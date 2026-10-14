@@ -583,6 +583,16 @@ pub struct CheckerContext<'a> {
     /// and all cross-file binders.
     pub symbol_name_candidates_cache: RefCell<FxHashMap<String, Vec<SymbolId>>>,
 
+    /// Memo of the project request consensus for one `(source file, specifier)`.
+    ///
+    /// The consensus probes the whole request-kind and resolution-mode key domain
+    /// and charges every probe, so repeating it for the same pair is pure waste.
+    /// It depends only on the immutable compiler-owned outcome map, never on the
+    /// current file, so entries stay valid across files. A result observed while
+    /// execution was stopped is never recorded.
+    pub(crate) project_module_consensus_memo:
+        RefCell<FxHashMap<usize, FxHashMap<String, Option<ProjectModuleConsensus>>>>,
+
     /// Per-file memo for `find_member_access_info`, keyed by
     /// `(class declaration NodeIndex, member-name Atom, is_static)`. The lookup
     /// walks the class's `members.nodes` (and its base-class chain) by name to

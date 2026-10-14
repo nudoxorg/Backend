@@ -41,6 +41,9 @@ impl UnixCommandTransport {
         ceiling: Option<std::time::Duration>,
         search_scope: Option<&super::RequestContext>,
     ) -> Result<Vec<u8>, ClientError> {
+        // Counted before the write: a frame that fails to send may still have
+        // been consumed by an owner that is retiring this connection.
+        self.frames_sent = self.frames_sent.saturating_add(1);
         let started = Instant::now();
         let initial = self
             .stream

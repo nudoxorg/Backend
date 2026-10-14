@@ -24,11 +24,12 @@ use crate::outline::{OutlineEntry, OutlineTree, row_resolver};
 use crate::page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceSite, Truncation,
 };
+use crate::readiness::{PublishedFacts, gapped_lanes, project_readiness};
 use crate::record::{CollapsedExternals, Record, RecordList};
-use crate::shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
+use crate::shelf::{LanguageCount, Readiness, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
-    Coverage, Document, GraphRelation, Outline, PageContinuation, Row, RowId, RowState,
+    Coverage, Document, GraphRelation, HealthReport, Outline, PageContinuation, Row, RowId,
     SourceAvailability, SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
 };
 use std::collections::BTreeMap;
@@ -405,9 +406,40 @@ fn summary_of(row: &Row) -> Option<String> {
 }
 
 /// Builds the shelf from one packages snapshot.
+///
+/// The snapshot carries the lane coverage of the revision it was read at, so
+/// the shelf prints the same lane statement `status` does. It does not carry
+/// the published row count; use [`shelf_from_snapshot_with_health`] when a
+/// health report of the same revision is available.
 #[must_use]
 pub fn shelf_from_snapshot(snapshot: &ViewSnapshot, revision: KeyTag) -> Shelf {
-    shelf_from_root(&snapshot.root, revision)
+    let facts = PublishedFacts::new(snapshot.root.coverage(), None);
+    shelf_from_root_with_facts(&snapshot.root, revision, facts)
+}
+
+/// Builds the shelf from one packages snapshot and the health report read at
+/// the same revision.
+///
+/// The report supplies the published row count and the lane coverage, so
+/// `packages` and `status` read the very same facts: a project that is still
+/// indexing is described with the count `status` prints rather than with a
+/// count invented from a reply that carried only package rows. A packages
+/// snapshot is stamped with the visible view's root, exactly as the report's
+/// revision receipt is, so a report whose revision differs describes another
+/// revision and is ignored: the lanes then come from the snapshot itself and the count is
+/// shown as unread, never as zero.
+#[must_use]
+pub fn shelf_from_snapshot_with_health(
+    snapshot: &ViewSnapshot,
+    revision: KeyTag,
+    health: &HealthReport,
+) -> Shelf {
+    let facts = if health.revision().root() == snapshot.root.basis().root {
+        PublishedFacts::from_health(health)
+    } else {
+        PublishedFacts::new(snapshot.root.coverage(), None)
+    };
+    shelf_from_root_with_facts(&snapshot.root, revision, facts)
 }
 
 /// Builds the shelf from one immutable view root.
@@ -422,16 +454,32 @@ pub fn shelf_from_snapshot(snapshot: &ViewSnapshot, revision: KeyTag) -> Shelf {
 /// what they are: readable, with a known count.
 #[must_use]
 pub fn shelf_from_root(root: &ViewRoot, revision: KeyTag) -> Shelf {
+    shelf_from_root_with_facts(root, revision, PublishedFacts::unread())
+}
+
+/// Builds the shelf from one immutable view root and what the owner published
+/// at the same revision.
+#[must_use]
+pub fn shelf_from_root_with_facts(
+    root: &ViewRoot,
+    revision: KeyTag,
+    facts: PublishedFacts,
+) -> Shelf {
     let rows = root.rows();
     let counts = language_counts(rows);
+    let sole_project = rows
+        .iter()
+        .filter(|row| matches!(row.id, RowId::Package(_)))
+        .count()
+        == 1;
     let mut entries = rows
         .iter()
         .filter(|row| matches!(row.id, RowId::Package(_)))
-        .map(|row| shelf_entry(row, &counts))
+        .map(|row| shelf_entry(row, &counts, &facts, sole_project))
         .collect::<Vec<_>>();
     synthesise_loose(&mut entries, &counts);
     entries.sort_by(|left, right| left.identity().name().cmp(right.identity().name()));
-    Shelf::new(revision, entries)
+    Shelf::new(revision, entries).with_facts(facts)
 }
 
 fn language_counts(rows: &[Row]) -> BTreeMap<String, BTreeMap<Language, u64>> {
@@ -480,7 +528,12 @@ fn synthesise_loose(
     }
 }
 
-fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) -> ShelfEntry {
+fn shelf_entry(
+    row: &Row,
+    counts: &BTreeMap<String, BTreeMap<Language, u64>>,
+    facts: &PublishedFacts,
+    sole_project: bool,
+) -> ShelfEntry {
     let identity = package_identity(row);
     let languages = identity
         .project()
@@ -492,12 +545,22 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let published = languages
-        .iter()
-        .fold(0_u64, |total, count| {
-            total.saturating_add(count.declarations().get())
-        });
-    let entry = ShelfEntry::new(identity, readiness_of(row, published));
+    let readiness = project_readiness(row.state, &row.label, facts, sole_project);
+    let entry = ShelfEntry::new(identity, readiness);
+    // The lane statement and the row count describe the whole revision, so
+    // they are attributed to a project only when it is the revision's only one.
+    let entry = if sole_project {
+        entry
+            .with_published_rows(facts.rows())
+            .with_partial_lanes(match row.state {
+                backend_library::RowState::Ready => gapped_lanes(facts),
+                backend_library::RowState::Loading | backend_library::RowState::Failed => {
+                    Vec::new()
+                }
+            })
+    } else {
+        entry
+    };
     if languages.is_empty() {
         // Package-only replies carry no declaration count evidence. Do not
         // turn the absence of symbol rows into an authoritative zero.
@@ -507,16 +570,6 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
     }
 }
 
-/// Reads one project's readiness from the row the owner published.
-///
-/// `published` is how many declarations of this project the *same* reply
-/// carried, and it is used for the language tags and nothing else. It must not
-/// decide readiness: the shelf reply carries package rows and no declarations,
-/// so a count of zero means "this reply did not say", not "nothing is indexed".
-/// Reading it as the latter is how a project with eighteen readable
-/// declarations came to render as `○ polyglot requested` next to a `health`
-/// line that said `ready · 18 row(s)`. The owner's own [`RowState`] is the
-/// authority, and it is the only thing consulted here.
 fn package_identity(row: &Row) -> Identity {
     let identity = Identity::parse_with_key(&row.label, row.id.into());
     if matches!(row.id, backend_library::RowId::Package(_)) {
@@ -526,28 +579,6 @@ fn package_identity(row: &Row) -> Identity {
             .unwrap_or(identity)
     } else {
         identity
-    }
-}
-
-fn readiness_of(row: &Row, published: u64) -> Readiness {
-    match row.state {
-        RowState::Ready => Readiness::Ready,
-        RowState::Loading => Readiness::Indexing {
-            rows: RowCount::new(published),
-        },
-        RowState::Failed => Readiness::Failed {
-            fault: Fault::new(
-                crate::fault::FaultSlug::Rejected,
-                crate::fault::Operand::Coordinate(crate::identity::Coordinate::new(&row.label)),
-                crate::fault::Cause::new(
-                    crate::fault::CauseSlug::Refused,
-                    "the owner published this project row in a failed state",
-                ),
-                crate::fault::Affordance::Reindex {
-                    path: row.label.clone(),
-                },
-            ),
-        },
     }
 }
 

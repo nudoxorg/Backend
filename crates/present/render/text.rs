@@ -453,14 +453,19 @@ pub fn shelf(shelf: &Shelf, theme: Theme) -> String {
     for entry in shelf.entries() {
         push_shelf_entry(&mut lines, entry, theme);
     }
-    lines.push(theme.paint(
-        Style::Dim,
-        &format!(
-            "{} project(s) · revision {}",
-            shelf.entries().len(),
-            shelf.revision()
-        ),
-    ));
+    let mut footer = format!(
+        "{} project(s) · revision {}",
+        shelf.entries().len(),
+        shelf.revision()
+    );
+    let statement = shelf.lane_statement();
+    if let Some((words, _)) = &statement {
+        let _ = write!(footer, " · {words}");
+    }
+    lines.push(theme.paint(Style::Dim, &footer));
+    if let Some((_, line)) = statement {
+        lines.push(coverage(line, theme));
+    }
     lines.finish()
 }
 
@@ -476,14 +481,7 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
         theme.paint(Style::Name, entry.identity().name())
     );
     let mut tags = vec![entry.readiness().name().to_owned()];
-    if let Readiness::Indexing { rows } = entry.readiness() {
-        tags.push(format!("{} row(s)", rows.get()));
-    }
-    match entry.declarations() {
-        Some(count) if count.get() > 0 => tags.push(format!("{} declaration(s)", count.get())),
-        Some(_) => {}
-        None => tags.push("declaration count unavailable".to_owned()),
-    }
+    tags.extend(entry.count_tags());
     for language in entry.languages() {
         tags.push(format!(
             "{} {}",
@@ -557,7 +555,7 @@ pub fn status(status: &Status, theme: Theme) -> String {
     let mut lines = Lines::new();
     let readiness = status.readiness();
     let style = match readiness {
-        "ready" => Style::Ready,
+        "ready" | "partial" => Style::Ready,
         "unavailable" => Style::Fault,
         _ => Style::Working,
     };

@@ -200,10 +200,12 @@ pub fn encode_answer(
                             readiness: project.readiness,
                             rows: project.rows,
                             declarations: project.declarations,
+                            partial_lanes: project.partial_lanes,
                             fault: project.fault,
                         }
                     })
                     .collect();
+                let published = ShelfDto::new(shelf);
                 encode_typed(
                     answer.kind(),
                     detail,
@@ -211,6 +213,8 @@ pub fn encode_answer(
                     SummaryShelfDto {
                         revision: shelf.revision().to_string(),
                         projects,
+                        readiness: published.readiness,
+                        rows: published.rows,
                     },
                     budget,
                 )
@@ -651,6 +655,8 @@ struct SummaryShelfEntryDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     rows: Option<u64>,
     declarations: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    partial_lanes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
 }
@@ -659,6 +665,10 @@ struct SummaryShelfEntryDto {
 struct SummaryShelfDto {
     revision: String,
     projects: Vec<SummaryShelfEntryDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readiness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rows: Option<u64>,
 }
 
 #[derive(Serialize)]

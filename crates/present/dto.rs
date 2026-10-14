@@ -226,12 +226,15 @@ impl SignatureTokenDto {
 pub struct CoverageDto {
     /// Lane name.
     pub lane: String,
-    /// Lane state: `complete`, `partial`, `unavailable`, or `unobserved`.
+    /// Lane state, in the readiness vocabulary every surface shares:
+    /// `complete`; `indexing` while work runs and the counts still move;
+    /// `partial` once work finished with settled source gaps and readable
+    /// rows; `unavailable`; or `unobserved`.
     pub state: String,
-    /// Completed shards, when the lane is partial.
+    /// Completed shards, when the lane is indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<u16>,
-    /// Declared shards, when the lane is partial.
+    /// Declared shards, when the lane is indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u16>,
     /// Why the lane answered nothing, when it is unavailable.
@@ -250,11 +253,12 @@ impl CoverageDto {
                 LaneState::Unobserved => Self::simple(lane.name(), "unobserved"),
                 LaneState::Partial { completed, total } => Self {
                     lane: lane.name().to_owned(),
-                    state: "partial".to_owned(),
+                    state: "indexing".to_owned(),
                     completed: Some(completed.get()),
                     total: Some(total.get()),
                     reason: None,
                 },
+                LaneState::Gapped => Self::simple(lane.name(), "partial"),
                 LaneState::Unavailable { reason } => Self {
                     lane: lane.name().to_owned(),
                     state: "unavailable".to_owned(),
@@ -716,11 +720,16 @@ pub struct ShelfEntryDto {
     pub identity: IdentityDto,
     /// How ready the project is.
     pub readiness: String,
-    /// Rows published so far, when the project is still indexing.
+    /// Rows published so far, when the project is still indexing and the reply
+    /// carried the published count. Absent means "not read", never zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
     /// The declaration count, or null when this reply supplied no count evidence.
     pub declarations: Option<u64>,
+    /// Lanes which finished with settled source gaps. The project is ready and
+    /// usable; these lanes say where it is partial.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partial_lanes: Vec<String>,
     /// Per-language declaration counts.
     pub languages: Vec<LanguageCountDto>,
     /// Why the project is not readable, when it failed.
@@ -745,10 +754,15 @@ impl ShelfEntryDto {
             identity: IdentityDto::new(entry.identity()),
             readiness: entry.readiness().name().to_owned(),
             rows: match entry.readiness() {
-                Readiness::Indexing { rows } => Some(rows.get()),
+                Readiness::Indexing { rows } => rows.map(crate::shelf::RowCount::get),
                 _ => None,
             },
             declarations: entry.declarations().map(crate::shelf::RowCount::get),
+            partial_lanes: entry
+                .partial_lanes()
+                .iter()
+                .map(|lane| crate::coverage::lane_name(*lane).to_owned())
+                .collect(),
             languages: entry
                 .languages()
                 .iter()
@@ -769,6 +783,15 @@ pub struct ShelfDto {
     pub revision: String,
     /// Every project in display order.
     pub projects: Vec<ShelfEntryDto>,
+    /// The workspace readiness word `status` prints for the same revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<String>,
+    /// Rows the owner published at this revision, when the reply carried them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    /// Lane coverage of the revision, identical to `status`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<CoverageDto>,
 }
 
 impl ShelfDto {
@@ -778,6 +801,12 @@ impl ShelfDto {
         Self {
             revision: shelf.revision().to_string(),
             projects: shelf.entries().iter().map(ShelfEntryDto::new).collect(),
+            readiness: shelf.facts().lanes().map(|line| line.readiness().to_owned()),
+            rows: shelf.facts().rows().map(crate::shelf::RowCount::get),
+            coverage: shelf
+                .facts()
+                .lanes()
+                .map_or_else(Vec::new, |line| CoverageDto::all(*line)),
         }
     }
 }

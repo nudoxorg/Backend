@@ -949,6 +949,18 @@ impl Fault {
                 ),
                 Affordance::WaitForReadiness,
             )),
+            Coverage::Gapped { lane } => Some(Self::new(
+                FaultSlug::LanePartial,
+                Operand::Lane(lane),
+                Cause::new(
+                    CauseSlug::NotCaptured,
+                    format!(
+                        "the {} lane finished and published readable rows, but part of its declared scope is not covered; waiting will not change that",
+                        lane_name(lane)
+                    ),
+                ),
+                Affordance::None,
+            )),
         }
     }
 
@@ -1113,10 +1125,28 @@ impl Fault {
             failure.detail().to_owned()
         };
         let scope = if failure.is_typescript_program_execution_failure() {
-            format!(
-                "TypeScript project (requested from {})",
-                failure.relative_path()
-            )
+            match failure.typescript_stop_site() {
+                // The request context says nothing about where the program ran out
+                // of work or time; the stop site is the file and phase that did.
+                Some(site) => {
+                    let location = match (site.phase, site.file.as_deref()) {
+                        (Some(phase), Some(file)) => format!("in {} of {file}", phase.tag()),
+                        (Some(phase), None) => format!("in {}", phase.tag()),
+                        (None, Some(file)) => format!("at {file}"),
+                        (None, None) => "between phases".to_owned(),
+                    };
+                    format!(
+                        "TypeScript project (requested from {}; stopped {location} after {} of {} work units)",
+                        failure.relative_path(),
+                        site.work_charged,
+                        site.work_allowance,
+                    )
+                }
+                None => format!(
+                    "TypeScript project (requested from {})",
+                    failure.relative_path()
+                ),
+            }
         } else if failure.typescript_compiler_admission().is_some() {
             format!(
                 "TypeScript compiler package (requested from {})",
@@ -1225,12 +1255,31 @@ impl Fault {
                 format!("the local endpoint could not be used: {detail}"),
                 Affordance::Retry,
             ),
+            // A refused dial is the same "nothing is listening" fact it was
+            // reported as before it became a reconnectable disconnect.
+            ClientError::Disconnected(kind) if error.is_owner_absent() => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!("the local endpoint could not be used: no owner is listening ({kind})"),
+                Affordance::Retry,
+            ),
+            // A bare disconnect is always a read: a command that changes state
+            // is reported as `MutationOutcomeUnknown` (or, for a saved index
+            // start, `IndexOperationDeliveryUnknown`), which carry the
+            // reconcile-before-repeating guidance. Repeating a read is safe.
+            ClientError::Disconnected(kind) if error.is_owner_slow() => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the local owner did not answer this read in time ({kind}) and the connection was dropped; the read changes nothing and can be repeated on a new connection"
+                ),
+                Affordance::Retry,
+            ),
             ClientError::Disconnected(kind) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
                 format!(
-                    "the local endpoint closed this connection ({kind}); \
-                     reconnect before retrying a read. An in-flight mutation may already be accepted; reconcile its saved identity before deciding whether to start another"
+                    "the local endpoint closed this connection ({kind}); the read changes nothing and can be repeated on a new connection"
                 ),
                 Affordance::Retry,
             ),

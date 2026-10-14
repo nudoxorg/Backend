@@ -281,7 +281,8 @@ pub enum Reason {
 pub enum Coverage {
     /// The lane covers its declared source scope.
     Complete,
-    /// The lane completed only a bounded portion of its scope.
+    /// The lane completed only a bounded portion of its scope and is still
+    /// moving: the counts advance as shards finish, so a reader may wait.
     Partial {
         /// Lane whose bounded result is represented.
         lane: Lane,
@@ -289,6 +290,15 @@ pub enum Coverage {
         completed: u16,
         /// Number of declared shards/lanes.
         total: u16,
+    },
+    /// The lane finished every task its authority could run and published
+    /// readable rows, while explicit source-scope gaps remain: sources the
+    /// configured compiler program excludes, or a profile that was refused
+    /// while another published. Unlike [`Self::Partial`] this is a settled
+    /// result: waiting changes nothing until the sources or configuration do.
+    Gapped {
+        /// Lane whose published result has explicit gaps.
+        lane: Lane,
     },
     /// The lane could not produce an authoritative result.
     Unavailable {
@@ -339,13 +349,13 @@ impl Coverage {
     pub const fn is_failed_lane(self) -> bool {
         match self {
             Self::Unavailable { reason, .. } => !reason.is_outside_declared_scope(),
-            Self::Complete | Self::Partial { .. } => false,
+            Self::Complete | Self::Partial { .. } | Self::Gapped { .. } => false,
         }
     }
 
     pub(super) fn is_valid(self) -> bool {
         match self {
-            Self::Complete | Self::Unavailable { .. } => true,
+            Self::Complete | Self::Gapped { .. } | Self::Unavailable { .. } => true,
             Self::Partial {
                 completed, total, ..
             } => completed <= total,

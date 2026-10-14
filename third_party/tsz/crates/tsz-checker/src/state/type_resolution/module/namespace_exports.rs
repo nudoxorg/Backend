@@ -1060,7 +1060,7 @@ impl<'a> CheckerState<'a> {
                 }
             }
         } else {
-            for (file_idx, binder) in binders.iter().enumerate() {
+            for (file_idx, binder) in self.ctx.binders_for_module_export_retry(binders) {
                 if let Some(exports) = self.ctx.module_exports_for_module(binder, module_specifier)
                 {
                     let mut combined = exports.clone();

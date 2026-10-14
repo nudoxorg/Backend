@@ -233,6 +233,107 @@ impl ExecutionCheckpoint for LatchedExecutionCheckpoint<'_> {
     }
 }
 
+/// A file-local work allowance carved out of one shared program checkpoint.
+///
+/// The slice charges its own allowance first and forwards exactly the units it
+/// admitted to the parent, so the parent's spend is the sum of what every slice
+/// admitted. When a charge does not fit, the slice drains, forwards only the
+/// part that fit, and refuses the rest: the parent is neither charged for the
+/// refused remainder nor latched, so one hot file cannot starve the files that
+/// still have work to do. Cancellation, deadline, and program-wide exhaustion
+/// are parent stops; they pass through unchanged and always win over the
+/// slice's own exhaustion.
+///
+/// A refused slice reports [`ProjectExecutionStop::WorkBudgetExhausted`] to the
+/// computation it guards, which unwinds exactly as it does for a program-wide
+/// stop. The slice's owner tells the two apart with [`Self::is_exhausted`] after
+/// confirming that the parent itself has not stopped.
+///
+/// Everything a guarded computation produced is partial once the slice is
+/// exhausted. The owner must discard its results and must not reuse any mutable
+/// state that the computation could have written to; the type database cannot
+/// encode execution provenance. Re-arming is for the next, independent
+/// computation only.
+pub struct FileWorkSlice<'checkpoint> {
+    parent: &'checkpoint dyn ExecutionCheckpoint,
+    allowance: AtomicU64,
+    remaining: AtomicU64,
+    exhausted: AtomicBool,
+}
+
+impl<'checkpoint> FileWorkSlice<'checkpoint> {
+    /// Creates an armed slice of `allowance` work units over `parent`.
+    #[must_use]
+    pub fn new(parent: &'checkpoint dyn ExecutionCheckpoint, allowance: u64) -> Self {
+        Self {
+            parent,
+            allowance: AtomicU64::new(allowance),
+            remaining: AtomicU64::new(allowance),
+            exhausted: AtomicBool::new(false),
+        }
+    }
+
+    /// Starts a new independent computation with a full allowance. Any
+    /// exhaustion latched by the previous computation is cleared.
+    pub fn arm(&self, allowance: u64) {
+        self.allowance.store(allowance, Ordering::Release);
+        self.remaining.store(allowance, Ordering::Release);
+        self.exhausted.store(false, Ordering::Release);
+    }
+
+    /// Work units the current computation may spend in total.
+    #[must_use]
+    pub fn allowance(&self) -> u64 {
+        self.allowance.load(Ordering::Acquire)
+    }
+
+    /// Work units admitted to the current computation so far.
+    #[must_use]
+    pub fn spent(&self) -> u64 {
+        self.allowance()
+            .saturating_sub(self.remaining.load(Ordering::Acquire))
+    }
+
+    /// Whether this slice, rather than its parent, refused a charge.
+    #[must_use]
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::Acquire)
+    }
+}
+
+impl ExecutionCheckpoint for FileWorkSlice<'_> {
+    fn execution_identity(&self) -> Option<ProjectExecutionIdentity> {
+        self.parent.execution_identity()
+    }
+
+    fn observe(&self, event: ProjectExecutionEvent<'_>) {
+        self.parent.observe(event);
+    }
+
+    fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
+        if self.is_exhausted() {
+            return Err(ProjectExecutionStop::WorkBudgetExhausted);
+        }
+        if work_units == 0 {
+            return self.parent.checkpoint(0);
+        }
+        let before = self
+            .remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                Some(remaining.saturating_sub(work_units))
+            })
+            .unwrap_or_else(|unchanged| unchanged);
+        // Charge the parent for exactly the part the slice admitted. A parent
+        // stop is program-wide and must not be reported as slice exhaustion.
+        self.parent.checkpoint(before.min(work_units))?;
+        if before < work_units {
+            self.exhausted.store(true, Ordering::Release);
+            return Err(ProjectExecutionStop::WorkBudgetExhausted);
+        }
+        Ok(())
+    }
+}
+
 /// Amortizes cooperative checks inside synchronous compiler walks.
 ///
 /// Call [`Self::tick`] for each bounded unit of work and [`Self::finish`] at
@@ -335,15 +436,20 @@ impl<'cancel> ProjectExecutionBudget<'cancel> {
         // previously latched stop above and below. It does not consume any
         // allowance, so avoid contending on the shared counter for the many
         // cache-boundary polls that use this value.
-        if work_units != 0
-            && self
+        if work_units != 0 {
+            // A charge larger than what is left drains the allowance to zero
+            // instead of leaving the remainder untouched. `initial - remaining`
+            // is then exactly the work admitted when the stop is latched, and
+            // concurrent workers cannot keep spending a stale remainder.
+            let before = self
                 .remaining_work
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                    remaining.checked_sub(work_units)
+                    Some(remaining.saturating_sub(work_units))
                 })
-                .is_err()
-        {
-            return Err(self.latch(ProjectExecutionStop::WorkBudgetExhausted));
+                .unwrap_or_else(|unchanged| unchanged);
+            if before < work_units {
+                return Err(self.latch(ProjectExecutionStop::WorkBudgetExhausted));
+            }
         }
         if self.cancelled.load(Ordering::Acquire) {
             return Err(self.latch(ProjectExecutionStop::Cancelled));
@@ -394,7 +500,7 @@ impl ExecutionCheckpoint for ProjectExecutionBudget<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint,
+        ExecutionCheckpoint, ExecutionWorkMeter, FileWorkSlice, LatchedExecutionCheckpoint,
         ProjectExecutionBudget, ProjectExecutionStop,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -495,6 +601,8 @@ mod tests {
             budget.checkpoint(2),
             Err(ProjectExecutionStop::WorkBudgetExhausted)
         );
+        // The refused charge drains the allowance: admitted work is exact.
+        assert_eq!(budget.remaining_work_units(), 0);
         assert_eq!(
             budget.stop_reason(),
             Some(ProjectExecutionStop::WorkBudgetExhausted)
@@ -563,5 +671,90 @@ mod tests {
             budget.stop_reason(),
             Some(ProjectExecutionStop::WorkBudgetExhausted)
         );
+    }
+
+    #[test]
+    fn oversized_charge_drains_the_allowance_so_admitted_work_is_exact() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 10);
+        assert_eq!(budget.checkpoint(4), Ok(()));
+        assert_eq!(
+            budget.checkpoint(1_000),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert_eq!(budget.remaining_work_units(), 0, "initial - remaining == admitted");
+        // An exact fit is admitted and only the next unit exhausts.
+        let fit =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 5);
+        assert_eq!(fit.checkpoint(5), Ok(()));
+        assert_eq!(fit.remaining_work_units(), 0);
+        assert_eq!(fit.stop_reason(), None);
+        assert_eq!(
+            fit.checkpoint(1),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn file_slice_exhaustion_is_local_and_charges_the_parent_only_what_it_admitted() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 100);
+        let slice = FileWorkSlice::new(&budget, 10);
+        assert_eq!(slice.checkpoint(0), Ok(()));
+        assert_eq!(slice.checkpoint(6), Ok(()));
+        assert_eq!((slice.spent(), budget.remaining_work_units()), (6, 94));
+        assert_eq!(
+            slice.checkpoint(7),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert!(slice.is_exhausted());
+        assert_eq!(slice.spent(), 10, "the slice drains");
+        assert_eq!(
+            budget.remaining_work_units(),
+            90,
+            "the parent paid for the 4 units the slice admitted, not for the refused 7"
+        );
+        assert_eq!(budget.stop_reason(), None, "a file stop never latches the program");
+        // Zero-work polls observe the slice's stop too, without touching the parent.
+        assert_eq!(
+            slice.checkpoint(0),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert_eq!(budget.remaining_work_units(), 90);
+        // Another file is unaffected and can use the rest of the program.
+        slice.arm(50);
+        assert!(!slice.is_exhausted());
+        assert_eq!(slice.checkpoint(50), Ok(()));
+        assert_eq!(budget.remaining_work_units(), 40);
+        assert_eq!(budget.checkpoint(0), Ok(()));
+    }
+
+    #[test]
+    fn program_stops_win_over_file_slice_exhaustion_and_do_not_mark_the_slice() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 5);
+        let slice = FileWorkSlice::new(&budget, 1_000);
+        assert_eq!(
+            slice.checkpoint(8),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert!(
+            !slice.is_exhausted(),
+            "the program, not the file's share, ran out"
+        );
+        assert_eq!(
+            budget.stop_reason(),
+            Some(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+
+        let roomy =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 100);
+        let slice = FileWorkSlice::new(&roomy, 10);
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(slice.checkpoint(1), Err(ProjectExecutionStop::Cancelled));
+        assert!(!slice.is_exhausted());
     }
 }

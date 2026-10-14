@@ -42,6 +42,7 @@ pub use tsz::tsz_solver::type_handles as tsz_type_handles;
 pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
     TszDeclarationDiagnosticPolicy, TszDiagnostic, TszEnvironmentFingerprint, TszFileInput,
+    TszFileWorkExhaustion, TszFileWorkPolicy,
     TszLibraryInput, TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic,
     TszProject, TszProjectAuthority, TszProjectCheckerExecution, TszProjectFileFormat,
     TszProjectFileFormatInput, TszProjectModuleRequestKind, TszProjectModuleResolution,
@@ -58,6 +59,7 @@ pub use tsz_common::{
     ProjectExecutionBudget as TszProjectExecutionBudget,
     ProjectExecutionIdentity as TszProjectExecutionIdentity,
     ProjectExecutionEvent as TszProjectExecutionEvent,
+    ProjectExecutionFile as TszProjectExecutionFile,
     ProjectExecutionPhase as TszProjectExecutionPhase,
     ProjectExecutionStop as TszProjectExecutionStop,
     ProjectExecutionTransition as TszProjectExecutionTransition,

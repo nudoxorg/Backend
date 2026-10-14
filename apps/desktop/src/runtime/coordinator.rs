@@ -89,6 +89,8 @@ pub struct DesktopRuntime {
     next_request: u64,
     admitted_project: Option<LocalProjectId>,
     initial_root_gate: Option<super::owner::OwnerGate>,
+    /// The attachment whose one transport-failure refresh was already spent.
+    initial_root_refreshed: Option<super::owner::Epoch>,
     /// Retain the last Root identity through UI event delivery, not its result.
     current_root_request: Option<RequestId>,
 }
@@ -118,6 +120,7 @@ impl DesktopRuntime {
             next_request: 1,
             admitted_project: None,
             initial_root_gate: None,
+            initial_root_refreshed: None,
             current_root_request: None,
         }
     }
@@ -127,6 +130,37 @@ impl DesktopRuntime {
     /// the store watcher (which may still represent an earlier owner).
     pub(crate) fn observe_initial_root(&mut self, gate: Option<super::owner::OwnerGate>) {
         self.initial_root_gate = gate;
+    }
+
+    /// Whether this runtime waits on an owner gate. Its authoritative first
+    /// Root is then asked when the owner answers, never at construction.
+    pub(crate) const fn has_owner_gate(&self) -> bool {
+        self.initial_root_gate.is_some()
+    }
+
+    /// The first `Transport` failure of an attachment's initial Root is most
+    /// often a reply lost while the owner is still busy starting, not a dead
+    /// owner. Ask the Root once more for that attachment before withdrawing
+    /// it. Returns the refresh's events, or `None` when the failure is
+    /// definitive and belongs to [`Self::report_initial_root_failure`]: any
+    /// other fault code, an attachment that already spent its refresh, a
+    /// superseded request, or an attachment no longer awaiting its first root.
+    pub(crate) fn refresh_transient_initial_root(
+        &mut self,
+        failure: &InitialRootFailure,
+    ) -> Option<Vec<RuntimeEvent>> {
+        if failure.error.code() != FaultCode::Transport
+            || self.current_root_request != Some(failure.request)
+            || self.initial_root_refreshed == Some(failure.attachment)
+            || !failure.gate.initial_root_pending(failure.attachment)
+        {
+            return None;
+        }
+        self.initial_root_refreshed = Some(failure.attachment);
+        super::trace::mark("root.refresh-after-transport", failure.error.message());
+        let request = self.allocate_request();
+        let basis = self.snapshot.key();
+        Some(self.dispatch(Intent::RefreshRoot { basis, request }))
     }
 
     /// A later Root or Stop can retire a receipt after polling but before its

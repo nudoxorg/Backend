@@ -7,10 +7,12 @@ use backend_frontend_typescript::{
     TszProjectProgramCheckError, TszProjectQuerySessionError, TszSourceError,
 };
 use backend_library::interface::TypeScriptAuthorityFailureKind as F;
+use backend_library::interface::TypeScriptFailureCause;
 use backend_library::interface::{
     TypeScriptCompilerAdmissionCause as C, TypeScriptCompilerAdmissionDetail,
     TypeScriptCompilerApiExport, TypeScriptCompilerPackageRole as R, TypeScriptCompilerVersion,
 };
+use std::path::Path;
 
 pub(super) fn admission_detail(
     error: &PackageAuthorityError,
@@ -18,6 +20,7 @@ pub(super) fn admission_detail(
     let PackageAuthorityError::TypeScriptProjectHost(error) = error else {
         return None;
     };
+    let error = peel(error);
     let (error, role, version) = match error {
         TypeScriptProjectHostError::CompilerPackageAdmission {
             source,
@@ -114,6 +117,7 @@ fn checker_failure(error: &CheckerError) -> F {
 
 fn host_failure(error: &TypeScriptProjectHostError) -> F {
     match error {
+        TypeScriptProjectHostError::Described { source, .. } => host_failure(source),
         TypeScriptProjectHostError::CompilerPackageAdmission { source, .. } => host_failure(source),
         TypeScriptProjectHostError::BundledSdkAdmission { .. } => F::HostToolchainResolution,
         TypeScriptProjectHostError::ToolchainResolution { .. } => F::HostToolchainResolution,
@@ -185,6 +189,325 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::InvalidCompilerVersion { .. } => F::HostInvalidCompilerVersion,
         TypeScriptProjectHostError::VersionMismatch { .. } => F::HostVersionMismatch,
         TypeScriptProjectHostError::CheckerConfiguration { .. } => F::HostCheckerConfiguration,
+    }
+}
+
+/// Peels the public-cause wrapper so typed classification sees the original error.
+fn peel(error: &TypeScriptProjectHostError) -> &TypeScriptProjectHostError {
+    match error {
+        TypeScriptProjectHostError::Described { source, .. } => peel(source),
+        other => other,
+    }
+}
+
+/// Sanitized cause retained by [`describe_host_error`], when this error carries one.
+pub(super) fn failure_cause(error: &PackageAuthorityError) -> Option<TypeScriptFailureCause> {
+    match error {
+        PackageAuthorityError::TypeScriptProjectHost(TypeScriptProjectHostError::Described {
+            cause,
+            ..
+        }) => Some(cause.clone()),
+        _ => None,
+    }
+}
+
+/// Pairs a host error with its public cause text under the given project roots.
+///
+/// The text is rebuilt from fields the host controls (config selection, config
+/// parse, closure and bridge messages), never from process output. Every path
+/// below a root becomes root-relative and every other absolute path is masked,
+/// so the result names project files without exposing the machine layout.
+pub(crate) fn describe_host_error(
+    error: TypeScriptProjectHostError,
+    roots: &[&Path],
+) -> TypeScriptProjectHostError {
+    if matches!(error, TypeScriptProjectHostError::Described { .. }) {
+        return error;
+    }
+    let scope = PathScope::new(roots);
+    match host_cause_text(&error, &scope).and_then(|text| TypeScriptFailureCause::sanitize(&text)) {
+        Some(cause) => TypeScriptProjectHostError::Described {
+            cause,
+            source: Box::new(error),
+        },
+        None => error,
+    }
+}
+
+/// Canonical and as-given spellings of the roots a public cause may name.
+struct PathScope {
+    roots: Vec<String>,
+}
+
+impl PathScope {
+    fn new(roots: &[&Path]) -> Self {
+        let mut spellings = Vec::new();
+        for root in roots {
+            if let Ok(canonical) = std::fs::canonicalize(root) {
+                spellings.push(canonical.to_string_lossy().into_owned());
+            }
+            spellings.push(root.to_string_lossy().into_owned());
+        }
+        spellings.retain(|root| root.len() > 1);
+        spellings
+            .sort_unstable_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
+        spellings.dedup();
+        Self { roots: spellings }
+    }
+
+    /// Project-relative spelling of one path; outside paths keep only the file name.
+    fn path(&self, path: &Path) -> String {
+        let text = path.to_string_lossy();
+        for root in &self.roots {
+            if let Some(rest) = text.strip_prefix(root.as_str()) {
+                if rest.is_empty() {
+                    return ".".to_owned();
+                }
+                if let Some(relative) = rest.strip_prefix(['/', '\\']) {
+                    return relative.to_owned();
+                }
+            }
+        }
+        if path.is_absolute() {
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            return format!("<outside project>/{name}");
+        }
+        text.into_owned()
+    }
+
+    /// Makes host-written free text project-relative and masks foreign paths.
+    fn text(&self, message: &str) -> String {
+        let mut text = message.to_owned();
+        for root in &self.roots {
+            text = text
+                .replace(&format!("{root}/"), "")
+                .replace(&format!("{root}\\"), "");
+            text = text.replace(root.as_str(), ".");
+        }
+        mask_absolute_paths(&text)
+    }
+}
+
+/// Replaces each remaining absolute path token with `<outside project>/<name>`.
+fn mask_absolute_paths(text: &str) -> String {
+    fn token_break(character: char) -> bool {
+        character.is_whitespace() || matches!(character, '"' | '\'' | '`' | ')' | ']' | ',' | ';')
+    }
+    fn token_start_context(previous: Option<char>) -> bool {
+        previous.is_none_or(|character| {
+            character.is_whitespace()
+                || matches!(character, '"' | '\'' | '`' | '(' | '[' | '=' | ':' | ',')
+        })
+    }
+    let characters = text.char_indices().collect::<Vec<_>>();
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < characters.len() {
+        let (offset, character) = characters[index];
+        let previous = index.checked_sub(1).map(|before| characters[before].1);
+        let drive = character.is_ascii_alphabetic()
+            && token_start_context(previous)
+            && matches!(characters.get(index + 1), Some((_, ':')))
+            && matches!(characters.get(index + 2), Some((_, '/' | '\\')));
+        if (character == '/' && token_start_context(previous)) || drive {
+            let mut end = index;
+            while end < characters.len() && !token_break(characters[end].1) {
+                end += 1;
+            }
+            let token_end = characters
+                .get(end)
+                .map_or(text.len(), |(offset, _)| *offset);
+            let token = &text[offset..token_end];
+            let name = token
+                .rsplit(['/', '\\'])
+                .find(|part| !part.is_empty())
+                .unwrap_or_default();
+            if token.len() > 1 && token.chars().any(char::is_alphanumeric) && !name.is_empty() {
+                output.push_str("<outside project>/");
+                output.push_str(name);
+            } else {
+                output.push_str(token);
+            }
+            index = end;
+            continue;
+        }
+        output.push(character);
+        index += 1;
+    }
+    output
+}
+
+fn host_cause_text(error: &TypeScriptProjectHostError, scope: &PathScope) -> Option<String> {
+    use TypeScriptProjectHostError as E;
+    Some(match error {
+        E::Described { source, .. } => return host_cause_text(source, scope),
+        E::CompilerApiBridge { message } => scope.text(message),
+        E::CompilerProgramSourceMissing {
+            package_relative_path,
+        } => format!(
+            "{} was absent from the compiler program",
+            scope.text(package_relative_path)
+        ),
+        E::ConfigInvalid { config, message } => {
+            format!(
+                "{} is malformed: {}",
+                scope.path(config),
+                scope.text(message)
+            )
+        }
+        E::ConfigMissing { config } => format!("{} does not exist", scope.path(config)),
+        E::WorkspaceConfigInvalid { path, message } => {
+            format!("{} is malformed: {}", scope.path(path), scope.text(message))
+        }
+        E::ConfigCycle { config } => {
+            format!(
+                "the configuration graph has a cycle at {}",
+                scope.path(config)
+            )
+        }
+        E::ConfigEscapesBoundary { config, boundary } => format!(
+            "{} escapes the workspace boundary {}",
+            scope.path(config),
+            scope.path(boundary)
+        ),
+        E::ConfigFileLimit { observed, maximum } => {
+            format!("{observed} tsconfig files were found; the maximum is {maximum}")
+        }
+        E::ConfigDirectoryDepth { directory } => format!(
+            "the tsconfig scan exceeded its directory depth at {}",
+            scope.path(directory)
+        ),
+        E::CompilerIoClosureLimit { phase, detail } => {
+            format!("{} budget: {}", scope.text(phase), scope.text(detail))
+        }
+        E::CompilerIoClosureMismatch { detail } => scope.text(detail),
+        E::PackagePath { path, source } => {
+            format!("{} could not be read: {}", scope.path(path), source.kind())
+        }
+        E::FileTooLarge {
+            path,
+            observed,
+            maximum,
+        } => format!(
+            "{} has {observed} bytes; the limit is {maximum}",
+            scope.path(path)
+        ),
+        E::RegularFileRequired { path } => {
+            format!("{} is not a regular file", scope.path(path))
+        }
+        E::RegularDirectoryRequired { path } => {
+            format!("{} is not a regular directory", scope.path(path))
+        }
+        E::ModuleEntrySymlink { path } => {
+            format!("{} is a disallowed symlink", scope.path(path))
+        }
+        E::WitnessChanged { path } => {
+            format!("{} changed while it was being analyzed", scope.path(path))
+        }
+        E::SourceOutsideCapability { path } => format!(
+            "{} is outside the project and compiler roots",
+            scope.path(path)
+        ),
+        E::ResolvedSourceLimit { observed, maximum } => {
+            format!("{observed} resolved sources exceed the {maximum}-file limit")
+        }
+        E::ResolvedSourceBytes { observed, maximum } => {
+            format!("{observed} resolved source bytes exceed the {maximum}-byte limit")
+        }
+        E::ResolverObservationLimit { observed, maximum } => {
+            format!("{observed} resolver observations exceed the limit of {maximum}")
+        }
+        E::NonPortablePath { path } => {
+            format!("{} is not a portable UTF-8 path", scope.path(path))
+        }
+        E::CheckerConfiguration { message, .. } => scope.text(message),
+        E::CompilerProgramProbe { source } => probe_cause_text(source),
+        E::NodeProbe { source, .. } => format!("Node {}", probe_cause_text(source)),
+        E::CompilerProbe { source, .. } => format!("TypeScript {}", probe_cause_text(source)),
+        E::ManifestInvalid { manifest, message } => {
+            format!(
+                "{} is malformed: {}",
+                scope.path(manifest),
+                scope.text(message)
+            )
+        }
+        E::ManifestTooLarge { manifest, maximum } => {
+            format!("{} exceeds the {maximum}-byte limit", scope.path(manifest))
+        }
+        E::InvalidPackageName { manifest, name } => format!(
+            "{} names package {}, not typescript",
+            scope.path(manifest),
+            scope.text(name)
+        ),
+        E::InvalidPackageVersion { manifest, version } => format!(
+            "{} has the invalid version {}",
+            scope.path(manifest),
+            scope.text(version)
+        ),
+        E::PackageEscapesNodeModules {
+            package,
+            node_modules,
+        } => format!(
+            "{} escapes {}",
+            scope.path(package),
+            scope.path(node_modules)
+        ),
+        E::CompilerEscapesPackage { compiler, package } => format!(
+            "compiler entry {} is outside {}",
+            scope.path(compiler),
+            scope.path(package)
+        ),
+        E::YarnPnpUnsupported { marker } => format!(
+            "{} marks Yarn Plug'n'Play, which needs a node_modules layout",
+            scope.path(marker)
+        ),
+        E::VersionMismatch {
+            expected, observed, ..
+        } => format!(
+            "the compiler reports {} but its package is {}",
+            scope.text(observed),
+            scope.text(expected)
+        ),
+        E::InvalidCompilerVersion { output, .. } => format!(
+            "the compiler printed an invalid version: {}",
+            scope.text(output)
+        ),
+        _ => return None,
+    })
+}
+
+/// Closed account of a Compiler API process failure; stream bytes never appear.
+fn probe_cause_text(error: &super::toolchain_probe::ToolchainProbeError) -> String {
+    use super::toolchain_probe::{ToolchainProbeError as E, ToolchainProbePrimary as P};
+    match error {
+        E::Bounded {
+            primary: P::Deadline { .. },
+            ..
+        } => "the Compiler API process exceeded its time limit".to_owned(),
+        E::Bounded {
+            primary: P::OutputLimit { .. },
+            ..
+        } => "the Compiler API process exceeded its output limit".to_owned(),
+        E::Bounded {
+            primary: P::Cancelled,
+            ..
+        } => "the Compiler API process was cancelled".to_owned(),
+        E::Exit { status, .. } => format!("the Compiler API process exited with {status}"),
+        E::Spawn { .. } | E::ProbeWorkerSpawn { .. } | E::ReaderSpawn { .. } => {
+            "the Compiler API process could not be started".to_owned()
+        }
+        E::Cleanup { preceding, .. }
+        | E::Stream {
+            preceding: Some(preceding),
+            ..
+        }
+        | E::Streams {
+            preceding: Some(preceding),
+            ..
+        } => probe_cause_text(preceding),
+        _ => "the Compiler API process failed before producing a report".to_owned(),
     }
 }
 
@@ -266,6 +589,11 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszProjectQuerySessionError::ExecutionStopped(reason) => {
                 stop_failure(*reason, StopSite::Session)
             }
+            // A file query that spent its own allowance with no restart left: the
+            // allowance is work budget, so the closed cause is the same one.
+            TszProjectQuerySessionError::FileWorkExhausted { .. } => {
+                F::NativeSessionWorkBudgetExhausted
+            }
         },
         TszAuthorityError::ProjectCheck(error) => match error {
             TszProjectProgramCheckError::ModuleResolution(error) => {
@@ -276,6 +604,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             }
         },
         TszAuthorityError::ExecutionStopped(reason) => stop_failure(*reason, StopSite::Update),
+        TszAuthorityError::FileWorkExhausted(_) => F::NativeProjectCheckWorkBudgetExhausted,
     }
 }
 
@@ -418,6 +747,116 @@ mod tests {
             failure_kind(&error),
             Some(F::NativeProjectCheckModuleTargetNotInProgram)
         );
+    }
+
+    #[test]
+    fn described_host_errors_keep_their_kind_and_expose_only_bounded_project_relative_cause() {
+        let root = Path::new("/work/app");
+        let bridge = describe_host_error(
+            TypeScriptProjectHostError::CompilerApiBridge {
+                message: "selected config has Compiler API parse diagnostics: TS5083: Cannot read file '/work/app/tsconfig.app.json'. (/home/dev/.nvm/typescript/lib/typescript.js:1)".into(),
+            },
+            &[root],
+        );
+        let error = PackageAuthorityError::TypeScriptProjectHost(bridge);
+        assert_eq!(failure_kind(&error), Some(F::HostCompilerApiBridge));
+        assert_eq!(admission_detail(&error), None);
+        let cause = failure_cause(&error).expect("bridge cause is retained");
+        assert_eq!(
+            cause.as_str(),
+            "selected config has Compiler API parse diagnostics: TS5083: Cannot read file 'tsconfig.app.json'. (<outside project>/typescript.js:1)"
+        );
+        assert!(!cause.as_str().contains("/work/app"));
+        assert!(!cause.as_str().contains("/home/dev"));
+        assert!(cause.detail_for(F::HostCompilerApiBridge).len() <= 384);
+
+        for (error, expected) in [
+            (
+                TypeScriptProjectHostError::ConfigInvalid {
+                    config: Path::new("/work/app/packages/a/tsconfig.json").into(),
+                    message: "expected value at line 3 column 5".into(),
+                },
+                "packages/a/tsconfig.json is malformed: expected value at line 3 column 5",
+            ),
+            (
+                TypeScriptProjectHostError::ConfigMissing {
+                    config: Path::new("/work/app/tsconfig.node.json").into(),
+                },
+                "tsconfig.node.json does not exist",
+            ),
+            (
+                TypeScriptProjectHostError::ConfigCycle {
+                    config: Path::new("/elsewhere/tsconfig.json").into(),
+                },
+                "the configuration graph has a cycle at <outside project>/tsconfig.json",
+            ),
+            (
+                TypeScriptProjectHostError::ConfigFileLimit {
+                    observed: 600,
+                    maximum: 512,
+                },
+                "600 tsconfig files were found; the maximum is 512",
+            ),
+        ] {
+            let kind = host_failure(&error);
+            let described = describe_host_error(error, &[root]);
+            assert_eq!(host_failure(&described), kind, "typed kind is preserved");
+            let error = PackageAuthorityError::TypeScriptProjectHost(described);
+            assert_eq!(failure_cause(&error).unwrap().as_str(), expected);
+        }
+
+        // Typed admission facts stay authoritative and cannot be shadowed by text.
+        let admission = describe_host_error(
+            TypeScriptProjectHostError::CompilerPackageAdmission {
+                package_version: "5.9.3".into(),
+                role: R::SelectedCompiler,
+                source: Box::new(TypeScriptProjectHostError::ModuleFileLimit {
+                    package_root: Path::new("/work/app/node_modules/typescript").into(),
+                    observed: 300,
+                    maximum: 256,
+                }),
+            },
+            &[root],
+        );
+        assert!(matches!(
+            admission,
+            TypeScriptProjectHostError::CompilerPackageAdmission { .. }
+        ));
+
+        // Process output never becomes public text, only a closed account of the failure.
+        let probe = describe_host_error(
+            TypeScriptProjectHostError::CompilerProgramProbe {
+                source: super::super::toolchain_probe::ToolchainProbeError::Empty {
+                    tool: backend_semantic::vocabulary::NativeTool::TypeScriptCompiler,
+                },
+            },
+            &[root],
+        );
+        let error = PackageAuthorityError::TypeScriptProjectHost(probe);
+        assert_eq!(
+            failure_cause(&error).unwrap().as_str(),
+            "the Compiler API process failed before producing a report"
+        );
+    }
+
+    #[test]
+    fn path_masking_handles_roots_quotes_and_foreign_absolute_paths() {
+        let scope = PathScope::new(&[Path::new("/work/app"), Path::new("/work")]);
+        assert_eq!(scope.path(Path::new("/work/app")), ".");
+        assert_eq!(scope.path(Path::new("/work/app/src/a.ts")), "src/a.ts");
+        assert_eq!(scope.path(Path::new("/work/other/b.ts")), "other/b.ts");
+        assert_eq!(
+            scope.path(Path::new("/usr/lib/c.ts")),
+            "<outside project>/c.ts"
+        );
+        assert_eq!(
+            scope.text(
+                "a/b is fine; \"/usr/lib/x.js\" and (/opt/y/z.ts:3) and C:\\Users\\me\\q.ts too"
+            ),
+            "a/b is fine; \"<outside project>/x.js\" and (<outside project>/z.ts:3) and <outside project>/q.ts too"
+        );
+        assert_eq!(scope.text("see /work/app/src"), "see src");
+        assert_eq!(mask_absolute_paths("a / b"), "a / b");
     }
 
     #[test]

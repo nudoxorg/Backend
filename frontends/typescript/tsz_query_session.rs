@@ -19,8 +19,9 @@
 //! callback and return owned compiler facts rather than TSZ handles.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
-use super::{TszAuthorityError, TszProject};
+use super::{TszAuthorityError, TszFileWorkExhaustion, TszProject};
 use tsz::tsz_solver::construction::TypeDatabase;
 use tsz_common::ExecutionCheckpoint;
 
@@ -36,6 +37,8 @@ pub struct TszProjectQuerySession<'project> {
     project: &'project TszProject,
     checker_session: tsz::parallel::ProjectCheckerSession<'project>,
     file_indexes: HashMap<&'project str, usize>,
+    /// The first file query that spent its per-file work allowance.
+    file_work_exhausted: Mutex<Option<TszFileWorkExhaustion>>,
 }
 
 impl std::fmt::Debug for TszProjectQuerySession<'_> {
@@ -63,7 +66,27 @@ impl TszProject {
         &'project self,
         checkpoint: &'project dyn ExecutionCheckpoint,
     ) -> Result<TszProjectQuerySession<'project>, TszProjectQuerySessionError> {
-        TszProjectQuerySession::new(self, checkpoint)
+        TszProjectQuerySession::new(self, checkpoint, None)
+    }
+
+    /// Like [`Self::checked_query_session`], but every file query is bounded by
+    /// its own work allowance of `allowance` units.
+    ///
+    /// A query that spends its allowance fails with
+    /// [`TszProjectQuerySessionError::FileWorkExhausted`], drops its partial
+    /// output, and is recorded for [`TszProjectQuerySession::take_file_work_exhaustion`].
+    /// The interrupted query may have written partial state into the checked
+    /// image's program-wide tables, so after that error neither the session nor
+    /// the project may serve further queries: rebuild the project first.
+    ///
+    /// # Errors
+    /// As [`Self::checked_query_session`].
+    pub fn checked_query_session_with_file_work<'project>(
+        &'project self,
+        checkpoint: &'project dyn ExecutionCheckpoint,
+        allowance: u64,
+    ) -> Result<TszProjectQuerySession<'project>, TszProjectQuerySessionError> {
+        TszProjectQuerySession::new(self, checkpoint, Some(allowance))
     }
 
     /// Opens an unmetered native query session for semantic regression tests.
@@ -83,7 +106,7 @@ impl TszProject {
     pub fn checked_query_session_unmetered_for_test(
         &self,
     ) -> Result<TszProjectQuerySession<'_>, TszProjectQuerySessionError> {
-        TszProjectQuerySession::new(self, &UNMETERED_TEST_CHECKPOINT)
+        TszProjectQuerySession::new(self, &UNMETERED_TEST_CHECKPOINT, None)
     }
 }
 
@@ -104,6 +127,7 @@ impl<'project> TszProjectQuerySession<'project> {
     fn new(
         project: &'project TszProject,
         checkpoint: &'project dyn ExecutionCheckpoint,
+        file_work_allowance: Option<u64>,
     ) -> Result<Self, TszProjectQuerySessionError> {
         // Only the query scope admitted by the most recent successful update
         // may enter this request. A later exact update can intentionally admit
@@ -115,7 +139,10 @@ impl<'project> TszProjectQuerySession<'project> {
         {
             return Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch);
         }
-        let checker_session = project.program.query_session(checkpoint)?;
+        let mut checker_session = project.program.query_session(checkpoint)?;
+        if let Some(allowance) = file_work_allowance {
+            checker_session = checker_session.with_file_work_allowance(allowance);
+        }
         let file_indexes = project
             .program
             .files
@@ -127,6 +154,7 @@ impl<'project> TszProjectQuerySession<'project> {
             project,
             checker_session,
             file_indexes,
+            file_work_exhausted: Mutex::new(None),
         })
     }
 
@@ -162,8 +190,43 @@ impl<'project> TszProjectQuerySession<'project> {
             &dyn TypeDatabase,
         ) -> Output,
     ) -> Result<Output, TszProjectQuerySessionError> {
-        self.checker_session
-            .with_file_checker_and_types(file_index, consume)
+        let result = self
+            .checker_session
+            .with_file_checker_and_types(file_index, consume);
+        if let Err(TszProjectQuerySessionError::FileWorkExhausted {
+            file_index,
+            allowance,
+        }) = &result
+        {
+            let path = self
+                .project
+                .program
+                .files
+                .get(*file_index)
+                .map_or_else(String::new, |file| file.file_name.clone());
+            let mut recorded = self
+                .file_work_exhausted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            recorded.get_or_insert(TszFileWorkExhaustion {
+                file_index: *file_index,
+                path,
+                allowance: *allowance,
+            });
+        }
+        result
+    }
+
+    /// Takes the first file query that spent its per-file work allowance, if any.
+    ///
+    /// This is the only way to tell a file-local exhaustion from a program-wide
+    /// stop when a lowering step swallowed or re-labelled the query error.
+    #[must_use]
+    pub fn take_file_work_exhaustion(&self) -> Option<TszFileWorkExhaustion> {
+        self.file_work_exhausted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Resolves an exact path to its merged program file index.
