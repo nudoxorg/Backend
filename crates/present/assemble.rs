@@ -236,7 +236,13 @@ fn relation_groups(
                 }
                 _ => (RelationDirection::Outgoing, false),
             };
-            matches.then_some(relation_label(edge.relation, direction))
+            matches.then_some(
+                if edge.confidence >= backend_library::SemanticConfidence::Indexed {
+                    relation_label(edge.relation, direction)
+                } else {
+                    RelationLabel::Unverified(edge.relation, direction)
+                },
+            )
         });
         let labels = typed.collect::<Vec<_>>();
         let labels = if labels.is_empty() {
@@ -267,6 +273,27 @@ pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
     record_list_from_rows(
         query,
         snapshot.root.rows(),
+        snapshot.root.coverage(),
+        snapshot.next.is_some(),
+    )
+    .with_continuation(snapshot.next.map(PageContinuation::from_cursor))
+}
+
+/// Builds the page of one declaration's graph neighbours: the neighbourhood
+/// of `center`, without `center` itself. The declaration a reader asked about
+/// is not one of its own relations; a graph with nothing else says so.
+#[must_use]
+pub fn neighbour_list(center: &str, snapshot: &ViewSnapshot) -> RecordList {
+    let rows = snapshot
+        .root
+        .rows()
+        .iter()
+        .filter(|row| row.label != center)
+        .cloned()
+        .collect::<Vec<_>>();
+    record_list_from_rows(
+        center,
+        &rows,
         snapshot.root.coverage(),
         snapshot.next.is_some(),
     )

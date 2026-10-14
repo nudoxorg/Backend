@@ -1167,6 +1167,9 @@ pub struct ProductRecordDto {
     /// The exact operand a caller passes back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operand: Option<String>,
+    /// A line of text shown under the identity, such as the code of a use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// The tags shown after the title.
     pub tags: Vec<String>,
     /// Typed native registry facts when this row came from a package release.
@@ -1222,6 +1225,7 @@ impl ProductDto {
                     extent: record.extent(),
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
+                    detail: record.detail().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),
                     native_metadata: record.native_metadata().cloned(),
                     source_metadata: record.source_metadata().cloned(),

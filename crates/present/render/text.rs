@@ -630,6 +630,9 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         if let Some(operand) = record.operand() {
             lines.push(format!("  {}", theme.paint(Style::Coordinate, operand)));
         }
+        if let Some(detail) = record.detail() {
+            lines.push(format!("  {detail}"));
+        }
         if let Some(status) = record.history_status() {
             lines.push(format!(
                 "  {}",

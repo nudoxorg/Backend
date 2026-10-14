@@ -1860,6 +1860,10 @@ fn references_name_sites_from_compiler_facts_against_the_selected_view() {
                 end: 46,
             }),
         },
+        place: Some(crate::ReferencePlace {
+            line: 12,
+            text: ProductText::new("callee();").expect("text"),
+        }),
     };
     let target = ProductText::new(target_label).expect("target");
     let records = library
@@ -1867,6 +1871,8 @@ fn references_name_sites_from_compiler_facts_against_the_selected_view() {
         .expect("references");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].site.as_str(), "pkg::caller");
+    let place = records[0].place.as_ref().expect("place survives the projection");
+    assert_eq!((place.line, place.text.as_str()), (12, "callee();"));
     assert_eq!(records[0].relation, SemanticLinkKind::Calls);
     let span = records[0].evidence.source.as_ref().expect("span");
     assert_eq!((span.start, span.end), (40, 46));
@@ -1926,6 +1932,7 @@ fn borrowed_reference_labels_match_cloned_rows() {
             confidence: SemanticConfidence::Compiler,
             source: None,
         },
+        place: None,
     };
     let target = ProductText::new(target_label).expect("target");
     let records = library

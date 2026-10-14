@@ -31,7 +31,8 @@ use crate::canonical::{
 };
 use crate::{
     Basis, CommandReply, CoverageCapability, DeclarationKind, GraphRelation, HealthReport,
-    PageTerminal, RevisionReceipt, Row, RowId, RowIdentityPreimage, RowState, SemanticLinkKind,
+    PageTerminal, RevisionReceipt, Row, RowId, RowIdentityPreimage, RowState, SemanticConfidence,
+    SemanticLinkKind,
     SemanticSearchStatus, ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
@@ -136,6 +137,9 @@ pub(crate) struct GraphRelationWire {
     pub(crate) from: RowIdWire,
     pub(crate) to: RowIdWire,
     pub(crate) relation: SemanticLinkKind,
+    /// Absent for an edge the compiler proved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confidence: Option<SemanticConfidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -542,6 +546,8 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
                         from: row_id_to_wire(relation.from),
                         to: row_id_to_wire(relation.to),
                         relation: relation.relation,
+                        confidence: (relation.confidence != SemanticConfidence::Compiler)
+                            .then_some(relation.confidence),
                     })
                     .collect(),
             }),
@@ -623,7 +629,10 @@ fn graph_relations_from_wire(
         if root.row(from).is_none() || root.row(to).is_none() {
             return Err("graph relation sidecar names an absent row".to_owned());
         }
-        relations.push(GraphRelation::new(from, to, relation.relation));
+        relations.push(
+            GraphRelation::new(from, to, relation.relation)
+                .with_confidence(relation.confidence.unwrap_or(SemanticConfidence::Compiler)),
+        );
     }
     relations.sort_unstable();
     if relations.windows(2).any(|pair| pair[0] == pair[1]) {

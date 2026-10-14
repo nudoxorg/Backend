@@ -44,7 +44,13 @@ impl RichGraphSnapshot {
             )?)?;
         }
         for relation in relations {
-            builder.add_edge(RichGraphEdge::from_relation(*relation, provenance))?;
+            let edge_provenance = GraphProvenance::semantic(
+                revision.semantic_generation,
+                revision.semantic_root,
+                revision.semantic_root,
+                relation.confidence,
+            );
+            builder.add_edge(RichGraphEdge::from_relation(*relation, edge_provenance))?;
         }
         builder.finish()
     }

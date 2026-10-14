@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 pub struct ProductRecord {
     title: String,
     operand: Option<String>,
+    detail: Option<String>,
     tags: Box<[String]>,
     native_metadata: Option<RegistryNativeMetadata>,
     source_metadata: Option<backend_library::PythonProjectMetadata>,
@@ -61,6 +62,7 @@ impl ProductRecord {
         Self {
             title: title.into(),
             operand,
+            detail: None,
             tags: tags.into_boxed_slice(),
             native_metadata: None,
             source_metadata: None,
@@ -187,6 +189,20 @@ impl ProductRecord {
     #[must_use]
     pub fn operand(&self) -> Option<&str> {
         self.operand.as_deref()
+    }
+
+    /// Attaches one line of text the reader acts on: the code of a use, shown
+    /// under the identity it belongs to.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Returns the line of text shown under the identity, when there is one.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 
     /// Returns the tags shown after the title.
@@ -2745,27 +2761,35 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
             backend_library::SemanticLinkKind::Documents => "documents".to_owned(),
         },
         match record.evidence.confidence {
-            backend_library::SemanticConfidence::Syntactic => "syntactic".to_owned(),
-            backend_library::SemanticConfidence::Heuristic => "heuristic".to_owned(),
+            backend_library::SemanticConfidence::Syntactic => "unverified name match".to_owned(),
+            backend_library::SemanticConfidence::Heuristic => "unverified heuristic".to_owned(),
             backend_library::SemanticConfidence::Indexed => "indexed".to_owned(),
             backend_library::SemanticConfidence::Imported => "imported".to_owned(),
             backend_library::SemanticConfidence::Compiler => "compiler".to_owned(),
         },
     ];
-    match record.evidence.source.as_ref() {
-        Some(span) => tags.push(format!(
+    match (record.evidence.source.as_ref(), record.place.as_ref()) {
+        (Some(span), Some(place)) => tags.push(format!("{}:{}", span.file.as_str(), place.line)),
+        (Some(span), None) => tags.push(format!(
             "{} [bytes{}..{})",
             span.file.as_str(),
             span.start,
             span.end
         )),
-        None => tags.push("site not captured".to_owned()),
+        // The images hold the caller as a copy with no source of its own: the
+        // use is somewhere in the declaration that begins on this line.
+        (None, Some(place)) => tags.push(format!("within the declaration at line {}", place.line)),
+        (None, None) => tags.push("site not captured".to_owned()),
     }
-    ProductRecord::new(
+    let row = ProductRecord::new(
         record.site.as_str().to_owned(),
         Some(record.site.as_str().to_owned()),
         tags,
-    )
+    );
+    match record.place.as_ref() {
+        Some(place) => row.with_detail(place.text.as_str()),
+        None => row,
+    }
 }
 
 fn diff_row(record: &DiffRecord) -> ProductRecord {

@@ -1871,6 +1871,7 @@ fn a_references_reply_renders_sites_with_their_provenance() {
                     end: 46,
                 }),
             },
+            place: None,
         }]),
     };
     let view = product_view(&reply);
@@ -1886,6 +1887,104 @@ fn a_references_reply_renders_sites_with_their_provenance() {
         "the source span must survive rendering, tags are {tags:?}"
     );
     assert!(!tags.iter().any(|tag| tag == "src/main.rs:40-46"));
+}
+
+fn reference_with(
+    confidence: backend_library::SemanticConfidence,
+    source: Option<backend_library::SemanticSourceSpan>,
+    place: Option<backend_library::ReferencePlace>,
+) -> backend_library::SurfaceReply {
+    backend_library::SurfaceReply::References {
+        target: backend_library::ProductText::new("pkg::semantic::callee").expect("target text"),
+        references: Box::new([backend_library::ReferenceRecord {
+            site: backend_library::ProductText::new("pkg::semantic::caller").expect("site text"),
+            target: backend_library::SemanticLinkTarget::Local {
+                declaration: backend_library::SemanticDeclarationIdentity {
+                    family: [1; 16],
+                    variant: [2; 16],
+                },
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_library::SemanticLinkEvidence { confidence, source },
+            place,
+        }]),
+    }
+}
+
+fn span_in(file: &str) -> backend_library::SemanticSourceSpan {
+    backend_library::SemanticSourceSpan {
+        file: backend_library::ProductText::new(file).expect("path"),
+        start: 40,
+        end: 46,
+    }
+}
+
+#[test]
+fn a_use_with_a_place_names_its_line_and_shows_the_code_on_it() {
+    let place = backend_library::ReferencePlace {
+        line: 136,
+        text: backend_library::ProductText::new("return enclose(\"|\".join(words))").expect("text"),
+    };
+    let reply = reference_with(
+        backend_library::SemanticConfidence::Compiler,
+        Some(span_in("inflect/__init__.py")),
+        Some(place),
+    );
+    let view = product_view(&reply);
+    let record = view.records().first().expect("record");
+    assert!(
+        record.tags().iter().any(|tag| tag == "inflect/__init__.py:136"),
+        "the line, not the bytes: {:?}",
+        record.tags()
+    );
+    assert!(
+        !record.tags().iter().any(|tag| tag.contains("[bytes")),
+        "{:?}",
+        record.tags()
+    );
+    assert_eq!(record.detail(), Some("return enclose(\"|\".join(words))"));
+    let text = text::product(&view, Theme::plain());
+    assert!(
+        text.contains("return enclose(\"|\".join(words))"),
+        "the code of the use is printed under its identity: {text}"
+    );
+}
+
+#[test]
+fn a_name_matched_use_is_labelled_unverified() {
+    let reply = reference_with(
+        backend_library::SemanticConfidence::Syntactic,
+        Some(span_in("src/a.rs")),
+        None,
+    );
+    let view = product_view(&reply);
+    let tags = view.records().first().expect("record").tags();
+    assert!(
+        tags.iter().any(|tag| tag == "unverified name match"),
+        "a guess from a name says so: {tags:?}"
+    );
+    assert!(!tags.iter().any(|tag| tag == "compiler"), "{tags:?}");
+}
+
+#[test]
+fn a_use_the_compiler_could_not_place_says_where_its_declaration_is() {
+    let place = backend_library::ReferencePlace {
+        line: 52,
+        text: backend_library::ProductText::new("func TestRequiredField(t *testing.T) {")
+            .expect("text"),
+    };
+    let reply = reference_with(backend_library::SemanticConfidence::Compiler, None, Some(place));
+    let view = product_view(&reply);
+    let record = view.records().first().expect("record");
+    assert!(
+        record
+            .tags()
+            .iter()
+            .any(|tag| tag == "within the declaration at line 52"),
+        "{:?}",
+        record.tags()
+    );
+    assert!(!record.tags().iter().any(|tag| tag == "site not captured"));
 }
 
 #[test]

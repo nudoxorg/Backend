@@ -3,7 +3,7 @@
 use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
-use crate::surface::SemanticLinkKind;
+use crate::surface::{SemanticConfidence, SemanticLinkKind};
 use backend_compile::{
     DeclarationFacts, DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation,
 };
@@ -778,13 +778,27 @@ pub struct GraphRelation {
     pub to: RowId,
     /// Compiler-defined semantic relation kind.
     pub relation: SemanticLinkKind,
+    /// How the edge is known: by the compiler, or only by a name match.
+    pub confidence: SemanticConfidence,
 }
 
 impl GraphRelation {
-    /// Creates one typed graph relation.
+    /// Creates one typed graph relation the compiler proved.
     #[must_use]
     pub const fn new(from: RowId, to: RowId, relation: SemanticLinkKind) -> Self {
-        Self { from, to, relation }
+        Self {
+            from,
+            to,
+            relation,
+            confidence: SemanticConfidence::Compiler,
+        }
+    }
+
+    /// The same edge, known with `confidence`.
+    #[must_use]
+    pub const fn with_confidence(mut self, confidence: SemanticConfidence) -> Self {
+        self.confidence = confidence;
+        self
     }
 }
 

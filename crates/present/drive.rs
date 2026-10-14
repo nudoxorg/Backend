@@ -585,7 +585,7 @@ fn neighbourhood(engine: &mut dyn Engine, text: &str, incoming: bool) -> Result<
     let CommandReply::Graph(snapshot) = reply.reply else {
         return Err(shape("graph"));
     };
-    let list = record_list(at, &snapshot);
+    let list = crate::assemble::neighbour_list(at, &snapshot);
     let list = if list.is_empty() {
         list.with_empty_reason("no graph edges at this coordinate; the authority recorded none")
     } else {

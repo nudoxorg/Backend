@@ -899,6 +899,7 @@ impl Library {
                     target: fact.target.clone(),
                     relation: fact.relation,
                     evidence: fact.evidence.clone(),
+                    place: fact.place.clone(),
                 })
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;

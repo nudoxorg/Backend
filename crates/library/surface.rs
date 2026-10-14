@@ -3843,6 +3843,22 @@ pub struct ReferenceRecord {
     pub relation: SemanticLinkKind,
     /// Authority classification and captured source span of the use.
     pub evidence: SemanticLinkEvidence,
+    /// The line the use is written on, when the owner could read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<ReferencePlace>,
+}
+
+/// Where one use is written: its line in the file and that line's text.
+///
+/// The span of a use is in bytes, which a reader cannot act on; this is the
+/// line a reader opens and the code on it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferencePlace {
+    /// One-based line of the use.
+    pub line: u32,
+    /// The text of that line, trimmed and bounded.
+    pub text: ProductText,
 }
 
 /// One declaration and graph difference between package generations.

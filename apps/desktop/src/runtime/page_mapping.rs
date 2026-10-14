@@ -3596,6 +3596,7 @@ mod tests {
                         end: 319,
                     }),
                 },
+                place: None,
             }]),
         };
         let outline = OutlineIndex::new(rows, true);

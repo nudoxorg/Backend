@@ -138,6 +138,8 @@ pub enum RelationDirection {
 pub enum RelationLabel {
     /// A relation whose compiler kind and direction are both known.
     Typed(SemanticLinkKind, RelationDirection),
+    /// A call known only by matching a name: no compiler proved it.
+    Unverified(SemanticLinkKind, RelationDirection),
     /// A bounded neighbourhood whose per-edge kind the reply did not carry.
     Neighbourhood,
     /// Incoming and outgoing neighbours whose per-edge kind is not carried.
@@ -150,6 +152,7 @@ impl RelationLabel {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Typed(kind, direction) => typed_label(kind, direction),
+            Self::Unverified(kind, direction) => unverified_label(kind, direction),
             Self::Neighbourhood => "neighbours",
             Self::Related => "related",
         }
@@ -172,6 +175,20 @@ pub const fn relation_label(
     direction: RelationDirection,
 ) -> RelationLabel {
     RelationLabel::Typed(kind, direction)
+}
+
+/// The label of a relation no compiler proved. Only a call is ever known by
+/// its name alone; any other kind keeps its ordinary words.
+const fn unverified_label(kind: SemanticLinkKind, direction: RelationDirection) -> &'static str {
+    match (kind, direction) {
+        (SemanticLinkKind::Calls, RelationDirection::Outgoing) => "calls (name match)",
+        (SemanticLinkKind::MethodCall, RelationDirection::Outgoing) => "calls method (name match)",
+        (SemanticLinkKind::Calls, RelationDirection::Incoming) => "called by (name match)",
+        (SemanticLinkKind::MethodCall, RelationDirection::Incoming) => {
+            "method called by (name match)"
+        }
+        _ => typed_label(kind, direction),
+    }
 }
 
 const fn typed_label(kind: SemanticLinkKind, direction: RelationDirection) -> &'static str {

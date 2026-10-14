@@ -865,6 +865,9 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
         if let Some(operand) = record.operand() {
             lines.push(format!("`{operand}`"));
         }
+        if let Some(detail) = record.detail() {
+            lines.push(format!("`{detail}`"));
+        }
         if let Some(status) = record.history_status() {
             lines.push(semantic_history_details(status));
         }

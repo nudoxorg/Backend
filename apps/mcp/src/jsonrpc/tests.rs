@@ -1008,6 +1008,7 @@ impl Engine for Fake {
                             end: 46,
                         }),
                     },
+                    place: None,
                 }]),
             }),
             SurfaceCommand::Diff { .. } => Err(ClientError::CommandFailed(
@@ -6163,6 +6164,7 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
                     end: index + 1,
                 }),
             },
+            place: None,
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();

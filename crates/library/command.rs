@@ -90,6 +90,8 @@ pub struct ReferenceFact {
     pub relation: SemanticLinkKind,
     /// Authority classification and captured source span of the use.
     pub evidence: SemanticLinkEvidence,
+    /// The line the use is written on and its text, when the owner read it.
+    pub place: Option<crate::ReferencePlace>,
 }
 
 /// Closed command identity shared by CLI, MCP, and desktop transports.
