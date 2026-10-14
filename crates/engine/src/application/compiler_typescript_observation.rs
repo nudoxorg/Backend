@@ -153,7 +153,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             // the shared stop poll succeeded. A FileCheck return alone is
             // insufficient: it may have converted a stop to a sentinel.
             (Phase::FilePostprocess, Transition::Returned) => {
-                self.completed_source_checks.fetch_add(1, Ordering::Relaxed);
+                self.completed_source_checks.fetch_add(1, Ordering::AcqRel);
             }
             _ => {}
         }
@@ -190,6 +190,11 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                 let _ = self.stop_context.set(context.clone());
                 let program = self.current_program.load(Ordering::Acquire);
                 let thread = std::thread::current();
+                // Sample completions before starts. Each completed boundary
+                // publishes its earlier start, so the counters cannot present
+                // a completed check that this snapshot has not yet started.
+                let completed = self.completed_source_checks.load(Ordering::Acquire);
+                let started = self.started_source_checks.load(Ordering::Acquire);
                 tracing::warn!(target: "compiler.typescript_project", transition = "stopped",
                     reason = ?stop, project_elapsed_millis = self.started.elapsed().as_millis() as u64,
                     project_initial_work_units = self.initial_work,
@@ -205,8 +210,8 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                     admitted_source_count = self.admitted_sources.load(Ordering::Relaxed),
                     admitted_library_count = self.admitted_libraries.load(Ordering::Relaxed),
                     admitted_module_request_count = self.admitted_module_requests.load(Ordering::Relaxed),
-                    started_source_check_count = self.started_source_checks.load(Ordering::Relaxed),
-                    completed_source_check_count = self.completed_source_checks.load(Ordering::Relaxed),
+                    started_source_check_count = started,
+                    completed_source_check_count = completed,
                     reused_source_check_count = self.reused_source_checks.load(Ordering::Relaxed),
                     "native TypeScript project execution stopped");
             }
