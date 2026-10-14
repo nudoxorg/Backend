@@ -362,7 +362,123 @@ fn actual_caller_id_is_admitted_before_selection_and_resumes_refuse_atomically()
     let baseline_limit = first["result"]["structuredContent"]["package_graph_page"]["limit"]
         .as_u64()
         .expect("effective limit");
-    let large_id = Value::String("caller".repeat(5_000));
+    // Native 3081 refused this original 30KB ID even at the minimum page:
+    // 13,054 ordinary cl100k tokens. Preserve that pressure as an explicit
+    // atomic-refusal case, not a false promise that every ID leaves room.
+    let original_large_id = Value::String("caller".repeat(5_000));
+    let mut minimum_server = ready(Fake {
+        native_graph_rows: Some(rows.clone()),
+        ..Fake::default()
+    });
+    let mut minimum_args = args.clone();
+    minimum_args["limit"] = json!(1);
+    let minimum = request(
+        &mut minimum_server,
+        "tools/call",
+        &json!({"name":"backend.package_graph","arguments":minimum_args}),
+    );
+    assert_eq!(minimum["result"]["isError"], false, "{minimum}");
+    assert_eq!(
+        minimum["result"]["structuredContent"]["package_graph_page"]["limit"],
+        1
+    );
+    assert_eq!(
+        minimum["result"]["structuredContent"]["package_graph_page"]["rows"]
+            .as_array()
+            .expect("one whole native edge")
+            .len(),
+        1
+    );
+    let minimum_pressure =
+        wire_admission::ResponseBudget::new(&original_large_id).prepare(minimum["result"].clone());
+    assert!(
+        !minimum_pressure.fits(),
+        "original ID cannot admit even a whole limit-one page"
+    );
+    assert!(
+        minimum_pressure
+            .tokens()
+            .expect("byte-bounded irreducible page")
+            > MCP_CL100K_TOKEN_LIMIT
+    );
+    let mut original_pressure = ready(Fake {
+        native_graph_rows: Some(rows.clone()),
+        ..Fake::default()
+    });
+    let refused = original_pressure
+        .handle_value(
+            json!({"jsonrpc":"2.0","id":original_large_id,
+        "method":"tools/call","params":{"name":"backend.package_graph","arguments":args}}),
+            None,
+        )
+        .map(encoded_stdio_reply)
+        .expect("original correlated minimum refusal");
+    assert_eq!(refused["id"], original_large_id);
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(refused["result"]["structuredContent"]["cause"], "oversized");
+    for structured in [
+        &refused["result"]["structuredContent"],
+        &refused["error"]["data"]["structuredContent"],
+    ] {
+        for field in [
+            "package_graph_page",
+            "continuation_call",
+            "nextCursor",
+            "shell",
+        ] {
+            assert!(
+                structured.get(field).is_none(),
+                "atomic initial refusal cannot publish {field}"
+            );
+        }
+    }
+    assert!(matches!(original_pressure.product.surface_commands.last(),
+        Some(SurfaceCommand::PackageGraphPage { request }) if request.limit == 1 && request.cursor.is_none()));
+    assert!(wire_fits(&refused, ResponseTransport::StdioLine));
+
+    // Obtain the actual fixed resumed page before choosing a bounded pressure
+    // ID. Measurement uses production encoding, exact metadata and cl100k;
+    // no estimated byte/token ratio establishes the test's fit geometry.
+    let mut resumed_probe = ready(Fake {
+        native_graph_rows: Some(rows.clone()),
+        ..Fake::default()
+    });
+    let resumed_page = request(
+        &mut resumed_probe,
+        "tools/call",
+        &first["result"]["structuredContent"]["continuation_call"],
+    );
+    assert_eq!(resumed_page["result"]["isError"], false, "{resumed_page}");
+    assert_eq!(
+        resumed_page["result"]["structuredContent"]["package_graph_page"]["limit"],
+        baseline_limit,
+        "the calibration uses the unchanged issued resumed frontier"
+    );
+    assert_eq!(resumed_probe.product.surface_commands.len(), 1);
+    let mut selected_id = None;
+    for copies in (128..=5_000).step_by(128) {
+        let id = Value::String("caller".repeat(copies));
+        let budget = wire_admission::ResponseBudget::new(&id);
+        let initial = budget.prepare(first["result"].clone());
+        let fixed = budget.prepare(resumed_page["result"].clone());
+        let single = budget.prepare(minimum["result"].clone());
+        if !initial.fits() && !fixed.fits() && single.fits() {
+            println!(
+                "graph ID geometry: id_bytes={}, baseline_limit={}, initial={}B/{:?}, fixed={}B/{:?}, minimum={}B/{:?}",
+                serde_json::to_vec(&id).expect("ID bytes").len(),
+                baseline_limit,
+                initial.bytes(),
+                initial.tokens(),
+                fixed.bytes(),
+                fixed.tokens(),
+                single.bytes(),
+                single.tokens()
+            );
+            selected_id = Some(id);
+            break;
+        }
+    }
+    let large_id = selected_id.expect("bounded actual ID admits a complete minimum page but refuses baseline and fixed resumed pages");
     let mut large = ready(Fake {
         native_graph_rows: Some(rows.clone()),
         ..Fake::default()
@@ -380,7 +496,7 @@ fn actual_caller_id_is_admitted_before_selection_and_resumes_refuse_atomically()
             .as_u64()
             .expect("actual-ID page")
             < baseline_limit,
-        "a provisional Null-ID check cannot choose the same page for this actual 30KB ID"
+        "a provisional Null-ID check cannot choose the same page for this measured actual ID"
     );
 
     let mut resumed = ready(Fake {
@@ -396,20 +512,43 @@ fn actual_caller_id_is_admitted_before_selection_and_resumes_refuse_atomically()
         reply.get("error").is_some() || reply["result"]["isError"] == true,
         "{reply}"
     );
-    assert!(
-        reply["result"]["structuredContent"]
-            .get("package_graph_page")
-            .is_none()
+    assert_eq!(
+        reply["id"], message["id"],
+        "refusal retains the exact caller ID"
     );
-    assert!(
-        reply["error"]["data"]["structuredContent"]
-            .get("package_graph_page")
-            .is_none()
+    for structured in [
+        &reply["result"]["structuredContent"],
+        &reply["error"]["data"]["structuredContent"],
+    ] {
+        for field in [
+            "package_graph_page",
+            "continuation_call",
+            "nextCursor",
+            "shell",
+        ] {
+            assert!(
+                structured.get(field).is_none(),
+                "atomic resumed refusal cannot publish {field}"
+            );
+        }
+    }
+    let expected_cursor: PackageGraphCursor =
+        serde_json::from_value(message["params"]["arguments"]["cursor"].clone())
+            .expect("exact issued native graph cursor");
+    let [SurfaceCommand::PackageGraphPage { request: received }] =
+        resumed.product.surface_commands.as_slice()
+    else {
+        panic!("an issued frontier must make exactly one native graph request");
+    };
+    assert_eq!(
+        u64::from(received.limit),
+        baseline_limit,
+        "issued native limit cannot resize"
     );
     assert_eq!(
-        resumed.product.surface_commands.len(),
-        1,
-        "an issued frontier cannot silently resize"
+        received.cursor.as_ref(),
+        Some(&expected_cursor),
+        "all issued cursor fields remain unchanged"
     );
     assert!(wire_fits(&reply, ResponseTransport::StdioLine));
 }
