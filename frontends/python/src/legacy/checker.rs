@@ -44,6 +44,8 @@ mod project_configuration;
 mod project_environment;
 #[path = "project_native.rs"]
 mod project_native;
+#[path = "project_profile.rs"]
+mod project_profile;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProducerImage,
     NativePythonProjectAuthority, PythonCompiledImportUnavailable, PythonProjectBytesSource,
@@ -56,6 +58,9 @@ pub use project_configuration::PythonProjectConfigurationFault;
 pub use project_environment::{
     PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES, PythonDependencyRootKind,
     PythonEnvironmentCapture, PythonEnvironmentInput, PythonInterpreterSelection,
+};
+pub use project_profile::{
+    PythonVenvInterpreterRequirement, SUPPORTED_PYTHON_VERSIONS, python_version_numbers,
 };
 
 use std::path::{Path, PathBuf};
@@ -97,6 +102,50 @@ pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e
 /// Typed failure of one pyrefly authority transaction, preserving operands.
 #[derive(Debug, Error)]
 pub enum CheckerError {
+    /// An installed environment cannot select a supported Python language profile.
+    #[error("installed CPython {major}.{minor} is unsupported; select a CPython 3.10–3.14 venv")]
+    UnsupportedPythonEnvironmentVersion {
+        /// Observed major version.
+        major: u32,
+        /// Observed minor version.
+        minor: u32,
+    },
+    /// Captured interpreter metadata disagrees with the selected venv configuration.
+    #[error(
+        "captured CPython {actual_major}.{actual_minor} does not match the venv's Python {expected_major}.{expected_minor}; recreate the venv with the admitted interpreter"
+    )]
+    PythonEnvironmentVersionMismatch {
+        /// Selected venv major version.
+        expected_major: u32,
+        /// Selected venv minor version.
+        expected_minor: u32,
+        /// Actual trusted interpreter major version.
+        actual_major: u32,
+        /// Actual trusted interpreter minor version.
+        actual_minor: u32,
+    },
+    /// An exact explicit or closed interpreter selection cannot supply this venv.
+    #[error(
+        "host interpreter {path:?} does not match the selected Python {major}.{minor} venv; select the matching host interpreter explicitly with NUDOX_PYTHON"
+    )]
+    PythonInterpreterSelectionMismatch {
+        /// Exact frozen host candidate.
+        path: PathBuf,
+        /// Selected venv major version.
+        major: u32,
+        /// Selected venv minor version.
+        minor: u32,
+    },
+    /// No member of the frozen independent host candidate set matches the venv.
+    #[error(
+        "no admitted host interpreter matches the Python {major}.{minor} venv; install matching CPython or set NUDOX_PYTHON before restarting locald"
+    )]
+    PythonInterpreterSelectionUnavailable {
+        /// Selected venv major version.
+        major: u32,
+        /// Selected venv minor version.
+        minor: u32,
+    },
     /// A selected-program caller omitted the required environment disposition.
     #[error("Python selected-program request has no admitted installed-environment cohort")]
     EnvironmentCaptureMissing,
@@ -177,7 +226,9 @@ pub enum CheckerError {
     },
     /// A captured native configuration was refused, preserving its exact source
     /// identity and typed invalid/unsupported options instead of a path-only cause.
-    #[error("native Python configuration source {source_identity:02x?}, bytes={source_byte_len}, omitted={omitted_faults}, clipped={evidence_truncated}: {faults:?}")]
+    #[error(
+        "native Python configuration source {source_identity:02x?}, bytes={source_byte_len}, omitted={omitted_faults}, clipped={evidence_truncated}: {faults:?}"
+    )]
     ProjectConfiguration {
         /// Original project configuration path, before the private mirror rebase.
         path: PathBuf,

@@ -1442,7 +1442,7 @@ fn validate_selection(
     checkpoint(control)
 }
 
-fn normal_absolute(path: &Path) -> Result<(), CheckerError> {
+pub(super) fn normal_absolute(path: &Path) -> Result<(), CheckerError> {
     if !path.is_absolute()
         || path
             .components()
@@ -1683,7 +1683,10 @@ fn directory_entries(
     })
 }
 
-fn hash_image(path: &Path, control: PythonProjectControl<'_>) -> Result<[u8; 32], CheckerError> {
+pub(super) fn hash_image(
+    path: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<[u8; 32], CheckerError> {
     let parent = path
         .parent()
         .ok_or_else(|| project_error("", "interpreter image has no parent"))?;
