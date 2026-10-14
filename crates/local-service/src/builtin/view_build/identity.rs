@@ -79,7 +79,8 @@ pub(crate) fn external_semantic_coordinate(
 pub(super) fn declaration_kind(kind: ItemKind) -> DeclarationKind {
     match kind {
         ItemKind::Function => DeclarationKind::Function,
-        ItemKind::Constant | ItemKind::Variant => DeclarationKind::Constant,
+        ItemKind::Constant => DeclarationKind::Constant,
+        ItemKind::Variant => DeclarationKind::Variant,
         ItemKind::Record => DeclarationKind::Struct,
         ItemKind::Module | ItemKind::Namespace => DeclarationKind::Module,
         ItemKind::Field => DeclarationKind::Field,

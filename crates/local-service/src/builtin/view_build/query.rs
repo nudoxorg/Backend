@@ -10,8 +10,7 @@ use super::call_join::{
 };
 use super::compiled_source_path;
 use super::identity::{
-    declaration_kind, fragment_text, query_external_id, query_package_id, query_semantic_id,
-    semantic_coordinate,
+    fragment_text, query_external_id, query_package_id, query_semantic_id, semantic_coordinate,
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
@@ -231,6 +230,11 @@ fn append_compiler_query_facts(
                     ));
                 }
                 let name = super::semantic_display_name(entity.name)?.to_owned();
+                // The search corpus names a declaration by what the image
+                // proves, the word its structural twin shares in every
+                // case but the few that only the written syntax settles.
+                let kind = super::kinds::image_entity_kind(profile, image, &session, &entity)
+                    .map_err(BuiltinModelError)?;
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
@@ -357,7 +361,7 @@ fn append_compiler_query_facts(
                     ),
                     backend_extension_trustfall::SemanticQueryPresentation {
                         id,
-                        kind: declaration_kind(entity.entity.kind).name().to_owned(),
+                        kind: kind.name().to_owned(),
                         coordinate: semantic_coordinate(&label, identity, &name),
                         name,
                         signature: content.signature,

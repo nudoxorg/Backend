@@ -256,4 +256,22 @@ mod tests {
         assert!(rows.iter().any(|row| row.label.contains("Event")));
         assert!(rows.iter().any(|row| row.label.contains("Started")));
     }
+
+    /// A reader sees one word per declaration: an enum's cases are variants
+    /// (never constants) and a Rust record is a struct.
+    #[test]
+    fn the_reopen_fixture_names_each_declaration_with_its_product_word() {
+        let bytes = super::fixture_semantic_image(super::FIXTURE_PATH).expect("image");
+        let rows = super::project_rows(&bytes);
+        let kind_of = |name: &str| {
+            rows.iter()
+                .find(|row| row.label.ends_with(&format!("::{name}")))
+                .and_then(|row| row.kind)
+                .map(backend_engine::DeclarationKind::name)
+        };
+        assert_eq!(kind_of("Worker"), Some("struct"));
+        assert_eq!(kind_of("name"), Some("field"));
+        assert_eq!(kind_of("Event"), Some("enum"));
+        assert_eq!(kind_of("Started"), Some("variant"));
+    }
 }
