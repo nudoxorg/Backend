@@ -26,6 +26,10 @@ let
   # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
   baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
   common = baseEnv // {
+    # These shells run Cargo debug builds. glibc fortify requires -O while
+    # jemalloc's -Werror configure probes end with Cargo's -O0. Release Nix
+    # derivations retain their own hardening; use the smoke/cross debug policy.
+    hardeningDisable = crossAttrs.hardeningDisable;
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     # PR build/test commands opt into the leased wrapper; general tooling keeps
     # raw Cargo so immutable Nix checks do not require a mutable Git worktree.
