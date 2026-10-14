@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parent.parent.parent
 CHAR = re.compile(r"'(?:\\(?:u\{[^}\n]+\}|x[0-9A-Fa-f]{2}|[^\n])|[^'\\\n])'")
 IGNORE_PREFIX = re.compile(rb'#\s*!?\s*\[\s*(?:(?:r#)?(?:ignore|cfg_attr)\b|/)')
 RAW = re.compile(r'(?:br|cr|r)(#{0,255})"')
