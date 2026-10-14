@@ -23,6 +23,8 @@ Exit 0 when every case matches, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 import difflib
 import fcntl
 import json
@@ -33,6 +35,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,15 +50,23 @@ FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finished_at", "generated_at", "pid"}
 
 
+OUTPUT_LOCK = threading.Lock()
+CURRENT_CASE = ContextVar("surface_case", default=None)
+
+
 def log(message: str) -> None:
-    print(f"surface: {message}", flush=True)
+    case = CURRENT_CASE.get()
+    prefix = f"[{case}] " if case else ""
+    with OUTPUT_LOCK:
+        print(f"surface: {prefix}{message}", flush=True)
 
 
 def emit_performance(name: str, performance: dict) -> None:
     # Successful Concourse containers can expire after the next no-op poll.
     # Keep exact metrics in the retained event log as well as the report file.
-    print("SURFACE-PERFORMANCE " + json.dumps(
-        {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
+    with OUTPUT_LOCK:
+        print("SURFACE-PERFORMANCE " + json.dumps(
+            {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
 
 
 def stable(value):
@@ -876,29 +887,38 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
     return found
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bin-dir", type=Path, required=True)
-    parser.add_argument("--case", action="append", help="run only these cases (default: all)")
-    parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
-    parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
-    parser.add_argument(
-        "--print-missing",
-        action="store_true",
-        help="print missing or changed candidate snapshots for review in CI logs",
-    )
-    args = parser.parse_args()
-    # Fixed paths require exclusive ownership; another local run must never
-    # remove an active case workspace. Concourse tasks have separate /tmp.
-    SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock = open(SCRATCH / ".lock", "w")
+def print_candidate(name: str, record: dict) -> None:
+    with OUTPUT_LOCK:
+        print(f"SURFACE-SNAPSHOT-BEGIN {name}\n"
+              + json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False)
+              + f"\nSURFACE-SNAPSHOT-END {name}", flush=True)
+
+
+def execute_case(case: dict, bin_dir: Path) -> tuple[dict | None, float, str | None]:
+    log(f"case {case['name']}")
+    token = CURRENT_CASE.set(case['name'])
+    started = time.monotonic()
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        parser.error("another surface run owns the fixed scratch paths")
+        if case.get("kind") == "cli-contract":
+            from cli_contract import run_cases
+            # Shared scratch paths and direct stdout in this small runner.
+            with OUTPUT_LOCK:
+                record = {"performance": run_cases(bin_dir)}
+        else:
+            record = run_case(case, bin_dir)
+        return record, time.monotonic() - started, None
+    except Exception as error:  # one broken case must not hide the others
+        return None, time.monotonic() - started, str(error)
+    finally:
+        CURRENT_CASE.reset(token)
+
+
+def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     cases = json.loads((SURFACE / "cases.json").read_text())["cases"]
     if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", case["name"]) for case in cases):
         parser.error("case names must be simple scratch directory names")
+    if not cases or len({case["name"] for case in cases}) != len(cases):
+        parser.error("case catalog must be nonempty with unique scratch directory names")
     if args.case:
         unknown = set(args.case) - {case["name"] for case in cases}
         if unknown:
@@ -906,25 +926,17 @@ def main() -> int:
         cases = [case for case in cases if case["name"] in args.case]
     failed = []
     report = {}
-    for case in cases:
-        log(f"case {case['name']}")
-        started = time.monotonic()
-        if case.get("kind") == "cli-contract":
-            from cli_contract import run_cases
-
-            try:
-                report[case["name"]] = run_cases(args.bin_dir.resolve())
-                emit_performance(case["name"], report[case["name"]])
-                log(f"case {case['name']} passed ({time.monotonic() - started:.1f}s)")
-            except Exception as error:
-                log(f"case {case['name']} failed: {error}")
-                failed.append(case["name"])
-            continue
-        try:
-            record = run_case(case, args.bin_dir.resolve())
-        except Exception as error:  # noqa: BLE001 - one broken case must not hide the rest
+    with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
+        results = list(executor.map(lambda case: execute_case(case, args.bin_dir.resolve()), cases))
+    for case, (record, elapsed, error) in zip(cases, results):
+        if error is not None:
             log(f"case {case['name']} could not run: {error}")
             failed.append(case["name"])
+            continue
+        if case.get("kind") == "cli-contract":
+            report[case["name"]] = record["performance"]
+            emit_performance(case["name"], record["performance"])
+            log(f"case {case['name']} passed ({elapsed:.1f}s)")
             continue
         report[case["name"]] = record["performance"]
         emit_performance(case["name"], record["performance"])
@@ -932,14 +944,12 @@ def main() -> int:
         if args.update:
             snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-            log(f"case {case['name']} snapshot written ({time.monotonic() - started:.1f}s)")
+            log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
             continue
         if not snapshot_path.exists():
             log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
             if args.print_missing:
-                print(f"SURFACE-SNAPSHOT-BEGIN {case['name']}")
-                print(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False))
-                print(f"SURFACE-SNAPSHOT-END {case['name']}")
+                print_candidate(case["name"], record)
             failed.append(case["name"])
             continue
         reviewed = json.loads(snapshot_path.read_text())
@@ -955,11 +965,9 @@ def main() -> int:
             for problem in problems:
                 log(f"case {case['name']}: {problem}")
             if args.print_missing and reviewed["answers"] != record["answers"]:
-                print(f"SURFACE-SNAPSHOT-BEGIN {case['name']}")
-                print(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False))
-                print(f"SURFACE-SNAPSHOT-END {case['name']}")
+                print_candidate(case["name"], record)
         else:
-            log(f"case {case['name']} matches ({time.monotonic() - started:.1f}s, "
+            log(f"case {case['name']} matches ({elapsed:.1f}s, "
                 f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -967,6 +975,31 @@ def main() -> int:
         log(f"failed: {', '.join(failed)}")
         return 1
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--bin-dir", type=Path, required=True)
+    parser.add_argument("--case", action="append", help="run only these cases (default: all)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=2,
+                        help="concurrent isolated cases, 1–4 (default: 2)")
+    parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
+    parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
+    parser.add_argument(
+        "--print-missing",
+        action="store_true",
+        help="print missing or changed candidate snapshots for review in CI logs",
+    )
+    args = parser.parse_args()
+    # Fixed paths require exclusive ownership; another local run must never
+    # remove an active case workspace. Concourse tasks have separate /tmp.
+    SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(SCRATCH / ".lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            parser.error("another surface run owns the fixed scratch paths")
+        return compare_cases(args, parser)
 
 
 if __name__ == "__main__":

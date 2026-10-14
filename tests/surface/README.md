@@ -38,6 +38,30 @@ command locally. Smoke and integration have separate verdicts. Consumers verify 
 import the exact artifact runtime before entering the pinned surface shell;
 their checkout provides harness/configuration only, with no product build.
 
+## Bounded case parallelism (W3.3)
+
+One invocation runs up to two isolated cases concurrently, reusing the same
+published binaries. Use `--jobs 1` for controlled serial measurements or choose
+up to four workers explicitly:
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --jobs 2
+```
+
+Each indexed case keeps its own project, owner, workspace and credentials.
+Duplicate scratch names fail before any case launches. The CLI-contract runner
+uses shared scratch paths, so its small group is serialized. A failed case does
+not cancel or hide successful peers; the tier passes only if every selected
+case passes. Snapshots and reports are compared/emitted in catalog order.
+Reported case wall time measures execution, excluding time waiting for a worker.
+
+`SURFACE-PERFORMANCE` lines in the retained CI event log carry schema1 JSON with
+the case name and full measured timing/CPU/memory data. The report file remains
+available while the task container exists. Answer snapshots and performance
+limits are unchanged by selecting a worker count; the native rollout must prove
+that existing comparisons pass under the default concurrency. Cross-host noise
+calibration and durable independent Concourse artifact jobs remain separate work.
+
 ## Initial snapshot review
 
 Codex reviewed the first successful output from Concourse **457894**, source
