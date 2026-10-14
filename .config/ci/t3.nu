@@ -17,7 +17,7 @@ def main []: nothing -> nothing {
     let laws = if $capacity {
         ci-step "t3" "CLI saved-operation wait, failure and disconnect laws" {||
             with-env {CARGO_BUILD_JOBS: "2"} {
-                run-bounded 30min $cargo "nextest" "run" "--locked" "--package" "backend-cli" "--bin" "backend-cli" "--build-jobs" "2" "--test-threads" "2" "--no-tests=fail" "-E" "test(index_wait::)"
+                run-bounded 30min $cargo "nextest" "run" "--locked" "--package" "backend-cli" "--lib" "--build-jobs" "2" "--test-threads" "2" "--no-tests=fail" "-E" "test(index_wait::)"
             }
         }
     } else { false }
