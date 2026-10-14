@@ -3,6 +3,8 @@
 //! The coordinator captures the selected ordinary venv before observing semantic
 //! freshness. Native execution consumes this immutable payload in a separate private
 //! tree. Dependency members never enter the selected project source manifest.
+//! The wire normalizes separators between peers on the same target platform;
+//! native environment roots are not a cross-platform compilation capability.
 
 use super::CheckerError;
 use super::project::{PythonProjectControl, checkpoint, project_error};
@@ -457,12 +459,7 @@ impl PythonEnvironmentCapture {
             ));
         }
         for probe in &environment.probes {
-            normal_relative(
-                probe
-                    .relative
-                    .to_str()
-                    .ok_or_else(|| project_error("", "environment probe is not UTF-8"))?,
-            )?;
+            normal_relative(&canonical_path_spelling(&probe.relative)?)?;
             if probe
                 .bytes
                 .as_ref()
@@ -567,12 +564,10 @@ impl PythonEnvironmentCapture {
                 metadata_bytes = metadata_bytes.saturating_add(member.path.len() + 128);
                 let path = Path::new(&member.path);
                 let parent = path.parent().unwrap_or(Path::new(""));
-                let parent = parent
-                    .to_str()
-                    .ok_or_else(|| project_error("", "dependency parent is not UTF-8"))?;
+                let parent = canonical_path_spelling(parent)?;
                 if root
                     .directories
-                    .binary_search_by(|entry| entry.as_str().cmp(parent))
+                    .binary_search_by(|entry| entry.as_str().cmp(parent.as_str()))
                     .is_err()
                     || root.directories.binary_search(&member.path).is_ok()
                 {
@@ -615,16 +610,11 @@ impl PythonEnvironmentCapture {
                 metadata_bytes = metadata_bytes.saturating_add(path.len() + 64);
                 if !path.is_empty() {
                     let relative = normal_relative(path)?;
-                    let parent = relative
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .to_str()
-                        .ok_or_else(|| {
-                            project_error("", "dependency directory parent is not UTF-8")
-                        })?;
+                    let parent =
+                        canonical_path_spelling(relative.parent().unwrap_or(Path::new("")))?;
                     if root
                         .directories
-                        .binary_search_by(|entry| entry.as_str().cmp(parent))
+                        .binary_search_by(|entry| entry.as_str().cmp(parent.as_str()))
                         .is_err()
                     {
                         return Err(project_error("", "dependency directory parent is absent"));
@@ -1783,6 +1773,91 @@ mod tests {
         let mut workspace = super::super::Workspace::create()?;
         workspace.path = workspace.path.canonicalize().map_err(io_error)?;
         Ok(workspace)
+    }
+
+    #[test]
+    fn admission_and_roundtrip_preserve_nested_native_probe_and_member_parents()
+    -> Result<(), CheckerError> {
+        // Transport/type admission only: these synthetic paths never execute a
+        // checker or establish semantic facts. The genuine installed gate below
+        // separately exercises capture and native consumption of nested roots.
+        let project = if cfg!(windows) {
+            PathBuf::from("C:/project")
+        } else {
+            PathBuf::from("/project")
+        };
+        let installation = if cfg!(windows) {
+            PathBuf::from("C:/installed")
+        } else {
+            PathBuf::from("/installed")
+        };
+        let venv = project.join("local").join("py3");
+        let image = installation.join("bin").join("python");
+        let stdlib = installation.join("lib").join("python3.14");
+        let interpreter = Interpreter {
+            selected: if cfg!(windows) {
+                venv.join("Scripts").join("python.exe")
+            } else {
+                venv.join("bin").join("python")
+            },
+            trusted_selected: image.clone(),
+            image: image.clone(),
+            digest: [0x31; 32],
+            venv_image: image.clone(),
+            venv_digest: [0x31; 32],
+            installation: installation.clone(),
+            home_selected: installation.join("bin"),
+            home_directory: installation.join("bin"),
+            base_selected: image.clone(),
+            base_image: image,
+            base_digest: [0x31; 32],
+            abi: "cpython-314-transport-control".into(),
+            implementation: "cpython".into(),
+            version: [3, 14, 0],
+            platform: std::env::consts::OS.into(),
+            machine: std::env::consts::ARCH.into(),
+            stdlib: stdlib.clone(),
+        };
+        let environment = Environment {
+            project,
+            probes: vec![SelectionProbe {
+                relative: PathBuf::from("local").join("py3").join("pyvenv.cfg"),
+                bytes: Some(b"home = /installed/bin\n".to_vec()),
+            }],
+            roots: vec![
+                Root {
+                    kind: PythonDependencyRootKind::SitePackages,
+                    original: site_packages_path(&venv, interpreter.version),
+                    directories: vec!["".into(), "pkg".into(), "pkg/nested".into()],
+                    members: vec![Member {
+                        path: "pkg/nested/source.py".into(),
+                        payload: MemberPayload::Source(b"answer: int = 42\n".to_vec()),
+                    }],
+                },
+                Root {
+                    kind: PythonDependencyRootKind::StandardLibrary,
+                    original: stdlib,
+                    directories: vec!["".into()],
+                    members: vec![],
+                },
+            ],
+            interpreter: Some(interpreter),
+        };
+        let cancelled = AtomicBool::new(false);
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let bytes = admitted.encode(control(&cancelled))?;
+        let decoded =
+            PythonEnvironmentCapture::decode(&bytes, admitted.identity(), control(&cancelled))?;
+        assert_eq!(decoded.identity(), admitted.identity());
+        assert_eq!(
+            decoded.environment.roots[0].members[0].path,
+            "pkg/nested/source.py"
+        );
+        assert_eq!(
+            canonical_path_spelling(&decoded.environment.probes[0].relative)?,
+            "local/py3/pyvenv.cfg"
+        );
+        Ok(())
     }
 
     #[test]
