@@ -1661,7 +1661,10 @@ fn prepare_published_target(
         return prepare_rebound_view(preparation);
     }
     let changes = changed_rows(&current, &target);
-    let deltas = if current.row_count() == 0
+    // Row patches preserve the existing coverage vector. A capture completing
+    // alongside changed declarations must select the target metadata as well.
+    let deltas = if current.coverage() != target.coverage()
+        || current.row_count() == 0
         || changes.is_empty()
         || changes.len() > backend_engine::MAX_VIEW_PATCH_ROWS
     {

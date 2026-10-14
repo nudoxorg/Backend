@@ -555,7 +555,7 @@ fn publication_transport_cancel_partial_reset_then_reopen() {
 
 #[test]
 fn prepared_product_view_private_patch_and_reset_match_actual_publication() {
-    for count in [1, backend_engine::MAX_VIEW_PATCH_ROWS + 1] {
+    for (count, coverage_changes) in [(1, false), (1, true), (backend_engine::MAX_VIEW_PATCH_ROWS + 1, false)] {
         let directory = tempfile::tempdir().expect("actual private owner directory");
         let mut owner = owner(directory.path());
         publish(&mut owner, 1);
@@ -576,7 +576,13 @@ fn prepared_product_view_private_patch_and_reset_match_actual_publication() {
             current.basis(),
             current.frontier(),
             rows,
-            current.coverage().to_vec(),
+            if coverage_changes {
+                vec![backend_engine::ViewCoverage::Complete, backend_engine::ViewCoverage::Partial {
+                    lane: backend_engine::Lane::Semantic, completed: 0, total: 1,
+                }]
+            } else {
+                current.coverage().to_vec()
+            },
             current.capability().expect("actual admitted capability"),
         )
         .expect("checked private target");
@@ -590,9 +596,10 @@ fn prepared_product_view_private_patch_and_reset_match_actual_publication() {
         assert_eq!(daemon.engine().daemon().library().view(), &current);
         assert_eq!(daemon.engine().daemon().library().cursor(), prior_cursor);
         assert_eq!(private.len(), 1);
+        assert_eq!(preparation.current, target, "publication must retain target coverage and rows");
         assert_eq!(
             private[0].is_compact_replayable(),
-            count <= backend_engine::MAX_VIEW_PATCH_ROWS
+            !coverage_changes && count <= backend_engine::MAX_VIEW_PATCH_ROWS
         );
         let actual = commit_published_target(daemon, current, target)
             .expect("ordinary production publication");
