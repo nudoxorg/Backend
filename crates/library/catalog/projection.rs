@@ -248,12 +248,43 @@ impl Library {
         let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
+        let selection = query.selection();
+        // One row per declaration: a compiler-backed row that has a structural
+        // twin is that twin's other spelling, and an external placeholder
+        // without facts only names something elsewhere. Neither takes a rank,
+        // so offsets and continuations count exactly the rows a reader sees.
+        let visible = |id: RowId| {
+            let row = self.view.row_ref(id)?;
+            if let Some(structural) = self.view.structural_twin(row) {
+                // An address that names only the compiler-backed spelling
+                // still resolves, to the structural row that stands for it.
+                return match selection {
+                    crate::command::NameSelection::Address(address)
+                        if !self.row_matches_address(structural, address) =>
+                    {
+                        Some(structural)
+                    }
+                    _ => None,
+                };
+            }
+            if crate::is_inert_external_placeholder(row) {
+                return match selection {
+                    crate::command::NameSelection::Address(address)
+                        if row.label == address.text =>
+                    {
+                        Some(row)
+                    }
+                    _ => None,
+                };
+            }
+            Some(row)
+        };
         let fetch = |offset| {
             self.arrangement.names_page(
-                query.selection(),
+                selection,
                 offset,
                 limit,
-                |id| self.view.row_ref(id),
+                visible,
                 |id, address| {
                     self.view
                         .row_ref(id)

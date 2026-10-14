@@ -62,7 +62,7 @@ mod wire;
 /// Maximum number of events admitted from one bounded subscription payload.
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
-pub use arrangement::{QueryWork, declaration_name_priority};
+pub use arrangement::{QueryWork, declaration_name_priority, is_support_source_path};
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
@@ -298,7 +298,9 @@ pub use view::{
     RowIdentityPreimage, RowIdentityPreimageError, RowState, SelectedViewAddress,
     SourceAvailability, ViewDelta, ViewError, ViewPageCursor, ViewPageError, ViewProjection,
     ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot,
-    ViewSnapshotPage, resolve_selected_document_row, resolve_selected_view_address,
+    ViewSnapshotPage, external_placeholder_display, is_inert_external_placeholder,
+    resolve_canonical_declaration, resolve_canonical_document_row, resolve_selected_document_row,
+    resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
 pub use wire::{
