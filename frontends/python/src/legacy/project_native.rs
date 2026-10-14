@@ -9,8 +9,8 @@ use pyrefly::state::require::Require;
 use pyrefly::state::state::State;
 use pyrefly_config::base::{InferReturnTypes, Preset};
 use pyrefly_config::config::{ConfigFile, ConfigSource, FallbackSearchPath, ProjectLayout};
-use pyrefly_config::finder::ConfigFinder;
 use pyrefly_config::error_kind::ErrorKind;
+use pyrefly_config::finder::ConfigFinder;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::TextRangeWithModule;
 use pyrefly_python::module_name::{ModuleName, ModuleNameWithKind};
@@ -198,7 +198,7 @@ pub(super) fn analyze(
                         for component in module.as_str().split('.').filter(|part| !part.is_empty())
                         {
                             prefix.push(component);
-                            for suffix in pyrefly_python::COMPILED_FILE_SUFFIXES {
+                            for suffix in super::project_environment::compiled_resource_suffixes() {
                                 if let Some(original) = layout
                                     .compiled_dependency_candidate(&prefix.with_extension(suffix))
                                 {
@@ -385,14 +385,13 @@ pub(super) fn analyze(
     for handle in &dependency_handles {
         checkpoint(control)?;
         let path = handle.path().as_path();
-        if matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("py" | "pyi")
-        ) && pyrefly_python::COMPILED_FILE_SUFFIXES.iter().any(|suffix| {
-            layout
-                .compiled_dependency_candidate(&path.with_extension(suffix))
-                .is_some()
-        }) {
+        if super::project_environment::is_python_source_member(path)
+            && super::project_environment::compiled_resource_suffixes().any(|suffix| {
+                layout
+                    .compiled_dependency_candidate(&path.with_extension(suffix))
+                    .is_some()
+            })
+        {
             unavailable_dependency_paths.insert(path.to_path_buf());
         }
     }
@@ -894,8 +893,7 @@ pub(super) fn analyze(
                     || matches!(
                         occurrence.kind,
                         OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
-                    ))
-            {
+                    )) {
                 bindings.as_slice()
             } else {
                 callees.as_slice()
