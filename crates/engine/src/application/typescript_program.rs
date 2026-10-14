@@ -2553,12 +2553,13 @@ impl ProgramWorkShape {
     // Parse, bind and merge cost about 0.2 units per declaration byte. Checking and
     // lowering cost is set by the application files and by how much library surface
     // they touch (the first file to touch Angular core pays about 12M), so every
-    // application file carries its own generous term. The allowance is a runaway
-    // guard with headroom of an order of magnitude, not a prediction.
+    // application file carries its own generous term (an Angular 21 RealWorld app
+    // spent 11 to 15M per file, 459M units for its first 30 files). The allowance is
+    // a runaway guard with headroom, not a prediction.
     const BASE_UNITS: u64 = 150_000_000;
     const DECLARATION_UNITS_PER_BYTE: u64 = 8;
     const APPLICATION_UNITS_PER_BYTE: u64 = 1_000;
-    const APPLICATION_FILE_UNITS: u64 = 8_000_000;
+    const APPLICATION_FILE_UNITS: u64 = 20_000_000;
     const CLOSURE_REPLAY_UNITS: u64 = 256;
     /// A single file may spend at most this share of its program's allowance...
     const FILE_SHARE_DENOMINATOR: u64 = 8;
