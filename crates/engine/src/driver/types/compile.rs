@@ -142,8 +142,22 @@ fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<CollectedFacts<'source, 'cancel>, CompileFailure<'diagnostic>> {
     let prepared = prepare(request)?;
+    let plan = match &prepared.authority {
+        EnteredAuthority::Go { image } => {
+            lower::go::controlled_resource_plan(prepared.lease.bytes(), image, prepared.permit)
+                .map_err(|cause| match cause {
+                    lower::go::DemandError::Projection(cause) => {
+                        go_terminal(prepared.source, prepared.recipe, cause)
+                    }
+                    lower::go::DemandError::Stopped(stopped) => {
+                        stopped_failure(prepared.permit, prepared.recipe, stopped)
+                    }
+                })?
+        }
+        _ => lower::ResourcePlan::for_source(request.profile, request.source.len()),
+    };
     let mut facts = lower::FactSet::with_primary_source(
-        lower::ResourcePlan::for_source(request.profile, request.source.len()),
+        plan,
         u32::try_from(request.source.len()).unwrap_or(u32::MAX),
     );
     emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
@@ -649,7 +663,17 @@ fn checkpoint<'diagnostic>(
 ) -> Result<(), CompileFailure<'diagnostic>> {
     match permit.checkpoint() {
         Ok(()) => Ok(()),
-        Err(WorkStopped::Cancelled) => Err(CompileFailure::Cancelled {
+        Err(stopped) => Err(stopped_failure(permit, recipe, stopped)),
+    }
+}
+
+fn stopped_failure<'diagnostic>(
+    permit: WorkPermit<'_>,
+    recipe: CompileRecipeFact,
+    stopped: WorkStopped,
+) -> CompileFailure<'diagnostic> {
+    match stopped {
+        WorkStopped::Cancelled => CompileFailure::Cancelled {
             source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
@@ -657,8 +681,8 @@ fn checkpoint<'diagnostic>(
                 observed: 0,
                 truncated: false,
             },
-        }),
-        Err(WorkStopped::Deadline) => Err(CompileFailure::DeadlineExceeded {
+        },
+        WorkStopped::Deadline => CompileFailure::DeadlineExceeded {
             source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
@@ -666,7 +690,7 @@ fn checkpoint<'diagnostic>(
                 observed: 0,
                 truncated: false,
             },
-        }),
+        },
     }
 }
 

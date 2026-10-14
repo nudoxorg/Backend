@@ -18,7 +18,7 @@ func TestGenericCallReferencesDistinguishCallsAndValues(t *testing.T) {
 		{"Inferred", "One", "", "", "example.com/genericcalls/exports", 1},
 		{"Parenthesized", "One", "", "", "example.com/genericcalls/exports", 1},
 		{"MultipleParentheses", "Two", "", "", "example.com/genericcalls/exports", 1},
-		{"PlainParentheses", "One", "", "", "example.com/genericcalls/exports", 1},
+		{"PlainParentheses", "Plain", "", "", "example.com/genericcalls/exports", 1},
 		{"LocalExplicit", "LocalOne", "", "", "", 1},
 		{"DotSingle", "One", "", "", "example.com/genericcalls/exports", 1},
 		{"DotMultiple", "Two", "", "", "example.com/genericcalls/exports", 1},
