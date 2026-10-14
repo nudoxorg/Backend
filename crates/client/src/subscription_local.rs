@@ -36,8 +36,23 @@ use std::{
 #[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
 
+/// Real-time allowance for releasing a lease whose admission was ABANDONED or
+/// failed. Nothing depends on the acknowledgement, so teardown stays short.
 #[cfg(any(unix, windows))]
 const TERMINAL_CLEANUP_ALLOWANCE: Duration = Duration::from_millis(50);
+
+/// Smallest time a fully verified bootstrap root spends waiting for the owner
+/// to acknowledge the release of its one-shot lease. The owner is
+/// single-threaded and is typically busy right after it served the last page,
+/// so the abandoned-admission allowance is far too short to observe a healthy
+/// acknowledgement.
+#[cfg(any(unix, windows))]
+const VERIFIED_RELEASE_FLOOR: Duration = Duration::from_secs(1);
+
+/// A zero socket timeout is rejected on Unix and means "block forever" on
+/// Windows. Every release allowance is raised to at least this value.
+#[cfg(any(unix, windows))]
+const MIN_RELEASE_ALLOWANCE: Duration = Duration::from_millis(1);
 
 /// Private, affine permission to spend only the remaining teardown allowance
 /// on the exact held lease/socket after its abandoned response was discarded.
@@ -81,12 +96,19 @@ enum Lifecycle {
     Released,
 }
 
-/// Disposition of the exact socket after a correlated bootstrap release.
+/// Disposition of the exact socket after a bootstrap release.
 #[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BootstrapRelease {
+pub(crate) enum BootstrapRelease {
+    /// The exact acknowledgement arrived and the socket was restored for reuse.
     Reusable,
+    /// The exact acknowledgement arrived, but the socket could not be
+    /// restored (for example the peer already closed it) and was retired.
     RetiredAfterAcknowledgement,
+    /// The release acknowledgement of an already verified root was lost
+    /// (stall, close, or I/O failure). The socket was retired and the owner's
+    /// one-shot bootstrap lease expires on its own term.
+    RetiredUnacknowledged,
 }
 
 /// Failure starting or completing one resumable local-control request.
@@ -171,6 +193,29 @@ fn subscription_exchange_error(error: LocalSubscriptionExchangeError) -> ClientE
             ClientError::Protocol(format!("locald subscription: {message}"))
         }
         LocalSubscriptionExchangeError::Exchange(error) => ClientError::Protocol(error.to_string()),
+    }
+}
+
+/// Whether a failed bootstrap release says only that the Cancel round trip
+/// did not complete: the exchange stalled, the peer closed, or the stream
+/// failed. A producer rejection, a malformed frame, or an acknowledgement for
+/// another request or lease is not loss and stays an error.
+#[cfg(any(unix, windows))]
+fn bootstrap_release_acknowledgement_lost(error: &LocalSubscriptionExchangeError) -> bool {
+    use backend_replication::LocalControlExchangeFailure;
+    match error {
+        LocalSubscriptionExchangeError::Exchange(exchange) => matches!(
+            exchange.failure,
+            LocalControlExchangeFailure::Stalled
+                | LocalControlExchangeFailure::Closed
+                | LocalControlExchangeFailure::Io(_)
+        ),
+        LocalSubscriptionExchangeError::Setup(ClientError::Io(_) | ClientError::Disconnected(_)) => {
+            true
+        }
+        LocalSubscriptionExchangeError::Setup(_)
+        | LocalSubscriptionExchangeError::Invalid(_)
+        | LocalSubscriptionExchangeError::Rejected { .. } => false,
     }
 }
 
@@ -407,42 +452,101 @@ impl LocalSubscriptionTransport {
 
     /// Hydrates and releases the exact bootstrap lease, retaining typed raw
     /// lease-release failures so callers can distinguish transport loss from an
-    /// invalid proof or acknowledgement. A complete root is never returned
-    /// without the exact release acknowledgement.
+    /// invalid proof or acknowledgement.
+    ///
+    /// The returned root is proof-verified before the release is attempted:
+    /// every page, continuation and the final root commitment were admitted
+    /// against the authenticated producer. The Cancel only frees owner-side
+    /// retention of a one-shot lease that expires on its own term, and nothing
+    /// the client holds depends on it. A release whose acknowledgement is
+    /// merely lost (stall, close, I/O) therefore never discards the verified
+    /// root: the exact socket is retired, so a late frame can never be
+    /// mistaken for another response, and the root is returned
+    /// ([`BootstrapRelease::RetiredUnacknowledged`]). A producer rejection or
+    /// an acknowledgement with the wrong identity remains an error.
+    ///
+    /// A verified root spends the remainder of its original hydration
+    /// deadline on the release (at least one second, at most the transport I/O
+    /// timeout); only an abandoned or failed admission uses the short
+    /// teardown allowance.
     /// # Errors
     /// Returns the original admission failure or the typed lease-release failure.
     pub fn bootstrap_root_with_exchange_error(
         &mut self,
     ) -> Result<(ViewRoot, Cursor), LocalSubscriptionExchangeError> {
+        self.bootstrap_root_released().map(|(root, _release)| root)
+    }
+
+    /// [`Self::bootstrap_root_with_exchange_error`] that also reports how the
+    /// bootstrap lease was released.
+    pub(crate) fn bootstrap_root_released(
+        &mut self,
+    ) -> Result<((ViewRoot, Cursor), BootstrapRelease), LocalSubscriptionExchangeError> {
         let previous = Cursor::new();
         let mut hydration = ResetHydration::begin(previous, self.now())
             .map_err(ClientError::from)
             .map_err(LocalSubscriptionExchangeError::Invalid)?;
-        let response = self
-            .lease_request_until(
-                LocalSubscriptionOperation::Open {
-                    cursor: Box::new([]),
-                    credit: PUBLICATION_CREDIT,
-                    lease_ms: BOOTSTRAP_LEASE.get(),
-                },
-                hydration.budget().deadline(),
-            )
-            .map_err(LocalSubscriptionExchangeError::Invalid)?;
+        let response = self.lease_request_until(
+            LocalSubscriptionOperation::Open {
+                cursor: Box::new([]),
+                credit: PUBLICATION_CREDIT,
+                lease_ms: BOOTSTRAP_LEASE.get(),
+            },
+            hydration.budget().deadline(),
+        )?;
         let lease = response.lease();
         let mut cleanup_on = self.connection();
-        let root = self.bootstrap_pages(response, lease, &mut hydration, &mut cleanup_on);
-        let cleanup =
-            self.release_bootstrap_lease_current(lease, cleanup_on, Duration::from_millis(50));
-        match root {
+        match self.bootstrap_pages(response, lease, &mut hydration, &mut cleanup_on) {
             Err(error) => {
-                let _ = cleanup;
-                Err(LocalSubscriptionExchangeError::Invalid(error))
+                // Abandoned admission: nothing depends on the acknowledgement,
+                // so only the short teardown allowance is spent.
+                let _ = self.release_bootstrap_lease_current(
+                    lease,
+                    cleanup_on,
+                    TERMINAL_CLEANUP_ALLOWANCE,
+                );
+                Err(error)
             }
-            Ok(root) => match cleanup? {
-                BootstrapRelease::Reusable | BootstrapRelease::RetiredAfterAcknowledgement => {
-                    Ok(root)
-                }
-            },
+            Ok(root) => {
+                let release = self.release_verified_bootstrap_lease(
+                    lease,
+                    cleanup_on,
+                    hydration.budget().deadline(),
+                )?;
+                Ok((root, release))
+            }
+        }
+    }
+
+    /// Time a verified root may spend on its release: the remainder of the
+    /// original hydration deadline, but at least [`VERIFIED_RELEASE_FLOOR`]
+    /// and at most this transport's I/O timeout. Never zero.
+    fn verified_release_allowance(&self, hydration_deadline: Instant) -> Duration {
+        hydration_deadline
+            .saturating_duration_since(self.now())
+            .max(VERIFIED_RELEASE_FLOOR)
+            .min(self.io_timeout)
+            .max(MIN_RELEASE_ALLOWANCE)
+    }
+
+    /// Releases the lease of a fully verified root. A lost acknowledgement
+    /// retires the exact socket and keeps the root; a rejection or an
+    /// acknowledgement with the wrong identity stays an error.
+    fn release_verified_bootstrap_lease(
+        &mut self,
+        lease: LocalSubscriptionId,
+        cleanup_on: ConnectionId,
+        hydration_deadline: Instant,
+    ) -> Result<BootstrapRelease, LocalSubscriptionExchangeError> {
+        let allowance = self.verified_release_allowance(hydration_deadline);
+        match self.release_bootstrap_lease_current(lease, cleanup_on, allowance) {
+            Err(error) if bootstrap_release_acknowledgement_lost(&error) => {
+                // Every failed release attempt already retired its socket;
+                // repeat it so that holds even for a pre-send refusal.
+                self.retire_connection();
+                Ok(BootstrapRelease::RetiredUnacknowledged)
+            }
+            other => other,
         }
     }
 
@@ -452,16 +556,17 @@ impl LocalSubscriptionTransport {
         lease: LocalSubscriptionId,
         hydration: &mut ResetHydration,
         cleanup_on: &mut ConnectionId,
-    ) -> Result<(ViewRoot, Cursor), ClientError> {
+    ) -> Result<(ViewRoot, Cursor), LocalSubscriptionExchangeError> {
+        let invalid = LocalSubscriptionExchangeError::Invalid;
         loop {
             // This operation completed and was correlated before any proof is
             // inspected. It may therefore be the exact cleanup socket even
             // if local admission of the returned page fails.
             *cleanup_on = self.connection();
             if response.lease() != lease {
-                return Err(ClientError::Protocol(
+                return Err(invalid(ClientError::Protocol(
                     "bootstrap response changed its lease identity".to_owned(),
-                ));
+                )));
             }
             let LocalSubscriptionResponse::SnapshotPage {
                 page,
@@ -470,21 +575,27 @@ impl LocalSubscriptionTransport {
                 ..
             } = response
             else {
-                return Err(ClientError::Protocol(
+                return Err(invalid(ClientError::Protocol(
                     "bootstrap lease did not return a snapshot page".to_owned(),
-                ));
+                )));
             };
             let peer = self.peer.as_ref().ok_or_else(|| {
-                ClientError::Protocol("bootstrap requires an authenticated local peer".to_owned())
+                invalid(ClientError::Protocol(
+                    "bootstrap requires an authenticated local peer".to_owned(),
+                ))
             })?;
             let clock = Arc::clone(&self.clock);
             let progress = hydration
                 .admit_page(&page, next.as_deref(), &payload, peer, clock.as_ref())
-                .map_err(ResetHydrationError::into_client_error)?;
+                .map_err(ResetHydrationError::into_client_error)
+                .map_err(invalid)?;
             match progress {
                 ResetPageProgress::Complete { cursor, root, .. } => return Ok((*root, cursor)),
                 ResetPageProgress::Continue { continuation, .. } => {
-                    hydration.check(clock.as_ref()).map_err(ClientError::from)?;
+                    hydration
+                        .check(clock.as_ref())
+                        .map_err(ClientError::from)
+                        .map_err(invalid)?;
                     response = self.lease_request_until(
                         LocalSubscriptionOperation::Page {
                             lease,
@@ -498,11 +609,15 @@ impl LocalSubscriptionTransport {
         }
     }
 
+    /// One bootstrap operation bounded by the hydration deadline. An elapsed
+    /// deadline is the bounded-reset `Invalid` fault; every other failure keeps
+    /// its typed cause, so a caller can tell a broken transport (retry on a
+    /// fresh stream) from a proof or producer refusal.
     fn lease_request_until(
         &mut self,
         operation: LocalSubscriptionOperation,
         deadline: Instant,
-    ) -> Result<LocalSubscriptionResponse, ClientError> {
+    ) -> Result<LocalSubscriptionResponse, LocalSubscriptionExchangeError> {
         let clock = Arc::clone(&self.clock);
         let mut expired = false;
         match self.lease_request_with_tick(operation, deadline, |_| {
@@ -522,17 +637,21 @@ impl LocalSubscriptionTransport {
                         && exchange.failure
                             == backend_replication::LocalControlExchangeFailure::Stalled) =>
             {
-                Err(crate::reset_budget::ResetFault::TimeBudget.into())
+                Err(LocalSubscriptionExchangeError::Invalid(
+                    crate::reset_budget::ResetFault::TimeBudget.into(),
+                ))
             }
-            Err(error) => Err(subscription_exchange_error(error)),
+            Err(error) => Err(error),
         }
     }
 
-    /// Releases a one-shot bootstrap lease on its last correlated socket. An
-    /// exact acknowledgement permits the verified root to be returned.
+    /// Releases a one-shot bootstrap lease on its last correlated socket
+    /// within `timeout` (raised to at least [`MIN_RELEASE_ALLOWANCE`]).
     /// The socket is reusable only if restoring normal timeouts succeeds;
     /// otherwise it is retired and future requests must authenticate anew.
-    /// Any ambiguous exchange still fails and retires the exact socket.
+    /// Any ambiguous exchange fails and retires the exact socket; the caller
+    /// decides whether a lost acknowledgement may still return a verified root
+    /// (see [`bootstrap_release_acknowledgement_lost`]).
     fn release_bootstrap_lease_current(
         &mut self,
         lease: LocalSubscriptionId,
@@ -551,6 +670,7 @@ impl LocalSubscriptionTransport {
                 "transport already released by a terminal lease cancellation".to_owned(),
             )));
         }
+        let timeout = timeout.max(MIN_RELEASE_ALLOWANCE);
         let request_id = self.next_request_id;
         let Some(next_request_id) = request_id.checked_add(1) else {
             // No cancellation can be correlated without a fresh ID. Retire
@@ -1196,7 +1316,9 @@ impl LocalSubscriptionTransport {
 #[allow(clippy::expect_used, clippy::panic)]
 mod bootstrap_exhaustion_tests {
     use super::*;
-    use backend_replication::{decode_request, encode_response, read_frame, write_frame};
+    use backend_replication::{
+        LocalControlExchangeError, decode_request, encode_response, read_frame, write_frame,
+    };
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -1262,6 +1384,95 @@ mod bootstrap_exhaustion_tests {
         assert!(transport.interrupt.is_none());
         assert!(transport.prepare_request().is_err());
         worker.join().expect("bounded release owner");
+    }
+
+    #[test]
+    fn verified_release_allowance_spends_the_remaining_deadline_within_floor_and_cap() {
+        use crate::monotonic::{ManualClock, MonotonicClock};
+        let (stream, _owner) = crate::test_socket::local_pair();
+        let clock = ManualClock::new();
+        let mut transport = LocalSubscriptionTransport::from_stream(stream)
+            .with_clock(Arc::<ManualClock>::clone(&clock));
+        let now = transport.now();
+        transport.io_timeout = Duration::from_secs(30);
+        // Remaining hydration time is spent as is.
+        assert_eq!(
+            transport.verified_release_allowance(now + Duration::from_secs(7)),
+            Duration::from_secs(7)
+        );
+        // An expired or nearly expired deadline still leaves the floor.
+        assert_eq!(
+            transport.verified_release_allowance(now),
+            VERIFIED_RELEASE_FLOOR
+        );
+        clock.advance(Duration::from_secs(20));
+        assert_eq!(
+            transport.verified_release_allowance(now),
+            VERIFIED_RELEASE_FLOOR,
+            "an already elapsed deadline never yields a zero allowance"
+        );
+        // The transport's I/O timeout caps a large remainder.
+        assert_eq!(
+            transport.verified_release_allowance(clock.now() + Duration::from_secs(600)),
+            Duration::from_secs(30)
+        );
+        // A short I/O timeout also caps the floor; a zero one cannot reach a
+        // zero socket timeout.
+        transport.io_timeout = Duration::from_millis(200);
+        assert_eq!(
+            transport.verified_release_allowance(clock.now() + Duration::from_secs(5)),
+            Duration::from_millis(200)
+        );
+        transport.io_timeout = Duration::ZERO;
+        assert_eq!(
+            transport.verified_release_allowance(clock.now()),
+            MIN_RELEASE_ALLOWANCE
+        );
+    }
+
+    #[test]
+    fn only_a_lost_round_trip_lets_a_verified_root_survive_its_release() {
+        use backend_replication::{LocalControlExchangeFailure as Failure, LocalControlExchangePhase};
+        let exchange = |failure| {
+            LocalSubscriptionExchangeError::Exchange(LocalControlExchangeError {
+                failure,
+                progress: LocalControlExchangeProgress {
+                    request_id: 2,
+                    phase: LocalControlExchangePhase::ReadingHeader,
+                    write_offset: 0,
+                    header_offset: 0,
+                    body_len: None,
+                    body_offset: 0,
+                    deadline: Instant::now(),
+                    elapsed: Duration::ZERO,
+                },
+            })
+        };
+        for lost in [
+            exchange(Failure::Stalled),
+            exchange(Failure::Closed),
+            exchange(Failure::Io(std::io::ErrorKind::BrokenPipe)),
+            LocalSubscriptionExchangeError::Setup(ClientError::Io("timeout option".to_owned())),
+            LocalSubscriptionExchangeError::Setup(ClientError::Disconnected(
+                std::io::ErrorKind::BrokenPipe,
+            )),
+        ] {
+            assert!(bootstrap_release_acknowledgement_lost(&lost), "{lost:?}");
+        }
+        for fatal in [
+            exchange(Failure::Cancelled),
+            exchange(Failure::Protocol(LocalControlError::Truncated)),
+            LocalSubscriptionExchangeError::Rejected {
+                request_id: 2,
+                message: "unknown lease".to_owned(),
+            },
+            LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(
+                "bootstrap lease cancellation was not acknowledged".to_owned(),
+            )),
+            LocalSubscriptionExchangeError::Setup(ClientError::Protocol("oversized".to_owned())),
+        ] {
+            assert!(!bootstrap_release_acknowledgement_lost(&fatal), "{fatal:?}");
+        }
     }
 
     #[test]

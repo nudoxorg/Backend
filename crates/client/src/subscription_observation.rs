@@ -745,6 +745,10 @@ impl LocalSubscriptionTransport {
     /// Any abandoned response drain and this Cancel share one real 50ms
     /// deadline. Per-attempt timeouts use the remaining allowance; this does
     /// not promise preemption of native syscalls, scheduling, or decoding.
+    /// The short bound is for teardown (a failed admission or a closing
+    /// observer), where nothing depends on the acknowledgement and the finite
+    /// lease expires on its own. A bootstrap root that was already verified
+    /// spends its remaining hydration deadline on its release instead.
     /// # Errors
     /// Returns an I/O or protocol error when this exact socket cannot release
     /// the lease; the caller must not assume successful producer cleanup.
@@ -1059,6 +1063,16 @@ mod tests {
         std::path::PathBuf,
         JoinHandle<()>,
     ) {
+        authenticated_pair_with_io(Duration::from_millis(200), serve)
+    }
+    fn authenticated_pair_with_io(
+        io_timeout: Duration,
+        serve: impl FnOnce(&mut UnixStream) + Send + 'static,
+    ) -> (
+        LocalSubscriptionTransport,
+        std::path::PathBuf,
+        JoinHandle<()>,
+    ) {
         let path = std::path::PathBuf::from(format!(
             "/tmp/nudox-pub-{}-{}.sock",
             std::process::id(),
@@ -1084,7 +1098,7 @@ mod tests {
         let transport = LocalSubscriptionTransport::connect_with_timeouts(
             &path,
             Duration::from_secs(1),
-            Duration::from_millis(200),
+            io_timeout,
         )
         .expect("connect and authenticate local producer");
         (transport, path, join)
@@ -1951,40 +1965,13 @@ mod tests {
         std::fs::remove_file(path).expect("remove authenticated test socket");
     }
 
-    #[test]
-    fn certified_bootstrap_release_stall_keeps_typed_cause_and_requires_fresh_admission() {
-        use backend_replication::{LocalControlExchangeFailure, LocalControlExchangePhase};
-        let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
-        let lease = LocalSubscriptionId::from_bytes([32; 16]);
-        let (release, held) = std::sync::mpsc::channel();
-        let (mut transport, path, owner) = authenticated_pair(move |stream| {
-            let cancel_id = serve_bootstrap_pages(stream, lease, pages);
-            assert_eq!(cancel_id, 4, "three certified pages precede exact release");
-            // Hold the actual ACK until the client observes its bounded stall;
-            // no sleep or scheduler assumption controls the failure.
-            held.recv_timeout(Duration::from_secs(3))
-                .expect("release held peer");
-        });
-        let error = transport
-            .bootstrap_root_with_exchange_error()
-            .expect_err("certified root cannot escape before its release acknowledgement");
-        let crate::LocalSubscriptionExchangeError::Exchange(exchange) = error else {
-            panic!("exact release must preserve its typed exchange cause");
-        };
-        assert_eq!(exchange.failure, LocalControlExchangeFailure::Stalled);
-        assert_eq!(exchange.progress.request_id, 4);
-        assert_eq!(
-            exchange.progress.phase,
-            LocalControlExchangePhase::ReadingHeader
-        );
-        assert!(exchange.progress.write_offset > 0);
-        assert_eq!(exchange.progress.header_offset, 0);
-        assert!(transport.interrupt_handle().is_none());
-        assert!(transport.authenticated_peer().is_none());
-        release.send(()).expect("close held peer after refusal");
-        owner.join().expect("bounded held owner");
-        std::fs::remove_file(path).expect("remove failed socket");
-
+    /// Fresh authenticated stream that serves every page and acknowledges the
+    /// release at once: proves a retired socket's replacement re-admits fully.
+    fn assert_fresh_bootstrap_admits(
+        target: &ViewRoot,
+        target_cursor: Cursor,
+        lease: LocalSubscriptionId,
+    ) {
         let (_, retry_target, _, retry_cursor, pages) = multi_page_bootstrap_fixture();
         assert_eq!(target.root(), retry_target.root());
         assert_eq!(target_cursor, retry_cursor);
@@ -2005,6 +1992,197 @@ mod tests {
         assert_eq!(cursor, target_cursor);
         owner.join().expect("fresh acknowledged owner");
         std::fs::remove_file(path).expect("remove fresh socket");
+    }
+
+    #[test]
+    fn certified_bootstrap_release_ack_slower_than_the_abandoned_allowance_keeps_a_reusable_root() {
+        let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+        let lease = LocalSubscriptionId::from_bytes([33; 16]);
+        let (mut transport, path, owner) =
+            authenticated_pair_with_io(Duration::from_secs(5), move |stream| {
+                let cancel_id = serve_bootstrap_pages(stream, lease, pages);
+                // The single-threaded owner is busy right after the last
+                // page: the ACK is three times the old 50 ms deadline.
+                std::thread::sleep(Duration::from_millis(150));
+                reply(
+                    stream,
+                    LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: cancel_id,
+                        lease,
+                    }),
+                );
+            });
+        let ((root, cursor), release) = transport
+            .bootstrap_root_released()
+            .expect("a verified root survives a slow but exact release acknowledgement");
+        assert_eq!(release, crate::subscription_local::BootstrapRelease::Reusable);
+        assert_eq!(root.root(), target.root());
+        assert_eq!(cursor, target_cursor);
+        assert!(transport.interrupt_handle().is_some(), "socket stays usable");
+        assert!(transport.authenticated_peer().is_some());
+        owner.join().expect("slow acknowledging owner");
+        std::fs::remove_file(path).expect("remove slow socket");
+    }
+
+    #[test]
+    fn certified_bootstrap_release_without_an_ack_returns_the_verified_root_and_retires_the_socket() {
+        use std::sync::mpsc::channel;
+        // `true`: the owner holds the socket open without answering (stall).
+        // `false`: the owner closes the socket without answering.
+        for hold in [true, false] {
+            let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+            let lease = LocalSubscriptionId::from_bytes([32; 16]);
+            let (release, held) = channel();
+            let (mut transport, path, owner) = authenticated_pair(move |stream| {
+                let cancel_id = serve_bootstrap_pages(stream, lease, pages);
+                assert_eq!(cancel_id, 4, "three certified pages precede exact release");
+                if hold {
+                    // Hold the actual ACK until the client gave up on it; no
+                    // sleep or scheduler assumption controls the outcome.
+                    held.recv_timeout(Duration::from_secs(3))
+                        .expect("release held peer");
+                }
+            });
+            let ((root, cursor), outcome) = transport
+                .bootstrap_root_released()
+                .expect("a lost release acknowledgement cannot discard a certified root");
+            assert_eq!(
+                outcome,
+                crate::subscription_local::BootstrapRelease::RetiredUnacknowledged
+            );
+            assert_eq!(root.root(), target.root());
+            assert_eq!(cursor, target_cursor);
+            assert!(transport.interrupt_handle().is_none());
+            assert!(
+                transport.authenticated_peer().is_none(),
+                "the socket whose ACK is unknown is never reused"
+            );
+            release.send(()).ok();
+            owner.join().expect("bounded held owner");
+            std::fs::remove_file(path).expect("remove retired socket");
+            assert_fresh_bootstrap_admits(&target, target_cursor, lease);
+        }
+    }
+
+    #[test]
+    fn certified_bootstrap_release_rejection_or_wrong_identity_stays_fatal() {
+        #[derive(Clone, Copy)]
+        enum Answer {
+            WrongLease,
+            Rejected,
+        }
+        for answer in [Answer::WrongLease, Answer::Rejected] {
+            let (_, _, _, _, pages) = multi_page_bootstrap_fixture();
+            let lease = LocalSubscriptionId::from_bytes([34; 16]);
+            let (mut transport, path, owner) =
+                authenticated_pair_with_io(Duration::from_secs(5), move |stream| {
+                    let cancel_id = serve_bootstrap_pages(stream, lease, pages);
+                    reply(
+                        stream,
+                        match answer {
+                            Answer::WrongLease => LocalControlResponse::Subscription(
+                                LocalSubscriptionResponse::Cancelled {
+                                    request_id: cancel_id,
+                                    lease: LocalSubscriptionId::from_bytes([35; 16]),
+                                },
+                            ),
+                            Answer::Rejected => LocalControlResponse::Rejected {
+                                request_id: cancel_id,
+                                message: "unknown lease".to_owned(),
+                            },
+                        },
+                    );
+                });
+            let error = transport
+                .bootstrap_root_with_exchange_error()
+                .expect_err("an answered but invalid release never preserves the root");
+            assert!(
+                matches!(
+                    &error,
+                    crate::LocalSubscriptionExchangeError::Invalid(_)
+                        | crate::LocalSubscriptionExchangeError::Rejected { .. }
+                ),
+                "typed non-loss failure expected, got {error:?}"
+            );
+            assert!(transport.authenticated_peer().is_none());
+            owner.join().expect("answering owner");
+            std::fs::remove_file(path).expect("remove invalid-ack socket");
+        }
+    }
+
+    #[test]
+    fn a_release_reply_for_another_request_is_a_lost_acknowledgement_not_an_ack() {
+        let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+        let lease = LocalSubscriptionId::from_bytes([37; 16]);
+        let (mut transport, path, owner) =
+            authenticated_pair_with_io(Duration::from_secs(5), move |stream| {
+                let cancel_id = serve_bootstrap_pages(stream, lease, pages);
+                // The exchange parks a frame for another request as pending
+                // and keeps waiting for its own; the owner then goes away.
+                reply(
+                    stream,
+                    LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: cancel_id + 1,
+                        lease,
+                    }),
+                );
+            });
+        let ((root, cursor), release) = transport
+            .bootstrap_root_released()
+            .expect("the verified root outlives a release that was never exactly acknowledged");
+        assert_eq!(
+            release,
+            crate::subscription_local::BootstrapRelease::RetiredUnacknowledged
+        );
+        assert_eq!(root.root(), target.root());
+        assert_eq!(cursor, target_cursor);
+        assert!(transport.authenticated_peer().is_none());
+        owner.join().expect("departing owner");
+        std::fs::remove_file(path).expect("remove stray-reply socket");
+    }
+
+    #[test]
+    fn abandoned_bootstrap_admission_keeps_the_short_release_allowance() {
+        use std::sync::mpsc::channel;
+        let lease = LocalSubscriptionId::from_bytes([36; 16]);
+        let (release, held) = channel();
+        // A generous transport timeout proves the bound comes from the
+        // abandoned-admission allowance and not from the socket.
+        let (mut transport, path, owner) =
+            authenticated_pair_with_io(Duration::from_secs(5), move |stream| {
+                let (open_id, _) = request(stream);
+                reply(
+                    stream,
+                    LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                        request_id: open_id,
+                        lease,
+                        page: Box::new([]),
+                        next: None,
+                        credit: PUBLICATION_CREDIT,
+                        payload: Box::from(b"not a producer proof".as_slice()),
+                    }),
+                );
+                let (_cancel_id, operation) = request(stream);
+                assert!(matches!(
+                    operation,
+                    LocalSubscriptionOperation::Cancel { lease: requested } if requested == lease
+                ));
+                held.recv_timeout(Duration::from_secs(3))
+                    .expect("release held peer");
+            });
+        let started = Instant::now();
+        let error = transport
+            .bootstrap_root_with_exchange_error()
+            .expect_err("an unprovable page is never a root");
+        assert!(matches!(error, crate::LocalSubscriptionExchangeError::Invalid(_)));
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "abandoned admission waited {:?}, longer than the 50 ms teardown allowance plus slack",
+            started.elapsed()
+        );
+        release.send(()).ok();
+        owner.join().expect("held owner");
+        std::fs::remove_file(path).expect("remove abandoned socket");
     }
 
     #[test]
