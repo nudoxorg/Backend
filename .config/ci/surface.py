@@ -225,7 +225,7 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
     terminal = detail.get("state", {})
     profiles = detail.get("source_capture", {}).get("profiles", [])
     if observation.get("state") != "known" or terminal.get("state") != "published":
-        raise RuntimeError("index setup: expected a published operation receipt")
+        raise RuntimeError(f"index setup: expected a published operation receipt; observation={observation.get('state')}, terminal={terminal}")
     if len(profiles) != profile_count or any(
         p.get("state", {}).get("state") != "published"
         or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
@@ -281,6 +281,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     first, seconds = run_cli(owner, project,
         ["index", str(project), "--execution-intent", "background", "--wait", "--wait-timeout", "0"], timeout)
     initial = require_index_wait_stop(first, project)
+    log(f"background zero-wait: {initial['state']['state']} after {seconds:.3f}s")
     times = {"background index zero-wait": round(seconds, 3)}
     key = initial["operation_key"]
     progress, seconds = run_cli(owner, project, ["index_progress", "--operation-key", key], 10)
@@ -289,6 +290,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     times["index progress after caller deadline"] = round(seconds, 3)
     completed, seconds = run_cli(owner, project,
         ["add", str(project), "--execution-intent", "background", "--wait"], timeout)
+    log(f"resumed wait: exit={completed['exit']}; operation={json.dumps(completed.get('json', {}).get('index_operation', {}))[:5000]}")
     require_completed_index(completed, profile_count)
     terminal = require_index_identity(completed, project, initial)
     times["resumed index wait"] = round(seconds, 3)
@@ -299,6 +301,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
         ("completed CLI keyed replay", ["index_start", str(project), "--execution-intent", "background", "--operation-key", key]),
     ):
         answer, seconds = run_cli(owner, project, args, 10)
+        log(f"{name}: checking terminal receipt")
         require_same_index_receipt(answer, project, terminal, profile_count)
         times[name] = round(seconds, 3)
     session, seconds = run_mcp(owner, project,
@@ -308,6 +311,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     reply = session["calls"][0]["reply"]
     if not isinstance(reply, dict) or reply.get("isError", False) or not isinstance(reply.get("structuredContent"), dict):
         raise RuntimeError(f"completed MCP operation lookup failed: {reply}")
+    log("completed MCP operation lookup: checking terminal receipt")
     require_same_index_receipt({"exit": 0, "json": reply["structuredContent"]}, project, terminal, profile_count)
     times["completed MCP operation lookup"] = round(seconds, 3)
     log("background index: zero-wait caller left; fresh alias/add clients retained one key; explicit keyed replay; CLI/MCP terminal receipts agree")
