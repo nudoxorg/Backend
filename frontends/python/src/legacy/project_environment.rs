@@ -36,6 +36,86 @@ pub enum PythonDependencyRootKind {
     StandardLibrary,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DependencyFileKind {
+    Source,
+    Compiled,
+}
+
+/// Preserve the native candidate set and additionally retain ordinary installed
+/// CPython extension resources. These witnesses supply refusals, never facts.
+pub(super) fn compiled_resource_suffixes() -> impl Iterator<Item = &'static str> {
+    pyrefly_python::COMPILED_FILE_SUFFIXES
+        .iter()
+        .copied()
+        .chain(["so", "dll"])
+}
+
+fn dependency_file_kind(path: &Path, windows: bool) -> Option<DependencyFileKind> {
+    let extension = path.extension().and_then(|value| value.to_str());
+    let suffix_matches = |candidate: &str| {
+        extension.is_some_and(|extension| {
+            if windows {
+                extension.eq_ignore_ascii_case(candidate)
+            } else {
+                extension == candidate
+            }
+        })
+    };
+    if compiled_resource_suffixes().any(suffix_matches) {
+        return Some(DependencyFileKind::Compiled);
+    }
+    if ["py", "pyi", "pth"].into_iter().any(suffix_matches)
+        || matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(
+                "py.typed"
+                    | "METADATA"
+                    | "RECORD"
+                    | "WHEEL"
+                    | "direct_url.json"
+                    | "pyproject.toml"
+                    | "pyrefly.toml"
+                    | ".pyrefly.toml"
+                    | "pyrightconfig.json"
+                    | "mypy.ini"
+                    | "setup.cfg"
+                    | "uv.lock"
+                    | "poetry.lock"
+            )
+        )
+    {
+        return Some(DependencyFileKind::Source);
+    }
+    None
+}
+
+pub(super) fn is_python_source_member(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            ["py", "pyi"].into_iter().any(|suffix| {
+                if cfg!(windows) {
+                    extension.eq_ignore_ascii_case(suffix)
+                } else {
+                    extension == suffix
+                }
+            })
+        })
+}
+
+// The native checker constructs lower-case compiled suffix probes. Windows
+// accepts those suffix spellings for the retained resource; the rest of the
+// actual path is preserved, as is the original spelling in provenance.
+fn compiled_candidate_key(path: &Path, windows: bool) -> PathBuf {
+    if windows {
+        if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+            return path.with_extension(extension.to_ascii_lowercase());
+        }
+    }
+    path.to_path_buf()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 enum MemberPayload {
     /// Exact bytes that the native parser or installed metadata authority may read.
@@ -264,7 +344,8 @@ impl PythonEnvironmentWitness {
 
 impl MaterializedPythonEnvironment {
     pub(super) fn compiled_candidate(&self, private_path: &Path) -> Option<&PathBuf> {
-        self.compiled.get(private_path)
+        self.compiled
+            .get(&compiled_candidate_key(private_path, cfg!(windows)))
     }
 
     pub(super) fn validate_current(
@@ -606,11 +687,12 @@ impl PythonEnvironmentCapture {
                         "dependency file/directory membership conflicts",
                     ));
                 }
-                let compiled = matches!(
-                    path.extension().and_then(|value| value.to_str()),
-                    Some("so" | "pyd" | "dll")
-                );
-                if matches!(member.payload, MemberPayload::Compiled { .. }) != compiled {
+                let kind = dependency_file_kind(path, cfg!(windows)).ok_or_else(|| {
+                    project_error("", "dependency member has an unsupported resource kind")
+                })?;
+                if matches!(member.payload, MemberPayload::Compiled { .. })
+                    != (kind == DependencyFileKind::Compiled)
+                {
                     return Err(project_error(
                         "",
                         "dependency payload role disagrees with its native extension kind",
@@ -968,8 +1050,16 @@ impl PythonEnvironmentCapture {
                     // A compiled-only import remains unavailable to the genuine
                     // checker. Never manufacture an empty extension or stub.
                     MemberPayload::Compiled { .. } => {
-                        compiled
-                            .insert(mirror.join(&member.path), root.original.join(&member.path));
+                        let key = compiled_candidate_key(&mirror.join(&member.path), cfg!(windows));
+                        if compiled
+                            .insert(key, root.original.join(&member.path))
+                            .is_some()
+                        {
+                            return Err(project_error(
+                                "",
+                                "compiled dependency candidate has conflicting retained spellings",
+                            ));
+                        }
                         continue;
                     }
                 };
@@ -1192,31 +1282,10 @@ fn capture_root_with_budget(
                 }
             } else {
                 let spelling = canonical_path_spelling(&child)?;
-                let extension = child.extension().and_then(|part| part.to_str());
-                let compiled = matches!(extension, Some("so" | "pyd" | "dll"));
-                let source = matches!(extension, Some("py" | "pyi" | "pth"))
-                    || matches!(
-                        name.to_str(),
-                        Some(
-                            "py.typed"
-                                | "METADATA"
-                                | "RECORD"
-                                | "WHEEL"
-                                | "direct_url.json"
-                                | "pyproject.toml"
-                                | "pyrefly.toml"
-                                | ".pyrefly.toml"
-                                | "pyrightconfig.json"
-                                | "mypy.ini"
-                                | "setup.cfg"
-                                | "uv.lock"
-                                | "poetry.lock"
-                        )
-                    );
-                if !compiled && !source {
+                let Some(file_kind) = dependency_file_kind(&child, cfg!(windows)) else {
                     continue;
-                }
-                let payload = if compiled {
+                };
+                let payload = if file_kind == DependencyFileKind::Compiled {
                     let (length, digest) = super::project::digest_environment_input(
                         root,
                         &child,
@@ -2449,6 +2518,126 @@ mod tests {
     }
 
     #[test]
+    fn dependency_resource_case_policy_keeps_source_and_compiled_roles_distinct() {
+        for suffix in ["PY", "PYI", "PTH"] {
+            assert_eq!(
+                dependency_file_kind(Path::new(&format!("package.{suffix}")), true),
+                Some(DependencyFileKind::Source)
+            );
+            assert_eq!(
+                dependency_file_kind(Path::new(&format!("package.{suffix}")), false),
+                None
+            );
+        }
+        for suffix in ["PYD", "DLL"] {
+            assert_eq!(
+                dependency_file_kind(Path::new(&format!("package.{suffix}")), true),
+                Some(DependencyFileKind::Compiled)
+            );
+            assert_eq!(
+                dependency_file_kind(Path::new(&format!("package.{suffix}")), false),
+                None
+            );
+            assert_eq!(
+                compiled_candidate_key(Path::new(&format!("Parent/package.{suffix}")), true),
+                PathBuf::from(format!("Parent/package.{}", suffix.to_ascii_lowercase()))
+            );
+        }
+        assert_eq!(
+            dependency_file_kind(Path::new("package.py"), false),
+            Some(DependencyFileKind::Source)
+        );
+        assert_eq!(
+            compiled_candidate_key(Path::new("Parent/package.PYD"), false),
+            PathBuf::from("Parent/package.PYD")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uppercase_windows_resources_capture_admit_and_resolve_native_suffix_probes()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        std::fs::create_dir(root.path.join("nested")).map_err(io_error)?;
+        for (name, bytes) in [
+            ("nested/package.py", b"answer: int = 42\n".as_slice()),
+            (
+                "nested/upper.PY",
+                b"answer: str = 'actual uppercase source'\n".as_slice(),
+            ),
+            ("nested/interface.PYI", b"answer: int\n".as_slice()),
+            (
+                "nested/paths.PTH",
+                b"retained-but-not-executed\n".as_slice(),
+            ),
+            (
+                "nested/package.PYD",
+                b"actual compiled-shadow witness".as_slice(),
+            ),
+            ("nested/library.DLL", b"actual DLL witness".as_slice()),
+        ] {
+            std::fs::write(root.path.join(name), bytes).map_err(io_error)?;
+        }
+        let captured = capture_root(
+            &root.path,
+            PythonDependencyRootKind::SitePackages,
+            control(&cancelled),
+        )?;
+        assert_eq!(captured.members.len(), 6);
+        let mut environment = transport_environment();
+        let original = environment.roots[0].original.clone();
+        environment.roots[0] = Root {
+            original,
+            ..captured
+        };
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let wire = admitted.encode(control(&cancelled))?;
+        let received =
+            PythonEnvironmentCapture::decode(&wire, admitted.identity(), control(&cancelled))?;
+        let mirror_parent = fixture()?;
+        let mirror = received.materialize(&mirror_parent.path, control(&cancelled))?;
+        let private = &mirror.roots[0].2;
+        assert_eq!(
+            std::fs::read(private.join("nested/package.py")).map_err(io_error)?,
+            b"answer: int = 42\n"
+        );
+        assert_eq!(
+            std::fs::read(private.join("nested/upper.PY")).map_err(io_error)?,
+            b"answer: str = 'actual uppercase source'\n"
+        );
+        for (query, actual) in [
+            ("nested/package.pyd", "nested/package.PYD"),
+            ("nested/library.dll", "nested/library.DLL"),
+        ] {
+            assert_eq!(
+                mirror.compiled_candidate(&private.join(query)),
+                Some(&mirror.roots[0].1.join(actual))
+            );
+            assert!(!private.join(actual).exists());
+        }
+        let mut conflicting = received.environment.as_ref().clone();
+        conflicting.roots[0].members.push(Member {
+            path: "nested/package.pyd".into(),
+            payload: MemberPayload::Compiled {
+                length: 1,
+                digest: [5; 32],
+            },
+        });
+        conflicting.roots[0]
+            .members
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        let conflicting = PythonEnvironmentCapture::admit(conflicting, control(&cancelled))?;
+        let second_parent = fixture()?;
+        assert!(
+            conflicting
+                .materialize(&second_parent.path, control(&cancelled))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dependency_payload_and_transitive_membership_changes_are_distinct()
     -> Result<(), CheckerError> {
         let root = fixture()?;
@@ -2956,6 +3145,31 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             Some(super::super::PythonProjectSourceStatus::UnavailableCompiledImport { .. })
         ));
         std::fs::remove_file(site.join("first_pkg.so"))?;
+        #[cfg(windows)]
+        {
+            for suffix in ["PYD", "DLL"] {
+                let compiled_path = site.join(format!("first_pkg.{suffix}"));
+                std::fs::write(&compiled_path, b"actual uppercase compiled witness")?;
+                let uppercase = PythonEnvironmentCapture::capture_with_interpreter(
+                    &project,
+                    Some(&trusted),
+                    control(&cancelled),
+                )?;
+                let uppercase_report = authority.analyze_project_bytes_with_environment(
+                    &project,
+                    "ordinary-installed",
+                    &sources,
+                    Some(&uppercase),
+                    profile,
+                    control(&cancelled),
+                )?;
+                assert!(matches!(
+                    uppercase_report.source_status("main.py"),
+                    Some(super::super::PythonProjectSourceStatus::UnavailableCompiledImport { .. })
+                ));
+                std::fs::remove_file(compiled_path)?;
+            }
+        }
         let dependency_as_project = [super::super::PythonProjectBytesSource {
             relative_path: "local/py3/lib/python3.14/site-packages/first_pkg/__init__.py",
             source: b"from second_pkg import answer\n",
