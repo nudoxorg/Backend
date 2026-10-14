@@ -2470,7 +2470,14 @@ fn collect_selected_documents(
             // member of `entities`/`candidates`/`semantic_documents`; so
             // direct coordinate lookups (`show`) and the semantic/vector
             // lane are unaffected.
-            if !is_synthetic_result_slot && !hidden {
+            // A variable the compiler found and no written site backs (a
+            // parameter or a local of some body) has no path and line to open
+            // and is stated by its owner's own signature, so a name search
+            // does not offer it. Like the result slot it stays an entity, so
+            // a direct coordinate lookup still answers.
+            let is_unlocated_variable =
+                presentation.kind == "variable" && source == SearchOrigin::Unsourced;
+            if !is_synthetic_result_slot && !is_unlocated_variable && !hidden {
                 let row_fields = fields_for_fact(fact);
                 checked_document_bytes(0, &row_fields)?;
                 documents.push((entity, row_fields));

@@ -1461,9 +1461,33 @@ fn document_text(document: &[Fragment]) -> String {
     text
 }
 
+/// The signature a compiler-backed declaration shows when no written site
+/// supplies one: its semantic type, written in its language's own syntax.
+///
+/// A callable reads as the declaration header its language writes (`fn
+/// name(a: u32) -> bool`), anything else as its type (`&str`, `*Config`,
+/// `list[int]`). A type the image cannot name completely is not shown at all
+/// rather than shown as the compiler's internal encoding, and a declaration
+/// whose type is only itself (a record's nominal type) has no signature to
+/// show.
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
     entity: &backend_engine::application::DocumentationEntity<'_, Reader>,
 ) -> Result<Option<String>, BuiltinModelError> {
+    // These declarations are what their own type names (an enum's variant has
+    // the enum for a type, a module has none), so the type says nothing about
+    // how to use them.
+    if matches!(
+        entity.entity.kind,
+        backend_semantic::ir::ItemKind::Variant
+            | backend_semantic::ir::ItemKind::Implementation
+            | backend_semantic::ir::ItemKind::Module
+            | backend_semantic::ir::ItemKind::Namespace
+            | backend_semantic::ir::ItemKind::Macro
+            | backend_semantic::ir::ItemKind::Reexport
+    ) {
+        return Ok(None);
+    }
     let Some(semantic_type) = entity
         .semantic_type()
         .map_err(|error| BuiltinModelError(format!("project semantic type: {error}")))?
@@ -1472,21 +1496,19 @@ fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     };
     let type_depth = NonZeroUsize::new(MAX_SEMANTIC_TYPE_DEPTH)
         .ok_or_else(|| BuiltinModelError("semantic type depth bound must be nonzero".to_owned()))?;
-    let prepared = semantic_type
-        .prepare_canonical(backend_semantic::ir::CanonicalTypeRenderLimits::new(
-            type_depth,
-        ))
-        .map_err(|error| BuiltinModelError(format!("render project semantic type: {error}")))?;
-    if prepared.encoded_len > MAX_SEMANTIC_SIGNATURE_BYTES {
-        return Err(BuiltinModelError(
-            "project semantic signature exceeds its output bound".to_owned(),
-        ));
-    }
-    let mut output = vec![0; prepared.encoded_len];
-    let rendered = prepared
-        .write_into(&mut output)
-        .map_err(|error| BuiltinModelError(format!("write project semantic type: {error}")))?;
-    Ok(Some(rendered.to_owned()))
+    let limits = backend_semantic::ir::CanonicalTypeRenderLimits::new(type_depth);
+    let name = entity
+        .name
+        .named_bytes()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok());
+    let rendered = match name {
+        Some(name) if entity.entity.kind == backend_semantic::ir::ItemKind::Function => {
+            semantic_type.render_source_header(profile, name, limits)
+        }
+        _ => semantic_type.render_source(profile, limits),
+    };
+    Ok(rendered
+        .filter(|text| text.len() <= MAX_SEMANTIC_SIGNATURE_BYTES && Some(text.as_str()) != name))
 }
 
 pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
@@ -1516,7 +1538,7 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| BuiltinModelError(format!("project semantic documentation: {error}")))?;
     let documentation_bytes = documentation_bytes(&documentation)?;
-    let signature = semantic_signature(entity)?;
+    let signature = semantic_signature(profile, entity)?;
     let encoded_bytes = documentation_bytes
         .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;

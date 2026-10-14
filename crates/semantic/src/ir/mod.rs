@@ -275,7 +275,7 @@ pub use semantic_render::{
     SemanticDocumentReference, SemanticImageSourceSyntaxDialect, SourceSyntaxDialect,
     SourceSyntaxError, TypeScriptSemanticDocumentDialect, UnsupportedSemanticStage,
     prepare_canonical_type, prepare_neutral, prepare_profile, prepare_semantic_document,
-    prepare_source_syntax,
+    prepare_source_syntax, render_source_callable, render_source_type,
 };
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,
