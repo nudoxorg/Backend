@@ -796,6 +796,18 @@ impl Fault {
                 ),
                 Affordance::WaitForReadiness,
             )),
+            Coverage::Gapped { lane } => Some(Self::new(
+                FaultSlug::LanePartial,
+                Operand::Lane(lane),
+                Cause::new(
+                    CauseSlug::NotCaptured,
+                    format!(
+                        "the {} lane finished and published readable rows, but part of its declared scope is not covered; waiting will not change that",
+                        lane_name(lane)
+                    ),
+                ),
+                Affordance::None,
+            )),
         }
     }
 
