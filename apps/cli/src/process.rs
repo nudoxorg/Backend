@@ -19,7 +19,7 @@ use backend_client::Session;
 use backend_present::{
     Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext, grammar_for,
 };
-use backend_present::{Request, lower, lower_surface_json};
+use backend_present::{Invocation, Request, lower, lower_surface_json};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -324,7 +324,13 @@ pub(crate) fn render_admitted_answer(
         .transpose()
         .map_err(|error| {
             Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
-        })?;
+        })?
+        // A list the owner never paged (members, an outline, references) is
+        // paged by a short stateless window cursor that survives the process.
+        .or_else(|| match answer.cursor() {
+            Some(backend_present::ContinuationCursor::Window(window)) => Some(window.encode()),
+            _ => None,
+        });
     render::try_answer_with_cursor(answer, options, cursor.as_deref())
 }
 
@@ -391,9 +397,30 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
             wait: None,
         });
     }
-    let invocation = invoke::parse(words, options.limit())?;
+    let mut invocation = invoke::parse(words, options.limit())?;
+    cap_machine_page(&mut invocation, options);
     let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
     lower(&invocation, project).map(|request| Plan { request, wait })
+}
+
+/// Most records one owner-paged page carries into machine output, where each
+/// record is a typed row of several hundred bytes and the whole answer shares
+/// one response budget. A larger `--limit` is served this many rows per page;
+/// the `nextCursor` reads on, so no read fails because of its size.
+const MACHINE_PAGE_ROWS: u16 = 30;
+
+/// Bounds an owner-paged page for `--json` the way the MCP bounds its own.
+fn cap_machine_page(invocation: &mut Invocation, options: &Options) {
+    if !options.is_machine() || !matches!(invocation.grammar().name(), "search" | "resolve") {
+        return;
+    }
+    if invocation
+        .option("limit")
+        .and_then(|limit| limit.parse::<u16>().ok())
+        .is_some_and(|limit| limit > MACHINE_PAGE_ROWS)
+    {
+        invocation.set("limit", MACHINE_PAGE_ROWS.to_string());
+    }
 }
 
 fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault> {
@@ -1088,5 +1115,31 @@ mod startup_tests {
                 .to_string()
                 .contains("install matched CLI and locald or rebuild")
         );
+    }
+}
+
+#[cfg(test)]
+mod machine_page_tests {
+    use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    fn search_limit(line: &str) -> u16 {
+        let (options, rest) = options::split(&words(line)).expect("options");
+        let plan = plan(&rest, &options, "/p").expect("plan");
+        let Request::Search { limit, .. } = plan.request else {
+            panic!("search lowers to a search request");
+        };
+        limit
+    }
+
+    #[test]
+    fn machine_output_pages_a_search_in_rows_that_always_fit_and_text_does_not() {
+        assert_eq!(search_limit("--json search ferris --limit 200"), MACHINE_PAGE_ROWS);
+        assert_eq!(search_limit("--json search ferris --limit 10"), 10);
+        assert_eq!(search_limit("--format markdown search ferris --limit 200"), 200);
+        assert_eq!(search_limit("search ferris --limit 200"), 200);
     }
 }

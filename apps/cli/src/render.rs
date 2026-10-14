@@ -9,7 +9,7 @@
 
 use backend_present::{
     Answer, ContinuationTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug,
-    bounded_text, encode_answer, fault_value, markdown, oversized_fault, text,
+    bounded_text, encode_answer, encode_answer_fitting, fault_value, markdown, oversized_fault, text,
 };
 use std::process::ExitCode;
 
@@ -65,7 +65,9 @@ pub(crate) fn try_answer_with_cursor(
             ContinuationTarget::CliOption,
         ))),
         Format::Json => {
-            let payload = encode_answer(
+            // Lower the detail rather than fail: no read fails because of its
+            // size, and the payload's own `detail` says what it carries.
+            let (payload, _) = encode_answer_fitting(
                 answer,
                 options.detail(),
                 cursor,

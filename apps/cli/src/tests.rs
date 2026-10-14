@@ -513,6 +513,56 @@ fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
 }
 
 #[test]
+fn outline_takes_the_same_page_bound_and_cursor_as_the_mcp_tool() {
+    use backend_present::{Request, WindowCursor, WindowKind, lower};
+
+    // The global bound reaches every command that pages; outline is one.
+    let (options, rest) = options::split(&words("--limit 5 outline /p"))
+        .expect("outline takes a page bound");
+    let invocation = invoke::parse(&rest, options.limit()).expect("parse");
+    let Request::Windowed { request, window } = lower(&invocation, "/p").expect("lower") else {
+        panic!("a bounded outline lowers to a window request");
+    };
+    assert!(matches!(*request, Request::Outline(_)));
+    assert_eq!(window.limit(), Some(5));
+
+    let cursor = WindowCursor::new(WindowKind::Outline, 5, 0x0123_4567_89ab_cdef).encode();
+    let invocation = invoke::parse(&words(&format!("outline /p --cursor {cursor}")), None)
+        .expect("outline takes a cursor");
+    let Request::Windowed { window, .. } = lower(&invocation, "/p").expect("lower") else {
+        panic!("a cursor lowers to a window request");
+    };
+    assert_eq!(window.cursor().map(WindowCursor::offset), Some(5));
+
+    // Without either, the outline is still the plain request: the first
+    // window is sized by the budget.
+    let invocation = invoke::parse(&words("outline /p"), None).expect("parse");
+    assert!(matches!(
+        lower(&invocation, "/p").expect("lower"),
+        Request::Outline(_)
+    ));
+
+    // A malformed bound or cursor is a usage fault naming the operand.
+    for line in ["outline /p --limit 0", "outline /p --cursor pc4-nope"] {
+        let invocation = invoke::parse(&words(line), None).expect("parse");
+        let fault = lower(&invocation, "/p").expect_err(line);
+        assert_eq!(fault.slug(), FaultSlug::Usage, "{line}");
+    }
+    // The same bound and cursor page a declaration's members and references.
+    for command in ["show", "source", "related", "references"] {
+        let line = format!("{command} /p::src/lib.rs:1::f --limit 3");
+        let invocation = invoke::parse(&words(&line), None).expect("parse");
+        assert!(
+            matches!(
+                lower(&invocation, "/p").expect("lower"),
+                Request::Windowed { .. }
+            ),
+            "{command}"
+        );
+    }
+}
+
+#[test]
 fn passive_connection_mode_is_limited_to_health_and_status() {
     let (options, command_words) =
         options::split(&words("--passive status")).expect("status accepts a passive connection");
@@ -562,7 +612,7 @@ fn a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command() {
     assert_eq!(fault.operand().render(), "document");
     assert_eq!(
         fault.cause().sentence(),
-        "usage: nudox document <COORDINATE>"
+        "usage: nudox document <COORDINATE> [--limit COUNT] [--cursor CURSOR]"
     );
     assert_eq!(render::exit_code(&fault), ExitCode::from(64));
 }
