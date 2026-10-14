@@ -123,6 +123,7 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
         ),
         typescript_admission: None,
         typescript_cause: None,
+        typescript_stop_site: None,
         go_failure: None,
     }
 }
