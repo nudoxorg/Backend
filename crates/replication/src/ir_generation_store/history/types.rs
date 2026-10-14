@@ -1163,6 +1163,8 @@ pub enum TypedV3HistoryInputReplayStatus {
 #[derive(Debug)]
 pub struct TypedV3HistoryReplay {
     commit: AdmittedHistoryCommit,
+    image: backend_semantic::ir::SemanticPlaneImageKey,
+    image_identity: backend_semantic::ir::SemanticImageIdentity,
     manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
     content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
     input_claim: backend_semantic::ir::SemanticInputClaimV2,
@@ -1172,6 +1174,8 @@ pub struct TypedV3HistoryReplay {
 impl TypedV3HistoryReplay {
     pub(crate) fn new(
         commit: AdmittedHistoryCommit,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        image_identity: backend_semantic::ir::SemanticImageIdentity,
         manifest: backend_semantic::ir::SemanticTypedPlaneManifestV2,
         content: backend_semantic::ir::VerifiedTypedPlaneHistoryContentV3,
         gc_pin: std::sync::Arc<backend_store::GcPinGuard>,
@@ -1179,6 +1183,8 @@ impl TypedV3HistoryReplay {
         let input_claim = manifest.input_claim();
         Self {
             commit,
+            image,
+            image_identity,
             manifest,
             content,
             input_claim,
@@ -1191,6 +1197,19 @@ impl TypedV3HistoryReplay {
     #[must_use]
     pub const fn commit(&self) -> &AdmittedHistoryCommit {
         &self.commit
+    }
+
+    /// Exact native image key cold-admitted against this commit's selected
+    /// generation and typed payload closure; it creates no live selection.
+    #[must_use]
+    pub const fn image(&self) -> backend_semantic::ir::SemanticPlaneImageKey {
+        self.image
+    }
+
+    /// Complete native image identity from that same persisted generation.
+    #[must_use]
+    pub const fn image_identity(&self) -> backend_semantic::ir::SemanticImageIdentity {
+        self.image_identity
     }
 
     /// Returns the canonical persisted V3 manifest.

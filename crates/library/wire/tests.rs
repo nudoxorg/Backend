@@ -1311,6 +1311,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let request = crate::SemanticShapeRequest::new(
         root.root(),
         source.clone(),
+        crate::SemanticSourceEpoch {
+            source_relation_root: [0x21; 32],
+            semantic_relation_root: [0x22; 32],
+        },
         vec![crate::SymbolAddress::selected(symbol)].into_boxed_slice(),
         crate::SemanticShapeBudget::new(4096, crate::MAX_SEMANTIC_SHAPE_BYTES as u32)
             .expect("hard limits are valid"),
@@ -1538,6 +1542,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let other_basis_request = crate::SemanticShapeRequest::new(
         view_state_root(&[("different".to_owned(), "view".to_owned())]),
         source.clone(),
+        request.source_epoch(),
         request.symbols().to_vec().into_boxed_slice(),
         request.budget(),
     )
@@ -2749,7 +2754,6 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 #[path = "index_ticket_reply_tests.rs"]
 mod index_ticket_reply;
 
-
 #[test]
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
@@ -2780,6 +2784,44 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     let error =
         crate::wire::decode_reply_body(&bytes).expect_err("strict old live envelope refused");
     assert!(error.contains("reply DTO version 27"));
+    assert!(!error.contains("unknown variant"));
+}
+
+#[test]
+fn semantic_source_live_dto29_refuses_dto28_before_new_source_or_epoch_payload() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("unchanged actual source capture");
+    let record: crate::SemanticVersionRecord =
+        serde_json::from_value(packet["surface"]["data"][0].clone()).expect("exact typed record");
+    let root = record
+        .selected_source_frontier
+        .as_ref()
+        .expect("captured frontier")
+        .source_relation_root;
+    let reference = crate::SemanticSourceReference::capture(&record, root, [34; 32], &[7; 32])
+        .expect("selector only; not native authority");
+    let command = crate::CommandDto::new(
+        1,
+        crate::Command::Surface(crate::SurfaceCommand::SemanticSource {
+            request: crate::SemanticSourceRequest {
+                reference,
+                range: Default::default(),
+            },
+        }),
+    );
+    let bytes = serde_json::to_vec(&command).expect("current exact live DTO");
+    let error = super::codec::check_version_header_against(&bytes, "command", 28)
+        .expect_err("old peer must refuse before new payload variant");
+    assert!(error.contains("command DTO version 29"));
+    assert!(error.contains("this build supports 28"));
+    let mut downgraded: serde_json::Value = serde_json::from_slice(&bytes).expect("wire envelope");
+    downgraded["version"] = serde_json::json!(28);
+    downgraded["command"] = serde_json::json!({"operation":"unknown_future_source"});
+    let error = crate::decode_command_body(&serde_json::to_vec(&downgraded).expect("old envelope"))
+        .expect_err("current peer refuses old version first");
+    assert!(error.contains("command DTO version 28"));
     assert!(!error.contains("unknown variant"));
 }
 

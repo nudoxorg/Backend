@@ -32,9 +32,10 @@ use backend_present::cl100k_tokens;
 use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
-    ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
-    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value,
-    lower_with_opener, markdown, oversized_fault, record_list,
+    ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
+    McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer,
+    encode_answer_with_call, encode_serializable, estimate_tokens, fault_value, lower_with_opener,
+    markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -48,6 +49,9 @@ use std::io::{self, BufRead, Write};
 mod codec;
 mod cursor_authority;
 mod index_progress;
+mod package_graph;
+mod record_pages;
+mod semantic_pages;
 mod wire_admission;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
@@ -61,8 +65,8 @@ use codec::{
     read_line, string, success, valid_id, write_message,
 };
 use tools::{
-    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, ToolRoute,
-    list_tools, tool_route, validate_registry_arguments,
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, NamedToolCall, QUERY_TOOL,
+    SURFACE_TOOL, ToolRoute, list_tools, tool_route, validate_registry_arguments,
 };
 
 #[cfg(feature = "token-budget")]
@@ -76,6 +80,12 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Already-selected local serving metadata; must not connect or start an owner.
+    /// Frozen local bundle/attachment metadata, available without connecting.
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        None
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         context.as_ref().map_or(Ok(()), RequestContext::check)
     }
@@ -190,6 +200,10 @@ impl Engine for SessionProduct {
 }
 
 impl Product for SessionProduct {
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        observed_cli_context(&self.1)
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         self.0.set_request_context(context)
     }
@@ -239,6 +253,7 @@ pub(super) struct SessionEndpoint {
     /// The complete runtime selection, retained for reconnects that need to
     /// compose a daemon after its previous process exited.
     paths: backend_runtime::WorkspacePaths,
+    cli_context: Option<backend_present::StartupRecoveryContext>,
     /// Bounded continuation state retained if the daemon is still between
     /// leases and the replacement dial has not succeeded yet.
     pending_continuation_state: Option<backend_client::SessionContinuationState>,
@@ -247,6 +262,10 @@ pub(super) struct SessionEndpoint {
 
 impl reconnect::Endpoint for SessionEndpoint {
     type Product = SessionProduct;
+
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.cli_context.clone()
+    }
 
     fn set_request_context(&mut self, context: Option<RequestContext>) {
         self.request_context = context;
@@ -313,9 +332,64 @@ pub(super) fn disconnected_reconnecting_product(
 ) -> ReconnectingProduct {
     reconnect::Reconnecting::disconnected(SessionEndpoint {
         paths: paths.clone(),
+        cli_context: observed_cli_context(paths),
         pending_continuation_state: None,
         request_context: None,
     })
+}
+
+fn observed_cli_context(
+    paths: &backend_runtime::WorkspacePaths,
+) -> Option<backend_present::StartupRecoveryContext> {
+    #[cfg(unix)]
+    {
+        let executable = backend_runtime::installed_cli_executable()?;
+        cli_context_for_executable(paths, &executable)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = paths;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn cli_context_for_executable(
+    paths: &backend_runtime::WorkspacePaths,
+    executable: &std::path::Path,
+) -> Option<backend_present::StartupRecoveryContext> {
+    fn operand(path: &std::path::Path) -> Option<String> {
+        let text = path.to_str()?;
+        (path.is_absolute() && !text.contains('\0')).then(|| text.to_owned())
+    }
+    let executable = backend_runtime::observed_cli_executable(executable)?;
+    let selected = paths.startup_recovery_selection()?;
+    if !selected.workspace_authority {
+        return None;
+    }
+    operand(selected.data)?;
+    let directory = match selected.workspace {
+        backend_runtime::StartupWorkspaceSelection::Explicit(path) => {
+            backend_present::StartupRecoveryWorkspace::Explicit(operand(path)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::Home(anchor) => {
+            backend_present::StartupRecoveryWorkspace::Home(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgState(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgData(operand(anchor)?)
+        }
+    };
+    Some(backend_present::StartupRecoveryContext::new(
+        operand(selected.project)?,
+        operand(selected.endpoint)?,
+        operand(&executable)?,
+        backend_present::StartupRecoveryCommand::Status,
+        backend_present::StartupRecoveryMode::Active,
+        directory,
+    ))
 }
 
 /// Converts a daemon restart window into the same reconnectable class as a
@@ -541,14 +615,16 @@ impl<P: Product> Server<P> {
                 &error,
                 backend_present::Operand::Whole,
             ));
-            return Some(if value.get("method").and_then(Value::as_str) == Some("tools/call") {
-                match error.into_tool_result() {
-                    Ok(result) => success(id, result),
-                    Err(error) => error.into_reply(id),
-                }
-            } else {
-                error.into_reply(id)
-            });
+            return Some(
+                if value.get("method").and_then(Value::as_str) == Some("tools/call") {
+                    match error.into_tool_result() {
+                        Ok(result) => success(id, result),
+                        Err(error) => error.into_reply(id),
+                    }
+                } else {
+                    error.into_reply(id)
+                },
+            );
         }
         self.request_context = context.clone();
         let reply = self.handle_inner(value);
@@ -616,14 +692,22 @@ impl<P: Product> Server<P> {
             ));
         }
         Some(
-            match self.route(method, &params).and_then(bound_route_value) {
+            match self
+                .route(method, &params, &response_id)
+                .and_then(bound_route_value)
+            {
                 Ok(result) => success(response_id, result),
                 Err(error) => error.into_reply(response_id),
             },
         )
     }
 
-    fn route(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
+    fn route(
+        &mut self,
+        method: &str,
+        params: &Value,
+        response_id: &Value,
+    ) -> Result<Value, RpcError> {
         // Product-bearing tools/resources perform typed admission before they
         // become `Value`s. The registry and protocol metadata are finite
         // constructors (with their schema budget checked in the token audit);
@@ -631,10 +715,10 @@ impl<P: Product> Server<P> {
         match method {
             "ping" => Ok(json!({})),
             "tools/list" => list_tools(params),
-            "tools/call" => self.call_tool(params),
+            "tools/call" => self.call_tool(params, response_id),
             "resources/list" => resources::list_resources(params),
             "resources/templates/list" => resources::list_resource_templates(params),
-            "resources/read" => self.read_resource(params),
+            "resources/read" => self.read_resource(params, response_id),
             "prompts/list" => list_prompts(params),
             "prompts/get" => self.get_prompt(params),
             _ => Err(RpcError::new(-32601, "Method not found")),
@@ -676,8 +760,9 @@ impl<P: Product> Server<P> {
         let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str(
-            "\n\nQuick start: `nudox add .`; for accepted work, copy the returned poll command \
-             and inspect its terminal receipt before `nudox search \"error handling\"`. \
+            "\n\nQuick start: call backend.packages, then backend.index with the absolute project path. \
+             For accepted work, copy index_poll.call and inspect its terminal receipt before backend.search. CLI support is optional: \
+             source builds may have backend-cli, and index_poll.shell is absent when no runnable CLI attachment is observed. \
              Register this stdio server in Claude Code with `claude mcp add --scope user \
              --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
              '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
@@ -692,14 +777,22 @@ impl<P: Product> Server<P> {
         instructions
     }
 
-    fn read_resource(&mut self, params: &Value) -> Result<Value, RpcError> {
+    fn read_resource(&mut self, params: &Value, response_id: &Value) -> Result<Value, RpcError> {
+        if let Some(uri) = params.get("uri").and_then(Value::as_str)
+            && uri.starts_with("backend://semantic-source/")
+        {
+            no_extra(object(params)?, &["uri", "_meta"])?;
+            let request = backend_library::SemanticSourceRequest::from_resource_uri(uri)
+                .map_err(|error| RpcError::invalid(format!("semantic source URI: {error}")))?;
+            return self.semantic_source_resource(&request, uri, response_id);
+        }
         let is_workspace = params
             .get("uri")
             .and_then(Value::as_str)
             .is_some_and(|uri| uri == "backend://workspace/current");
         let context =
             (is_workspace && self.working_directory.is_some()).then(|| self.instructions_context());
-        resources::read_resource(&mut self.product, params, context.as_deref())
+        resources::read_resource(&mut self.product, params, context.as_deref(), response_id)
     }
 
     fn instructions_context(&self) -> String {
@@ -721,7 +814,7 @@ impl<P: Product> Server<P> {
         context
     }
 
-    fn call_tool(&mut self, params: &Value) -> Result<Value, RpcError> {
+    fn call_tool(&mut self, params: &Value, response_id: &Value) -> Result<Value, RpcError> {
         let params = object(params)?;
         let name = string(params, "name")?;
         let route = tool_route(name).ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
@@ -729,23 +822,46 @@ impl<P: Product> Server<P> {
         if !matches!(params.get("arguments"), None | Some(Value::Object(_))) {
             return Err(RpcError::invalid("arguments must be an object"));
         }
-        self.call_routed_tool(params, name, route)
-            .or_else(|error| error.into_tool_result_for_call(name, params.get("arguments")))
+        let empty = Map::new();
+        let arguments = params
+            .get("arguments")
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
+        self.call_named_tool(arguments, name, route, McpExposure::Direct, response_id)
+    }
+
+    fn call_named_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        name: &str,
+        route: ToolRoute,
+        exposure: McpExposure,
+        response_id: &Value,
+    ) -> Result<Value, RpcError> {
+        let invocation = McpInvocation::new(exposure, name, arguments);
+        self.call_routed_tool(arguments, name, route, invocation, response_id)
+            .or_else(|error| error.into_tool_result_for_invocation(invocation))
     }
     /// A recognized route owns input/domain refusals. Envelope and retained
     /// proof failures remain JSON-RPC errors; no display string classifies one.
     fn call_routed_tool(
         &mut self,
-        params: &Map<String, Value>,
+        arguments: &Map<String, Value>,
         name: &str,
         route: ToolRoute,
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
     ) -> Result<Value, RpcError> {
-        let empty = Map::new();
-        let arguments = match params.get("arguments") {
-            None | Some(Value::Null) => &empty,
-            Some(Value::Object(arguments)) => arguments,
-            Some(_) => return Err(RpcError::invalid("arguments must be an object")),
-        };
+        if matches!(route, ToolRoute::NamedCall) {
+            let call = NamedToolCall::admit(arguments)?;
+            return self.call_named_tool(
+                call.arguments(),
+                call.name(),
+                call.route(),
+                McpExposure::RegisteredCall,
+                response_id,
+            );
+        }
         // The MCP schema requires an explicit path even though the shared CLI
         // grammar permits its project default. Admit it before any owner call.
         if name == "backend.index" {
@@ -765,14 +881,20 @@ impl<P: Product> Server<P> {
             let mut surface_arguments = arguments.clone();
             surface_arguments.remove("detail");
             let context = continuation_context(&self.project, name, &surface_arguments, detail);
-            return self.surface_tool(&surface_arguments, detail, &context);
+            return self.surface_tool(
+                &surface_arguments,
+                detail,
+                &context,
+                invocation,
+                response_id,
+            );
         }
         if matches!(
             route,
             ToolRoute::IndexStart | ToolRoute::IndexProgress | ToolRoute::IndexCancel
         ) {
             let context = continuation_context(&self.project, name, arguments, detail);
-            return self.index_job_tool(name, arguments, detail, &context);
+            return self.index_job_tool(name, arguments, detail, &context, invocation.exposure());
         }
         if matches!(route, ToolRoute::RefusedIndexAwait) {
             return Err(RpcError::from_fault(&Fault::usage(
@@ -781,7 +903,7 @@ impl<P: Product> Server<P> {
             )));
         }
         if name == "backend.outline" {
-            return self.outline_tool(arguments, detail);
+            return self.outline_tool(arguments, detail, invocation, response_id);
         }
         let context = continuation_context(&self.project, name, arguments, detail);
         let grammar = match route {
@@ -790,24 +912,33 @@ impl<P: Product> Server<P> {
             ToolRoute::IndexStart
             | ToolRoute::IndexProgress
             | ToolRoute::IndexCancel
-            | ToolRoute::RefusedIndexAwait => None,
+            | ToolRoute::RefusedIndexAwait
+            | ToolRoute::NamedCall => None,
         };
-        let index_search_tool = grammar.is_some_and(|grammar| grammar.name() == "index-search");
+        let cursor_domain = grammar.and_then(|grammar| grammar.continuation_domain());
+        let index_search_tool = matches!(
+            cursor_domain,
+            Some(backend_present::ContinuationDomain::PresentationOwnerToken)
+        );
         let index_search_cursor = if index_search_tool {
             self.index_search_cursor(arguments, &context)?
         } else {
             None
         };
-        let continuation = if index_search_tool {
-            None
-        } else {
+        let continuation = if matches!(route, ToolRoute::Query)
+            || matches!(
+                cursor_domain,
+                Some(backend_present::ContinuationDomain::PresentationPage)
+            ) {
             self.continuation(arguments, &context)?
+        } else {
+            None
         };
         if matches!(route, ToolRoute::Query) {
-            return self.query_tool(arguments, detail, continuation, &context);
+            return self.query_tool(arguments, detail, continuation, invocation, response_id);
         }
         if grammar.is_some_and(|grammar| grammar.name() == "graph") {
-            return self.graph_tool(name, arguments, detail, continuation, &context);
+            return self.graph_tool(arguments, detail, continuation, invocation, response_id);
         }
         let Some(grammar) = grammar else {
             return Err(RpcError::new(-32602, "Unknown tool"));
@@ -821,17 +952,57 @@ impl<P: Product> Server<P> {
                     Value::String(cursor.as_str().to_owned()),
                 );
             }
-        } else {
+        } else if matches!(
+            cursor_domain,
+            Some(backend_present::ContinuationDomain::PresentationPage)
+        ) {
             command_arguments.remove("cursor");
         }
+        // Native domains retain the exact input cursor for their owner to
+        // admit. A command with no cursor grammar rejects the unknown field.
         let opener = self.opener()?;
         let planned = validate_registry_arguments(grammar, &command_arguments)
             .and_then(|()| Invocation::from_json(grammar, &command_arguments))
             .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener));
         match planned {
+            Ok(request)
+                if matches!(&request, Request::Surface(command)
+                if matches!(command.as_ref(), SurfaceCommand::SemanticVersions { .. })) =>
+            {
+                let Request::Surface(command) = request else {
+                    unreachable!()
+                };
+                self.semantic_versions_tool(&command, detail, invocation, response_id)
+            }
+            Ok(Request::Surface(command))
+                if matches!(command.as_ref(), SurfaceCommand::SemanticSource { .. }) =>
+            {
+                let SurfaceCommand::SemanticSource { request } = command.as_ref() else {
+                    unreachable!()
+                };
+                self.semantic_source_tool(request, detail, invocation, response_id)
+            }
+            Ok(Request::Surface(command))
+                if matches!(command.as_ref(), SurfaceCommand::PackageGraphPage { .. }) =>
+            {
+                let SurfaceCommand::PackageGraphPage { request } = command.as_ref() else {
+                    unreachable!()
+                };
+                self.package_graph_tool(
+                    request,
+                    arguments,
+                    detail,
+                    invocation,
+                    response_id,
+                    package_graph::GraphToolProjection::Registered,
+                )
+            }
+            Ok(request) if matches!(&request, Request::Search { .. } | Request::Resolve { .. }) => {
+                self.records_tool(&request, detail, continuation, invocation, response_id)
+            }
             Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
                 Ok(answer) => self.rendered(
-                    &answer,
+                    answer,
                     detail,
                     &context,
                     if index_search_tool {
@@ -839,7 +1010,7 @@ impl<P: Product> Server<P> {
                     } else {
                         CursorTarget::CliOption
                     },
-                    name,
+                    invocation,
                 ),
                 Err(fault) => Err(RpcError::from_fault(&fault)),
             },
@@ -854,6 +1025,8 @@ impl<P: Product> Server<P> {
         &mut self,
         arguments: &Map<String, Value>,
         detail: Detail,
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
     ) -> Result<Value, RpcError> {
         let lifetime = self.request_context.clone().unwrap_or_default();
         lifetime
@@ -881,9 +1054,9 @@ impl<P: Product> Server<P> {
         command.remove("cursor");
         validate_registry_arguments(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
-        let invocation = Invocation::from_json(grammar, &command)
+        let planned_invocation = Invocation::from_json(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
-        let request = lower_with_opener(&invocation, &self.project, self.opener()?)
+        let request = lower_with_opener(&planned_invocation, &self.project, self.opener()?)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let Request::Outline(path) = request else {
             return Err(RpcError::invalid("outline request changed shape"));
@@ -928,18 +1101,19 @@ impl<P: Product> Server<P> {
             }
             pinned = Some(basis);
             let mut result = self.rendered(
-                &answer,
+                answer,
                 detail,
                 &context,
                 CursorTarget::CliOption,
-                "backend.outline",
+                invocation.with_arguments(&page_arguments),
             )?;
             // The opaque token appears once. Copy these exact arguments and
             // take cursor from structuredContent.nextCursor; no second token
             // copy is charged to the agent context.
-            if result
-                .get("structuredContent")
-                .is_some_and(|value| value.get("nextCursor").is_some())
+            if invocation.exposure() == McpExposure::Direct
+                && result
+                    .get("structuredContent")
+                    .is_some_and(|value| value.get("nextCursor").is_some())
             {
                 let next_arguments =
                     json!({"path":path, "limit":effective, "detail":detail.name()});
@@ -955,12 +1129,10 @@ impl<P: Product> Server<P> {
                     ));
                 }
             }
-            // Select against a complete provisional envelope; final encoding
-            // independently measures the actual caller ID and transport. A
-            // large ID can still receive an honest final admission fault.
+            // Select using the complete envelope and the actual caller ID.
             let candidate = MeasuredEnvelope::new(
                 attach_wire_budget(
-                    codec::success(Value::Null, result),
+                    codec::success(response_id.clone(), result),
                     ResponseTransport::StdioLine,
                 ),
                 ResponseTransport::StdioLine,
@@ -1008,7 +1180,8 @@ impl<P: Product> Server<P> {
         arguments: &Map<String, Value>,
         detail: Detail,
         continuation: Option<PageContinuation>,
-        context: &[u8],
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
     ) -> Result<Value, RpcError> {
         no_extra(
             arguments,
@@ -1020,55 +1193,159 @@ impl<P: Product> Server<P> {
         )
         .map_err(|error| RpcError::invalid(error.to_string()))?;
         let query = input.query().to_owned();
-        match self
-            .product
-            .graph_query(input, limit(arguments)?, continuation)
-        {
-            Ok(page) => self.graph_page_result(&page, detail, context),
-            Err(error) => Err(RpcError::from_fault(&Fault::from_client_error(
-                &error,
-                backend_present::Operand::Text(query),
-            ))),
+        let lifetime = self.semantic_lifetime()?;
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let mut effective = limit(arguments)?;
+        let mut arguments = arguments.clone();
+        let mut pinned = None;
+        loop {
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            let page = self
+                .product
+                .graph_query(input.clone(), effective, continuation)
+                .map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        backend_present::Operand::Text(query.clone()),
+                    ))
+                })?;
+            let basis = (page.revision, page.source);
+            if pinned.is_some_and(|expected| expected != basis) {
+                return Err(RpcError::tool(
+                    "query source changed while selecting a bounded page; restart the query explicitly",
+                ));
+            }
+            pinned = Some(basis);
+            let context = continuation_context(
+                &self.project,
+                invocation.selected_name(),
+                &arguments,
+                detail,
+            );
+            let result = self
+                .graph_page_result(
+                    &page,
+                    detail,
+                    &context,
+                    invocation.with_arguments(&arguments),
+                )
+                .and_then(|result| budget.admit(result));
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            match result {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if continuation.is_none()
+                        && effective > 1
+                        && semantic_pages::oversized(&error) =>
+                {
+                    effective = effective.div_ceil(2);
+                    arguments.insert("limit".to_owned(), json!(effective));
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
     fn graph_tool(
         &mut self,
-        tool_name: &str,
         arguments: &Map<String, Value>,
         detail: Detail,
         continuation: Option<PageContinuation>,
-        context: &[u8],
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
     ) -> Result<Value, RpcError> {
         no_extra(arguments, &["coordinate", "limit", "cursor", "detail"])?;
         let coordinate = string(arguments, "coordinate")?.to_owned();
-        let reply = self
-            .product
-            .graph_page(coordinate.clone(), limit(arguments)?, continuation)
-            .map_err(|error| {
-                RpcError::from_fault(&backend_present::probe_fault(
-                    &error,
-                    Probe::Graph(&coordinate),
-                ))
-            })?;
-        let page = match reply.reply {
-            backend_library::CommandReply::ProjectionPage(page) => page,
-            backend_library::CommandReply::Failed(failure) => {
-                return Err(RpcError::from_fault(&backend_present::probe_fault(
-                    &ClientError::CommandFailed(failure),
-                    Probe::Graph(&coordinate),
-                )));
+        let lifetime = self.semantic_lifetime()?;
+        let budget = wire_admission::ResponseBudget::new(response_id);
+        let mut effective = limit(arguments)?;
+        let mut arguments = arguments.clone();
+        let mut pinned = None;
+        loop {
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            let reply = self
+                .product
+                .graph_page(coordinate.clone(), effective, continuation)
+                .map_err(|error| {
+                    RpcError::from_fault(&backend_present::probe_fault(
+                        &error,
+                        Probe::Graph(&coordinate),
+                    ))
+                })?;
+            let page = match reply.reply {
+                backend_library::CommandReply::ProjectionPage(page) => page,
+                backend_library::CommandReply::Failed(failure) => {
+                    return Err(RpcError::from_fault(&backend_present::probe_fault(
+                        &ClientError::CommandFailed(failure),
+                        Probe::Graph(&coordinate),
+                    )));
+                }
+                _ => return Err(RpcError::tool("graph page reply changed shape")),
+            };
+            if page.terminal
+                != page.snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+                    PageTerminal::More(PageContinuation::from_cursor(cursor))
+                })
+            {
+                return Err(RpcError::tool(
+                    "graph page terminal disagrees with native snapshot",
+                ));
             }
-            _ => return Err(RpcError::tool("graph page reply changed shape")),
-        };
-        let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
-        self.rendered(&answer, detail, context, CursorTarget::CliOption, tool_name)
+            let records = record_list(&coordinate, &page.snapshot);
+            let basis = records
+                .page_basis()
+                .ok_or_else(|| RpcError::tool("graph page omits native scope"))?;
+            if pinned.is_some_and(|expected| expected != basis) {
+                return Err(RpcError::tool(
+                    "graph source changed while selecting a bounded page; restart discovery explicitly",
+                ));
+            }
+            pinned = Some(basis);
+            let context = continuation_context(
+                &self.project,
+                invocation.selected_name(),
+                &arguments,
+                detail,
+            );
+            let result = self
+                .rendered_admitted(
+                    Answer::Records(Box::new(records)),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    invocation.with_arguments(&arguments),
+                )
+                .and_then(|result| budget.admit(result));
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            match result {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if continuation.is_none()
+                        && effective > 1
+                        && semantic_pages::oversized(&error) =>
+                {
+                    effective = effective.div_ceil(2);
+                    arguments.insert("limit".to_owned(), json!(effective));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
     fn surface_tool(
         &mut self,
         arguments: &Map<String, Value>,
         detail: Detail,
         context: &[u8],
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
     ) -> Result<Value, RpcError> {
         no_extra(arguments, &["command"])?;
         let encoded = arguments
@@ -1095,6 +1372,22 @@ impl<P: Product> Server<P> {
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        if let SurfaceCommand::PackageGraphPage { request } = &command {
+            return self.package_graph_tool(
+                request,
+                arguments,
+                detail,
+                invocation,
+                response_id,
+                package_graph::GraphToolProjection::Surface,
+            );
+        }
+        if matches!(&command, SurfaceCommand::SemanticVersions { .. }) {
+            return self.semantic_versions_tool(&command, detail, invocation, response_id);
+        }
+        if let SurfaceCommand::SemanticSource { request } = &command {
+            return self.semantic_source_tool(request, detail, invocation, response_id);
+        }
         let operand = surface_error_operand(&command);
         let reply = self
             .product
@@ -1103,7 +1396,7 @@ impl<P: Product> Server<P> {
                 ClientError::StaleCursor => RpcError::stale_cursor(),
                 other => RpcError::from_fault(&Fault::from_client_error(&other, operand)),
             })?;
-        self.surface_reply_result(&command, &reply, detail, context)
+        self.surface_reply_result(&command, &reply, detail, context, McpExposure::Direct)
     }
     fn index_job_tool(
         &mut self,
@@ -1111,6 +1404,7 @@ impl<P: Product> Server<P> {
         arguments: &Map<String, Value>,
         detail: Detail,
         context: &[u8],
+        exposure: McpExposure,
     ) -> Result<Value, RpcError> {
         let command = match name {
             INDEX_START_TOOL => {
@@ -1193,7 +1487,8 @@ impl<P: Product> Server<P> {
                         backend_library::admit_surface_reply(&command, &reply).map_err(
                             |error| RpcError::tool(format!("default index_start receipt: {error}")),
                         )?;
-                        return self.surface_reply_result(&command, &reply, detail, context);
+                        return self
+                            .surface_reply_result(&command, &reply, detail, context, exposure);
                     }
                 }
             }
@@ -1220,9 +1515,9 @@ impl<P: Product> Server<P> {
                         serde_json::from_value::<backend_library::IndexOperationKey>(key.clone())
                             .map_err(|error| RpcError::invalid(format!("operation_key: {error}")))?;
                     let command = SurfaceCommand::IndexOperationStatus { operation_key };
-                    if let Some(result) =
-                        self.conditional_index_progress(arguments, &command, detail, context)?
-                    {
+                    if let Some(result) = self.conditional_index_progress(
+                        arguments, &command, detail, context, exposure,
+                    )? {
                         return Ok(result);
                     }
                     let reply = self.product.surface(command.clone()).map_err(|error| {
@@ -1231,7 +1526,7 @@ impl<P: Product> Server<P> {
                             surface_error_operand(&command),
                         ))
                     })?;
-                    return self.surface_reply_result(&command, &reply, detail, context);
+                    return self.surface_reply_result(&command, &reply, detail, context, exposure);
                 }
                 let ticket = index_job_ticket(arguments)?;
                 let after_sequence = match arguments.get("after_sequence") {
@@ -1245,7 +1540,7 @@ impl<P: Product> Server<P> {
                     after_sequence,
                 };
                 if let Some(result) =
-                    self.conditional_index_progress(arguments, &command, detail, context)?
+                    self.conditional_index_progress(arguments, &command, detail, context, exposure)?
                 {
                     return Ok(result);
                 }
@@ -1267,7 +1562,7 @@ impl<P: Product> Server<P> {
             .product
             .surface(command.clone())
             .map_err(|error| RpcError::from_fault(&Fault::from_client_error(&error, operand)))?;
-        self.surface_reply_result(&command, &reply, detail, context)
+        self.surface_reply_result(&command, &reply, detail, context, exposure)
     }
     fn surface_reply_result(
         &mut self,
@@ -1275,14 +1570,19 @@ impl<P: Product> Server<P> {
         reply: &SurfaceReply,
         detail: Detail,
         context: &[u8],
+        exposure: McpExposure,
     ) -> Result<Value, RpcError> {
-        let view = backend_present::product_view_for_command(command, reply);
-        let view = view.with_bounded_index_poll().map_err(|error| {
-            RpcError::from_fault(&Fault::from_client_error(
-                &error,
-                surface_error_operand(command),
-            ))
-        })?;
+        let mut view = backend_present::product_view_for_command(command, reply);
+        view.expose_mcp_advice(exposure);
+        let view = view
+            .with_cli_context(self.product.cli_context())
+            .with_bounded_index_poll()
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?;
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -1297,6 +1597,7 @@ impl<P: Product> Server<P> {
             None,
             SurfaceBody {
                 fault: view.fault().map(backend_present::FaultDto::new),
+                continuation_call: None,
                 index_poll: backend_present::IndexPollDto::for_detail(&view, detail),
                 surface: SurfaceProjection {
                     reply,
@@ -1434,6 +1735,9 @@ impl<P: Product> Server<P> {
                     ))
                 })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
+            // This cursor is already authenticated by the durable native owner
+            // and binds exact roots/package/key/limit, including after restart.
+            ContinuationCursor::SemanticVersions(cursor) => return Ok(cursor.as_str().to_owned()),
         };
         self.sign_cursor_token(&owner_token, context)
     }
@@ -1551,64 +1855,160 @@ impl<P: Product> Server<P> {
 
     fn rendered(
         &mut self,
-        answer: &Answer,
+        answer: Answer,
         detail: Detail,
         context: &[u8],
         cursor_target: CursorTarget,
-        tool_name: &str,
+        invocation: McpInvocation<'_>,
+    ) -> Result<Value, RpcError> {
+        match self.rendered_admitted(answer, detail, context, cursor_target, invocation) {
+            Err(error)
+                if error.fault.as_ref().is_some_and(|fault| {
+                    fault.cause().slug() == backend_present::CauseSlug::Oversized
+                }) =>
+            {
+                Ok(refused(
+                    error.fault.as_ref().expect("matched typed overflow"),
+                ))
+            }
+            result => result,
+        }
+    }
+
+    fn rendered_admitted(
+        &mut self,
+        answer: Answer,
+        detail: Detail,
+        context: &[u8],
+        cursor_target: CursorTarget,
+        invocation: McpInvocation<'_>,
     ) -> Result<Value, RpcError> {
         let next = answer
             .cursor()
             .map(|cursor| self.issue_cursor(cursor, context))
             .transpose()?;
-        let projected_product = match (answer, next.as_deref()) {
-            (Answer::Product(product), None)
-                if product.index_operation().is_none() && product.index_job().is_none() =>
-            {
-                None
-            }
-            (Answer::Product(product), token) => {
-                let product = match token {
-                    Some(token) => (**product).clone().project_cursor(token, cursor_target),
-                    None => (**product).clone(),
+        let answer = match answer {
+            Answer::Product(product) => {
+                let product = match next.as_deref() {
+                    Some(token) => (*product).project_cursor(token, cursor_target),
+                    None => *product,
                 };
-                let product = product.with_bounded_index_poll().map_err(|error| {
-                    RpcError::from_fault(&Fault::from_client_error(
-                        &error,
-                        backend_present::Operand::Whole,
-                    ))
-                })?;
-                Some(Answer::Product(Box::new(product)))
+                let product = product
+                    .with_cli_context(self.product.cli_context())
+                    .with_bounded_index_poll()
+                    .map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Whole,
+                        ))
+                    })?;
+                Answer::Product(Box::new(product))
+            }
+            answer => answer,
+        }
+        .with_mcp_exposure(invocation.exposure());
+        let native_graph_cursor = match &answer {
+            Answer::Product(product) => {
+                product
+                    .package_graph_page()
+                    .and_then(|page| match &page.terminal {
+                        backend_library::PackageGraphPageTerminal::More(cursor) => Some(cursor),
+                        _ => None,
+                    })
             }
             _ => None,
         };
-        let answer = projected_product.as_ref().unwrap_or(answer);
-        let payload = match encode_answer(
-            answer,
+        let source_next = match &answer {
+            Answer::Product(product) => match product.semantic_data() {
+                Some(backend_present::ProductSemanticData::Source(chunk)) => chunk.next,
+                _ => None,
+            },
+            _ => None,
+        };
+        let native_versions = matches!(&answer, Answer::Product(product)
+            if matches!(product.semantic_data(), Some(backend_present::ProductSemanticData::VersionsPage(_))));
+        let continuation_call = if let Some(offset) = source_next {
+            Some(invocation.native_source_continuation_call(offset))
+        } else if let Some(cursor) = native_graph_cursor {
+            Some(invocation.native_graph_continuation_call(cursor))
+        } else {
+            next.as_deref()
+                .filter(|_| {
+                    native_versions
+                        || matches!(&answer, Answer::Records(_))
+                        || invocation.exposure() == McpExposure::RegisteredCall
+                })
+                .map(|cursor| invocation.continuation_call(cursor))
+        };
+        // Long portable proofs occur once in the executable next call. No
+        // owner bytes or selectable rows are discarded to reduce duplication.
+        let executable_only = matches!(&answer, Answer::Records(_))
+            && next.as_ref().is_some_and(|cursor| cursor.len() > 1024);
+        let target = match invocation.exposure() {
+            McpExposure::Direct
+                if native_graph_cursor.is_none()
+                    && source_next.is_none()
+                    && !native_versions
+                    && !executable_only
+                    && !invocation.adapted_arguments() =>
+            {
+                ContinuationTarget::McpTool(invocation.selected_name())
+            }
+            _ => ContinuationTarget::McpInvocation(invocation),
+        };
+        let payload = match encode_answer_with_call(
+            &answer,
             detail,
-            next.as_deref(),
+            next.as_deref().filter(|_| !executable_only),
             DEFAULT_RESPONSE_BUDGET_BYTES,
+            continuation_call.as_ref(),
         ) {
             Ok(payload) => payload,
-            Err(error) => return Ok(refused(&oversized_fault(error))),
+            Err(error) => return Err(RpcError::from_fault(&oversized_fault(error))),
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let preview = match detail {
-            Detail::Summary => markdown::summary_with_cursor(
-                answer,
-                next.as_deref(),
-                ContinuationTarget::McpTool(tool_name),
-            ),
-            Detail::Standard | Detail::Full => markdown::answer_with_detail(
-                answer,
-                detail,
-                next.as_deref(),
-                ContinuationTarget::McpTool(tool_name),
-            ),
+        let preview = match &answer {
+            Answer::Product(product)
+                if matches!(
+                    product.semantic_data(),
+                    Some(backend_present::ProductSemanticData::VersionsPage(_))
+                ) =>
+            {
+                let Some(backend_present::ProductSemanticData::VersionsPage(page)) =
+                    product.semantic_data()
+                else {
+                    unreachable!()
+                };
+                semantic_pages::versions_preview(page, page.more, invocation)
+            }
+            _ => match detail {
+                Detail::Summary => markdown::summary_with_cursor(&answer, next.as_deref(), target),
+                Detail::Standard | Detail::Full => {
+                    markdown::answer_with_detail(&answer, detail, next.as_deref(), target)
+                }
+            },
         };
+        if matches!(&answer, Answer::Product(view) if view.package_graph_page().is_some() || matches!(view.semantic_data(), Some(backend_present::ProductSemanticData::VersionsPage(_) | backend_present::ProductSemanticData::Source(_))))
+            && preview.len() > backend_present::MAX_PREVIEW_TEXT_BYTES
+        {
+            return Err(RpcError::from_fault(&oversized_fault(BudgetExceeded {
+                bytes: preview.len(),
+                budget: backend_present::MAX_PREVIEW_TEXT_BYTES,
+            })));
+        }
         let text = bounded_text(&preview);
-        Ok(tool_result(&text, structured, answer.fault().is_some()))
+        if matches!(&answer, Answer::Records(_))
+            || matches!(&answer, Answer::Product(view) if view.package_graph_page().is_some() || matches!(view.semantic_data(), Some(backend_present::ProductSemanticData::VersionsPage(_) | backend_present::ProductSemanticData::Source(_))))
+        {
+            Ok(complete_tool_result(
+                &text,
+                structured,
+                answer.fault().is_some(),
+            ))
+        } else {
+            Ok(tool_result(&text, structured, answer.fault().is_some()))
+        }
     }
 
     fn graph_page_result(
@@ -1616,26 +2016,40 @@ impl<P: Product> Server<P> {
         page: &GraphQueryPage,
         detail: Detail,
         context: &[u8],
+        invocation: McpInvocation<'_>,
     ) -> Result<Value, RpcError> {
         let next = match page.terminal {
             PageTerminal::More(cursor) => Some(self.issue_continuation(cursor, context)?),
             PageTerminal::Complete | PageTerminal::Cancelled => None,
         };
+        let continuation_call = next
+            .as_deref()
+            .map(|cursor| invocation.continuation_call(cursor));
+        let executable_only = next.as_ref().is_some_and(|cursor| cursor.len() > 1024);
+        let target = match invocation.exposure() {
+            McpExposure::Direct if !invocation.adapted_arguments() && !executable_only => {
+                ContinuationTarget::McpTool(QUERY_TOOL)
+            }
+            _ => ContinuationTarget::McpInvocation(invocation),
+        };
         let payload = match encode_serializable(
             "query",
             detail,
-            next.as_deref(),
-            GraphPageBody { page },
+            next.as_deref().filter(|_| !executable_only),
+            GraphPageBody {
+                page,
+                continuation_call: continuation_call.as_ref(),
+            },
             DEFAULT_RESPONSE_BUDGET_BYTES,
         ) {
             Ok(payload) => payload,
-            Err(error) => return Ok(refused(&oversized_fault(error))),
+            Err(error) => return Err(RpcError::from_fault(&oversized_fault(error))),
         };
         let value: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
             RpcError::tool(format!("typed graph projection decode failed: {error}"))
         })?;
-        Ok(tool_result(
-            &bounded_text(&graph_page_text(page, next.as_deref())),
+        Ok(complete_tool_result(
+            &bounded_text(&graph_page_text_for_target(page, next.as_deref(), target)),
             value,
             false,
         ))
@@ -1651,11 +2065,15 @@ and expired observations do not establish publication. A published receipt does 
 optional lane ready. An empty shelf means no project has been indexed yet, and a lane that is not \
 configured is not an empty codebase. Find \
 a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
+structuredContent.continuation_call to read more search, graph, query or semantic pages. Initial \
+pages may select a smaller limit to fit the whole response; the next call preserves that limit \
+and the exact native cursor. Long portable proofs occur once in this call. Copy \
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
 the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
 and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
 call; follow it. Read backend://workspace/current when a result looks thin. Read \
-backend://tools/catalog for callable capability-dependent routes that are not in tools/list. \
+backend://tools/catalog for capability-dependent route schemas and pass their exact \
+name and arguments to backend.call when the host exposes only listed tools. \
 Status reports owner availability, published rows, lane coverage, and native oracle readiness separately; \
 structural rows do not prove native semantic coverage.";
 
@@ -1799,7 +2217,7 @@ fn refused(fault: &Fault) -> Value {
 /// Context-sized ceiling for one complete encoded JSON-RPC response, including
 /// its ID, text block, typed projection, metadata, and transport framing.
 const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
-const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
+const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.";
 
 fn serialized_bytes(value: &Value) -> usize {
     let mut count = codec::ResponseByteCounter::default();
@@ -1824,7 +2242,7 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
 }
 
 /// Named ordinary-token contract; other encodings may have different counts.
-const MCP_CL100K_TOKEN_LIMIT: usize = 12_000;
+const MCP_CL100K_TOKEN_LIMIT: usize = backend_present::DEFAULT_RESPONSE_TOKEN_BUDGET;
 
 #[cfg(test)]
 fn wire_tokens(value: &Value) -> Result<usize, backend_present::Cl100kError> {
@@ -2071,12 +2489,16 @@ pub(super) fn token_budget_rpc_response_with_observed(
     )
 }
 
-fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
-    let mut candidate = json!({
+fn complete_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
+    json!({
         "content": [{ "type": "text", "text": text }],
         "structuredContent": structured,
         "isError": is_error
-    });
+    })
+}
+
+fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
+    let mut candidate = complete_tool_result(text, structured, is_error);
     let bytes = serialized_bytes(&candidate);
     // Leave room for the ordinary JSON-RPC envelope. The final reply gate
     // still checks the actual caller ID, including deliberately huge IDs.
@@ -2225,7 +2647,16 @@ fn code_span_end(line: &str, start: usize) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
 fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
+    graph_page_text_for_target(page, cursor, ContinuationTarget::McpTool(QUERY_TOOL))
+}
+
+fn graph_page_text_for_target(
+    page: &GraphQueryPage,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut out = format!(
         "~query {} row(s) · {} · revision {}\n",
         page.rows.len(),
@@ -2235,10 +2666,7 @@ fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
     match page.terminal {
         PageTerminal::More(_) => {
             if let Some(cursor) = cursor {
-                out.push_str(&backend_present::continuation_note(
-                    ContinuationTarget::McpTool(QUERY_TOOL),
-                    cursor,
-                ));
+                out.push_str(&backend_present::continuation_note(target, cursor));
                 out.push('\n');
             } else {
                 out.push_str("… more rows are available, but no continuation cursor was issued\n");
@@ -2251,14 +2679,29 @@ fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
         }
         PageTerminal::Complete => {}
     }
+    // Reserve truthful page-preview counts before adding only whole rows.
+    // The complete typed page still includes every field and coordinate.
+    let count_reserve = format!("query preview: {} row(s), {} shown, {} omitted from text; structuredContent contains every row.\n", page.rows.len(), page.rows.len(), page.rows.len()).len();
+    let row_budget =
+        backend_present::MAX_PREVIEW_TEXT_BYTES.saturating_sub(out.len() + count_reserve);
+    let mut rows_text = String::new();
+    let mut shown = 0;
     for row in &page.rows {
         let fields = row
             .fields()
             .iter()
             .map(|(name, value)| format!("{name}={}", scalar_text(value)))
             .collect::<Vec<_>>();
-        out.push_str(&fields.join("  "));
-        out.push('\n');
+        let text = format!("{}\n", fields.join("  "));
+        if rows_text.len().saturating_add(text.len()) > row_budget {
+            break;
+        }
+        rows_text.push_str(&text);
+        shown += 1;
+    }
+    out.push_str(&rows_text);
+    if shown < page.rows.len() {
+        out.push_str(&format!("query preview: {} row(s), {shown} shown, {} omitted from text; structuredContent contains every row.\n", page.rows.len(), page.rows.len() - shown));
     }
     out
 }
@@ -2299,36 +2742,60 @@ struct RpcError {
 impl RpcError {
     /// Only a typed startup refusal proves that the original command was not
     /// submitted. Attach the caller's exact call as advice, never execute it.
+    #[cfg(test)]
     fn into_tool_result_for_call(
         self,
         name: &str,
-        arguments: Option<&Value>,
+        arguments: &Map<String, Value>,
     ) -> Result<Value, Self> {
+        self.into_tool_result_for_invocation(McpInvocation::new(
+            McpExposure::Direct,
+            name,
+            arguments,
+        ))
+    }
+
+    fn into_tool_result_for_invocation(
+        mut self,
+        invocation: McpInvocation<'_>,
+    ) -> Result<Value, Self> {
+        self.fault = self
+            .fault
+            .map(|fault| fault.with_mcp_exposure(invocation.exposure()));
         if let Some(fault) = &self.fault
             && fault.startup_recovery()
                 == Some(backend_client::StartupRecovery::RetryOriginalCommand)
         {
-            let call = json!({
-                "name": name,
-                "arguments": arguments.cloned().unwrap_or_else(|| json!({})),
-            });
-            let mut structured = fault_value(fault);
-            structured["call"] = call.clone();
-            structured
-                .as_object_mut()
-                .expect("fault object")
-                .remove("shell");
-            let text = format!(
-                "Retry the exact tool call in structuredContent.call; this command was not submitted.\n{}",
-                markdown::fault(fault),
-            );
-            let result = tool_result(&bounded_text(&text), structured, true);
-            if result
-                .get("structuredContent")
-                .and_then(|content| content.get("call"))
-                == Some(&call)
-            {
-                return Ok(result);
+            let call = invocation.executable_call();
+            let mut projected = backend_present::FaultDto::new(fault);
+            projected.shell = None;
+            projected.call = None;
+            // Admit the complete borrowed invocation before allocating its
+            // JSON value. Neither queries nor operand lists are cloned here.
+            if let Ok(payload) = backend_present::encode_value(
+                &RetryFaultBody {
+                    answer: "fault",
+                    fault: projected,
+                    call: &call,
+                },
+                MCP_RESULT_BUDGET_BYTES,
+            ) {
+                let structured: Value =
+                    serde_json::from_slice(&payload.bytes).map_err(|error| {
+                        RpcError::tool(format!("typed retry projection decode failed: {error}"))
+                    })?;
+                let text = format!(
+                    "Retry the exact tool call in structuredContent.call; this command was not submitted.\n{}",
+                    markdown::fault(fault),
+                );
+                let result = tool_result(&bounded_text(&text), structured, true);
+                if result
+                    .get("structuredContent")
+                    .and_then(|content| content.get("call"))
+                    .is_some()
+                {
+                    return Ok(result);
+                }
             }
 
             // The request frame can be larger than the result budget. Keep
@@ -2470,6 +2937,14 @@ impl RpcError {
     }
 }
 
+#[derive(Serialize)]
+struct RetryFaultBody<'a> {
+    answer: &'static str,
+    #[serde(flatten)]
+    fault: backend_present::FaultDto,
+    call: &'a McpExecutableCall<'a>,
+}
+
 /// Projects the startup fault when its exact input call cannot fit the MCP
 /// result budget. Large user operands and diagnostics are shortened with an
 /// explicit marker so the typed refusal itself remains within the hard cap.
@@ -2525,6 +3000,7 @@ fn graph_value(value: &GraphValue) -> Value {
 
 struct GraphPageBody<'a> {
     page: &'a GraphQueryPage,
+    continuation_call: Option<&'a McpExecutableCall<'a>>,
 }
 
 impl Serialize for GraphPageBody<'_> {
@@ -2532,11 +3008,15 @@ impl Serialize for GraphPageBody<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map =
+            serializer.serialize_map(Some(4 + usize::from(self.continuation_call.is_some())))?;
         map.serialize_entry("revision", &encode_id(self.page.revision.as_bytes()))?;
         map.serialize_entry("rows", &GraphRows(&self.page.rows))?;
         map.serialize_entry("terminal", terminal_name(self.page.terminal))?;
         map.serialize_entry("emitted", &self.page.rows.len())?;
+        if let Some(call) = self.continuation_call {
+            map.serialize_entry("continuation_call", call)?;
+        }
         map.end()
     }
 }
@@ -2647,6 +3127,8 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 
 #[derive(Serialize)]
 struct SurfaceBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation_call: Option<&'a backend_present::McpExecutableCall<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<backend_present::FaultDto>,
     #[serde(skip_serializing_if = "Option::is_none")]

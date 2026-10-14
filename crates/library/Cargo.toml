@@ -10,6 +10,7 @@ publish.workspace = true
 backend-advisory = { path = "../advisory" }
 backend-discovery = { path = "../discovery" }
 arrayvec.workspace = true
+base64.workspace = true
 blake3.workspace = true
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }

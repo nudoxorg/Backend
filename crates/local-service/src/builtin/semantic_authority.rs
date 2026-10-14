@@ -1521,6 +1521,7 @@ impl DetachedSemanticAuthority {
 pub(crate) struct SemanticAuthority {
     authority: SemanticAuthorityRole,
     owner_identity: Arc<()>,
+    source_reference_authority: Option<[u8; 32]>,
     store: FileStore,
     workspace: PathBuf,
     s3_publisher: Option<Arc<dyn SelectedClosurePublisher>>,
@@ -1541,6 +1542,16 @@ pub(crate) struct SemanticAuthority {
 
 impl SemanticAuthority {
     pub(crate) fn open(workspace: &Path) -> Result<Self, BuiltinModelError> {
+        Self::open_with_product_authority(workspace, None)
+    }
+
+    /// Receives the already admitted configured product key once at startup.
+    /// A guessed workspace path or a per-query credential reload cannot rebind
+    /// existing portable references to another owner after restart.
+    pub(crate) fn open_with_product_authority(
+        workspace: &Path,
+        source_reference_authority: Option<[u8; 32]>,
+    ) -> Result<Self, BuiltinModelError> {
         let store = FileStore::open(workspace.join(CAS_DIRECTORY), 512 * 1024 * 1024)
             .map_err(|error| BuiltinModelError(format!("open semantic artifact CAS: {error:?}")))?;
         let s3_publisher: Option<Arc<dyn SelectedClosurePublisher>> =
@@ -1601,6 +1612,7 @@ impl SemanticAuthority {
         Ok(Self {
             authority: SemanticAuthorityRole::Writer(authority),
             owner_identity: Arc::new(()),
+            source_reference_authority,
             store,
             workspace: workspace.to_path_buf(),
             s3_publisher,
@@ -1675,6 +1687,7 @@ impl SemanticAuthority {
                 selections,
             },
             owner_identity: Arc::clone(&self.owner_identity),
+            source_reference_authority: self.source_reference_authority,
             store: self.store.clone(),
             workspace: self.workspace.clone(),
             s3_publisher: self.s3_publisher.clone(),
@@ -1740,6 +1753,14 @@ impl SemanticAuthority {
     #[must_use]
     pub(crate) fn store(&self) -> FileStore {
         self.store.clone()
+    }
+
+    /// Borrows the configured owner's already admitted credential. Raw source
+    /// references cannot install or replace this authority scope.
+    pub(crate) fn product_statement_authority(&self) -> Result<&[u8; 32], BuiltinModelError> {
+        self.source_reference_authority.as_ref().ok_or_else(|| {
+            BuiltinModelError("native source reference authority is not installed".to_owned())
+        })
     }
 
     /// Creates the bounded semantic-plane range service over this authority's local CAS.
@@ -2564,6 +2585,11 @@ impl SemanticAuthority {
     ) -> Result<GcReport, BuiltinModelError> {
         let roots_store = self.store.clone();
         let roots_authority = self.writer_authority()?;
+        let history_roots = backend_replication::FileSemanticRangeStore::open(
+            self.store.clone(),
+            backend_replication::TransportLimits::default(),
+        )
+        .map_err(|error| BuiltinModelError(format!("open native history GC roots: {error}")))?;
         let s3_publisher = self.s3_publisher.as_deref();
         self.store
             .collect_garbage_resolving_roots(
@@ -2608,6 +2634,13 @@ impl SemanticAuthority {
                         }
                         for frontier in frontiers.iter() {
                             let namespace = frontier.namespace().clone();
+                            if is_local_semantic_namespace(&namespace) {
+                                let key = key_from_namespace(&namespace).map_err(|error| backend_store::StoreError::Io(error.to_string()))?;
+                                let target = backend_replication::SemanticTargetKey::new(
+                                    key.package().as_str(), key.coordinate().as_str(), key.profile(),
+                                ).map_err(|error| backend_store::StoreError::Io(error.to_string()))?;
+                                history_roots.add_history_gc_roots(&target, roots)?;
+                            }
                             let mut after_generation = None;
                             loop {
                                 let generations = futures_executor::block_on(

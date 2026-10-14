@@ -53,6 +53,8 @@ pub enum ContinuationCursor {
     Page(PageContinuation),
     /// An opaque durable index-search continuation.
     IndexSearch(IndexSearchCursor),
+    /// Root-bound native compiler-generation discovery cursor.
+    SemanticVersions(backend_library::SemanticVersionsCursor),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -226,6 +228,20 @@ pub enum Answer {
 }
 
 impl Answer {
+    /// Changes only executable reader advice, retaining producer rows/receipts.
+    #[must_use]
+    pub fn with_mcp_exposure(mut self, exposure: crate::McpExposure) -> Self {
+        if exposure == crate::McpExposure::Direct {
+            return self;
+        }
+        match &mut self {
+            Self::Page(page) => page.expose_mcp_advice(exposure),
+            Self::Shelf(shelf) => shelf.expose_mcp_advice(exposure),
+            Self::Product(product) => product.expose_mcp_advice(exposure),
+            Self::Records(_) | Self::Outline(_) | Self::Status(_) => {}
+        }
+        self
+    }
     /// Returns the shared failure carried by an otherwise admitted answer.
     /// The full answer remains available, including exact owner receipts.
     #[must_use]
@@ -574,9 +590,9 @@ fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, 
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Product(Box::new(crate::product_view_for_command(
-        command, &reply,
-    ))))
+    Ok(Answer::Product(Box::new(
+        crate::product_view_for_owned_command(command, reply),
+    )))
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {

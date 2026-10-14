@@ -151,6 +151,8 @@ pub enum CommandId {
     PackageVersions,
     /// Read immutable compiler generation history.
     SemanticVersions,
+    /// Read one bounded range of an exact captured semantic source.
+    SemanticSource,
     /// Read one snapshot-bound page of exact selected Project source members.
     PackageSourceMembership,
     /// Select an exact immutable compiler generation.
