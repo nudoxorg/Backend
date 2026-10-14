@@ -228,7 +228,7 @@ The archive hash is `sha256-FFomzcfEnbVmAXuAfEmJ7n993rVpQj6cuZ+ZX6w2IdM=`.
 The case waits for complete native publication, then snapshots real CLI/MCP
 search, outline and package answers. Before admitting a new snapshot, each surface
 must find upstream-authored `Sum64String` in `xxhash_unsafe.go` and `Digest` in
-`xxhash.go`, with Go language identity. Unrelated/nonempty results cannot satisfy
+`xxhash.go`, with Go language identity and ready state. Unrelated/nonempty results cannot satisfy
 those witnesses. Missing pinned project authority fails rather than skipping.
 The existing resumable seven-language case remains unchanged; this smaller real
 project uses a direct blocking wait because a zero-deadline call could legitimately
@@ -240,5 +240,21 @@ Run only this case with:
 python3 .config/ci/test.py integration --bin-dir DIR --case go-xxhash
 ```
 
-The first golden requires explicit source/result review and a second exact-head comparison. This is the first real-project slice,
-not the planned full per-language representative corpus.
+This case caught active `Sum64String` losing its source location beside its
+build-excluded namesake. Source pairing now prefers the compiler's primary-source
+entities when they cover the entire structural group; ambiguous incomplete groups
+still keep no guessed location. The authored source witnesses remain unchanged.
+
+The first golden requires explicit source/result review and a second exact-head
+comparison. This is the first real-project slice, not the planned full per-language
+representative corpus.
+
+Initial source/result review (Concourse 480531 / pr-t1/597, `cf1aad6ef`):
+`Sum64String` is a ready Go function at `xxhash_unsafe.go:38`, and `Digest` a
+ready Go struct at `xxhash.go:29`, on both CLI and MCP. Search records agree;
+continuation tokens keep their distinct surface formats. Default outline pages
+are explicitly truncated (CLI 200 declarations, MCP 100); this snapshot does
+not claim exhaustive outline traversal or removal of source-less package-context
+rows. Initial indexing took 189.73s, owner CPU 187.26s and owner peak RSS
+379,308KiB. This is a first baseline, not a calibrated fleet-wide performance
+claim; representative-corpus scale and indexing efficiency remain open.

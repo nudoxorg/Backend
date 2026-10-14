@@ -534,6 +534,7 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
     for name, filename in expected.items():
         if not any(row.get("identity", {}).get("name") == name
                    and row.get("identity", {}).get("path") == filename and row.get("language") == language
+                   and row.get("state") == "ready"
                    for row in answer.get("records", [])):
             observed = [{"name": row.get("identity", {}).get("name"), "path": row.get("identity", {}).get("path"),
                          "language": row.get("language")} for row in answer.get("records", [])[:20]]

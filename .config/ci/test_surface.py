@@ -204,10 +204,10 @@ class CursorRefusalAdmissionTests(unittest.TestCase):
 class AuthoredCorpusAdmissionTests(unittest.TestCase):
     def test_plausible_results_from_the_wrong_source_are_not_a_reference(self):
         expected = {"Sum64String": "xxhash_unsafe.go"}
-        row = {"identity": {"name": "Sum64String", "path": "xxhash_unsafe.go"}, "language": "go"}
+        row = {"identity": {"name": "Sum64String", "path": "xxhash_unsafe.go"}, "language": "go", "state": "ready"}
         surface.require_authored_symbols({"records": [row]}, expected, "go")
         for wrong in ({"records": []}, {"records": [dict(row, file="xxhash_unsafe.go", identity={"name": "Sum64String", "path": "benchmark_test.go"})]},
-                      {"records": [dict(row, language="rust")]}, {"records": [dict(row, identity={"name": "unrelated"})]}):
+                      {"records": [dict(row, state="stale")]}, {"records": [dict(row, language="rust")]}, {"records": [dict(row, identity={"name": "unrelated"})]}):
             with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
                 surface.require_authored_symbols(wrong, expected, "go")
 
