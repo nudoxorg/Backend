@@ -320,7 +320,7 @@ fn reconciliation_adds_the_deployment_terminal_only_when_the_lane_is_silent() {
 }
 
 #[test]
-fn native_refusal_is_not_masked_by_optional_embeddings_or_another_pending_profile() {
+fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_moving() {
     for reason in [
         SemanticUnavailableReason::Rejected,
         SemanticUnavailableReason::Cancelled,
@@ -328,16 +328,6 @@ fn native_refusal_is_not_masked_by_optional_embeddings_or_another_pending_profil
         let refused = selected_key("native-refused");
         let pending = selected_key("native-pending");
         let mut observed = SemanticTally::default();
-        observed
-            .observe_current(
-                &pending,
-                None,
-                Some(
-                    backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { prior: None },
-                ),
-                &ActivatedProfiles::new(),
-            )
-            .unwrap();
         observed
             .observe_current(
                 &refused,
@@ -348,6 +338,37 @@ fn native_refusal_is_not_masked_by_optional_embeddings_or_another_pending_profil
                 &ActivatedProfiles::new(),
             )
             .unwrap();
+        // A sibling profile that is still pending is work that is genuinely
+        // moving. The lane reads as indexing until it settles, and the refusal
+        // is reported the moment nothing else is in flight. The project row
+        // applies the same precedence (see `merge_package_state`).
+        let mut moving = observed;
+        moving
+            .observe_current(
+                &pending,
+                None,
+                Some(
+                    backend_engine::builtin::ProductSemanticCaptureOutcome::Pending { prior: None },
+                ),
+                &ActivatedProfiles::new(),
+            )
+            .unwrap();
+        for deployment in [
+            SemanticDeployment::Configured,
+            SemanticDeployment::Unconfigured,
+        ] {
+            assert_eq!(
+                moving.coverage(deployment),
+                vec![
+                    ViewCoverage::Complete,
+                    ViewCoverage::Partial {
+                        lane: Lane::Semantic,
+                        completed: 0,
+                        total: 1
+                    }
+                ]
+            );
+        }
         let expected = if reason == SemanticUnavailableReason::Cancelled {
             Reason::Cancelled
         } else {
@@ -488,7 +509,7 @@ fn published_capture_requires_exact_selected_claim_and_coverage() {
 }
 
 #[test]
-fn published_partial_scope_is_terminal_and_retains_positive_artifacts() {
+fn published_partial_scope_is_settled_usable_and_never_a_failure() {
     use backend_engine::builtin::{PartialSemanticCoverage, ProductSemanticCaptureOutcome};
     use std::num::NonZeroU32;
     let key = selected_key("partial");
@@ -512,23 +533,115 @@ fn published_partial_scope_is_terminal_and_retains_positive_artifacts() {
             &activated(&[&key]),
         )
         .unwrap();
+    // A publication whose authority checked only part of the declared scope
+    // is readable. It is reported as a settled gap, not as an unavailable
+    // lane, and never as a fraction that tells the reader to wait.
+    for deployment in [
+        SemanticDeployment::Configured,
+        SemanticDeployment::Unconfigured,
+    ] {
+        assert_eq!(
+            observed.coverage(deployment),
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Gapped {
+                    lane: Lane::Semantic
+                }
+            ]
+        );
+    }
     assert_eq!(
-        observed.coverage(SemanticDeployment::Configured),
+        super::capture_row_state(ProductSemanticCaptureOutcome::Published {
+            coverage,
+            claim: claim(b"partial")
+        }),
+        backend_engine::RowState::Ready,
+        "a published partial scope keeps the project usable"
+    );
+    assert_eq!(
+        super::publication_row_state(&record),
+        backend_engine::RowState::Ready
+    );
+}
+
+#[test]
+fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fails() {
+    use backend_engine::RowState;
+    use backend_engine::builtin::ProductSemanticCaptureOutcome;
+    let usable = selected_key("usable");
+    let refused = selected_key("refused");
+    let mut mixed = SemanticTally::default();
+    mixed
+        .observe_current(
+            &usable,
+            Some(&published(b"usable")),
+            Some(ProductSemanticCaptureOutcome::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim: claim(b"usable"),
+            }),
+            &activated(&[&usable]),
+        )
+        .unwrap();
+    mixed
+        .observe_current(
+            &refused,
+            None,
+            Some(ProductSemanticCaptureOutcome::Unavailable {
+                reason: SemanticUnavailableReason::Rejected,
+            }),
+            &ActivatedProfiles::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        mixed.coverage(SemanticDeployment::Configured),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Gapped {
+                lane: Lane::Semantic
+            }
+        ],
+        "a profile refused while another published is partial, not failed"
+    );
+    let mut total = SemanticTally::default();
+    for key in [&usable, &refused] {
+        total
+            .observe_current(
+                key,
+                None,
+                Some(ProductSemanticCaptureOutcome::Unavailable {
+                    reason: SemanticUnavailableReason::Rejected,
+                }),
+                &ActivatedProfiles::new(),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        total.coverage(SemanticDeployment::Configured),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Unavailable {
                 lane: Lane::Semantic,
                 reason: Reason::Incomplete
             }
-        ]
+        ],
+        "only a total refusal is a failed lane"
     );
-    assert_eq!(
-        super::capture_row_state(ProductSemanticCaptureOutcome::Published {
-            coverage,
-            claim: claim(b"partial")
-        }),
-        backend_engine::RowState::Failed
-    );
+    // The project row applies the same precedence, in any order.
+    let states = [RowState::Ready, RowState::Loading, RowState::Failed];
+    for first in states {
+        for second in states {
+            let merged = super::merge_package_state(first, second);
+            assert_eq!(merged, super::merge_package_state(second, first));
+            let expected = if first == RowState::Loading || second == RowState::Loading {
+                RowState::Loading
+            } else if first == RowState::Ready || second == RowState::Ready {
+                RowState::Ready
+            } else {
+                RowState::Failed
+            };
+            assert_eq!(merged, expected, "{first:?} then {second:?}");
+        }
+    }
 }
 
 #[test]
@@ -637,4 +750,99 @@ fn legacy_package_scope_retains_native_refusal_and_optional_configuration() {
         super::publication_row_state(&published(b"legacy-complete")),
         RowState::Ready
     );
+}
+
+/// The lane line and the project row are two renderings of one set of capture
+/// facts. For every combination of per-profile outcomes up to three profiles,
+/// the pair the owner publishes must agree in meaning: a row is loading
+/// exactly when the lane is a moving fraction, failed exactly when the lane is
+/// unavailable for work that was asked for, and ready exactly when the lane is
+/// complete or settled with gaps. A pair outside that table is a lie.
+#[test]
+fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
+    use backend_engine::RowState;
+    use backend_engine::builtin::{
+        PartialSemanticCoverage, ProductSemanticCaptureOutcome as Outcome, SemanticPublicationVersion,
+    };
+    use std::num::NonZeroU32;
+    let prior = SemanticPublicationVersion::new(
+        SemanticPublicationCoverage::Complete,
+        claim(b"agreement-prior"),
+    );
+    let gaps = SemanticPublicationCoverage::Partial(
+        PartialSemanticCoverage::new(NonZeroU32::new(1).unwrap(), NonZeroU32::new(2).unwrap())
+            .unwrap(),
+    );
+    let outcomes = |seed: &[u8]| {
+        vec![
+            Outcome::Pending { prior: None },
+            Outcome::Pending { prior: Some(prior) },
+            Outcome::Failed {
+                prior,
+                reason: SemanticUnavailableReason::Rejected,
+            },
+            Outcome::Unavailable {
+                reason: SemanticUnavailableReason::Rejected,
+            },
+            Outcome::Unavailable {
+                reason: SemanticUnavailableReason::Cancelled,
+            },
+            Outcome::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim: claim(seed),
+            },
+            Outcome::Published {
+                coverage: gaps,
+                claim: claim(seed),
+            },
+        ]
+    };
+    let names = ["agree-a", "agree-b", "agree-c"];
+    let mut checked = 0_usize;
+    for count in 1..=3_usize {
+        let choices = outcomes(b"agreement").len();
+        for code in 0..choices.pow(u32::try_from(count).unwrap()) {
+            let mut tally = SemanticTally::default();
+            let mut row: Option<RowState> = None;
+            let mut remainder = code;
+            let mut picked = Vec::new();
+            for name in &names[..count] {
+                let outcome = outcomes(name.as_bytes())[remainder % choices];
+                remainder /= choices;
+                picked.push(outcome);
+                let key = selected_key(name);
+                let selected = match outcome {
+                    Outcome::Published { coverage, claim } => {
+                        Some(ProductSemanticPublicationRecord::Published { coverage, claim })
+                    }
+                    _ => None,
+                };
+                tally
+                    .observe_current(&key, selected.as_ref(), Some(outcome), &activated(&[&key]))
+                    .unwrap();
+                let state = super::capture_row_state(outcome);
+                row = Some(row.map_or(state, |prior| super::merge_package_state(prior, state)));
+            }
+            let lane = tally.coverage(SemanticDeployment::Configured);
+            let lane = lane
+                .iter()
+                .copied()
+                .find(|entry| super::is_semantic_lane(*entry));
+            let row = row.unwrap();
+            let agrees = match (row, lane) {
+                (RowState::Loading, Some(ViewCoverage::Partial { .. })) => true,
+                (RowState::Failed, Some(ViewCoverage::Unavailable { reason, .. })) => {
+                    !reason.is_outside_declared_scope()
+                }
+                (RowState::Ready, None | Some(ViewCoverage::Gapped { .. })) => true,
+                _ => false,
+            };
+            assert!(
+                agrees,
+                "row {row:?} and lane {lane:?} disagree for outcomes {picked:?}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 7 + 49 + 343);
 }
