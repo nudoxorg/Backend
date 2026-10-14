@@ -191,3 +191,14 @@ individual phases and terminal lookups are also reported. Golden answers and
 performance limits are unchanged. This proves caller deadline/resumption with a
 real owner, not owner crash recovery, ticket cancellation, or process-local ticket
 awaiting. The targeted scripted transport-retirement test remains valuable.
+
+### CLI wait-option admission (W1.3, CLI-02.01)
+
+Four additional independently selectable usage cases run against the published
+CLI: timeout without wait, timeout above 900, negative timeout, and wait on search.
+Each requires exit64 and the typed usage fault naming the offending option and
+its actionable diagnostic. The existing sentinel and isolated paths also require
+no owner launch, workspace state or endpoint directory. Add help must advertise
+wait, its timeout operand and terminal-receipt semantics. Together with #233's
+real index-alias/zero-deadline/resumption proof this covers the CLI-facing portion
+of CLI-02.01; MCP argument rejection and the targeted Rust boundary test remain.
