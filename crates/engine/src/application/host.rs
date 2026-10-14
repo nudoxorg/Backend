@@ -94,6 +94,30 @@ pub enum LocalHostVariable {
     LibclangPath,
     /// Explicit Python interpreter.
     NudoxPython,
+    /// Frozen independent installed Python candidate 0; no version is inferred.
+    NudoxPythonDefault,
+    /// Frozen independent installed Python candidate 1; no version is inferred.
+    NudoxPythonCandidate1,
+    /// Frozen independent installed Python candidate 2; no version is inferred.
+    NudoxPythonCandidate2,
+    /// Frozen independent installed Python candidate 3; no version is inferred.
+    NudoxPythonCandidate3,
+    /// Frozen independent installed Python candidate 4; no version is inferred.
+    NudoxPythonCandidate4,
+    /// Frozen independent installed Python candidate 5; no version is inferred.
+    NudoxPythonCandidate5,
+    /// Frozen independent installed Python candidate 6; no version is inferred.
+    NudoxPythonCandidate6,
+    /// Frozen independent installed Python candidate 7; no version is inferred.
+    NudoxPythonCandidate7,
+    /// Frozen independent installed Python candidate 8; no version is inferred.
+    NudoxPythonCandidate8,
+    /// Frozen independent installed Python candidate 9; no version is inferred.
+    NudoxPythonCandidate9,
+    /// Frozen independent installed Python candidate 10; no version is inferred.
+    NudoxPythonCandidate10,
+    /// Frozen independent installed Python candidate 11; no version is inferred.
+    NudoxPythonCandidate11,
     /// Explicit TypeScript compiler.
     NudoxTypeScriptCompiler,
     /// TypeScript compiler selected from the installed host toolchain rather than NUDOX_TSC.
@@ -149,7 +173,7 @@ impl LocalHostVariable {
     /// The order is the stable order used by closed host-environment snapshots. Keep this list
     /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
     /// changing its role meaning requires a snapshot protocol version change.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 46] = [
         Self::NudoxDataRoot,
         Self::Home,
         Self::XdgDataHome,
@@ -184,6 +208,18 @@ impl LocalHostVariable {
         Self::NudoxTypeScriptBundledNode,
         Self::NudoxTypeScriptBundledApplication,
         Self::NudoxTypeScriptDefaultModuleRoot,
+        Self::NudoxPythonDefault,
+        Self::NudoxPythonCandidate1,
+        Self::NudoxPythonCandidate2,
+        Self::NudoxPythonCandidate3,
+        Self::NudoxPythonCandidate4,
+        Self::NudoxPythonCandidate5,
+        Self::NudoxPythonCandidate6,
+        Self::NudoxPythonCandidate7,
+        Self::NudoxPythonCandidate8,
+        Self::NudoxPythonCandidate9,
+        Self::NudoxPythonCandidate10,
+        Self::NudoxPythonCandidate11,
     ];
 
     /// Number of closed snapshot roles after excluding the workspace-owned data root.
@@ -430,6 +466,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 variable,
                 LocalHostVariable::Home
                     | LocalHostVariable::NudoxPython
+                    | LocalHostVariable::NudoxPythonDefault
+                    | LocalHostVariable::NudoxPythonCandidate1
+                    | LocalHostVariable::NudoxPythonCandidate2
+                    | LocalHostVariable::NudoxPythonCandidate3
+                    | LocalHostVariable::NudoxPythonCandidate4
+                    | LocalHostVariable::NudoxPythonCandidate5
+                    | LocalHostVariable::NudoxPythonCandidate6
+                    | LocalHostVariable::NudoxPythonCandidate7
+                    | LocalHostVariable::NudoxPythonCandidate8
+                    | LocalHostVariable::NudoxPythonCandidate9
+                    | LocalHostVariable::NudoxPythonCandidate10
+                    | LocalHostVariable::NudoxPythonCandidate11
                     | LocalHostVariable::NudoxTypeScriptCompiler
                     | LocalHostVariable::NudoxTypeScriptDefaultCompiler
                     | LocalHostVariable::NudoxTypeScriptNode
@@ -507,12 +555,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             ));
         }
 
+        self.capture_installed_python_paths(&mut paths, home.as_deref())?;
         for (variable, role, tool) in [
-            (
-                LocalHostVariable::NudoxPython,
-                LocalHostPathRole::Native(NativeTool::Python),
-                NativeTool::Python,
-            ),
             (
                 LocalHostVariable::NudoxGo,
                 LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -1411,6 +1455,19 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::NudoxClang => "NUDOX_CLANG",
         LocalHostVariable::LibclangPath => "LIBCLANG_PATH",
         LocalHostVariable::NudoxPython => "NUDOX_PYTHON",
+        LocalHostVariable::NudoxPythonDefault => "BACKEND_LOCALD_DEFAULT_PYTHON",
+        LocalHostVariable::NudoxPythonCandidate1 => "BACKEND_LOCALD_PYTHON_CANDIDATE_1",
+        LocalHostVariable::NudoxPythonCandidate2 => "BACKEND_LOCALD_PYTHON_CANDIDATE_2",
+        LocalHostVariable::NudoxPythonCandidate3 => "BACKEND_LOCALD_PYTHON_CANDIDATE_3",
+        LocalHostVariable::NudoxPythonCandidate4 => "BACKEND_LOCALD_PYTHON_CANDIDATE_4",
+        LocalHostVariable::NudoxPythonCandidate5 => "BACKEND_LOCALD_PYTHON_CANDIDATE_5",
+        LocalHostVariable::NudoxPythonCandidate6 => "BACKEND_LOCALD_PYTHON_CANDIDATE_6",
+        LocalHostVariable::NudoxPythonCandidate7 => "BACKEND_LOCALD_PYTHON_CANDIDATE_7",
+        LocalHostVariable::NudoxPythonCandidate8 => "BACKEND_LOCALD_PYTHON_CANDIDATE_8",
+        LocalHostVariable::NudoxPythonCandidate9 => "BACKEND_LOCALD_PYTHON_CANDIDATE_9",
+        LocalHostVariable::NudoxPythonCandidate10 => "BACKEND_LOCALD_PYTHON_CANDIDATE_10",
+        LocalHostVariable::NudoxPythonCandidate11 => "BACKEND_LOCALD_PYTHON_CANDIDATE_11",
+
         LocalHostVariable::NudoxTypeScriptCompiler => "NUDOX_TSC",
         LocalHostVariable::NudoxTypeScriptDefaultCompiler => "BACKEND_LOCALD_DEFAULT_TSC",
         LocalHostVariable::NudoxGo => "NUDOX_GO",

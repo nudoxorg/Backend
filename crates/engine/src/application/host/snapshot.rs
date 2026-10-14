@@ -327,6 +327,12 @@ impl ClosedLocalHostEnvironmentSnapshot {
             if selected.iter().any(|(existing, _)| *existing == variable) {
                 return Err(ClosedLocalHostEnvironmentSnapshotError::DuplicateRole);
             }
+            if selected.iter().any(|(existing, _)| {
+                (variable == LocalHostVariable::NudoxPython && super::python_environment::INSTALLED_PYTHON_ROLES.contains(existing))
+                    || (*existing == LocalHostVariable::NudoxPython && super::python_environment::INSTALLED_PYTHON_ROLES.contains(&variable))
+            }) {
+                return Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonRoles);
+            }
             if is_typescript_node_role(variable)
                 && selected
                     .iter()
@@ -589,6 +595,8 @@ pub enum ClosedLocalHostEnvironmentSnapshotError {
     DuplicateRole,
     /// More than one explicit, installed, or bundled Node authority is claimed.
     ConflictingTypeScriptNodeRoles,
+    /// Explicit Python and independent installed Python paths cannot claim the same policy.
+    ConflictingPythonRoles,
     /// The snapshot contains more roles than the vocabulary permits.
     TooManyRoles,
     /// A selected value is not an absolute path.
@@ -623,6 +631,7 @@ impl fmt::Display for ClosedLocalHostEnvironmentSnapshotError {
             Self::ConflictingTypeScriptNodeRoles => {
                 "compiler environment snapshot contains conflicting TypeScript Node roles"
             }
+            Self::ConflictingPythonRoles => "compiler environment snapshot mixes explicit and installed Python selection",
             Self::TooManyRoles => "compiler environment snapshot has too many roles",
             Self::RelativePath => "compiler environment snapshot contains a relative path",
             Self::InvalidPath => "compiler environment snapshot contains an invalid native path",
@@ -755,6 +764,16 @@ mod tests {
     use crate::application::LocalHostVariable;
     use backend_platform::{NativePath, NativePathWire};
     use std::path::PathBuf;
+
+    #[test]
+    fn explicit_python_and_frozen_candidate_authorities_cannot_mix() {
+        let path = if cfg!(windows) { PathBuf::from("C:/host/python.exe") } else { PathBuf::from("/host/python3") };
+        for candidate in super::super::python_environment::INSTALLED_PYTHON_ROLES {
+            for roles in [[LocalHostVariable::NudoxPython, candidate], [candidate, LocalHostVariable::NudoxPython]] {
+                assert_eq!(ClosedLocalHostEnvironmentSnapshot::from_paths(roles.map(|role| (role, path.clone()))), Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonRoles));
+            }
+        }
+    }
 
     #[test]
     fn typed_go_failure_survives_closed_transport_without_changing_clean_v1_bytes() {

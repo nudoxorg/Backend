@@ -117,6 +117,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if let Some(path) = self.optional_absolute_path(variable)? {
             return self.validate_file(role, variable, path).map(Some);
         }
+        if self.discovery == LocalHostDiscovery::ClosedSnapshot
+            && variable == LocalHostVariable::NudoxPython
+            && let Some(path) = self.optional_absolute_path(LocalHostVariable::NudoxPythonDefault)?
+        {
+            return self.validate_file(role, LocalHostVariable::NudoxPythonDefault, path).map(Some);
+        }
         if self.discovery == LocalHostDiscovery::ExplicitOnly
             || self.discovery == LocalHostDiscovery::ClosedSnapshot
         {
@@ -394,7 +400,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostVariable::NudoxCargoHome => (LocalHostPathRole::CargoHome, Directory),
             LocalHostVariable::NudoxClang => (Native(NativeTool::Clang), File),
             LocalHostVariable::LibclangPath => (LocalHostPathRole::Libclang, FileOrDirectory),
-            LocalHostVariable::NudoxPython => (Native(NativeTool::Python), File),
+            LocalHostVariable::NudoxPython
+            | LocalHostVariable::NudoxPythonDefault
+            | LocalHostVariable::NudoxPythonCandidate1
+            | LocalHostVariable::NudoxPythonCandidate2
+            | LocalHostVariable::NudoxPythonCandidate3
+            | LocalHostVariable::NudoxPythonCandidate4
+            | LocalHostVariable::NudoxPythonCandidate5
+            | LocalHostVariable::NudoxPythonCandidate6
+            | LocalHostVariable::NudoxPythonCandidate7
+            | LocalHostVariable::NudoxPythonCandidate8
+            | LocalHostVariable::NudoxPythonCandidate9
+            | LocalHostVariable::NudoxPythonCandidate10
+            | LocalHostVariable::NudoxPythonCandidate11 => (Native(NativeTool::Python), File),
             LocalHostVariable::NudoxTypeScriptCompiler
             | LocalHostVariable::NudoxTypeScriptDefaultCompiler => {
                 (Native(NativeTool::TypeScriptCompiler), File)
@@ -3076,6 +3094,30 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_python_capture_freezes_all_independent_versions_and_keeps_override_strict() {
+        let (root, mut environment) = installed_fixture("python-candidate-policy", false);
+        let alternate = root.join("python312/bin").join(if cfg!(windows) { "python.exe" } else { "python3.12" });
+        executable(&alternate);
+        environment.search_path = Some(std::env::join_paths([
+            root.join("bin"), alternate.parent().unwrap().to_path_buf()
+        ]).unwrap());
+        let captured = LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection().unwrap();
+        assert_eq!(captured.snapshot().path(LocalHostVariable::NudoxPython), None);
+        assert_eq!(captured.snapshot().path(LocalHostVariable::NudoxPythonDefault), Some(root.join("bin/python3").canonicalize().unwrap().as_path()));
+        let alternate = alternate.canonicalize().unwrap();
+        assert!(super::super::python_environment::INSTALLED_PYTHON_ROLES.into_iter().any(|role| captured.snapshot().path(role) == Some(alternate.as_path())));
+        let decoded = super::super::ClosedLocalHostEnvironmentSnapshot::parse(&captured.snapshot().encode().unwrap()).unwrap();
+        assert_eq!(decoded, *captured.snapshot());
+        environment.set(LocalHostVariable::NudoxPython, &alternate);
+        let explicit = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection().unwrap();
+        assert_eq!(explicit.snapshot().path(LocalHostVariable::NudoxPython), Some(alternate.as_path()));
+        assert!(super::super::python_environment::INSTALLED_PYTHON_ROLES.into_iter().all(|role| explicit.snapshot().path(role).is_none()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cold_go_cache_capture_survives_ordinary_dependency_setup() {
         let (root, mut environment) = installed_fixture("cold-go-cache", false);
         environment.go_module_cache = None;
@@ -3180,7 +3222,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxPython),
+            snapshot.path(LocalHostVariable::NudoxPythonDefault),
             Some(
                 fs::canonicalize(root.join("bin/python3"))
                     .unwrap()
@@ -3241,7 +3283,7 @@ mod tests {
                 assert_eq!(incoming.snapshot().path(variable), None);
                 assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_some());
                 assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode).is_some());
-                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPython).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPythonDefault).is_some());
             }
         }
         // A previously captured cause must survive the temporary frozen host construction.
