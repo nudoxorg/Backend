@@ -31,9 +31,18 @@ class TierCommandTests(unittest.TestCase):
             self.assertEqual(isolated, "1")
 
     def test_missing_binaries_and_cross_tier_options_fail_before_nix(self):
-        for arguments in (["integration"], ["smoke", "--update"], ["deep", "--case", "polyglot"], ["smoke", "--jobs", "2"], ["integration", "--bin-dir", "/unused", "--jobs", "0"]):
+        for arguments in (["integration"], ["smoke", "--update"], ["deep", "--case", "polyglot"], ["smoke", "--jobs", "2"], ["integration", "--bin-dir", "/unused", "--jobs", "0"], ["smoke", "--ci-report", "/unused"], ["list", "--ci-report", "/unused"], ["integration", "--bin-dir", "/unused", "--ci-report", "/unused"], ["integration", "--bin-dir", "/unused", "--source-sha", "a" * 40]):
             result = subprocess.run([sys.executable, str(RUNNER), *arguments], env=dict(os.environ, PATH=""), capture_output=True)
             self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_ci_evidence_plan_forwards_identity_without_running_tools(self):
+        result = subprocess.run([sys.executable, str(RUNNER), "integration", "--bin-dir", "/unused/bin",
+                                 "--ci-report", "/unused/report.json", "--source-sha", "a" * 40, "--plan"],
+                                env=dict(os.environ, PATH=""), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout)
+        self.assertEqual(arguments[arguments.index("--source-sha") + 1], "a" * 40)
+        self.assertEqual(arguments[arguments.index("--ci-report") + 1], "/unused/report.json")
 
     def test_selection_preview_falls_back_without_launching_build_tools(self):
         result = subprocess.run([sys.executable, str(RUNNER), "select", "--base", "missing-ref"],
