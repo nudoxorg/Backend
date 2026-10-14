@@ -13,12 +13,18 @@ updates without importing a library that the executing bootstrap has not pinned.
 
 The existing public repository is `philocalyst/Backend` on
 `https://dev.nudox.org/git/`. Canonical `Nudox/Backend` is private. R2's public
-entrypoint, digest-named bootstrap, channel, both platform libraries and Linux
-manifest were anonymously read back on October 11 and retained their exact
-published bytes. The shell launcher was added to R2 on October 11 and both
-named shell URLs were independently read back anonymously at 05:44 UTC.
-Each returned HTTP 200 and the integrated source's exact 4,318 bytes/SHA-256
-`7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`.
+entrypoint, digest-named bootstrap, channel, both platform libraries, Linux
+manifest and shell launcher were anonymously read back on October 14 and
+retained their exact published bytes. The current immutable shell launcher is
+`install-shell-d837c1fc8130285f.sh` (5,845 bytes, SHA-256
+`d837c1fc8130285fe60d1dc44ef96f93fa2177f18bdb2c1db031eab7fc28a8ac`), matching
+`tools/package/install_diagnostic_preview.sh` and the Linux install guide.
+R2 still serves the older `install.sh` and
+`install-shell-7e7bedf26d431193.sh` aliases (4,318 bytes, SHA-256
+`7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`). Those
+October 11 assets are superseded: their CPython probe uses `assert`, which
+`PYTHONOPTIMIZE` can disable, and their curl size guard is not a hard streaming
+limit for every transfer. Do not use those old aliases for new installs.
 
 Root's publication destinations are:
 
@@ -31,12 +37,17 @@ Root's publication destinations are:
   `forgejo-preview-channel.json` bytes as `preview-channel.json`. The same
   bootstrap bytes are published as `install.py`. R1 remains a separate
   immutable release and its older library asset is unchanged.
-* Published shell assets on R2: `install.sh` (asset 14) and
+* Superseded shell assets still on R2: `install.sh` (asset 14) and
   `install-shell-7e7bedf26d431193.sh` (asset 13), both 4,318 bytes/SHA-256
   `7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`.
   Launcher source commit `a79ee40748190d7c4555e615886356444e161592` was
   integrated through PR 132 at `e3321a4327d8cf4cf6fee60ff0f5962d0e6d8d0a`.
-  The existing Python bootstrap, channel and platform identities were retained.
+  They retain the existing Python bootstrap, channel and platform identities.
+* Current shell asset on R2: `install-shell-d837c1fc8130285f.sh` (5,845
+  bytes/SHA-256 `d837c1fc8130285fe60d1dc44ef96f93fa2177f18bdb2c1db031eab7fc28a8ac`).
+  It is the exact source of `tools/package/install_diagnostic_preview.sh` and
+  adds a non-assert CPython probe plus a bounded streaming download check. Its
+  immutable asset URL was anonymously read back with HTTP 200 on October 14.
 * Mac tag: `checkpoint-20261006-a659d5d181-macos-arm64`. Upload unchanged
   `install-macos-arm64-82f71f98a05a2b13.py` and
   `nudox-macos-arm64-a659d5d181.tar.gz` (70,309,994 bytes, SHA-256
@@ -89,7 +100,7 @@ The public user command also downloads before execution, preserving a curl
 failure instead of running an empty shell script:
 
 ```sh
-(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-launcher.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.sh" 'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.sh' && sh "$installer_dir/install.sh")
+(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-launcher.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.sh" 'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-shell-d837c1fc8130285f.sh' && sh "$installer_dir/install.sh")
 ```
 
 The command preserves curl or launcher failures through its final exit status,
