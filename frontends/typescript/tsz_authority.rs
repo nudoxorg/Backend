@@ -294,6 +294,9 @@ pub struct TszProjectAuthority {
     environment: Option<TszEnvironmentFingerprint>,
     libraries: Option<[u8; 32]>,
     binding_options: Option<[u8; 32]>,
+    // Cached binders carry library declaration arena provenance. Keep the
+    // original library objects whenever exact library bytes are unchanged.
+    lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
     bound_sources: BTreeMap<String, CachedBind>,
     project: Option<TszProject>,
 }
@@ -506,6 +509,9 @@ impl TszProjectAuthority {
         // and library binders. The full environment also includes dependency
         // source bytes and resolver reads; rebuilding every unchanged arena
         // for those changes would discard the per-source cache on every edit.
+        if libraries_changed {
+            self.lib_files = lib_files.to_vec();
+        }
         if libraries_changed || binding_options_changed {
             self.bound_sources.clear();
             self.project = None;
@@ -518,6 +524,7 @@ impl TszProjectAuthority {
         self.environment = Some(options.environment);
         self.libraries = Some(library_digest);
         self.binding_options = Some(binding_digest);
+        let lib_files = self.lib_files.as_slice();
 
         report.removed_sources = self
             .bound_sources
@@ -2783,6 +2790,47 @@ mod tests {
         assert_eq!(changed.parsed_and_bound, 1);
         assert_eq!(changed.reused_binds, 0);
         assert!(!changed.reused_project_result);
+    }
+
+    #[test]
+    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() {
+        let library = || TszLibraryInput::from_utf8(
+            "lib.fixture.d.ts", b"declare type LibraryLabel = string;".to_vec(),
+        ).unwrap().into_lib_file();
+        let original = library();
+        let first = vec![
+            input("src/a.ts", "export const a: LibraryLabel = 'a';"),
+            input("src/b.ts", "export const b: LibraryLabel = 'b';"),
+        ];
+        let mut authority = TszProjectAuthority::new();
+        authority.update(first.clone(), options(), &[Arc::clone(&original)]).unwrap();
+        let unchanged = Arc::clone(authority.project().unwrap().bound_sources.get("src/b.ts").unwrap());
+        // The production bridge constructs these objects again after each
+        // fresh admission. Equal bytes do not make their arena objects equal.
+        let readmitted = library();
+        assert!(!Arc::ptr_eq(&original, &readmitted));
+        let changed = vec![input("src/a.ts", "export const a: LibraryLabel = 'edited';"), first[1].clone()];
+        let mut recipe = options();
+        recipe.environment = TszEnvironmentFingerprint::from_sha256([0x73; 32]);
+        let report = authority.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)]).unwrap();
+        assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
+        let project = authority.project().unwrap();
+        assert!(Arc::ptr_eq(&project.lib_files[0], &original));
+        assert!(Arc::ptr_eq(project.bound_sources.get("src/b.ts").unwrap(), &unchanged));
+        let observed = |authority: &TszProjectAuthority| {
+            let project = authority.project().unwrap();
+            let session = project.checked_query_session_unmetered_for_test().unwrap();
+            let index = session.file_index("src/b.ts").unwrap();
+            session.with_file_checker_and_types(index, |checker, binder, _, _| {
+                let ty = checker.get_type_of_symbol(binder.file_locals.get("b").unwrap());
+                let ty = checker.resolve_lazy_type(ty);
+                checker.format_type(ty)
+            }).unwrap()
+        };
+        let mut cold = TszProjectAuthority::new();
+        cold.update(changed, recipe, &[readmitted]).unwrap();
+        assert_eq!(observed(&authority), observed(&cold));
+        assert_eq!(observed(&authority), "string");
     }
 
     #[test]
