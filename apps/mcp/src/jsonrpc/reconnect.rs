@@ -24,6 +24,13 @@
 //!
 //! One reconnect per call, never a loop: if the fresh connection fails the
 //! same way, that is the daemon's answer and it is reported.
+//!
+//! The daemon also retires a connection that has served its frame budget
+//! (256 frames by default). A read recovers from that through the retry
+//! above, but a mutation written to such a connection would come back as an
+//! unknown outcome even though the daemon never saw it. The wrapper therefore
+//! asks the product how many frames its connection has left and opens the
+//! replacement *before* writing, so retirement never reaches a mutation.
 
 use super::{Engine, Probe, Product};
 use backend_client::{ClientError, RequestContext};
@@ -57,6 +64,13 @@ pub(crate) trait Endpoint {
         drop(previous);
     }
 }
+
+/// Frames of a connection's budget that must remain before a call is written.
+///
+/// One product call can exchange several frames (a pinned query reads the
+/// revision, sends the query, and polls its preparation), so a connection is
+/// replaced while a few frames are still left rather than at the last one.
+const FRAME_HEADROOM: usize = 4;
 
 /// Whether repeating a call after a reconnect is the same as making it once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +156,20 @@ impl<E: Endpoint> Reconnecting<E> {
         // touching an already-dead product again.
         if self.product.is_none() {
             self.product = Some(self.endpoint.connect(None)?);
+        } else if self
+            .product
+            .as_ref()
+            .and_then(Product::connection_frames_remaining)
+            .is_some_and(|remaining| remaining < FRAME_HEADROOM)
+        {
+            // The owner closes a connection once it has served its frame
+            // budget, whatever the next frame is. Writing a mutation to one
+            // that is about to be retired leaves its admission unknowable, so
+            // the replacement is opened here, before anything is sent. Nothing
+            // has been written yet: a failure to open it is a plain connect
+            // failure, never an unknown outcome.
+            let previous = self.take_reconnect_lease()?;
+            self.product = Some(self.endpoint.connect(previous)?);
         }
         if let Some(product) = &mut self.product {
             product.set_request_context(self.request_context.clone())?;
@@ -767,6 +795,39 @@ mod tests {
         (Reconnecting::new(endpoint, dead), log)
     }
 
+    /// A slow owner answers a poll after the read window. The progress read
+    /// changes nothing, so it is dropped and repeated once on a fresh
+    /// connection; the connection endpoint reuses the existing listener (it
+    /// only starts an owner when none accepts), and a mutation hit by the same
+    /// timeout stays an unknown outcome.
+    #[test]
+    fn a_read_timeout_is_repeated_on_a_fresh_connection_but_a_mutation_is_not() {
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            let (mut product, _) = idle_out();
+            let mut calls = 0;
+            let result: Result<u8, ClientError> = product.attempt(Repeatable::Yes, |_| {
+                calls += 1;
+                if calls == 1 {
+                    Err(ClientError::Disconnected(kind))
+                } else {
+                    Ok(7)
+                }
+            });
+            assert_eq!(result, Ok(7), "{kind:?}");
+            assert_eq!(calls, 2);
+            assert_eq!(product.endpoint.connects, 1, "{kind:?}");
+
+            let (mut product, _) = idle_out();
+            let mut calls = 0;
+            let result: Result<u8, ClientError> = product.attempt(Repeatable::No, |_| {
+                calls += 1;
+                Err(ClientError::Disconnected(kind))
+            });
+            assert_eq!(result, Err(ClientError::MutationOutcomeUnknown(kind)));
+            assert_eq!(calls, 1, "a mutation is never repeated");
+        }
+    }
+
     #[test]
     fn pinned_preparation_disconnect_does_not_reconnect_or_rebind_the_same_call() {
         let (mut product, _) = idle_out();
@@ -1004,6 +1065,220 @@ mod tests {
             handle.endpoint.connects, 1,
             "the long idle gap opens exactly one replacement session"
         );
+    }
+
+    /// A connection the owner retires once it has served its frame budget,
+    /// exactly as the real listener does: the frame after the last one is not
+    /// admitted and the stream is closed.
+    struct Retiring {
+        inner: Connection,
+        remaining: usize,
+        advertise: bool,
+    }
+
+    impl Retiring {
+        fn frame(&mut self, call: &str) -> Result<(), ClientError> {
+            if self.remaining == 0 {
+                self.inner
+                    .log
+                    .lock()
+                    .expect("fixture log")
+                    .push(format!("retired:{call}"));
+                return Err(ClientError::Disconnected(
+                    std::io::ErrorKind::ConnectionReset,
+                ));
+            }
+            self.remaining -= 1;
+            self.inner.record(call)
+        }
+    }
+
+    impl Engine for Retiring {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            self.frame("revision")?;
+            Ok(view_state_root(&[]))
+        }
+
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            self.frame("health")?;
+            let library = backend_library::Library::new();
+            Ok(HealthReport::from_root(library.view(), library.cursor()))
+        }
+
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            match probe {
+                Probe::Packages => {
+                    self.frame("packages")?;
+                    Ok(ReplyDto::new(1, CommandReply::Packages(empty_snapshot())))
+                }
+                Probe::Index(path) => {
+                    self.frame("index")?;
+                    Ok(ReplyDto::new(
+                        1,
+                        CommandReply::Added(Intent::request_package(package_key(path)).id()),
+                    ))
+                }
+                other => Err(ClientError::Protocol(format!(
+                    "retiring fixture has no reply for {other:?}"
+                ))),
+            }
+        }
+
+        fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol(format!(
+                "retiring fixture has no reply for {:?}",
+                command.id()
+            )))
+        }
+    }
+
+    impl Product for Retiring {
+        fn connection_frames_remaining(&self) -> Option<usize> {
+            self.advertise.then_some(self.remaining)
+        }
+
+        fn encode_continuation(&mut self, _: PageContinuation) -> Result<String, ClientError> {
+            Err(ClientError::Protocol("no portable cursor".to_owned()))
+        }
+
+        fn decode_continuation(&mut self, _: &str) -> Result<PageContinuation, ClientError> {
+            Err(ClientError::Protocol("no portable cursor".to_owned()))
+        }
+
+        fn graph_query(
+            &mut self,
+            _: AdmittedGraphQueryInput,
+            _: u16,
+            _: Option<PageContinuation>,
+        ) -> Result<GraphQueryPage, ClientError> {
+            Err(ClientError::Protocol("no graph query".to_owned()))
+        }
+    }
+
+    struct RetiringFixture {
+        log: Log,
+        budget: usize,
+        advertise: bool,
+        connects: usize,
+    }
+
+    impl RetiringFixture {
+        fn connection(&self) -> Retiring {
+            Retiring {
+                inner: Connection {
+                    log: Arc::clone(&self.log),
+                    alive: true,
+                },
+                remaining: self.budget,
+                advertise: self.advertise,
+            }
+        }
+    }
+
+    impl Endpoint for RetiringFixture {
+        type Product = Retiring;
+
+        fn connect(
+            &mut self,
+            _previous: Option<Self::Product>,
+        ) -> Result<Self::Product, ClientError> {
+            self.connects += 1;
+            Ok(self.connection())
+        }
+    }
+
+    /// W1: `index_start` as the first call on a connection the owner retired
+    /// for its frame budget used to be written to a dead stream and reported
+    /// as an unknown outcome although the owner never saw it. Knowing the
+    /// budget, the wrapper opens the replacement before writing.
+    #[test]
+    fn a_mutation_is_never_written_to_a_connection_at_its_frame_budget() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let fixture = RetiringFixture {
+            log: Arc::clone(&log),
+            budget: 8,
+            advertise: true,
+            connects: 0,
+        };
+        let first = fixture.connection();
+        let mut product = Reconnecting::new(fixture, first);
+        // Eight reads exhaust the owner's budget for the first connection.
+        for _ in 0..8 {
+            product.probe(Probe::Packages).expect("read within budget");
+        }
+        product
+            .probe(Probe::Index("/project"))
+            .expect("the mutation goes to a fresh connection, not a retired one");
+        let calls = calls(&log);
+        assert!(
+            calls.iter().all(|call| !call.starts_with("retired:")),
+            "nothing was ever written to a retired connection: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|call| call.ends_with(":index")).count(),
+            1,
+            "the mutation is sent exactly once: {calls:?}"
+        );
+        assert!(
+            product.endpoint.connects >= 1,
+            "a replacement was opened before the budget ran out"
+        );
+    }
+
+    /// The hazard itself, without the budget knowledge: the same sequence
+    /// reports an unknown outcome for a mutation the owner never admitted.
+    #[test]
+    fn without_the_budget_a_mutation_at_retirement_is_an_unknown_outcome() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let fixture = RetiringFixture {
+            log: Arc::clone(&log),
+            budget: 8,
+            advertise: false,
+            connects: 0,
+        };
+        let first = fixture.connection();
+        let mut product = Reconnecting::new(fixture, first);
+        for _ in 0..8 {
+            product.probe(Probe::Packages).expect("read within budget");
+        }
+        assert_eq!(
+            product.probe(Probe::Index("/project")).err(),
+            Some(ClientError::MutationOutcomeUnknown(
+                std::io::ErrorKind::ConnectionReset
+            ))
+        );
+        assert!(calls(&log).contains(&"retired:index".to_owned()));
+    }
+
+    /// Many calls across many retirements: every read succeeds and every
+    /// mutation is sent once, never replayed and never unknown.
+    #[test]
+    fn mixed_calls_survive_repeated_frame_budget_retirement() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let fixture = RetiringFixture {
+            log: Arc::clone(&log),
+            budget: 8,
+            advertise: true,
+            connects: 0,
+        };
+        let first = fixture.connection();
+        let mut product = Reconnecting::new(fixture, first);
+        let mut mutations = 0;
+        for call in 0..100 {
+            if call % 7 == 3 {
+                product.probe(Probe::Index("/project")).expect("mutation");
+                mutations += 1;
+            } else {
+                product.probe(Probe::Packages).expect("read");
+            }
+        }
+        let calls = calls(&log);
+        assert!(calls.iter().all(|call| !call.starts_with("retired:")));
+        assert_eq!(
+            calls.iter().filter(|call| call.ends_with(":index")).count(),
+            mutations
+        );
+        assert!(product.endpoint.connects > 10, "many retirements happened");
     }
 
     #[test]
