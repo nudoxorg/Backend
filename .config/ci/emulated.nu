@@ -164,7 +164,7 @@ def main [
     }
     ^python3 ($env.FILE_PWD | path join "quarantine.py") $platform
     if $env.LAST_EXIT_CODE != 0 {
-        error make {msg: "emulation exclusion review is invalid or expired; see docs/testing/quarantine.md"}
+        error make {msg: "test exclusion ownership/review is invalid or expired; see docs/testing/quarantine.md"}
     }
     let filter = if ($lane.excluded | is-empty) {
         "all()"

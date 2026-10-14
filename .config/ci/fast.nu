@@ -28,7 +28,7 @@ def main []: nothing -> nothing {
     # Check wall-clock expiry on every invocation, outside cached Nix checks.
     ^python3 ($env.FILE_PWD | path join "quarantine.py")
     if $env.LAST_EXIT_CODE != 0 {
-        error make {msg: "emulation exclusion review is invalid or expired; see docs/testing/quarantine.md"}
+        error make {msg: "test exclusion ownership/review is invalid or expired; see docs/testing/quarantine.md"}
     }
 
     # Fast checks keep only compile outputs, independently of the much larger

@@ -67,6 +67,9 @@ in
         cp ${../ci/quarantine.py} quarantine.py
         cp ${../ci/test_quarantine.py} test_quarantine.py
         python3 test_quarantine.py
+        cp ${../ci/source_ignores.py} source_ignores.py
+        cp ${../ci/test_source_ignores.py} test_source_ignores.py
+        python3 test_source_ignores.py
         python3 test_smoke.py
         python3 test_t1_capacity.py
         cp ${../ci/t1_artifacts.py} t1_artifacts.py

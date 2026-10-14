@@ -32,3 +32,34 @@ review rather than cite this migration indefinitely. No tests were deleted and
 no new failure was hidden. Individual historical build references remain in the
 original reason fields where available; missing historical evidence is review
 work, not a reason to invent a passing result.
+
+
+## Source intake 2026-10-14
+
+The source registry `.config/ci/source-ignores.json` owns126 existing Rust ignore
+attributes in the current versioned code tree, including vendored/fork sources.
+Documentation examples and the retired `workspace/` prototype are outside this
+code policy. This is a static attribute inventory, not126 tests proved to run in
+the current nextest selection. Existing ignores and their literal reasons stay
+unchanged; this intake adds no exclusion, removes no test and claims no pass.
+The accountable owner is the NuDox Backend maintainers, with the same November13
+UTC deadline and30-day maximum as emulation filters. The intake is administrative
+ownership; bare ignores and semantic reasons still need classification/evidence.
+
+`python3 .config/ci/source_ignores.py` prints current source sites for review; it
+never updates ownership or dates. The lexer skips Rust comments/strings/characters
+and retains direct/conditional ignores. Tracked Rust symlinks are refused. Source
+keys include the file, nested module and function, with explicit occurrence keys
+for generated/unsupported sites. Historical intake lines aid navigation but do
+not make unrelated line movement invalidate an owner. Attribute text changes,
+new ignored sites and stale registry entries require an explicit metadata change.
+Unknown source directories are included; only the two named non-code roots are
+excluded. Generated macro behavior that has no written ignore attribute requires
+the separate runtime inventory and is not claimed covered by this scan.
+
+Fast and emulated entrypoints check the actual UTC expiry and source-registry
+consistency before heavy work. A cached Nix check cannot replace this runtime
+check. No expired entry is automatically renewed or silently reenabled. Removing
+an ignore requires removing its metadata too; renewing one requires current
+observations and an accountable review. Source inventory/lexer/expiry controls
+run in the Nix sandbox, without compiling or executing the ignored Rust tests.
