@@ -272,9 +272,10 @@ fn owner_recovery_rearms_observation_after_store_renewal_without_a_hydration_rep
     });
     let _release = _release; // release worker before the graph can drop
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("startup hydration remains held");
+    assert!(
+        entered.try_recv().is_err(),
+        "an owner-gated window asks for no Root before its owner answers"
+    );
     graph.root.update(cx, |root, _| {
         root.index_poll = None;
     });
@@ -282,7 +283,10 @@ fn owner_recovery_rearms_observation_after_store_renewal_without_a_hydration_rep
         key: basis(),
         mode: ServiceMode::Embedded,
     });
-    cx.run_until_parked();
+    crate::runtime::wait::until("the answered owner's Root is held without a reply", || {
+        cx.run_until_parked();
+        entered.try_recv().is_ok()
+    });
     assert!(
         graph
             .root
@@ -474,12 +478,17 @@ fn uncertain_saved_key_is_checked_once_after_initial_store_owner_admission(
     });
     let _release = _release;
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("hydration held");
+    assert!(
+        entered.try_recv().is_err(),
+        "an owner-gated window asks for no Root before its owner answers"
+    );
     gate.publish(OwnerState::Ready {
         key: basis(),
         mode: ServiceMode::Embedded,
+    });
+    crate::runtime::wait::until("the answered owner's Root is held", || {
+        cx.run_until_parked();
+        entered.try_recv().is_ok()
     });
     crate::runtime::wait::until("uncertain startup key checks exact new owner", || {
         cx.run_until_parked();
@@ -582,9 +591,10 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
     });
     let _release = _release; // release worker before the graph can drop
     cx.run_until_parked();
-    entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("hydration held");
+    assert!(
+        entered.try_recv().is_err(),
+        "an owner-gated window asks for no Root before its owner answers"
+    );
     // The initial owner is still starting: its automatic cold reconciliation
     // must not race this deliberately queued callback. Both admissions and
     // the replacement happen before the outer update flushes any callback.
@@ -614,6 +624,10 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
             );
             root.flush_pending(cx);
         });
+    });
+    crate::runtime::wait::until("the answered owner's Root is held", || {
+        cx.run_until_parked();
+        entered.try_recv().is_ok()
     });
     crate::runtime::wait::until("new attachment receives one fresh status", || {
         cx.run_until_parked();

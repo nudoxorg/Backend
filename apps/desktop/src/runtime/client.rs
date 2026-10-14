@@ -875,7 +875,17 @@ mod tests {
                             FaultCode::Protocol
                         }
                     );
-                    assert_eq!(value.message(), diagnostic);
+                    if retry {
+                        assert_eq!(value.message(), diagnostic);
+                    } else {
+                        // `fault` names the Protocol class in front of the
+                        // exact exchange diagnostic.
+                        assert!(
+                            value.message().ends_with(&diagnostic),
+                            "{:?} must carry {diagnostic:?}",
+                            value.message()
+                        );
+                    }
                 }
                 other => panic!("unexpected bootstrap fault: {other:?}"),
             }
@@ -1084,6 +1094,10 @@ mod tests {
         fn accepted(&self) -> usize {
             self.accepted.load(std::sync::atomic::Ordering::SeqCst)
         }
+
+        fn counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+            Arc::clone(&self.accepted)
+        }
     }
 
     #[cfg(unix)]
@@ -1183,10 +1197,14 @@ mod tests {
         let mut client = LocalEngineClient::new(&owner.path, project);
         let cancel = CancellationToken::new();
         client.active_cancel = Some(cancel.clone());
+        // Cancel only once the first attempt reached the owner, so the
+        // assertion below counts attempts, not scheduling luck.
         let canceller = std::thread::spawn({
-            let cancel = cancel.clone();
+            let (cancel, accepted) = (cancel.clone(), owner.counter());
             move || {
-                std::thread::sleep(Duration::from_millis(30));
+                while accepted.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 cancel.cancel();
             }
         });
