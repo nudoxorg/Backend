@@ -285,6 +285,47 @@ def require_bounded_search(reference: dict, bounded: dict, limit: int) -> None:
         raise RuntimeError(f"bounded search: limit {limit} has an untruthful completeness flag")
 
 
+def walk_search_pages(reference: dict, fetch_page, limit: int = 1) -> tuple[int, str]:
+    """Consume opaque cursors through real clients; refuse loss, repetition or drift."""
+    expected = reference.get("records")
+    if reference.get("more") is not False or not isinstance(expected, list) or len(expected) < 2:
+        raise RuntimeError("continuation: expected a complete multi-result reference")
+    cursor = None
+    first_cursor = None
+    seen = set()
+    offset = 0
+    started = time.monotonic()
+    for count in range(1, len(expected) + 2):
+        if time.monotonic() - started > 30:
+            raise RuntimeError("continuation: exceeded the traversal deadline")
+        page = fetch_page(cursor)
+        if time.monotonic() - started > 30:
+            raise RuntimeError("continuation: exceeded the traversal deadline")
+        if page.get("answer") != "records":
+            raise RuntimeError("continuation: expected a records page")
+        for field in ("query", "coverage", "readiness"):
+            if page.get(field) != reference.get(field):
+                raise RuntimeError(f"continuation: changed {field} between pages")
+        rows = page.get("records")
+        if not isinstance(rows, list) or not rows or rows != expected[offset:offset + limit]:
+            raise RuntimeError("continuation: missing, duplicated, reordered or unbounded rows")
+        offset += len(rows)
+        more = offset < len(expected)
+        if page.get("more") is not more:
+            raise RuntimeError("continuation: incorrect completeness flag")
+        token = page.get("nextCursor")
+        if not more:
+            if token is not None:
+                raise RuntimeError("continuation: exhausted page still offers a cursor")
+            return count, first_cursor
+        if not isinstance(token, str) or not token or token in seen:
+            raise RuntimeError("continuation: missing or repeated cursor")
+        seen.add(token)
+        first_cursor = first_cursor or token
+        cursor = token
+    raise RuntimeError("continuation: did not exhaust the reference")
+
+
 def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:
     times = {}
 
@@ -319,6 +360,32 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
         bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
         require_bounded_search(reference, bounded, limit)
         print(f"surface-contract: search limit {limit} preserves rank/completeness", flush=True)
+
+    def cli_page(cursor):
+        args = ["--limit", "1", "search", text]
+        if cursor is not None:
+            args += ["--cursor", cursor]
+        answer, _ = run_cli(owner, project, args, 10)
+        require_cli_success("CLI search continuation", answer)
+        return answer["json"]
+
+    def mcp_page(cursor):
+        arguments = {"query": text, "limit": 1}
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        session, _ = run_mcp(owner, project, [{"tool": "backend.search", "arguments": arguments}], 10)
+        if session["exit"] != 0 or len(session["calls"]) != 1:
+            raise RuntimeError("MCP search continuation: session failed")
+        reply = session["calls"][0]["reply"]
+        if not isinstance(reply, dict) or reply.get("isError", False) or not isinstance(reply.get("structuredContent"), dict):
+            raise RuntimeError(f"MCP search continuation failed: {reply}")
+        return reply["structuredContent"]
+
+    for name, fetch_page in (("CLI", cli_page), ("MCP", mcp_page)):
+        started = time.monotonic()
+        count, _ = walk_search_pages(reference, fetch_page)
+        times[f"{name} search continuation"] = round(time.monotonic() - started, 3)
+        print(f"surface-contract: {name} search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
     return times
 
 

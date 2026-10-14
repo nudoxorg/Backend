@@ -147,7 +147,17 @@ Search for the fixture's authored Java/C++ `language` methods at bound 200, then
 at global bounds 1 and 3. The reference must be complete and multi-result;
 bounded results must be its ordered prefix with a truthful `more` flag. These
 checks catch ignored bounds, lost/reordered results and false completeness.
-They do not yet follow a continuation cursor through every page.
+Both CLI and MCP also traverse that reference one result per page, using the
+returned opaque cursor in a fresh client process on every request. CLI resumes as
+`nudox --limit 1 search language --cursor TOKEN`; cursor is a command option. Combined rows
+must exhaust the same complete reference in order, with unchanged query,
+coverage and readiness. Missing/repeated cursors, duplicate/missing/reordered
+rows and false completeness fail. The last page must stop offering a cursor.
+Traversal has a 30-second deadline and a reference-sized page cap; individual
+client calls are bounded to 10 seconds. Cursor values are never snapshotted.
+Mutation checks exercise loss, repetition, query/coverage drift and false
+exhaustion. Cross-query, changed-limit, expired/stale and tampered-token refusal
+remain separate work.
 
 The checks run after existing CLI/MCP snapshots and add operation wall times to
 the report. Volatile health statistics are not snapshotted; exact identities are

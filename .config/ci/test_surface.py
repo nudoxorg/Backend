@@ -76,5 +76,44 @@ class LiveContractAdmissionTests(unittest.TestCase):
                 surface.require_bounded_search(reference, changed, 1)
 
 
+class ContinuationAdmissionTests(unittest.TestCase):
+    def test_slow_page_cannot_pass_after_the_traversal_deadline(self):
+        from unittest.mock import Mock, patch
+        reference = {"records": [{"id": 1}, {"id": 2}], "more": False}
+        fetch = Mock(return_value={"answer": "records"})
+        with patch.object(surface.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "deadline"):
+                surface.walk_search_pages(reference, fetch)
+        fetch.assert_called_once_with(None)
+
+    def test_traversal_rejects_loss_repetition_drift_and_false_exhaustion(self):
+        import copy
+        reference = {"answer": "records", "query": "language", "records": [{"id": 1}, {"id": 2}, {"id": 3}], "more": False, "coverage": [], "readiness": "ready"}
+        pages = {
+            None: dict(reference, records=[{"id": 1}], more=True, nextCursor="one"),
+            "one": dict(reference, records=[{"id": 2}], more=True, nextCursor="two"),
+            "two": dict(reference, records=[{"id": 3}]),
+        }
+        calls = []
+        def fetch(cursor):
+            calls.append(cursor)
+            return pages[cursor]
+        self.assertEqual(surface.walk_search_pages(reference, fetch), (3, "one"))
+        self.assertEqual(calls, [None, "one", "two"])
+        for cursor, field, value in (
+            (None, "records", []), (None, "records", reference["records"]),
+            (None, "records", [{"id": 2}]), ("one", "records", [{"id": 1}]),
+            (None, "more", False), (None, "more", 1),
+            (None, "nextCursor", None), (None, "nextCursor", ""),
+            ("one", "nextCursor", "one"), ("two", "nextCursor", "extra"),
+            ("two", "more", True), ("one", "query", "other"),
+            ("one", "coverage", ["lost"]), ("one", "readiness", "indexing"),
+        ):
+            changed = copy.deepcopy(pages)
+            changed[cursor][field] = value
+            with self.subTest(cursor=cursor, field=field, value=value), self.assertRaises(RuntimeError):
+                surface.walk_search_pages(reference, lambda token: changed[token])
+
+
 if __name__ == "__main__":
     unittest.main()
