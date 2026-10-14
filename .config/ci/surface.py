@@ -537,7 +537,7 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
                    for row in answer.get("records", [])):
             observed = [{"name": row.get("identity", {}).get("name"), "path": row.get("identity", {}).get("path"),
                          "language": row.get("language")} for row in answer.get("records", [])[:20]]
-            raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}")
+            raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
 
 
 def run_case(case: dict, bin_dir: Path) -> dict:
