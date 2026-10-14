@@ -76,7 +76,10 @@ mod projection;
 #[cfg(test)]
 mod projection_tests;
 #[cfg(test)]
+mod readiness_agreement_tests;
+#[cfg(test)]
 mod readiness_tests;
+mod readiness;
 mod record;
 mod render;
 mod sections;
@@ -91,7 +94,8 @@ pub use startup_recovery::{StartupRecoveryContext, StartupRecoveryWorkspace};
 
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
-    record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
+    record_list, record_list_from_rows, shelf_from_root, shelf_from_root_with_facts,
+    shelf_from_snapshot, shelf_from_snapshot_with_health,
 };
 pub use browse::{
     AlertReading, InventoryReading, RoleReading, RowReading, TreeReading, TwiceReading, count,
@@ -141,6 +145,7 @@ pub use product::{
     ProductView, product_view, product_view_for_command,
 };
 pub use projection::{PageProjection, PageSection};
+pub use readiness::{PublishedFacts, ReadinessState};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
