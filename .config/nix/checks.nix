@@ -74,6 +74,7 @@ in
         python3 test_t1_artifacts.py
         mkdir -p .config/ci
         cp ${../ci/t1_artifacts.py} .config/ci/t1_artifacts.py
+        cp ${../ci/source_identity.py} .config/ci/source_identity.py
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
@@ -81,7 +82,10 @@ in
         cp ${../ci/cli_contract.py} .config/ci/cli_contract.py
         cp ${../ci/test_cli_contract.py} .config/ci/test_cli_contract.py
         python3 .config/ci/test_cli_contract.py
+        cp ${../ci/catalog.py} .config/ci/catalog.py
+        cp ${../ci/test_catalog.py} .config/ci/test_catalog.py
         cp ${../ci/test.py} .config/ci/test.py
+        python3 .config/ci/test_catalog.py
         cp ${../ci/test_tiers.py} .config/ci/test_tiers.py
         cp ${../ci/selection.py} .config/ci/selection.py
         python3 .config/ci/test_tiers.py

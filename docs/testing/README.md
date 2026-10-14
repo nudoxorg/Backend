@@ -159,3 +159,17 @@ This is not the complete release gate. Full deep corpora, release builds,
 packaging and macOS/Wine/QEMU placement remain pending. No old tests are deleted
 or silently quarantined by this command. These tier commands currently target
 Linux with Nix; native macOS execution remains a separate workstream.
+
+## Source-bound catalog for CI consumers
+
+`python3 .config/ci/test.py list` keeps the simple local tier/name list.
+For automation, `python3 .config/ci/test.py list --source-sha FULL_HEAD_SHA`
+returns schema1, exact `source_sha`, the committed cases file's `catalog_sha256`
+and `tiers`. This requires the matching clean tracked checkout and reads the
+cases blob from that commit, so an untracked replacement cannot acquire its
+identity. No build, test, network request or PR comment is launched. Missing or
+malformed names, duplicates and source/checkout mismatch fail explicitly.
+The deep list currently names the implemented CLI laws; it does not claim to
+list every nightly platform/release test. A bot must bind its resolver to the
+same PR head before suggesting or scheduling these names. Dispatch authorization,
+replay protection and actual comment-triggered execution remain separate work.
