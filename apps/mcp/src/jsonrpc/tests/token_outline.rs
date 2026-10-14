@@ -123,9 +123,10 @@ fn full_outline_budget_selects_native_pages_and_complete_union_without_truncatin
         };
         assert_eq!(
             text_of(&result).matches(&cursor).count(),
-            0,
-            "opaque proof occurs once, only in typed content"
+            1,
+            "the next call spells its cursor once in the text, so a text-only agent pages"
         );
+        assert!(text_of(&result).contains("next page: backend.outline"));
         let changed_limit = request(
             &mut server,
             "tools/call",

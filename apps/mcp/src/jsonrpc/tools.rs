@@ -72,6 +72,7 @@ const SESSION_TOOLS: &[&str] = &[
     "backend.read",
     "backend.references",
     "backend.graph",
+    "backend.related",
     "backend.package",
     "backend.index_search",
 ];
@@ -626,6 +627,25 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     }
     for spec in grammar.options() {
         properties.insert(spec.json_name().to_owned(), property(*spec));
+    }
+    // These tools return one complete list the presentation pages by window.
+    // Their page size follows a response budget unless the caller bounds it,
+    // so a fixed default would misstate it.
+    if matches!(
+        grammar.name(),
+        "show" | "source" | "related" | "references" | "read"
+    ) && let Some(limit) = properties
+        .get_mut("limit")
+        .and_then(Value::as_object_mut)
+    {
+        limit.remove("default");
+        let noun = if grammar.name() == "source" { "source lines" } else { "rows" };
+        limit.insert(
+            "description".to_owned(),
+            Value::String(format!(
+                "Maximum {noun} in this page, 1 to 200. Omitted, as many as fit a response budget; the response says how to page on."
+            )),
+        );
     }
     // Presentation controls are shared by every read tool. Keeping them out
     // of the command grammar avoids making a presentation preference look

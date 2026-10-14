@@ -32,8 +32,8 @@ use backend_present::cl100k_tokens;
 use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
-    ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
-    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value,
+    ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, WindowCursor,
+    answer_paged, bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value,
     lower_with_opener, markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -805,12 +805,26 @@ impl<P: Product> Server<P> {
             | ToolRoute::RefusedIndexAwait => None,
         };
         let index_search_tool = grammar.is_some_and(|grammar| grammar.name() == "index-search");
+        // A declaration's members, a reference list and a neighbourhood reach
+        // the agent whole and are paged at the presentation boundary by a
+        // window cursor, not by an owner cursor.
+        let window_tool = grammar.is_some_and(|grammar| {
+            matches!(
+                grammar.name(),
+                "show" | "source" | "related" | "references" | "read"
+            )
+        });
         let index_search_cursor = if index_search_tool {
             self.index_search_cursor(arguments, &context)?
         } else {
             None
         };
-        let continuation = if index_search_tool {
+        let window_cursor = if window_tool {
+            self.window_cursor(arguments, &context)?
+        } else {
+            None
+        };
+        let continuation = if index_search_tool || window_tool {
             None
         } else {
             self.continuation(arguments, &context)?
@@ -826,6 +840,17 @@ impl<P: Product> Server<P> {
         };
         let mut command_arguments = arguments.clone();
         command_arguments.remove("detail");
+        // An owner-paged list page carries a typed row per record beside its
+        // text, and the pair shares one context budget. A larger `limit` is
+        // served as the most rows that always fit; the response's cursor
+        // reads on.
+        // (A limit outside 1 to 200 is not served shorter: it is refused below.)
+        if matches!(grammar.name(), "search" | "resolve")
+            && let Some(limit) = command_arguments.get("limit").and_then(Value::as_u64)
+            && (MCP_LIST_ROW_CAP + 1..=u64::from(backend_library::QueryLimit::MAX)).contains(&limit)
+        {
+            command_arguments.insert("limit".to_owned(), json!(MCP_LIST_ROW_CAP));
+        }
         if index_search_tool {
             if let Some(cursor) = index_search_cursor {
                 command_arguments.insert(
@@ -833,6 +858,8 @@ impl<P: Product> Server<P> {
                     Value::String(cursor.as_str().to_owned()),
                 );
             }
+        } else if let Some(cursor) = window_cursor {
+            command_arguments.insert("cursor".to_owned(), Value::String(cursor));
         } else {
             command_arguments.remove("cursor");
         }
@@ -842,7 +869,7 @@ impl<P: Product> Server<P> {
             .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener));
         match planned {
             Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
-                Ok(answer) => self.rendered(
+                Ok(answer) => self.rendered_call(
                     &answer,
                     detail,
                     &context,
@@ -852,6 +879,7 @@ impl<P: Product> Server<P> {
                         CursorTarget::CliOption
                     },
                     name,
+                    Some(arguments),
                 ),
                 Err(fault) => Err(RpcError::from_fault(&fault)),
             },
@@ -946,15 +974,21 @@ impl<P: Product> Server<P> {
                 CursorTarget::CliOption,
                 "backend.outline",
             )?;
-            // The opaque token appears once. Copy these exact arguments and
-            // take cursor from structuredContent.nextCursor; no second token
-            // copy is charged to the agent context.
-            if result
+            // The next call is spelled out with its cursor in the text: an
+            // agent that cannot see the typed channel pages from here. The
+            // cursor is short (a process-local handle), so this is cheap.
+            let next_token = result
                 .get("structuredContent")
-                .is_some_and(|value| value.get("nextCursor").is_some())
-            {
-                let next_arguments =
-                    json!({"path":path, "limit":effective, "detail":detail.name()});
+                .and_then(|value| value.get("nextCursor"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(token) = next_token {
+                let next_arguments = json!({
+                    "path": path,
+                    "limit": effective,
+                    "detail": detail.name(),
+                    "cursor": token,
+                });
                 if let Some(text) = result
                     .get_mut("content")
                     .and_then(Value::as_array_mut)
@@ -963,7 +997,7 @@ impl<P: Product> Server<P> {
                 {
                     let preview = text.as_str().unwrap_or_default();
                     *text = Value::String(format!(
-                        "{preview}\n\nContinue `backend.outline` with arguments `{next_arguments}` and `cursor` copied from `structuredContent.nextCursor`."
+                        "{preview}\n\nnext page: backend.outline {next_arguments}"
                     ));
                 }
             }
@@ -1064,7 +1098,11 @@ impl<P: Product> Server<P> {
         .map_err(|fault| RpcError::from_fault(&fault))?;
         let reply = self
             .product
-            .graph_page(coordinate.clone(), limit(arguments)?, continuation)
+            .graph_page(
+                coordinate.clone(),
+                limit(arguments)?.min(u16::try_from(MCP_LIST_ROW_CAP).unwrap_or(u16::MAX)),
+                continuation,
+            )
             .map_err(|error| {
                 RpcError::from_fault(&backend_present::probe_fault(
                     &error,
@@ -1082,7 +1120,14 @@ impl<P: Product> Server<P> {
             _ => return Err(RpcError::tool("graph page reply changed shape")),
         };
         let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
-        self.rendered(&answer, detail, context, CursorTarget::CliOption, tool_name)
+        self.rendered_call(
+            &answer,
+            detail,
+            context,
+            CursorTarget::CliOption,
+            tool_name,
+            Some(arguments),
+        )
     }
     fn surface_tool(
         &mut self,
@@ -1413,6 +1458,31 @@ impl<P: Product> Server<P> {
         self.verified_index_search_cursor(token, context).map(Some)
     }
 
+    /// Verifies the signed window cursor of a presentation-paged tool and
+    /// returns the window token it wraps.
+    fn window_cursor(
+        &self,
+        arguments: &Map<String, Value>,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        let Some(value) = arguments.get("cursor") else {
+            return Ok(None);
+        };
+        let token = value
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+        let owner = self
+            .verify_cursor_token(token, context)?
+            .filter(|owner| WindowCursor::is_window_token(owner))
+            .ok_or_else(|| {
+                RpcError::invalid(
+                    "cursor is unknown, expired, or belongs to another call; repeat the original call without a cursor",
+                )
+            })?;
+        Ok(Some(owner))
+    }
+
     fn verified_index_search_cursor(
         &self,
         token: &str,
@@ -1454,6 +1524,7 @@ impl<P: Product> Server<P> {
                     ))
                 })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
+            ContinuationCursor::Window(cursor) => cursor.encode(),
         };
         self.sign_cursor_token(&owner_token, context)
     }
@@ -1473,11 +1544,22 @@ impl<P: Product> Server<P> {
                 "owner cursor has an unsupported encoding or exceeds its bound",
             ));
         }
-        // Owner tokens already use URL-safe encodings. Sign their exact bytes
-        // rather than expanding them through a redundant second base64 layer.
+        // A long owner cursor (a portable query proof is kilobytes) is handed
+        // to the agent as a short handle this process remembers: the agent
+        // copies the cursor into its context, and a page of rows should not
+        // cost less than the cursor that follows it. A handle this process
+        // forgets is an unknown cursor, answered like an expired one.
         // Include the version in the authenticated body to prevent rebinding.
-        let body = format!("mcp2-{expiry}-{owner_token}");
+        // The authority is admitted first: a handle file lives beside its secret.
         let key = self.cursor_secret.key()?;
+        let body = if owner_token.len() > cursor_authority::SHORT_CURSOR_THRESHOLD {
+            let handle = self.cursor_secret.issue_handle(owner_token)?;
+            format!("mcp3-{expiry}-{handle}")
+        } else {
+            // Owner tokens already use URL-safe encodings. Sign their exact
+            // bytes rather than expanding them through a second base64 layer.
+            format!("mcp2-{expiry}-{owner_token}")
+        };
         let mac = Self::cursor_mac(&key, &body, context);
         Ok(format!("{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
     }
@@ -1485,6 +1567,9 @@ impl<P: Product> Server<P> {
     fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Result<Option<String>, RpcError> {
         if token.starts_with("mcp2-") {
             return self.verify_direct_cursor_token(token, context);
+        }
+        if token.starts_with("mcp3-") {
+            return self.verify_handle_cursor_token(token, context);
         }
         // Keep the historical mcp1 parser, canonical outer base64 check and
         // MAC domain unchanged so previously issued tokens remain verifiable.
@@ -1518,6 +1603,49 @@ impl<P: Product> Server<P> {
             return Ok(None);
         }
         Ok(Some(owner))
+    }
+
+    /// Verifies a short-handle wrapper and resolves its handle. The MAC binds
+    /// the handle to the request context before the table is consulted.
+    fn verify_handle_cursor_token(
+        &self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        if token.len() > 96 {
+            return Ok(None);
+        }
+        let Some((body, encoded_mac)) = token.rsplit_once('-') else {
+            return Ok(None);
+        };
+        let Some((expiry_text, handle)) = body
+            .strip_prefix("mcp3-")
+            .and_then(|body| body.split_once('-'))
+        else {
+            return Ok(None);
+        };
+        let Some(expiry) = expiry_text.parse::<u64>().ok() else {
+            return Ok(None);
+        };
+        if expiry <= unix_seconds()
+            || expiry.to_string() != expiry_text
+            || handle.is_empty()
+            || !handle.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || encoded_mac.len() != 32
+            || !encoded_mac
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Ok(None);
+        }
+        let Some(key) = self.cursor_secret.verification_key()? else {
+            return Ok(None);
+        };
+        let expected = Self::cursor_mac(&key, body, context);
+        if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
+            return Ok(None);
+        }
+        self.cursor_secret.resolve_handle(handle)
     }
 
     fn verify_direct_cursor_token(
@@ -1577,6 +1705,26 @@ impl<P: Product> Server<P> {
         cursor_target: CursorTarget,
         tool_name: &str,
     ) -> Result<Value, RpcError> {
+        self.rendered_call(answer, detail, context, cursor_target, tool_name, None)
+    }
+
+    /// Renders one answer for `tools/call`, retaining the call's own
+    /// arguments so the next-page line can spell the exact call.
+    ///
+    /// No read fails because of its size. A list the answer carries is already
+    /// cut to a window before it gets here; if the response is still too large
+    /// for the context budget (an enormous signature, a detail the request
+    /// raised), it is re-rendered one detail level lower and says so, down to
+    /// the summary. Only a summary that cannot fit refuses.
+    fn rendered_call(
+        &mut self,
+        answer: &Answer,
+        detail: Detail,
+        context: &[u8],
+        cursor_target: CursorTarget,
+        tool_name: &str,
+        arguments: Option<&Map<String, Value>>,
+    ) -> Result<Value, RpcError> {
         let next = answer
             .cursor()
             .map(|cursor| self.issue_cursor(cursor, context))
@@ -1603,32 +1751,66 @@ impl<P: Product> Server<P> {
             _ => None,
         };
         let answer = projected_product.as_ref().unwrap_or(answer);
-        let payload = match encode_answer(
-            answer,
-            detail,
-            next.as_deref(),
-            DEFAULT_RESPONSE_BUDGET_BYTES,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => return Ok(refused(&oversized_fault(error))),
-        };
-        let structured: Value = serde_json::from_slice(&payload.bytes)
-            .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let preview = match detail {
-            Detail::Summary => markdown::summary_with_cursor(
+        let target = arguments.map_or(ContinuationTarget::McpTool(tool_name), |arguments| {
+            ContinuationTarget::McpCall {
+                tool: tool_name,
+                arguments,
+            }
+        });
+        let mut level = detail;
+        loop {
+            let (result, refusal) = match encode_answer(
                 answer,
+                level,
                 next.as_deref(),
-                ContinuationTarget::McpTool(tool_name),
-            ),
-            Detail::Standard | Detail::Full => markdown::answer_with_detail(
-                answer,
-                detail,
-                next.as_deref(),
-                ContinuationTarget::McpTool(tool_name),
-            ),
-        };
-        let text = bounded_text(&preview);
-        Ok(tool_result(&text, structured, answer.fault().is_some()))
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            ) {
+                Ok(payload) => {
+                    let structured: Value =
+                        serde_json::from_slice(&payload.bytes).map_err(|error| {
+                            RpcError::tool(format!("typed projection decode failed: {error}"))
+                        })?;
+                    let preview = match level {
+                        Detail::Summary => {
+                            markdown::summary_with_cursor(answer, next.as_deref(), target)
+                        }
+                        Detail::Standard | Detail::Full => {
+                            markdown::answer_with_detail(answer, level, next.as_deref(), target)
+                        }
+                    };
+                    let preview = if level == detail {
+                        preview
+                    } else {
+                        format!(
+                            "(detail lowered to {}: the {} response would not fit the context budget)\n{preview}",
+                            level.name(),
+                            detail.name()
+                        )
+                    };
+                    let text = bounded_text(&preview);
+                    (
+                        Some(tool_result(&text, structured, answer.fault().is_some())),
+                        None,
+                    )
+                }
+                Err(error) => (None, Some(error)),
+            };
+            if let Some(result) = result {
+                match fitting_result(result) {
+                    Ok(result) => return Ok(result),
+                    Err(result) if lower_detail(level).is_none() => return Ok(result),
+                    Err(_) => {}
+                }
+            } else if let Some(error) = refusal
+                && lower_detail(level).is_none()
+            {
+                return Ok(refused(&oversized_fault(error)));
+            }
+            let Some(lower) = lower_detail(level) else {
+                return Err(RpcError::tool("response could not be fitted"));
+            };
+            level = lower;
+        }
     }
 
     fn graph_page_result(
@@ -1662,6 +1844,11 @@ impl<P: Product> Server<P> {
     }
 }
 
+/// Most records one owner-paged list response carries: search, resolve and
+/// graph rows each cost a typed row beside their text, and 200 of them cannot
+/// fit one context budget. The cursor in every response reads on.
+pub(super) const MCP_LIST_ROW_CAP: u64 = 30;
+
 const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Call \
 backend.packages to inspect the shelf. Index or reindex a repository explicitly with backend.index \
 and its absolute path. For accepted or active indexing work, copy the returned index_poll.call \
@@ -1672,8 +1859,10 @@ optional lane ready. An empty shelf means no project has been indexed yet, and a
 configured is not an empty codebase. Find \
 a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
-the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
-and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
+the body, backend.references for uses, and backend.graph for calls. A `path:line::name` handle \
+listed in a result is accepted wherever a coordinate is. Long lists are paged: when a result ends \
+with `next page: <tool> <arguments>`, make exactly that call to read on, or pass `limit` to bound a \
+page. Do not invent coordinates and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
 call; follow it. Read backend://workspace/current when a result looks thin. Read \
 backend://tools/catalog for callable capability-dependent routes that are not in tools/list. \
 Status reports owner availability, published rows, lane coverage, and native oracle readiness separately; \
@@ -1771,6 +1960,9 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     if owner.is_empty() || owner.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES {
         return false;
     }
+    if WindowCursor::is_window_token(owner) {
+        return owner.len() <= 64 && WindowCursor::decode(owner).is_ok();
+    }
     if let Some(encoded) = owner.strip_prefix("pc1-") {
         return encoded.len() == backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
             && encoded
@@ -1814,6 +2006,34 @@ fn refused(fault: &Fault) -> Value {
         fault_value(fault),
         true,
     )
+}
+
+/// The next smaller projection of the same answer.
+const fn lower_detail(detail: Detail) -> Option<Detail> {
+    match detail {
+        Detail::Full => Some(Detail::Standard),
+        Detail::Standard => Some(Detail::Summary),
+        Detail::Summary => None,
+    }
+}
+
+/// Admits a tool result only when its complete provisional envelope fits the
+/// byte and token budgets; the final transport measures the real caller ID.
+fn fitting_result(result: Value) -> Result<Value, Value> {
+    let measured = MeasuredEnvelope::new(
+        attach_wire_budget(
+            codec::success(Value::Null, result),
+            ResponseTransport::StdioLine,
+        ),
+        ResponseTransport::StdioLine,
+    );
+    let fits = measured.fits();
+    let mut frame = measured.into_value();
+    let result = frame
+        .as_object_mut()
+        .and_then(|frame| frame.remove("result"))
+        .unwrap_or(Value::Null);
+    if fits { Ok(result) } else { Err(result) }
 }
 
 /// Context-sized ceiling for one complete encoded JSON-RPC response, including

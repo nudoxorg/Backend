@@ -476,9 +476,14 @@ fn actual_binary_owner_mac_restarts_and_refuses_cross_surface_query_detail_and_k
             .expect("rotated key")
             .is_none()
     );
+    // The long portable proof is issued as a short signed handle that the
+    // workspace remembers, so it survives the restart above exactly as the
+    // long form did.
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 80, "{} bytes", token.len());
     for changed in [
-        token.replacen("pc4-", "pc3-", 1),
-        token.replacen("mcp2-", "mcp1-", 1),
+        token.replacen("mcp3-", "mcp2-", 1),
+        token.replacen("mcp3-", "mcp1-", 1),
     ] {
         assert!(
             fresh
@@ -1686,11 +1691,17 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             first_text_coordinate.get_or_insert_with(|| text_coordinates[0].clone());
             if let Some(cursor) = result["structuredContent"]["nextCursor"].as_str() {
                 assert_eq!(result["structuredContent"]["more"], true);
-                assert!(preview.contains(&format!("Continue `{tool}` with the same arguments")));
+                // The next call is spelled out, cursor included, in the text:
+                // an agent that cannot see structuredContent pages from it.
                 assert!(
-                    preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`")
+                    preview.contains(&format!("next page: {tool} {{")),
+                    "{tool}: {preview}"
                 );
-                assert!(!preview.contains(&format!("`{cursor}`")));
+                assert!(
+                    preview.contains(&format!("\"cursor\":\"{cursor}\"")),
+                    "{tool}: {preview}"
+                );
+                assert!(!preview.contains("structuredContent.nextCursor"), "{preview}");
                 assert!(!preview.contains("raise `limit`"), "{preview}");
                 first_cursor.get_or_insert_with(|| cursor.to_owned());
                 arguments["cursor"] = json!(cursor);
@@ -1805,9 +1816,7 @@ fn summary_rows_fixture(count: usize) -> (String, Vec<String>) {
         text.push_str(&format!("• `{name}` · function · rust\n  `{coordinate}`\n"));
         coordinates.push(coordinate);
     }
-    text.push_str(&format!(
-        "{count} row(s) on this page; showing {count} exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n"
-    ));
+    text.push_str(&format!("{count} row(s)\n"));
     (text, coordinates)
 }
 
@@ -1844,7 +1853,7 @@ fn every_interior_byte_of_a_rendered_backtick_unicode_row_backs_up_to_its_start(
 
     assert!(preview.contains("• ``  `λ`  `` · rust"), "{preview}");
     assert_eq!(summary_coordinates(&preview), vec![coordinate]);
-    assert!(preview.contains("1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted"));
+    assert!(preview.contains("\n1 row(s)\n"), "{preview}");
     for limit in row_start + 1..row_end {
         assert_eq!(
             readable_prefix_end(&preview, limit),
@@ -1873,7 +1882,7 @@ fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
     assert!(shown.len() < coordinates.len());
     assert_eq!(shown, coordinates[..shown.len()]);
     assert!(preview.contains(&format!(
-        "100 row(s) on this page; showing {} exact coordinate(s); {} omitted",
+        "100 row(s) · showing {}; {} omitted from this text, all rows in `structuredContent.records`",
         shown.len(),
         100 - shown.len()
     )));
@@ -1908,7 +1917,7 @@ fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
     assert!(shown.len() < coordinates.len());
     assert_eq!(shown, coordinates[..shown.len()]);
     assert!(preview.contains(&format!(
-        "100 row(s) on this page; showing {} exact coordinate(s); {} omitted",
+        "100 row(s) · showing {}; {} omitted from this text, all rows in `structuredContent.records`",
         shown.len(),
         100 - shown.len()
     )));
@@ -2229,6 +2238,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
         "read",
         "references",
         "graph",
+        "related",
         "package",
         "index-search",
     ];
@@ -2307,6 +2317,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.read",
             "backend.references",
             "backend.graph",
+            "backend.related",
             "backend.package",
             "backend.index_search",
             "backend.index_start",
@@ -3639,18 +3650,15 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
         assert!(summary["structuredContent"].get("source_fault").is_none());
         assert!(text_of(summary).contains("MCP_SIGNATURE_SENTINEL"));
         assert!(text_of(summary).contains(DECLARATION));
-        for omitted in [
-            "MCP_SOURCE_SENTINEL",
-            "Lights the beacon.",
-            "## source",
-            "## members",
-            "## relations",
-        ] {
+        for omitted in ["MCP_SOURCE_SENTINEL", "## source"] {
             assert!(
                 !text_of(summary).contains(omitted),
                 "summary leaked {omitted}"
             );
         }
+        // A summary names what the declaration holds: the first line of its
+        // documentation, without any of its source.
+        assert!(text_of(summary).contains("Lights the beacon."));
         for level in [None, Some("standard"), Some("full")] {
             let mut arguments = json!({"coordinate": DECLARATION});
             if let Some(level) = level {
@@ -3750,7 +3758,10 @@ fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
         assert_eq!(page["structuredContent"]["source_fault"]["cause"], cause);
         assert!(page["structuredContent"].get("source").is_none());
         assert!(text_of(&page).contains("source-unavailable"));
-        assert!(!text_of(&page).contains("OMITTED_DOCUMENTATION_SENTINEL"));
+        assert!(
+            text_of(&page).contains("OMITTED_DOCUMENTATION_SENTINEL"),
+            "a summary carries the first line of the documentation"
+        );
         let source = call(&mut server, "backend.source", &arguments);
         assert_eq!(source["isError"], true);
         assert_eq!(source["structuredContent"]["answer"], "fault");
@@ -3853,8 +3864,8 @@ fn a_standard_search_call_leads_with_honest_coverage_and_complete_selectable_row
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
         lines.first().copied(),
-        Some("~lanes exact· names· graph· semantic✗ unconfigured"),
-        "{text}"
+        Some("~lanes exact· names· graph· semantic✓1"),
+        "an unobserved lane is said; the optional vector feature never reads ✗: {text}"
     );
     assert_eq!(
         lines.get(1).copied(),
@@ -3918,8 +3929,8 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
             json!(symbol_key(coordinate).as_bytes())
         );
     }
-    assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
-    assert!(text.contains("Full page: `structuredContent.records`"));
+    assert!(text.contains("\n1 row(s)\n"), "{text}");
+    assert!(!text.contains("embedding-setup"), "{text}");
     assert_eq!(result["structuredContent"]["more"], false);
 }
 
@@ -3928,9 +3939,9 @@ fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_pre
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.search", &json!({"query":"ferris"}));
     let preview = text_of(&result);
-    assert!(preview.starts_with("~lanes exact· names· graph· semantic✗ unconfigured"));
+    assert!(preview.starts_with("~lanes exact· names· graph· semantic✓1"));
     assert!(preview.contains("1 row(s)"));
-    assert!(preview.contains("`structuredContent.records`"));
+    assert!(!preview.contains("semantic-search"), "{preview}");
     assert!(preview.contains(DECLARATION));
     let structured = &result["structuredContent"];
     assert_eq!(structured["detail"], "summary");
@@ -3960,8 +3971,8 @@ fn an_outline_call_is_a_tree_of_names_never_bare_digests() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.outline", &json!({}));
     let text = text_of(&result);
-    assert!(text.contains("▦ lib.rs"), "{text}");
-    assert!(text.contains("  ƒ ferris"), "{text}");
+    assert!(text.contains("▦ src/lib.rs"), "{text}");
+    assert!(text.contains("  ƒ src/lib.rs:2::ferris"), "{text}");
     assert!(text.contains("2 declaration(s) · complete"), "{text}");
     let digest = backend_present::KeyTag::from_key(symbol_key(DECLARATION).as_bytes()).to_string();
     assert!(
@@ -4437,7 +4448,7 @@ fn the_references_tool_serves_occurrence_sites_with_source_spans() {
     assert_eq!(result["isError"], false);
     let rendered = text_of(&result);
     assert!(
-        rendered.contains("pkg::semantic::caller"),
+        rendered.contains("src/main.rs::caller"),
         "the referencing site must be named: {rendered}"
     );
     assert!(
@@ -4651,7 +4662,7 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert_eq!(advertised.len(), 17);
+    assert_eq!(advertised.len(), 18);
     assert!(
         advertised
             .iter()
@@ -5457,9 +5468,11 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
             .expect("first graph page carries a cursor")
             .to_owned();
         let preview = text_of(&first);
-        assert!(preview.contains("Continue `backend.query` with the same arguments"));
-        assert!(preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"));
-        assert!(!preview.contains(&format!("`{cursor}`")));
+        assert!(preview.contains("next page: call `backend.query` with the same arguments"));
+        assert!(
+            preview.contains(&format!("\"cursor\":\"{cursor}\"")),
+            "the cursor is in the text: {preview}"
+        );
         assert!(!preview.contains("raise `limit`"), "{preview}");
         assert!(!preview.contains("narrow the query"), "{preview}");
 
@@ -5526,7 +5539,10 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
         .to_owned();
     assert!(cursor.starts_with("mcp2-"));
     assert!(cursor.contains(FIXTURE_INDEX_CURSOR));
-    assert!(!text_of(&first).contains(&cursor));
+    assert!(
+        text_of(&first).contains(&cursor),
+        "the cursor is in the text, not only in structuredContent"
+    );
     assert!(text_of(&first).contains("`command.cursor`"));
     assert!(!text_of(&first).contains("`--cursor`"));
     assert!(
@@ -5607,7 +5623,10 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
             first["structuredContent"]["nextCursor"].as_str(),
             Some(cursor.as_str())
         );
-        assert!(!text_of(&first).contains(&cursor));
+        assert!(
+            text_of(&first).contains(&cursor),
+            "the cursor is in the text, not only in structuredContent"
+        );
         assert!(text_of(&first).contains("`backend.index_search`"));
         assert!(
             serde_json::to_string(&first)
@@ -5754,7 +5773,10 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
 }
 
 #[test]
-fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation() {
+fn an_owner_cursor_too_large_to_copy_is_issued_as_a_short_handle_and_resumes_exactly() {
+    // The signed form of this cursor would be refused: it alone exceeds the
+    // response budget three times over. A handle stands for it instead, so the
+    // page succeeds, nothing is truncated, and the agent copies sixty bytes.
     let owner_cursor = URL_SAFE_NO_PAD.encode(format!(
         "{{\"padding\":\"{}\"}}",
         "x".repeat(26 * 1024 * 3 / 4)
@@ -5771,15 +5793,30 @@ fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation
         &json!({"query":"maven","limit":1,"detail":"summary"}),
     );
     assert_context_bounded(&response);
-    assert_eq!(response["isError"], true);
-    assert_eq!(response["structuredContent"]["answer"], "fault");
-    assert_eq!(response["structuredContent"]["cause"], "oversized");
+    assert_eq!(response["isError"], false, "{response}");
+    let handle = response["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("a short handle")
+        .to_owned();
+    assert!(handle.starts_with("mcp3-") && handle.len() < 100, "{handle}");
+    assert!(text_of(&response).contains(&handle), "the handle is in the text");
     assert!(
         !serde_json::to_string(&response)
-            .expect("refusal JSON")
-            .contains(&owner_cursor)
+            .expect("response JSON")
+            .contains(&owner_cursor),
+        "the owner cursor itself never reaches the agent"
     );
-    assert!(!text_of(&response).contains(&owner_cursor));
+    let resumed = call(
+        &mut server,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"detail":"summary","cursor":handle}),
+    );
+    assert_eq!(resumed["isError"], false, "{resumed}");
+    assert_eq!(
+        server.product.surface_index_search_seen.last(),
+        Some(&Some(owner_cursor)),
+        "the owner receives its exact cursor back"
+    );
 }
 
 #[test]
@@ -7837,10 +7874,10 @@ fn all_mcp_record_details_preserve_useful_text_and_complete_structured_identity(
             let decoded: backend_present::RecordListDto =
                 serde_json::from_value(typed.clone()).expect("stable typed row projection");
             assert_eq!(decoded.records.len(), records.len());
-            assert!(preview.contains(&format!(
-                "showing {} exact coordinate(s); 0 omitted",
-                coordinates.len()
-            )));
+            assert!(
+                preview.contains(&format!("\n{} row(s)\n", coordinates.len())),
+                "{preview}"
+            );
         }
     }
 }
@@ -7848,7 +7885,7 @@ fn all_mcp_record_details_preserve_useful_text_and_complete_structured_identity(
 #[test]
 fn final_record_preview_shrink_preserves_page_footer_across_ids_and_transports() {
     let (mut text, coordinates) = summary_rows_fixture(100);
-    text.push_str("Continue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n");
+    text.push_str("… more rows; next page: backend.graph {\"coordinate\":\"/x\",\"cursor\":\"exact-owner-token\"}\n");
     let structured = json!({"records": " ".repeat(32_000), "nextCursor": "exact-owner-token"});
     for transport in [ResponseTransport::StdioLine, ResponseTransport::HttpBody] {
         for id in [
@@ -7866,12 +7903,15 @@ fn final_record_preview_shrink_preserves_page_footer_across_ids_and_transports()
             let shown = summary_coordinates(&preview);
             assert_eq!(shown, coordinates[..shown.len()]);
             assert!(preview.contains(&format!(
-                "showing {} exact coordinate(s); {} omitted",
+                "showing {}; {} omitted from this text",
                 shown.len(),
                 100 - shown.len()
             )));
-            assert!(preview.contains("Continue `backend.graph` with the same arguments"));
-            assert!(!preview.contains("exact-owner-token"));
+            assert!(preview.contains("next page: backend.graph"));
+            assert!(
+                preview.contains("exact-owner-token"),
+                "the page footer keeps its cursor through the shrink: {preview}"
+            );
             assert!(wire_tokens(&response).expect("named tokenizer") <= MCP_CL100K_TOKEN_LIMIT);
         }
     }
@@ -7899,5 +7939,185 @@ fn dense_record_budget_witnesses_remain_named_token_refusals() {
                 .expect("typed refusal")
                 .contains(CL100K_POLICY)
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// bounded responses: window cursors, short handles, and the detail ladder
+// ---------------------------------------------------------------------------
+
+fn references_reply(count: usize) -> SurfaceReply {
+    SurfaceReply::References {
+        target: ProductText::new(DECLARATION).expect("target"),
+        references: (0..count)
+            .map(|index| backend_library::ReferenceRecord {
+                site: ProductText::new(format!(
+                    "{PROJECT}::src/caller_{index:03}.rs:{}::caller_{index:03}",
+                    index + 1
+                ))
+                .expect("site"),
+                target: backend_library::SemanticLinkTarget::Local {
+                    declaration: backend_library::SemanticDeclarationIdentity {
+                        family: [1; 16],
+                        variant: [2; 16],
+                    },
+                },
+                relation: backend_library::SemanticLinkKind::Calls,
+                evidence: backend_library::SemanticLinkEvidence {
+                    confidence: backend_library::SemanticConfidence::Compiler,
+                    source: None,
+                },
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    }
+}
+
+#[test]
+fn a_long_reference_list_never_fails_and_pages_by_a_cursor_that_is_in_the_text() {
+    let arguments = json!({"coordinate": DECLARATION});
+    let mut seen = 0;
+    let mut cursor: Option<String> = None;
+    for page in 0..20 {
+        let mut server = ready(Fake {
+            surface_reply: Some(references_reply(400)),
+            ..Fake::default()
+        });
+        let mut next = arguments.clone();
+        if let Some(cursor) = &cursor {
+            next["cursor"] = json!(cursor);
+        }
+        let result = call(&mut server, "backend.references", &next);
+        assert_eq!(result["isError"], false, "page {page}: {}", text_of(&result));
+        let text = text_of(&result);
+        assert!(text.len() < 10 * 1024, "{} bytes", text.len());
+        seen += text.lines().filter(|line| line.contains("::caller_")).count();
+        let structured = &result["structuredContent"];
+        match structured["nextCursor"].as_str() {
+            Some(token) => {
+                assert!(token.starts_with("mcp2-"), "{token}");
+                assert!(token.len() < 100, "a window cursor is short: {token}");
+                assert!(
+                    text.contains(&format!("\"cursor\":\"{token}\"")),
+                    "the cursor is in the text, not only in structuredContent: {text}"
+                );
+                assert!(text.contains("more rows; next page: backend.references"), "{text}");
+                cursor = Some(token.to_owned());
+            }
+            None => {
+                assert_eq!(seen, 400, "every row is reachable");
+                return;
+            }
+        }
+    }
+    panic!("the list did not end");
+}
+
+#[test]
+fn a_window_cursor_is_bound_to_its_call_and_refused_elsewhere() {
+    let mut server = ready(Fake {
+        surface_reply: Some(references_reply(400)),
+        ..Fake::default()
+    });
+    let first = call(&mut server, "backend.references", &json!({"coordinate": DECLARATION}));
+    let token = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("a window cursor")
+        .to_owned();
+    // Another coordinate, another detail: the signed context no longer matches.
+    for arguments in [
+        json!({"coordinate": MODULE, "cursor": token}),
+        json!({"coordinate": DECLARATION, "detail": "full", "cursor": token}),
+        json!({"coordinate": DECLARATION, "cursor": "w1-r-3-0000000000000000"}),
+        json!({"coordinate": DECLARATION, "cursor": "mcp2-1-w1-r-3-0000000000000000-00000000000000000000000000000000"}),
+    ] {
+        let mut other = ready(Fake {
+            surface_reply: Some(references_reply(400)),
+            ..Fake::default()
+        });
+        let refused = request(
+            &mut other,
+            "tools/call",
+            &json!({"name": "backend.references", "arguments": arguments}),
+        );
+        let error = refused.get("error").is_some()
+            || refused["result"]["isError"] == true;
+        assert!(error, "{refused}");
+    }
+}
+
+#[test]
+fn a_long_owner_cursor_is_issued_as_a_short_signed_handle_that_survives_a_restart() {
+    let fixture = LazyAuthorityFixture::new();
+    let owner = retained_go_binary_owner();
+    assert!(owner.len() > 1_000, "a portable proof is long: {}", owner.len());
+    let context = continuation_context(
+        PROJECT,
+        "backend.search",
+        json!({"query": "Color"}).as_object().expect("arguments"),
+        Detail::Summary,
+    );
+    let first = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    let token = first.sign_cursor_token(&owner, &context).expect("signer");
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 80, "an agent copies this into its context: {}", token.len());
+    assert_eq!(
+        first
+            .verify_cursor_token(&token, &context)
+            .expect("verify")
+            .as_deref(),
+        Some(owner.as_str())
+    );
+    drop(first);
+    let fresh = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    assert_eq!(
+        fresh
+            .verify_cursor_token(&token, &context)
+            .expect("durable handle")
+            .as_deref(),
+        Some(owner.as_str()),
+        "a handle outlives the process, as the long form always did"
+    );
+    let other = continuation_context(
+        PROJECT,
+        "backend.search",
+        json!({"query": "Other"}).as_object().expect("arguments"),
+        Detail::Summary,
+    );
+    assert!(fresh.verify_cursor_token(&token, &other).expect("rebinding").is_none());
+    // A handle nobody remembers (another workspace) is an unknown cursor.
+    let foreign = LazyAuthorityFixture::new();
+    let stranger = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&foreign.paths),
+    );
+    assert!(stranger.verify_cursor_token(&token, &context).expect("foreign").is_none());
+    assert!(!foreign.paths.data().exists(), "verification never mints state");
+}
+
+#[test]
+fn related_is_a_listed_tool_with_a_page_bound_and_a_cursor() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tools = &listed["result"]["tools"];
+    let related = tool_named(tools, "backend.related");
+    let properties = &related["inputSchema"]["properties"];
+    assert!(properties["limit"].is_object() && properties["cursor"].is_object());
+    assert!(
+        properties["limit"].get("default").is_none(),
+        "the page size follows a response budget unless bounded"
+    );
+    for tool in ["backend.document", "backend.source", "backend.references", "backend.read"] {
+        let schema = &tool_named(tools, tool)["inputSchema"]["properties"];
+        assert!(schema["limit"].is_object() && schema["cursor"].is_object(), "{tool}");
     }
 }

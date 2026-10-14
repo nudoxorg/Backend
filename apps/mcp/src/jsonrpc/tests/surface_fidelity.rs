@@ -429,7 +429,7 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                     );
                     assert!(!text_of(&graph).contains("def parse_args("));
                     if detail == "summary" {
-                        assert!(text_of(&graph).contains("structuredContent.records"));
+                        assert!(text_of(&graph).contains("1 row(s)"));
                         assert!(
                             graph["structuredContent"]["records"][0]
                                 .get("signature")
@@ -441,7 +441,7 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                 if detail == "summary" {
                     // A page with no record has no records to point at.
                     if count > 0 {
-                        assert!(text_of(&result).contains("structuredContent.records"));
+                        assert!(text_of(&result).contains(" row(s)"));
                     }
                     assert!(!text_of(&result).contains(HEADER));
                     assert!(records.iter().all(|row| row.get("signature").is_none()));
@@ -545,7 +545,11 @@ fn actual_package_only_route_keeps_unknown_counts_after_successful_selected_read
                 .expect("explicit count availability")
                 .is_null()
         );
-        assert!(text_of(&packages).contains("declaration count unavailable"));
+        // The row count is published beside the readiness; a second clause
+        // calling the declaration count unavailable only contradicts it. The
+        // typed count stays an explicit null.
+        assert!(text_of(&packages).contains("row(s)"));
+        assert!(!text_of(&packages).contains("declaration count unavailable"));
         assert!(!text_of(&packages).contains("0 declaration"));
     }
 }
@@ -609,4 +613,155 @@ fn a_name_two_declarations_share_is_refused_with_one_exact_call_per_candidate() 
             }
         }
     }
+}
+
+/// A class with many methods, as an owner publishes them: one row per member,
+/// each a child of the class, in a real immutable catalog.
+fn library_with_members(count: usize) -> (Library, String) {
+    let class = symbol_key("many-member class fixture");
+    let coordinate = format!("{SHELF}::src/many.py:3::Many");
+    let mut rows = vec![
+        Row::new(RowId::Package(package_key(SHELF)), basis(), SHELF),
+        Row::in_package(
+            RowId::Symbol(class),
+            basis(),
+            package_key(SHELF),
+            &coordinate,
+        )
+        .with_kind(DeclarationKind::Class)
+        .with_signature("class Many:")
+        .with_source(
+            backend_library::SourceLocation::new("src/many.py", 3).expect("one-based site"),
+        )
+        .with_excerpt(
+            SourceExcerpt::captured("class Many:\n    pass", SourceExcerptExtent::Complete)
+                .expect("bounded excerpt"),
+        )
+        .with_document([Fragment::Text("Many methods.".to_owned())]),
+    ];
+    for index in 0..count {
+        let label = format!(
+            "{SHELF}::src/many.py:{}::Many::method_{index:03}",
+            10 + index
+        );
+        rows.push(
+            Row::in_package(
+                RowId::Symbol(symbol_key(&label)),
+                basis(),
+                package_key(SHELF),
+                &label,
+            )
+            .with_parent(class)
+            .with_kind(DeclarationKind::Method)
+            .with_signature(format!("def method_{index:03}(self, value: int) -> str:"))
+            .with_source(
+                backend_library::SourceLocation::new(
+                    "src/many.py",
+                    u32::try_from(10 + index).expect("small line"),
+                )
+                .expect("one-based site"),
+            ),
+        );
+    }
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    (
+        Library::from_view(view, cursor).expect("real immutable catalog"),
+        coordinate,
+    )
+}
+
+#[test]
+fn a_type_with_many_members_answers_in_a_bounded_page_and_pages_to_every_member() {
+    let (library, coordinate) = library_with_members(150);
+    let mut server = server(library);
+    let mut seen = Vec::new();
+    let mut arguments = json!({ "coordinate": coordinate });
+    for page in 0..10 {
+        let result = invoke(&mut server, "backend.document", arguments.clone());
+        assert_eq!(result["isError"], false, "page {page}: {result}");
+        let text = text_of(&result);
+        assert!(text.len() < 10 * 1024, "page {page}: {} bytes", text.len());
+        for line in text.lines() {
+            if let Some((_, name)) = line.trim().split_once("::Many::method_") {
+                seen.push(format!("method_{}", &name[..3]));
+            }
+        }
+        match result["structuredContent"]["nextCursor"].as_str() {
+            Some(token) => {
+                assert!(
+                    text.contains(&format!("\"cursor\":\"{token}\"")),
+                    "the cursor is in the text: {text}"
+                );
+                assert!(text.contains("more members; next page: backend.document"));
+                assert_eq!(result["structuredContent"]["window"]["total"], 150);
+                arguments["cursor"] = json!(token);
+            }
+            None => {
+                let expected = (0..150)
+                    .map(|index| format!("method_{index:03}"))
+                    .collect::<Vec<_>>();
+                assert_eq!(seen, expected, "every member, once, in order");
+                assert!(page >= 1, "150 members do not fit one page");
+                // The same cursor refuses under other arguments.
+                let mut other = arguments.clone();
+                other["detail"] = json!("summary");
+                let request = json!({"jsonrpc":"2.0","id":"other","method":"tools/call",
+                    "params":{"name":"backend.document","arguments":other}});
+                let reply = server
+                    .handle(&serde_json::to_vec(&request).expect("request bytes"))
+                    .expect("response");
+                let refused = reply.get("error").is_some()
+                    || reply["result"]["isError"] == true;
+                assert!(refused, "{reply}");
+                return;
+            }
+        }
+    }
+    panic!("the member list did not end");
+}
+
+#[test]
+fn a_summary_of_a_large_type_still_names_its_members_and_a_limit_bounds_the_page() {
+    let (library, coordinate) = library_with_members(40);
+    let mut server = server(library);
+    let summary = invoke(
+        &mut server,
+        "backend.document",
+        json!({"coordinate": coordinate, "detail": "summary"}),
+    );
+    assert_eq!(summary["isError"], false, "{summary}");
+    let text = text_of(&summary);
+    assert!(text.contains("method_000, method_001"), "{text}");
+    assert!(!text.contains("value: int"), "a summary names; it does not spell signatures");
+    let bounded = invoke(
+        &mut server,
+        "backend.document",
+        json!({"coordinate": coordinate, "limit": 5}),
+    );
+    let text = text_of(&bounded);
+    assert_eq!(text.matches("::Many::method_").count(), 5, "{text}");
+    assert!(text.contains("35 more members; next page: backend.document"), "{text}");
+}
+
+#[test]
+fn a_full_request_that_cannot_fit_is_served_one_detail_lower_and_says_so() {
+    let (library, coordinate) = library_with_members(150);
+    let mut server = server(library);
+    let result = invoke(
+        &mut server,
+        "backend.document",
+        json!({"coordinate": coordinate, "detail": "full"}),
+    );
+    assert_eq!(result["isError"], false, "no read fails because of its size: {result}");
+    let text = text_of(&result);
+    let served = result["structuredContent"]["detail"].as_str().expect("detail served");
+    if served != "full" {
+        assert!(
+            text.starts_with(&format!("(detail lowered to {served}: the full response")),
+            "{text}"
+        );
+    }
+    assert!(text.contains("method_000"), "{text}");
+    assert!(text.contains("next page: backend.document"), "{text}");
 }
