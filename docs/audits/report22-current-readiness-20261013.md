@@ -1,5 +1,44 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-14, 05:10 UTC
+
+**Product readiness remains unproved.** Root fetched the coworker's PRs 231/232, reviewed their actual diff, and personally merged PR 225 into canonical `3aa8462a1a45f70006264db74ca3e8cd97d9e1c7`, tree `c9bd0a3248476fab277741773527574885cabe81`. The twelve Go repair postimages match the tested b4 source; every other canonical entry is preserved. The preexisting Nix edit remains untouched, SHA-256 `9cee064afabfacafd6b59a041993f6a0f98f382cf37866caf1d9e12225acff63`.
+
+This section supersedes pending statements below only where new execution is recorded. Source review, SDK/native tests, dependency setup, screenshots, and fresh product acceptance remain separate evidence.
+
+### New actual execution
+
+| Exact source / run | Verified result | Limit of the result |
+| --- | --- | --- |
+| b4 `b4b0dbea34b2f522da8e60daefe84abff0ffd60a`, engine continuation 11 | The **engine library no-run build passed**, then three exact controls passed: complete sibling-package reservation from a tiny primary file, reused-signature carrier reservation, and borrowed-owner lookup with absent/repeated owners. Root independently verified raw Cargo artifact/profile binding, libtest output, unchanged source/tools, kernel drain and permit release. | 1,010 tests were listed; only three were executed, with 1,009 filtered per invocation. The prior interrupted 91 integration artifacts remain unexecuted. No full engine suite, Clippy, or current Caddy product pass is inferred. Go SDK 18/18 was separately verified earlier. |
+| Desktop `3c65d18a6462257b1f18e2feb1b663e13c8281f1`, normal build 20 | Ordinary Linux GUI build succeeded in 365.997 seconds. Retained executable: 726,117,880 bytes, SHA-256 `3ee0b926f0a42e70d79b2d0b11d1659b1fc58917b51a97a2e2fef2b206c48699`. | Its library test build failed on two missing test imports. Selected Ask/owner tests did not execute. The named public-facade correction is reviewed source, not a rerun. |
+| Same desktop executable, native journey 22 | Real window, native input, accessibility extents, frame trace and thirteen distinct capture paths were retained. Root inspected startup, resize, zoom/reset and Settings images. The journey **failed**. | Startup captures at 0.5, 1, 3 and 10 seconds were black; first presentation followed mouse input at 15,775.784 ms. Five zoom chords produced only two zoom actions and 125%, not 200%. The move exposed an initial 2px X11 origin mismatch. Full motion, Add and publication remained unrun. |
+| Ordinary HTTPie dependency setup on ILO | Genuine CPython 3.14.6 installed 72 distributions; HTTPie 3.2.4, requests 2.34.2 and pytest 9.1.1 imported. All 133 original source/config files were preserved; 78 generated build/lib Python files remain separately recorded. Scope closed and released its permit. | Setup only. Generated files require explicit captured-membership disposition. No Nudox indexing or dependency consumption was proved. |
+| Ordinary SearXNG dependency setup on ILO | All twelve setup/import commands passed; 117 distributions installed, genuine searx/Flask/Sphinx/basedpyright imports succeeded. All 407 original source/config files were preserved, with no generated Python outside the environment. Scope closed and released its permit. | Setup only. Installed dependencies do not establish native semantic coverage or publication. Paperless dependency setup remains deferred. |
+
+The new engine receipts are retained under `b4-engine07-root-raw/native11-minimal-export/`: outer SHA-256 `5f860023b2657f0c225c9fad21a67737b0f76adf13ca0a372be0124d33c4514c`, driver `ceef33408d1cc583f982fa144e678b303a9b28dd265888d7a2be5c595967f0d2`, and Cargo JSON `e53dff335455e98c85f4110ee2ac59b45bd2d06dec1dd1c5422d879ef034a96e`. The exact engine test ELF is bound at 331,297,384 bytes, SHA-256 `b80380cfac86e60725344efea2fe4a82eb8e412c262edeb807bf78dadffb9b6f`.
+
+### Repairs reviewed, awaiting native execution
+
+The GUI composition is frozen at `3183000a7788d20c2d4bef362a68869a24500cac`, tree `5f07dbec4d251e06703ad3c45804b7be3e1d82f2`, on current canonical 3aa. Root independently bound 111 reviewed paths: 110 exact prior atom postimages and one expected combined lockfile; all twelve Go postimages are exact. Coworker publication assertions and dependency/test fixes remain preserved.
+
+The source repairs address initial scene submission, buffered X11 Map/Expose draining, actual native origin measurement, truthful WGPU presentation results, global zoom during drawer transitions, immutable graph-visit query/caret history, fresh-visit input retirement, deferred Ask acceptance of painted rows, and streaming running-image identity above the former 512 MiB cap. Root and Luna reviewed these changes. **The composed GUI build, native controls and repaired input journey remain unrun.** A `Presented` trace label alone cannot replace actual captured pixels.
+
+TypeScript exact parentage and call endpoints are source-clear at `5d281c798ab0b8d151e381d4bf299e24af596c26`; the previous 64e same-label graph collapse is repaired in source. Its current-canonical composition is `9b7b21fd14a82821d380dbe7324ad6e55e2c4e53`, [PR 234](https://dev.nudox.org/git/Nudox/Backend/pulls/234). Baseline-falsifier and repaired native controls are still unrun. The report's ASP/GymBro member lists cannot be credited from a synthetic source review.
+
+A concrete Python boundary remains missing: `captured_finder` deliberately disables interpreter probing and supplies an empty unspecified site-package list; current selected input carries project sources rather than a captured installed-dependency cohort. HTTPie/SearXNG installation therefore cannot, by itself, make the checker consume those dependencies. A typed immutable environment/dependency capture is being implemented without allowing ambient paths or counting dependency files as project coverage.
+
+### Reporter issues and current gates
+
+Old PRs 196/197/199/201 remain open in Forgejo, but their functional commits are already in canonical through PR 215. Their open labels must not be reported as evidence that wait recovery, complete member paging, short control reads or durable MCP start were never integrated. The exact CLI 42da 82/82 result remains useful, including the real subprocess retirement control; current large-project waits and concurrent reads still require a fresh matched-trio replay. The original eight-second cold-status cutoff was also changed under PR 215. Its startup recovery hint still references a hardcoded `nudox ... health` command and authority-file path; observed-executable/passive replay work in PR 216 remains a separate open gate.
+
+The current matched-trio source `79ee0a714aca65da7f649e158414ba40c10847a9` includes reviewed MCP 227, TypeScript 223, Python 226 and Go 225 source, but predates the coworker's 231/232 changes. It is not a current-canonical binary. No matched trio has yet completed. The first remote phase is narrowed to MCP library compilation and nine exact controls; normal CLI/MCP/locald builds follow only after measured phase closure. Earlier pre-admission attempts and their failures remain retained, including a stale four-GiB disk gate and the missing private loan-registry directory; they executed zero product tests.
+
+Resource limits remain 16 fleet slots, eight on ILO, four Cargo jobs maximum per build, eight-GiB destination memory and sixteen-GiB free-disk floors, plus the measured 80-GiB CI reserve. The narrowly bounded MCP experiment adds a two-GiB phase forecast and derives its disk gate as 98 GiB; it does not lower the 96-GiB reserve. The existing monitor stops on observed footprint breaches; this is not a kernel disk quota. Native/GUI additive ceilings remain 80/36/116 GiB. The offline Mac is explicitly excluded only for authorized ILO validation and is rechecked before guard sampling. Local heavy builds remain paused; source-only work does not prove laptop GUI acceptance.
+
+Installer publication, current binaries, fresh project CLI/MCP acceptance, GUI pixels/input/publication, and useful configured semantic search remain open and distinct. No new production-ready bundle, Homebrew pass, installer success or complete semantic coverage is claimed.
+
+
 ## Follow-up: 2026-10-14, 01:05 UTC
 
 **Product readiness is not established.** Canonical was fetched at `8b36bccf579e1f02f4cacd510152df8fcf8429fd`, tree `1482e861fefaa908ef2b5716454675a85b5b8c07`. Root reviewed and merged PRs 219, 223, 224 and 226. The existing `.config/nix/tools.nix` edit remains outside these commits; its SHA-256 remains `9cee064afabfacafd6b59a041993f6a0f98f382cf37866caf1d9e12225acff63`.
