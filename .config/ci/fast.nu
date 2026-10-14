@@ -25,6 +25,12 @@ def fast-flake-checks []: nothing -> list<string> {
 
 def main []: nothing -> nothing {
 
+    # Check wall-clock expiry on every invocation, outside cached Nix checks.
+    ^python3 ($env.FILE_PWD | path join "quarantine.py")
+    if $env.LAST_EXIT_CODE != 0 {
+        error make {msg: "emulation exclusion review is invalid or expired; see docs/testing/quarantine.md"}
+    }
+
     # Fast checks keep only compile outputs, independently of the much larger
     # Linux runtime cache. Cache loss always falls back to a clean build.
     let cache = $env.CI_FAST_CACHE_ROOT? | default ""
