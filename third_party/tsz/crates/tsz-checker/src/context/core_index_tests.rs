@@ -112,3 +112,50 @@ fn global_augmentation_indices_empty_for_no_augmentations() {
     assert!(aug_index.is_empty());
     assert!(targets_index.is_empty());
 }
+
+#[test]
+fn library_owner_positions_follow_the_shared_set_and_prefer_the_first_match() {
+    use crate::context::{CheckerContext, LibContext};
+    use tsz_parser::parser::node::NodeArena;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    let arena = Arc::new(NodeArena::new());
+    let binder = Arc::new(BinderState::new());
+    let interner = TypeInterner::new();
+    let queries = QueryCache::new(&interner);
+    let mut ctx = CheckerContext::new(
+        &arena,
+        &binder,
+        &queries,
+        "main.ts".into(),
+        Default::default(),
+    );
+    let lib = |binder: &Arc<BinderState>| LibContext {
+        arena: Arc::new(NodeArena::new()),
+        binder: Arc::clone(binder),
+    };
+    let (a, b, c) = (
+        Arc::new(BinderState::new()),
+        Arc::new(BinderState::new()),
+        Arc::new(BinderState::new()),
+    );
+    let ptr = |binder: &Arc<BinderState>| Arc::as_ptr(binder) as usize;
+
+    // The same binder appearing twice resolves to its first position, as a scan would.
+    ctx.set_lib_contexts_shared(Arc::new(vec![lib(&a), lib(&b), lib(&a)]));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&a)), Some(0));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&b)), Some(1));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&c)), None);
+    assert_eq!(ctx.lib_context_position_of_binder(&b), Some(1));
+
+    // Another library set on the same thread is indexed on its own, never answered
+    // from the previous set's index.
+    ctx.set_lib_contexts_shared(Arc::new(vec![lib(&c), lib(&b)]));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&c)), Some(0));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&b)), Some(1));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&a)), None);
+
+    // No libraries at all: nothing is found.
+    ctx.set_lib_contexts_shared(Arc::new(Vec::new()));
+    assert_eq!(ctx.lib_context_position_of_binder_ptr(ptr(&a)), None);
+}

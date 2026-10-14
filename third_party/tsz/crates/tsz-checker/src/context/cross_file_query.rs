@@ -45,6 +45,16 @@ impl<'a> CheckerContext<'a> {
             return true;
         }
 
+        // The sealed program already answered the whole-program scan, once.
+        if let Some(facts) = self
+            .shared_program_facts
+            .as_ref()
+        {
+            return facts.has_module_augmentations()
+                || !self.binder.module_augmentations.is_empty()
+                || !self.binder.augmentation_target_modules.is_empty();
+        }
+
         self.all_binders.as_ref().is_some_and(|binders| {
             binders.iter().any(|binder| {
                 !binder.module_augmentations.is_empty()
@@ -61,6 +71,9 @@ impl<'a> CheckerContext<'a> {
     pub fn program_has_global_augmentations(&self) -> bool {
         if !self.binder.global_augmentations.is_empty() {
             return true;
+        }
+        if let Some(facts) = self.shared_program_facts.as_ref() {
+            return facts.has_global_augmentations();
         }
         self.all_binders.as_ref().is_some_and(|binders| {
             binders
