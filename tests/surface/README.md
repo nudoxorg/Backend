@@ -426,3 +426,21 @@ MCP search/outline replies are compared using the same reviewed projection and
 live continuation checks as the existing real projects. A missing native symbol
 or partial/refused publication cannot become a new golden. Native review and an
 independent exact-head comparison are required before this slice is complete.
+
+Initial Rust snapshot review: Concourse484294/pr-t1/686, source5d4999f8b.
+The unchanged synthetic/Go/Python cases matched; the new case deliberately failed
+for a missing reviewed golden after all native/source/transport guards passed.
+Native complete Rust root is
+`df9e741237da30ee5a2f758eeece5c8bbb7f6404664c6d284af70bb78b0875fd`.
+Reviewed ready structs exactly match upstream PercentEncode at src/lib.rs:142
+and AsciiSet at src/ascii_set.rs:28. CLI returned4/8 search records; MCP's bounded
+first3 match CLI and both offered search continuations were consumed by fresh
+MCP clients. Complete public outline contains125 declarations and the ready
+package is percent-encoding. Source-less semantic instantiations/imports remain
+in the full compared result as returned (some language=unknown); no claim that
+every returned record is an authored source declaration.
+
+Initial native baseline: index19.38s, owner CPU19.46s, peak799588KiB; first
+PercentEncode query1.07s, AsciiSet0.04s, outline0.07s, packages0.02s, MCP0.21s.
+Existing1.5 time/CPU and1.25 memory ratios/floors stay unchanged. Independent
+exact-head comparison of this golden and every old case is required before merge.
