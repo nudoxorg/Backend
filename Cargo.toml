@@ -20,6 +20,7 @@ exclude = [
     "tests/surface",
     "third_party/tsz",
     "tools/package",
+    "vendor/pyrefly_config_native_1_2",
 ]
 
 [workspace.package]
@@ -197,6 +198,11 @@ gpui_ce_scheduler = { path = "vendor/gpui_ce_scheduler" }
 ra_ap_hir_def = { path = "vendor/ra_ap_hir_def" }
 ra_ap_project_model = { path = "vendor/ra_ap_project_model" }
 ra_ap_toolchain = { path = "vendor/ra_ap_toolchain" }
+
+# Preserve the pinned native loader's actual cause after its file-path context.
+# The borrowed accessor and unchanged upstream source are documented beside it.
+[patch."https://github.com/facebook/pyrefly"]
+pyrefly_config = { path = "vendor/pyrefly_config_native_1_2" }
 
 # Per-project TSZ semantic options are carried by QueryCache and every native
 # parallel checker instead of process-global identity environment variables.

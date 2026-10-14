@@ -9,7 +9,8 @@
     "Only blake3 dependency requirement =1.8.2 -> ^1.8.3 to unify with Iroh; workspace remains locked1.8.7",
     "Sibling native crates use same pinned upstream git revision instead of sibling paths",
     "Diagnostic baseline reader admits typed matching-key input (path/name/positive column) with typed optional legacy metadata and preserves upstream acceptance of unrelated JSON properties; compact inputs do not invent error coordinates or change legacy error output.",
-    "Doc-hidden reexports expose only the existing native baseline processor and diagnostic type to the captured-input adapter and its native matching controls; the error module remains private."
+    "Doc-hidden reexports expose only the existing native baseline processor and diagnostic type to the captured-input adapter and its native matching controls; the error module remains private.",
+    "A borrowed exact-range module Variable/Constant view exposes the native preferred-definition and last-assignment ranges through the committed Handle; imports/classes/functions and ambiguous ranges are refused. Native export/AST contents are not cloned."
   ],
   "upstream_files": [
     {
@@ -6884,9 +6885,19 @@
       "overlay_sha256": "7901b47744d5c582bb383c3bd62120cefd280e1d214a69755c113161c337b87c"
     },
     {
+      "path": "lib/export/exports.rs",
+      "upstream_sha256": "daa1f48fe1c32c09f0a728e3183eb14dc2bb72c7b13bab72864d859f318a8b7d",
+      "overlay_sha256": "da5ad453cfd4090bddb3e509262fcc1c1beb5c851927cc4595b19a82fedd2e7f"
+    },
+    {
       "path": "lib/lib.rs",
       "upstream_sha256": "30c8978f55a9f2861843bdede727f5ad4092295fc3f593f95b09b94219d0aef5",
       "overlay_sha256": "fedb8a408de71d9c250e76f930a6e5b1e15ee4670067bb5d424908ad6e3a095f"
+    },
+    {
+      "path": "lib/state/state.rs",
+      "upstream_sha256": "c6100db01cbf66d942ad1c0f9277a71f6f6ff79cc2821ff1a6bfe74f766f4ee1",
+      "overlay_sha256": "a4e611076945bcf84961abb932aa50b382ac35e201b072ed18de349e248c2888"
     }
   ]
 }

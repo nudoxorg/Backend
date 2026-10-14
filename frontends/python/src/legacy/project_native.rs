@@ -9,7 +9,7 @@ use pyrefly::state::require::Require;
 use pyrefly::state::state::State;
 use pyrefly_config::base::{InferReturnTypes, Preset};
 use pyrefly_config::config::{ConfigFile, ConfigSource, FallbackSearchPath, ProjectLayout};
-use pyrefly_config::finder::{ConfigError, ConfigFinder};
+use pyrefly_config::finder::ConfigFinder;
 use pyrefly_config::error_kind::ErrorKind;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::TextRangeWithModule;
@@ -301,16 +301,10 @@ pub(super) fn analyze(
     let read = state.transaction();
     let errors = read.get_config_errors();
     if !errors.is_empty() {
+        let causes = super::project_configuration::native_loader_causes(&errors, control)?;
         return Err(project_error(
             "",
-            &format!(
-                "native configuration errors: {}",
-                errors
-                    .iter()
-                    .map(ConfigError::get_message)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
+            &format!("native configuration errors: {causes}"),
         ));
     }
     // Recovery answers from an unavailable resource must not leak precise
@@ -330,17 +324,17 @@ pub(super) fn analyze(
         .map(|source| source.relative_path)
         .chain(compiled_sources.iter().copied())
         .collect::<BTreeSet<_>>();
-    let selected_native_paths = raw_sources
+    let selected_native_sources = raw_sources
         .iter()
         .zip(&raw_handles)
-        .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
+        .map(|(source, handle)| (handle.path().as_path(), (source.relative_path, handle)))
         .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
     for loaded in read.handles() {
         checkpoint(control)?;
-        let Some(path) = selected_native_paths
+        let Some((path, _)) = selected_native_sources
             .get(loaded.path().as_path())
-            .filter(|path| unavailable_paths.contains(**path))
+            .filter(|(path, _)| unavailable_paths.contains(*path))
         else {
             continue;
         };
@@ -355,9 +349,9 @@ pub(super) fn analyze(
             if dependent == loaded {
                 continue;
             }
-            let Some(dependent_path) = selected_native_paths
+            let Some((dependent_path, _)) = selected_native_sources
                 .get(dependent.path().as_path())
-                .filter(|path| syntax.contains_key(**path))
+                .filter(|(path, _)| syntax.contains_key(*path))
             else {
                 continue;
             };
@@ -672,9 +666,29 @@ pub(super) fn analyze(
                         "native definition module differs from captured bytes",
                     ));
                 }
+                // Native export lookup prefers the annotated/first declaration,
+                // while its committed Definitions also retain the current module
+                // binding range. Read that exact range through the selected Handle;
+                // no name matching or source-text fallback can create a target.
+                let binding_range = selected_native_sources
+                    .get(definition.module.path().as_path())
+                    .map(|(_, handle)| *handle)
+                    .filter(|handle| {
+                        read.get_module_info(handle).is_some_and(|module| {
+                            module.path() == definition.module.path()
+                                && module.name() == definition.module.name()
+                                && module.contents() == definition.module.contents()
+                        })
+                    })
+                    .and_then(|handle| {
+                        read.with_module_binding(handle, definition.range, |view| {
+                            view.map(|view| view.binding_range())
+                        })
+                    })
+                    .unwrap_or(definition.range);
                 let span = Span {
-                    start: definition.range.start().to_u32(),
-                    end: definition.range.end().to_u32(),
+                    start: binding_range.start().to_u32(),
+                    end: binding_range.end().to_u32(),
                 };
                 if target_source
                     .get(span.start as usize..span.end as usize)
@@ -772,7 +786,17 @@ pub(super) fn analyze(
                     targets.push(target);
                 }
             }
-            let primary = if is_class {
+            // A non-call read can have a native module-variable definition even
+            // when its value is an external ClassDef. A call still requires the
+            // captured class declaration; its variable cannot stand in for an
+            // uncaptured constructor or callable.
+            let primary = if is_class
+                && (!bindings.is_empty()
+                    || matches!(
+                        occurrence.kind,
+                        OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
+                    ))
+            {
                 bindings.as_slice()
             } else {
                 callees.as_slice()
@@ -854,7 +878,7 @@ pub(super) fn analyze(
     checkpoint(control)?;
     for error in read.get_errors(&handles).collect_display_errors() {
         checkpoint(control)?;
-        let Some(path) = selected_native_paths.get(error.path().as_path()) else {
+        let Some((path, _)) = selected_native_sources.get(error.path().as_path()) else {
             continue;
         };
         // Checker recovery/fallback diagnostics share the same tainted native
@@ -1167,6 +1191,7 @@ fn captured_finder(
         original: &Path,
         baselines: &CapturedBaselines,
         version: NativeVersion,
+        control: PythonProjectControl<'_>,
     ) -> Result<ArcId<ConfigFile>, CheckerError> {
         if let Some(path) = &config.typeshed_path {
             return Err(CheckerError::UncapturedDependency { path: path.clone() });
@@ -1225,16 +1250,10 @@ fn captured_finder(
         config.skip_lsp_config_indexing = true;
         let errors = config.configure();
         if !errors.is_empty() {
+            let causes = super::project_configuration::native_loader_causes(&errors, control)?;
             return Err(project_error(
                 "",
-                &format!(
-                    "native captured configuration errors: {}",
-                    errors
-                        .iter()
-                        .map(ConfigError::get_message)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ),
+                &format!("native captured configuration errors: {causes}"),
             ));
         }
         Ok(ArcId::new(config))
@@ -1255,6 +1274,7 @@ fn captured_finder(
         original_root,
         baselines,
         version,
+        control,
     )?;
     let mut loaded = BTreeMap::new();
     for directory in &directories {
@@ -1288,7 +1308,7 @@ fn captured_finder(
                 path,
                 (
                     priority,
-                    configure(config, layout, original_root, baselines, version)?,
+                    configure(config, layout, original_root, baselines, version, control)?,
                 ),
             );
         }
@@ -1296,7 +1316,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier.v6;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding+borrowed-native-config-cause+class-valued-module-read.v9;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory

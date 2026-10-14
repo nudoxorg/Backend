@@ -10360,7 +10360,6 @@ dependencies = [
 [[package]]
 name = "pyrefly_config"
 version = "1.2.0-dev.1"
-source = "git+https://github.com/facebook/pyrefly?rev=30b5ca5250db9f2d9264d5e889662cf1224a75b7#30b5ca5250db9f2d9264d5e889662cf1224a75b7"
 dependencies = [
  "anyhow",
  "clap",

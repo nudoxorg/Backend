@@ -5,6 +5,7 @@
 //! config or removes settings to admit an otherwise refused project.
 
 use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 
 use pyrefly_config::config::ConfigFile;
@@ -133,13 +134,61 @@ impl Evidence {
         self.faults.push(fault);
     }
 
-    fn message(&mut self, text: &str, maximum: usize) -> Box<str> {
-        let mut end = text.len().min(maximum);
-        while !text.is_char_boundary(end) {
-            end -= 1;
+    fn display(
+        &mut self,
+        value: impl fmt::Display,
+        maximum: usize,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Box<str>, CheckerError> {
+        checkpoint(control)?;
+        struct Bounded<'a> {
+            text: String,
+            maximum: usize,
+            truncated: bool,
+            control: PythonProjectControl<'a>,
+            refusal: Option<CheckerError>,
         }
-        self.truncated |= end != text.len();
-        text[..end].into()
+        impl fmt::Write for Bounded<'_> {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                if let Err(error) = checkpoint(self.control) {
+                    self.refusal = Some(error);
+                    return Err(fmt::Error);
+                }
+                let mut end = text.len().min(self.maximum - self.text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.text.push_str(&text[..end]);
+                self.truncated |= end != text.len();
+                if self.truncated {
+                    Err(fmt::Error)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let mut sink = Bounded {
+            // The writer never appends past this admitted allowance, so its
+            // buffer cannot grow geometrically beyond the diagnostic budget.
+            text: String::with_capacity(maximum),
+            maximum,
+            truncated: false,
+            control,
+            refusal: None,
+        };
+        let result = write!(&mut sink, "{value}");
+        checkpoint(control)?;
+        if let Some(error) = sink.refusal {
+            return Err(error);
+        }
+        if result.is_err() && !sink.truncated {
+            return Err(super::project::project_error(
+                "",
+                "native diagnostic cause formatter refused",
+            ));
+        }
+        self.truncated |= sink.truncated;
+        Ok(sink.text.into_boxed_str())
     }
 }
 
@@ -293,8 +342,15 @@ pub(super) fn configuration_error(
                 checkpoint(control)?;
                 if let Some(error) = native_parse_error {
                     diagnostic_faults(text, pyproject, &mut evidence, control)?;
-                    let message =
-                        evidence.message(error.message(), evidence.remaining().saturating_sub(1));
+                    // Keep the native cause first, then its own source/field
+                    // context. A long context can exhaust the existing allowance
+                    // without hiding the original parser cause or allocating a
+                    // second complete captured-document string.
+                    let message = evidence.display(
+                        format_args!("{}\n{error}", error.message()),
+                        evidence.remaining().saturating_sub(1),
+                        control,
+                    )?;
                     let width = message.len();
                     let error_span = error.span().and_then(span);
                     let fault = if evidence.faults.is_empty() && evidence.omitted == 0 {
@@ -366,12 +422,13 @@ fn loader_faults(
             evidence.omit();
             continue;
         }
-        // This pinned public API only exposes an owned message. Its producer
-        // already consumed a <=1 MiB captured document; retain only our shared
-        // remaining allowance and do not accumulate the returned strings.
-        let original = error.get_message();
-        checkpoint(control)?;
-        let message = evidence.message(&original, evidence.remaining() - severity.len() - 1);
+        // The borrowed native cause survives loader file-path context. Format
+        // it directly into the shared allowance, without message reconstruction.
+        let message = evidence.display(
+            error.cause(),
+            evidence.remaining() - severity.len() - 1,
+            control,
+        )?;
         let width = severity.len() + message.len();
         evidence.retain(
             PythonProjectConfigurationFault::NativeLoaderRefusal { severity, message },
@@ -379,6 +436,28 @@ fn loader_faults(
         );
     }
     checkpoint(control)
+}
+
+pub(super) fn native_loader_causes(
+    errors: &[ConfigError],
+    control: PythonProjectControl<'_>,
+) -> Result<Box<str>, CheckerError> {
+    struct Causes<'a>(&'a [ConfigError]);
+    impl fmt::Display for Causes<'_> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for (index, error) in self.0.iter().enumerate() {
+                if index != 0 {
+                    formatter.write_str("; ")?;
+                }
+                formatter.write_str(error.severity().label().trim())?;
+                for cause in error.cause_chain() {
+                    write!(formatter, ": {cause}")?;
+                }
+            }
+            Ok(())
+        }
+    }
+    Evidence::default().display(Causes(errors), MAX_NATIVE_DIAGNOSTIC_BYTES, control)
 }
 
 #[cfg(test)]
@@ -393,6 +472,153 @@ mod tests {
             cancelled,
             deadline: Instant::now() + Duration::from_secs(30),
         }
+    }
+
+    #[test]
+    fn borrowed_native_display_stops_at_utf8_bound_before_later_chunks() {
+        struct NativeChunks<'a>(&'a AtomicBool);
+        impl fmt::Display for NativeChunks<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a🐍")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                formatter.write_str("unreachable trailing native context")
+            }
+        }
+        let continued = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        let message = evidence
+            .display(NativeChunks(&continued), 2, control(&cancelled))
+            .unwrap();
+        assert_eq!(message.as_ref(), "a");
+        assert!(evidence.truncated);
+        assert!(!continued.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn borrowed_native_display_observes_cancellation_between_cause_chunks() {
+        struct CancellingCause<'a>(&'a AtomicBool);
+        impl fmt::Display for CancellingCause<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("native cause")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                formatter.write_str("native context")
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        assert!(matches!(
+            evidence.display(
+                CancellingCause(&cancelled),
+                MAX_NATIVE_DIAGNOSTIC_BYTES,
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { phase: "project" })
+        ));
+        assert!(evidence.faults.is_empty());
+    }
+
+    #[test]
+    fn borrowed_native_display_observes_cancellation_after_final_cause_write() {
+        struct FinalWriteCancellation<'a>(&'a AtomicBool);
+        impl fmt::Display for FinalWriteCancellation<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("genuine native cause")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        assert!(matches!(
+            evidence.display(
+                FinalWriteCancellation(&cancelled),
+                MAX_NATIVE_DIAGNOSTIC_BYTES,
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { phase: "project" })
+        ));
+        assert!(evidence.faults.is_empty());
+    }
+
+    #[test]
+    fn actual_native_invalid_path_causes_keep_field_and_config_source_context() {
+        fn complete(error: &ConfigError) -> String {
+            format!(
+                "{}: {}",
+                error.severity().label().trim(),
+                error
+                    .cause_chain()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(": ")
+            )
+        }
+        fn prefix(text: &str) -> &str {
+            let end = text
+                .char_indices()
+                .map(|(start, character)| start + character.len_utf8())
+                .take_while(|end| *end <= MAX_NATIVE_DIAGNOSTIC_BYTES)
+                .last()
+                .unwrap_or(0);
+            &text[..end]
+        }
+        let root = std::env::temp_dir().join(format!("c{:x}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // The native API accepts a supplied TOML path. A short private test
+        // TMPDIR exercises complete context; long platform paths must clip exactly.
+        let path = root.join("p");
+        let source = "search-path = ['s']\nsite-package-path = ['t']\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut config, errors) = ConfigFile::from_file(&path);
+        assert!(errors.is_empty());
+        config.interpreters.skip_interpreter_query = true;
+        let mut errors = config.configure();
+        assert_eq!(
+            errors.len(),
+            2,
+            "actual native search/site-package validation"
+        );
+        let cancelled = AtomicBool::new(false);
+        for (error, field) in errors.iter().zip(["site-package-path", "search-path"]) {
+            let complete = complete(error);
+            let message =
+                native_loader_causes(std::slice::from_ref(error), control(&cancelled)).unwrap();
+            assert_eq!(message.as_ref(), prefix(&complete));
+            let cause = error.cause().to_string();
+            let context = format!("Invalid {field}");
+            let file = error.get_message();
+            assert_eq!(file, path.to_string_lossy());
+            let cause_position = complete.find(&cause).unwrap();
+            let field_position =
+                complete[cause_position..].find(&context).unwrap() + cause_position;
+            let file_position = complete[field_position..].find(&file).unwrap() + field_position;
+            assert!(
+                cause_position < field_position && field_position < file_position,
+                "native cause, field and file context remain ordered"
+            );
+        }
+        // Generate fresh genuine configure errors until even a short TMPDIR
+        // exceeds the unchanged allowance. No assumed platform path length.
+        let mut full = errors.iter().map(complete).collect::<Vec<_>>().join("; ");
+        for _ in 0..MAX_NATIVE_DIAGNOSTIC_BYTES {
+            if full.len() > MAX_NATIVE_DIAGNOSTIC_BYTES {
+                break;
+            }
+            let additional = config.configure();
+            assert_eq!(additional.len(), 2, "fresh native path validation errors");
+            errors.extend(additional);
+            full = errors.iter().map(complete).collect::<Vec<_>>().join("; ");
+        }
+        assert!(
+            full.len() > MAX_NATIVE_DIAGNOSTIC_BYTES,
+            "deterministic native overflow"
+        );
+        let aggregate = native_loader_causes(&errors, control(&cancelled)).unwrap();
+        assert_eq!(aggregate.as_ref(), prefix(&full));
+        assert!(aggregate.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES);
+        assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn refuse(name: &str, text: &str) -> Box<[PythonProjectConfigurationFault]> {
@@ -558,13 +784,19 @@ mod tests {
             1,
             "actual native loader rejected original bytes"
         );
-        let native_message = errors[0].get_message();
+        let native_message = errors[0].cause().to_string();
+        assert_ne!(
+            native_message,
+            errors[0].get_message(),
+            "loader path context is not its native cause"
+        );
         let refusal =
             configuration_error(&path, &path, &errors, control(&AtomicBool::new(false))).unwrap();
         let CheckerError::ProjectConfiguration {
             source_identity,
             source_byte_len,
             omitted_faults,
+            evidence_truncated,
             faults,
             ..
         } = refusal
@@ -580,13 +812,14 @@ mod tests {
         );
         assert_eq!(source_byte_len as usize, bytes.len());
         assert_eq!(omitted_faults, 0);
+        assert!(!evidence_truncated);
         assert_eq!(faults.len(), 2);
         assert!(
             matches!(&faults[0], PythonProjectConfigurationFault::InvalidConfigurationEncoding { span } if span.start == rejected && span.end == rejected + 1)
         );
         assert!(
             matches!(&faults[1], PythonProjectConfigurationFault::NativeLoaderRefusal { severity, message }
-            if severity.as_ref() == "Error" && !message.is_empty() && native_message.starts_with(message.as_ref()))
+            if severity.as_ref() == "Error" && !message.is_empty() && message.as_ref() == native_message)
         );
         assert!(!faults.iter().any(|fault| matches!(
             fault,

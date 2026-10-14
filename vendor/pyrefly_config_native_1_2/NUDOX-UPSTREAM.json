@@ -1,0 +1,320 @@
+{
+  "schema": "pyrefly-native-config-overlay.v1",
+  "version": "1.2.0-dev.1",
+  "revision": "30b5ca5250db9f2d9264d5e889662cf1224a75b7",
+  "source_url": "https://github.com/facebook/pyrefly",
+  "upstream_files": [
+    {
+      "path": "LICENSE",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+      "bytes": 1088,
+      "mode": "100644",
+      "blob": "b93be90515ccd0b9daedaa589e42bf5929693f1f"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "43b1cc8f3581b4997ee6e2c833c1eff3570436c813a8f88e1c1bdc5e533a95db",
+      "bytes": 1567,
+      "mode": "100644",
+      "blob": "76315369a7edefd6c5c9ae0c45d6c76ef287202f"
+    },
+    {
+      "path": "src/args.rs",
+      "sha256": "7967713b76cbd62daade325ea1d3bc41ba18b9ddc466113b2575e2eb457cd332",
+      "bytes": 23714,
+      "mode": "100644",
+      "blob": "6dc671da6a5b59910db9ca5f81081a41f1448619"
+    },
+    {
+      "path": "src/base.rs",
+      "sha256": "70311d5e754e71622cb937aee65832e9eec03664a06f4e58762dc3f1cb6ef603",
+      "bytes": 26141,
+      "mode": "100644",
+      "blob": "7f36ce36437a5cf52564d108f586240d576605fd"
+    },
+    {
+      "path": "src/config.rs",
+      "sha256": "740e997592bef47c8ffcf3ad9dd7072036e3a704b42d412ad5346ebe322a1557",
+      "bytes": 143529,
+      "mode": "100644",
+      "blob": "8b7396c563c88bee2f44cbc3259b634dd46a8f53"
+    },
+    {
+      "path": "src/environment/active_environment.rs",
+      "sha256": "4e300429ed055744e77f0094ea8518d505c36f6c58d008247cf0474bb00c0206",
+      "bytes": 845,
+      "mode": "100644",
+      "blob": "e029309c50c04fe0af36c4f14d48a687a1ee211e"
+    },
+    {
+      "path": "src/environment/conda.rs",
+      "sha256": "ff06d8ea4894deaa5f0e8b8ee9dd89c87153c6d90831bd7b70c78c3e94b4ffea",
+      "bytes": 2342,
+      "mode": "100644",
+      "blob": "3177bf918b166657a0fc378cd0a67ba8118531e2"
+    },
+    {
+      "path": "src/environment/environment.rs",
+      "sha256": "0bcb740c413ebb96600c3f2681fe3f755902b1387602e9a442ac92c7e6efac9e",
+      "bytes": 11939,
+      "mode": "100644",
+      "blob": "79b3b6166b05b9562012e773fa46c190e815a731"
+    },
+    {
+      "path": "src/environment/finder.rs",
+      "sha256": "7b38a84a2088743a926111a5cf3ff7654cc90ced6765999e42a9a358cad8932f",
+      "bytes": 4913,
+      "mode": "100644",
+      "blob": "2713640d8c2f425fbf4123832607d0fe02ccf709"
+    },
+    {
+      "path": "src/environment/interpreters.rs",
+      "sha256": "e45ae419dbbfc7780c480638522a07c06cd0b82a37087ca5458edf2359ff39ef",
+      "bytes": 13482,
+      "mode": "100644",
+      "blob": "0dd73f25497ee3d9e5ac5cd733624c5d32783daf"
+    },
+    {
+      "path": "src/environment/mod.rs",
+      "sha256": "46cd3b96481b43c9974bf95da6f42aebc24a402c85ecbc04db882d8ae9914985",
+      "bytes": 445,
+      "mode": "100644",
+      "blob": "0c06cac38cef65ace09e12f4e6e7bab006570925"
+    },
+    {
+      "path": "src/environment/venv.rs",
+      "sha256": "3e65784970813834495ac96ef8ece9205e6d19399b1847079627e777742ab3ed",
+      "bytes": 12596,
+      "mode": "100644",
+      "blob": "b06b2ed6aa29f0619b25be12aaad428fd534015c"
+    },
+    {
+      "path": "src/error.rs",
+      "sha256": "65806d91d37b2ca22a9c945fa4362449e7e53697ca4fa307b4cd0b1227fe79f0",
+      "bytes": 9288,
+      "mode": "100644",
+      "blob": "6051addefc7fe50cc57ea195d0058dde6e081865"
+    },
+    {
+      "path": "src/error_kind.rs",
+      "sha256": "cd2eb713477983c8ebec98fcb2fc5a15b86399b0890f15994f2d105fed4d4711",
+      "bytes": 30841,
+      "mode": "100644",
+      "blob": "39bd393091c45b312a69e285de44a378165dcce1"
+    },
+    {
+      "path": "src/file_kind.rs",
+      "sha256": "94b49f1423af7c3ec44c7c1814017d4aa3e8627bbd2ad8bd3ba4c3e1b03bf853",
+      "bytes": 2302,
+      "mode": "100644",
+      "blob": "62eb29f26ee7e6fae0fbf3fd8f10e5f77d9738b8"
+    },
+    {
+      "path": "src/finder.rs",
+      "sha256": "5d4897f7e72c89087c6e090ac4efeea3cd07211b37df10b36bddf1f0251ebc51",
+      "bytes": 9973,
+      "mode": "100644",
+      "blob": "4feafd200dbe49a6eca7487bf3a92d81030bc680"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "7348a7ffb26164f174715e70ce3a6e23eef7cb32ac45274b3e8a64eed208bb8f",
+      "bytes": 447,
+      "mode": "100644",
+      "blob": "07ab8a3cb6ad195152b6d14ebc858b4b64ba53cf"
+    },
+    {
+      "path": "src/migration/config_option_migrater.rs",
+      "sha256": "0c1ef3a7ef23488432d1357adea2a90abbe8638a66064f76d59510ecbec69ba5",
+      "bytes": 1102,
+      "mode": "100644",
+      "blob": "e52eb7eca18bc3f6a61410d73f245ca3d778482a"
+    },
+    {
+      "path": "src/migration/error_codes.rs",
+      "sha256": "c6b08cab7ae02015dc752d3ee3416dffa79000c374a5389fefd1d3dba73b3849",
+      "bytes": 14694,
+      "mode": "100644",
+      "blob": "676d3707f6d326fd58a825580fc95828e8fb9e12"
+    },
+    {
+      "path": "src/migration/ignore_missing_imports.rs",
+      "sha256": "b8735b1c211e2a4bf7c2815b37ea342977906a92379be7a1e368c8e947ecf69f",
+      "bytes": 11219,
+      "mode": "100644",
+      "blob": "5c3bfa08aae4df81f210ec6bf562ba9f8fe724ea"
+    },
+    {
+      "path": "src/migration/mod.rs",
+      "sha256": "ae3eab035782b499fcfaeea84841b1872d638a8674f92df699eedd73ddaad048",
+      "bytes": 686,
+      "mode": "100644",
+      "blob": "ae5d364e7fdedffbb90b86d07f991d041c662d06"
+    },
+    {
+      "path": "src/migration/mypy/ini.rs",
+      "sha256": "3bdf5f5750db91279a567647b4884913a54a7b7b3c248a177a44b4cd703440ac",
+      "bytes": 4747,
+      "mode": "100644",
+      "blob": "648bd92f65d684cc92f90c18690c31ccb1b4de65"
+    },
+    {
+      "path": "src/migration/mypy/mod.rs",
+      "sha256": "f5fb0348a4e481eff7d0b558c63fddbe1c82a8b40294092e7eda8cdab1b0e5aa",
+      "bytes": 323,
+      "mode": "100644",
+      "blob": "758ab10b080c157b2aeee3d57fd9891065979c34"
+    },
+    {
+      "path": "src/migration/mypy/pyproject.rs",
+      "sha256": "10e75aa512b518cbc53864048ca16eee87aeec8a56f39339922c1ffa0b39fb29",
+      "bytes": 15082,
+      "mode": "100644",
+      "blob": "e369a6014bdb0b53b3c11a575523a443a36bdae0"
+    },
+    {
+      "path": "src/migration/mypy/regex_converter.rs",
+      "sha256": "c39b52f78bfdd2a82559b83b52a2d79bbf6ab8e4d8229b5be51ce47da0940708",
+      "bytes": 8744,
+      "mode": "100644",
+      "blob": "1df99f14593b7cf907cd42e863c18c547ea012f8"
+    },
+    {
+      "path": "src/migration/mypy/util.rs",
+      "sha256": "5cb5ea03dfd9143c2b62c5b5c78c7037cafd61ee9ef45983da2649c9429fa335",
+      "bytes": 11260,
+      "mode": "100644",
+      "blob": "c381d38b278a9b66655a58b6ad68d27f48ad69cf"
+    },
+    {
+      "path": "src/migration/project_excludes.rs",
+      "sha256": "e5e447efd915023f941533d557c61992d752c826d522be9ba98618e7d49ead4e",
+      "bytes": 4483,
+      "mode": "100644",
+      "blob": "936cdb4c77627766593a1b29dfb68502b429d547"
+    },
+    {
+      "path": "src/migration/project_includes.rs",
+      "sha256": "1b32646b3fdbae7986b4143581140c110b4cf604a8fab66d3fcd5bd7f6258882",
+      "bytes": 6173,
+      "mode": "100644",
+      "blob": "018bf233ad235136608f0b74be1a0ca4b790c0fb"
+    },
+    {
+      "path": "src/migration/pyright.rs",
+      "sha256": "04da5da0a781057816eea0ee37daf4bddfc6be068bb0961ff248cada5be33c25",
+      "bytes": 26483,
+      "mode": "100644",
+      "blob": "1b77e1e32336c9192eac4bf75f7a4a3738ac7223"
+    },
+    {
+      "path": "src/migration/python_interpreter.rs",
+      "sha256": "f68c66aefe708bf5ce8137c7865558a7046ecbe455434faafc31935469df6d70",
+      "bytes": 4189,
+      "mode": "100644",
+      "blob": "53eaad2cb54386b248f1522ada0de0b40ca84ac4"
+    },
+    {
+      "path": "src/migration/python_platform.rs",
+      "sha256": "ab7a52d3f9cd0b365996d42e7aced287c710eb8fa7c4c813f646ac9495dc174a",
+      "bytes": 3772,
+      "mode": "100644",
+      "blob": "862335a32048b32d1b39863f84e5d963aba4119a"
+    },
+    {
+      "path": "src/migration/python_version.rs",
+      "sha256": "bc946718d3ca94dfb53a182540bc366e88eaf4d8df35f26e8e08139f66925d06",
+      "bytes": 3875,
+      "mode": "100644",
+      "blob": "62c2830a184b162dc4017ec5aec3aaeb66bee6a4"
+    },
+    {
+      "path": "src/migration/run.rs",
+      "sha256": "e9d147bae0a4f8e831af8c5d371332e2732efa655ca5a76af94e32a3ed06dd81",
+      "bytes": 36977,
+      "mode": "100644",
+      "blob": "00e6aac3ab8a33a7ac8c236a6f8576b5b5518aeb"
+    },
+    {
+      "path": "src/migration/search_path.rs",
+      "sha256": "4a9ca75edfeffa9526a3823df6f94bb49072b8cbf09ffda52b4cdcf3f55fa6f7",
+      "bytes": 10549,
+      "mode": "100644",
+      "blob": "c77cf9269e449fbc1a09e348c997d9b48b5c6f80"
+    },
+    {
+      "path": "src/migration/site_package_path.rs",
+      "sha256": "f47422193af27c5555d5209b291b7b717d6047b05d7e78b6cd00c2980031db16",
+      "bytes": 2555,
+      "mode": "100644",
+      "blob": "031b4e92a582281da6a7e237a4a7a9bbe6976328"
+    },
+    {
+      "path": "src/migration/sub_configs.rs",
+      "sha256": "51257e94c870eee7158a5622a7802e349971b778074bf6398893dfe0b45a38d7",
+      "bytes": 12151,
+      "mode": "100644",
+      "blob": "a253ee21d0c1819a34b28fe15373db60a291681b"
+    },
+    {
+      "path": "src/migration/test_util.rs",
+      "sha256": "af68cc980e1d43c2ba5d1089fd3915f831a68b9ae63466acc0a361b47ef289d4",
+      "bytes": 714,
+      "mode": "100644",
+      "blob": "f34198062af85873603ca7a4294383893f7548e5"
+    },
+    {
+      "path": "src/migration/untyped_def_behavior.rs",
+      "sha256": "97938466c87ff37a37f45fbaecca16b96ebd962a38263595a6c7bbb4e6ed1010",
+      "bytes": 4239,
+      "mode": "100644",
+      "blob": "c6d81b2f9ddf1e23ad23d62a4289d50e24ec6930"
+    },
+    {
+      "path": "src/module_wildcard.rs",
+      "sha256": "ede5c800ae43030754191f7affdd99c545c36888554de463043bf93a95fa7c08",
+      "bytes": 6924,
+      "mode": "100644",
+      "blob": "14cfb3cae99a625cceab62307c69b15e6ce7ab94"
+    },
+    {
+      "path": "src/pyproject.rs",
+      "sha256": "8900c8ee5307f8d9edc9c4deffca3e94ccefd94cc8aac1ecdb8048b66715dd2d",
+      "bytes": 10259,
+      "mode": "100644",
+      "blob": "60bd64fd7fbb52403cc20d48d0e61cce05163009"
+    },
+    {
+      "path": "src/resolve_unconfigured.rs",
+      "sha256": "80ad8b9314c3b49ed78f39b2b7795318b47e86dc1b058fb6f08bb6a86ec9a33a",
+      "bytes": 11790,
+      "mode": "100644",
+      "blob": "2ab9acd13fd17dff624acfcd4282206946cf3b6a"
+    },
+    {
+      "path": "src/util.rs",
+      "sha256": "aa654c003f61c5fa596b2dcffe5de65cb36d7f564aa38375776b62e6627b3389",
+      "bytes": 6335,
+      "mode": "100644",
+      "blob": "eaa3f5eb569713c8ce3df0e5d82af6a3ae41efb7"
+    }
+  ],
+  "changes": [
+    "Sibling build/python/util crates remain at the exact pinned git revision instead of sibling paths.",
+    "ConfigError::cause borrows anyhow::Error::root_cause before loader path context; no native parser/loader or severity behavior is changed.",
+    "One native cause-context control is added; all upstream source and tests remain present.",
+    "Borrowed ConfigError::cause_chain yields the genuine root cause followed by native field/file contexts, preserving configure() diagnostics in the bounded streaming adapter."
+  ],
+  "overlay_files": [
+    {
+      "path": "Cargo.toml",
+      "upstream_sha256": "43b1cc8f3581b4997ee6e2c833c1eff3570436c813a8f88e1c1bdc5e533a95db",
+      "overlay_sha256": "b1860998ceee351862d8526f5c2f7d862a4a081d9dcf68df46b60d53b978cc6a"
+    },
+    {
+      "path": "src/finder.rs",
+      "upstream_sha256": "5d4897f7e72c89087c6e090ac4efeea3cd07211b37df10b36bddf1f0251ebc51",
+      "overlay_sha256": "660113d27e1501f8eb5ae0d7833675028609170f063281a6f569ae097f9ec42b"
+    }
+  ]
+}

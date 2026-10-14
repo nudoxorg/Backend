@@ -111,6 +111,7 @@ use crate::export::exports::ExportLocation;
 use crate::export::exports::ExportOrigin;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
+pub use crate::export::exports::ModuleBindingView;
 use crate::export::special::SpecialExport;
 use crate::module::bundled::BundledStub;
 use crate::module::finder::find_import_prefixes;
@@ -2518,6 +2519,18 @@ impl<'a> Transaction<'a> {
     pub(crate) fn get_exports_data(&self, handle: &Handle) -> Arc<Exports> {
         let module_data = self.get_module(handle);
         self.lookup_export(module_data)
+    }
+
+    /// Inspect a unique module binding from this Handle's committed definitions.
+    /// The callback borrows the shared exports; no definitions or AST are cloned.
+    pub fn with_module_binding<T>(
+        &self,
+        handle: &Handle,
+        definition_range: TextRange,
+        inspect: impl FnOnce(Option<ModuleBindingView<'_>>) -> T,
+    ) -> T {
+        let exports = self.get_exports_data(handle);
+        inspect(exports.module_binding(definition_range))
     }
 
     pub fn get_module_docstring_range(&self, handle: &Handle) -> Option<TextRange> {
