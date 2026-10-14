@@ -4,7 +4,8 @@ use super::structural::resolve_specifier_paths;
 use backend_engine::PackageKey;
 use backend_engine::application::DocumentationSession;
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalId, ExternalTarget, ForeignTargetOrigin, ImageProvenance,
+    DeclarationIdentity, ExternalId, ExternalTarget, ForeignExternalTarget, ForeignTargetOrigin,
+    ImageProvenance,
     ItemKind, PYTHON_NATIVE_SOURCE_ECOSYSTEM, PythonSourceCoordinate, SemanticCoreReader,
     SemanticImageView, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
     python_program_identity, typescript_program_identity,
@@ -1646,7 +1647,36 @@ pub(crate) fn foreign_display_name(
     if display.is_empty() {
         return Ok(None);
     }
-    Ok(Some(display.to_owned()))
+    Ok(Some(
+        go_qualified_display(image, foreign, display).unwrap_or_else(|| display.to_owned()),
+    ))
+}
+
+/// A Go name of another package, as it is written there: `errors.New`, not
+/// `New`, so it cannot be taken for a declaration of this one.
+fn go_qualified_display(
+    image: &SemanticImageView<'_>,
+    foreign: &ForeignExternalTarget,
+    display: &str,
+) -> Option<String> {
+    let ForeignTargetOrigin::Package { ecosystem, package } = foreign.origin else {
+        return None;
+    };
+    if image.atom(ecosystem)? != b"go" || foreign.kind == Some(ItemKind::Module) {
+        return None;
+    }
+    let package = std::str::from_utf8(image.atom(package)?).ok()?;
+    // `example.com/lib/v5` is imported as `lib`.
+    let mut segments = package.rsplit('/');
+    let mut name = segments.next()?;
+    if name.len() > 1
+        && name.starts_with('v')
+        && name[1..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        name = segments.next().unwrap_or(name);
+    }
+    (!name.is_empty() && name != display && !display.contains('.'))
+        .then(|| format!("{name}.{display}"))
 }
 
 #[cfg(test)]

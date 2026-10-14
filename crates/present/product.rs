@@ -2781,8 +2781,10 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
         (None, Some(place)) => tags.push(format!("within the declaration at line {}", place.line)),
         (None, None) => tags.push("site not captured".to_owned()),
     }
+    // The title is how a reader names the declaration; the operand is the
+    // exact coordinate a caller passes back.
     let row = ProductRecord::new(
-        record.site.as_str().to_owned(),
+        crate::Identity::parse(record.site.as_str()).trail_within(None),
         Some(record.site.as_str().to_owned()),
         tags,
     );
