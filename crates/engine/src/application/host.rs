@@ -1277,7 +1277,7 @@ mod tests {
             .ok_or("closed negative host policy missing")?;
         assert!(matches!(
             absent_admission.capture_project(&project, control()),
-            Err(CheckerError::ProjectReport { .. })
+            Err(CheckerError::PythonInterpreterSelectionUnavailable { major: 3, minor: 14 })
         ));
         drop(absent);
         drop(client);
