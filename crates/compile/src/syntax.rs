@@ -29,7 +29,8 @@
 //! full contract and provenance vocabulary.
 
 use crate::{
-    InputContentSchema, InputContentVersion, SyntaxProducerId, SyntaxProducerSchema, typed_of,
+    InputContentSchema, InputContentVersion, SourceBinding, SourceBindingCapture,
+    SourceBindingIdentity, SyntaxProducerId, SyntaxProducerSchema, typed_of,
 };
 pub use backend_semantic::vocabulary::Language as SourceLanguage;
 use std::{
@@ -214,12 +215,17 @@ pub enum Container {
     #[default]
     Module,
     /// Lexically inside the captured definition that starts at this line and
-    /// has this name.
+    /// has this name. Legacy metadata has no exact source binding anchor.
     Enclosing {
         /// Name of the enclosing captured definition.
         name: String,
         /// One-based start line of the enclosing captured definition.
         line: NonZeroU32,
+    },
+    /// Lexically inside this exact captured binding in the same source file.
+    Binding {
+        /// Exact source binding of the enclosing declaration.
+        binding: SourceBinding,
     },
     /// Attached to a named type by an impl block, a method receiver, or an
     /// out-of-line scoped definition (`Foo::bar`), to be resolved by name.
@@ -407,6 +413,7 @@ pub struct SourceDeclaration {
     documentation: String,
     source_excerpt: SourceExcerpt,
     container: Container,
+    binding_identity: SourceBindingIdentity,
     facts: DeclarationFacts,
 }
 
@@ -476,6 +483,7 @@ impl SourceDeclaration {
             documentation: documentation.into(),
             source_excerpt: SourceExcerpt::NotCaptured,
             container: Container::Module,
+            binding_identity: SourceBindingIdentity::Legacy,
             facts: DeclarationFacts::UNOBSERVED,
         };
         if value.name.is_empty()
@@ -547,6 +555,38 @@ impl SourceDeclaration {
     #[must_use]
     pub const fn container(&self) -> &Container {
         &self.container
+    }
+
+    /// Retains the exact binding observed by this producer, or explicit legacy precision.
+    #[must_use]
+    pub fn with_binding_identity(mut self, identity: SourceBindingIdentity) -> Self {
+        self.binding_identity = identity;
+        self
+    }
+
+    /// Returns the file-local source identity independently of display metadata.
+    #[must_use]
+    pub const fn binding_identity(&self) -> SourceBindingIdentity {
+        self.binding_identity
+    }
+
+    /// Admits the lexical relation between the retained exact byte anchors.
+    /// Storage and projection call this at their admission boundaries.
+    ///
+    /// # Errors
+    /// Refuses an exact parent without a child anchor or a self reference.
+    /// Exact owner containment is checked when the target declaration is
+    /// resolved within the same source record. Legacy stays explicitly legacy.
+    pub fn admit_binding_parentage(&self) -> Result<(), String> {
+        if let Container::Binding { binding: parent } = self.container() {
+            let SourceBindingIdentity::Exact(child) = self.binding_identity else {
+                return Err("exact parent requires an exact child binding".to_owned());
+            };
+            if *parent == child.binding() {
+                return Err("exact binding cannot parent itself".to_owned());
+            }
+        }
+        Ok(())
     }
 
     /// Attaches the facts the parse observed about this declaration.
@@ -664,7 +704,12 @@ impl SyntaxFrontend {
         if variants.is_empty() {
             return Err(SyntaxError::NoGrammar(language));
         }
-        let mut identity = Vec::with_capacity(language.name().len() + contract.len() + 1);
+        // Shared extraction semantics changed too: every grammar must retire
+        // cached name/line deduplication even when its own query is unchanged.
+        let capture_contract = b"syntax-capture/exact-owner-name-v2\0";
+        let mut identity =
+            Vec::with_capacity(capture_contract.len() + language.name().len() + contract.len() + 1);
+        identity.extend_from_slice(capture_contract);
         identity.extend_from_slice(language.name().as_bytes());
         identity.push(0);
         identity.extend_from_slice(contract);
@@ -733,7 +778,8 @@ impl SyntaxFrontend {
             return Err(SyntaxError::MalformedSource(self.language));
         }
         let mut cursor = QueryCursor::new();
-        let captured = captured_definitions(variant, &tree, &mut cursor, source, text);
+        let captured =
+            captured_definitions(self.language, variant, &tree, &mut cursor, source, text)?;
         Ok(SourceAnalysis {
             language: self.language,
             content: typed_of::<InputContentSchema>(source),
@@ -790,6 +836,7 @@ impl SyntaxFrontend {
                 )?
                 .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source))
                 .with_container(definition.container)
+                .with_binding_identity(definition.binding_identity)
                 .with_facts(facts),
             );
             if declarations.len() > MAX_DECLARATIONS {
@@ -831,7 +878,14 @@ impl SyntaxFrontend {
 
 /// One definition selected by a tags query, before it becomes a declaration.
 struct CapturedDefinition<'a> {
+    /// Original grammar capture used for the declaration's written source.
     node: Node<'a>,
+    /// Exact declaration that owns nested definitions. A multi-binding
+    /// statement shares its written range, but each initializer belongs to
+    /// its own declarator rather than the first name captured for the statement.
+    owner_node: Node<'a>,
+    name_node: Node<'a>,
+    binding_identity: SourceBindingIdentity,
     name: String,
     tag: &'a str,
     line: NonZeroU32,
@@ -839,16 +893,18 @@ struct CapturedDefinition<'a> {
 
 /// Selects every definition a grammar's tags query matches, once each.
 ///
-/// The `(line, tag, name)` identity is retained because two patterns commonly
+/// The exact captured-name byte range distinguishes shadowed same-line bindings.
+/// The tag is retained at this stage because two patterns commonly
 /// select the same definition - a supplementary pattern refining a stock one -
 /// and one declaration must not be published twice.
 fn captured_definitions<'a>(
+    language: SourceLanguage,
     variant: &'a GrammarVariant,
     tree: &'a tree_sitter::Tree,
     cursor: &mut QueryCursor,
     source: &[u8],
     text: &str,
-) -> Vec<CapturedDefinition<'a>> {
+) -> Result<Vec<CapturedDefinition<'a>>, SyntaxError> {
     let names = variant.tags.capture_names();
     let mut matches = cursor.matches(&variant.tags, tree.root_node(), source);
     let mut seen = BTreeSet::new();
@@ -867,26 +923,73 @@ fn captured_definitions<'a>(
         let (Some((tag, node)), Some(name)) = (definition, name) else {
             continue;
         };
-        let name = node_text(name, text).trim();
+        let owner_node = captured_owner_node(language, node, name);
+        let name_node = name;
+        let binding_identity = if language == SourceLanguage::TypeScript {
+            SourceBindingIdentity::Exact(
+                SourceBindingCapture::new(
+                    u32::try_from(owner_node.start_byte())
+                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                    u32::try_from(owner_node.end_byte())
+                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                    u32::try_from(name_node.start_byte())
+                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                    u32::try_from(name_node.end_byte())
+                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                )
+                .ok_or_else(|| {
+                    SyntaxError::Declaration("captured name is outside its owner".to_owned())
+                })?,
+            )
+        } else {
+            SourceBindingIdentity::Legacy
+        };
+        let name = node_text(name_node, text).trim();
         let line = NonZeroU32::new(
             u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX),
         )
         .unwrap_or(NonZeroU32::MIN);
-        if name.is_empty() || !seen.insert((line, tag, name.to_owned())) {
+        if name.is_empty() || !seen.insert(((name_node.start_byte(), name_node.end_byte()), tag)) {
             continue;
         }
         captured.push(CapturedDefinition {
             node,
+            owner_node,
+            name_node,
+            binding_identity,
             name: bounded(name),
             tag,
             line,
         });
     }
-    captured
+    Ok(captured)
 }
 
-/// One definition node's byte span and name, as captures are grouped by.
-type DefinitionSelector = ((usize, usize), String);
+/// Keeps ownership tied to the grammar's exact binding node while preserving
+/// the statement capture for source excerpts, signatures and documentation.
+/// TypeScript's supplemental lexical pattern captures the same statement for
+/// every identifier binding; that statement cannot identify which initializer
+/// owns a nested declaration. Only the directly captured name field proves the
+/// corresponding declarator. Other grammar captures retain their original node.
+fn captured_owner_node<'a>(
+    language: SourceLanguage,
+    definition: Node<'a>,
+    name: Node<'a>,
+) -> Node<'a> {
+    if language == SourceLanguage::TypeScript && definition.kind() == "lexical_declaration" {
+        if let Some(declarator) = name.parent()
+            && declarator.kind() == "variable_declarator"
+            && declarator.child_by_field_name("name") == Some(name)
+            && declarator.parent() == Some(definition)
+        {
+            return declarator;
+        }
+    }
+    definition
+}
+
+/// One captured-name byte span, independent of display text and query tag.
+type DefinitionSelector = (usize, usize);
 
 /// One definition with its containment and its settled role.
 struct ResolvedDefinition<'a> {
@@ -895,6 +998,7 @@ struct ResolvedDefinition<'a> {
     kind: DeclarationKind,
     line: NonZeroU32,
     container: Container,
+    binding_identity: SourceBindingIdentity,
 }
 
 /// Settles containment, role, and identity for every captured definition.
@@ -912,18 +1016,27 @@ fn resolved_definitions<'a>(
 ) -> Vec<ResolvedDefinition<'a>> {
     let mut definitions = DefinitionIndex::new();
     for capture in captured {
-        definitions.insert(capture.node, &capture.name, capture.line, capture.tag);
+        definitions.insert(
+            capture.owner_node,
+            &capture.name,
+            capture.line,
+            capture.tag,
+            capture.binding_identity,
+        );
     }
     let mut selected: BTreeMap<DefinitionSelector, usize> = BTreeMap::new();
     let mut resolved: Vec<ResolvedDefinition<'a>> = Vec::new();
     for capture in captured {
-        let container = container_of(capture.node, &definitions, text);
+        let container = container_of(
+            capture.owner_node,
+            &definitions,
+            text,
+            capture.binding_identity,
+        );
         let tag = settled_role(capture.tag, &container, &definitions);
         let kind = declaration_kind(language, tag, capture.node.kind());
-        let selector: DefinitionSelector = (
-            (capture.node.start_byte(), capture.node.end_byte()),
-            capture.name.clone(),
-        );
+        let selector: DefinitionSelector =
+            (capture.name_node.start_byte(), capture.name_node.end_byte());
         if let Some(held) = selected.get(&selector).and_then(|at| resolved.get_mut(*at)) {
             if role_specificity(kind) > role_specificity(held.kind) {
                 held.kind = kind;
@@ -937,6 +1050,7 @@ fn resolved_definitions<'a>(
             kind,
             line: capture.line,
             container,
+            binding_identity: capture.binding_identity,
         });
     }
     resolved

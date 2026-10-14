@@ -1,7 +1,7 @@
 use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use super::identity::{declaration_coordinate, declaration_symbol};
 use super::semantic_profile_is_complete;
-use backend_compile::Container;
+use backend_compile::{Container, SourceBinding, SourceBindingIdentity};
 use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -237,6 +237,8 @@ impl ProjectTypeIndex {
 pub(super) struct StructuralDeclaration {
     pub(super) coordinate: String,
     pub(super) parent: Option<String>,
+    pub(super) parent_binding: Option<SourceBinding>,
+    binding_capture: Option<backend_compile::SourceBindingCapture>,
     pub(super) id: RowId,
     pub(super) identity_preimage: Option<RowIdentityPreimage>,
     pub(super) is_file_module: bool,
@@ -267,6 +269,7 @@ pub(super) struct StructuralFilePlan {
 #[derive(Default)]
 pub(super) struct StructuralProjectionPlan {
     files: BTreeMap<[u8; 32], StructuralFilePlan>,
+    by_binding: BTreeMap<([u8; 32], SourceBinding), (RowId, backend_compile::SourceBindingCapture)>,
     pub(super) by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
 }
 
@@ -338,14 +341,38 @@ impl StructuralProjectionPlan {
             let mut occurrences = BTreeMap::new();
             let mut declarations = Vec::new();
             visit_complete_declarations(sources, record, |declaration| {
+                declaration
+                    .admit_binding_parentage()
+                    .map_err(BuiltinModelError)?;
                 let coordinate = containment.coordinate(declaration);
-                let (id, identity_preimage) = declaration_symbol(
-                    &coordinate,
-                    declaration.kind(),
-                    declaration.signature(),
-                    duplicate_coordinates.contains(&coordinate),
-                    &mut occurrences,
-                );
+                let (id, identity_preimage) = if duplicate_coordinates.contains(&coordinate)
+                    && let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                {
+                    let (name_start, name_end) = binding.name();
+                    let preimage = format!("{coordinate}\0binding-v1\0{name_start}:{name_end}");
+                    (
+                        RowId::Symbol(backend_engine::symbol_key(&preimage)),
+                        Some(preimage),
+                    )
+                } else {
+                    declaration_symbol(
+                        &coordinate,
+                        declaration.kind(),
+                        declaration.signature(),
+                        duplicate_coordinates.contains(&coordinate),
+                        &mut occurrences,
+                    )
+                };
+                if let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                    && plan
+                        .by_binding
+                        .insert((*file_key, binding.binding()), (id, binding))
+                        .is_some()
+                {
+                    return Err(BuiltinModelError(
+                        "source repeats an exact binding identity".to_owned(),
+                    ));
+                }
                 let identity_preimage = identity_preimage
                     .map(RowIdentityPreimage::try_from)
                     .transpose()
@@ -363,6 +390,14 @@ impl StructuralProjectionPlan {
                 declarations.push(StructuralDeclaration {
                     coordinate,
                     parent,
+                    binding_capture: match declaration.binding_identity() {
+                        SourceBindingIdentity::Exact(capture) => Some(capture),
+                        _ => None,
+                    },
+                    parent_binding: match declaration.container() {
+                        Container::Binding { binding } => Some(*binding),
+                        _ => None,
+                    },
                     id,
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
@@ -385,6 +420,26 @@ impl StructuralProjectionPlan {
                     return Err(BuiltinModelError(
                         "structural file splice omitted a requested source".to_owned(),
                     ));
+                }
+            }
+        }
+        for (file_key, file) in &plan.files {
+            for declaration in &file.declarations {
+                if let Some(binding) = declaration.parent_binding {
+                    let (parent, parent_capture) =
+                        plan.by_binding.get(&(*file_key, binding)).ok_or_else(|| {
+                            BuiltinModelError(
+                                "exact structural parent binding is absent".to_owned(),
+                            )
+                        })?;
+                    let child = declaration.binding_capture.ok_or_else(|| {
+                        BuiltinModelError("exact parent lacks child evidence".to_owned())
+                    })?;
+                    if *parent == declaration.id || !parent_capture.strictly_contains(child) {
+                        return Err(BuiltinModelError(
+                            "exact parent does not strictly contain its child owner".to_owned(),
+                        ));
+                    }
                 }
             }
         }
@@ -411,6 +466,21 @@ impl StructuralProjectionPlan {
                 BuiltinModelError(
                     "structural declaration plan is out of sync with source".to_owned(),
                 )
+            })
+    }
+
+    /// Resolves an exact lexical target only within its owning file. Missing
+    /// targets are a capture/storage contract error, never a name fallback.
+    pub(super) fn binding_parent_id(
+        &self,
+        file_key: [u8; 32],
+        binding: SourceBinding,
+    ) -> Result<RowId, BuiltinModelError> {
+        self.by_binding
+            .get(&(file_key, binding))
+            .map(|(id, _)| *id)
+            .ok_or_else(|| {
+                BuiltinModelError("exact structural parent binding is absent".to_owned())
             })
     }
 
@@ -567,8 +637,14 @@ impl<'a> FileContainment<'a> {
         if is_file_module(declaration, self.path) {
             return None;
         }
+        if matches!(declaration.container(), Container::Binding { .. }) {
+            return None;
+        }
         Some(match declaration.container() {
             Container::Module => self.module_coordinate.clone(),
+            Container::Binding { .. } => {
+                unreachable!("exact targets resolve through binding identities")
+            }
             Container::Enclosing { name, line } => {
                 declaration_coordinate(self.label, self.path, line.get(), name)
             }
@@ -1296,7 +1372,7 @@ fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
 
 #[path = "structural_calls.rs"]
 mod calls;
-pub(crate) use calls::StructuralCallResidence;
+pub(crate) use calls::{StructuralCallEndpoint, StructuralCallResidence};
 
 /// Same-file and import-resolved pairs from the exact selected source facts.
 /// Graph and references share the immutable typed projection behind this view.
@@ -1378,8 +1454,133 @@ pub(crate) fn view_row_for_structural_coordinate(
     }
 }
 
-/// Maps structural call coordinate pairs onto view rows, skipping pairs whose
-/// endpoints are absent or ambiguous in the published view.
+/// Borrowed row lookup shared by mapped graph and reference projection.
+/// Exact binding endpoints never resolve through a display-label map. Only a
+/// uniquely matching source site can retarget an absent structural row onto a
+/// semantic-shaped row; same-name/line ambiguity remains unresolved.
+pub(crate) struct StructuralCallRows<'a> {
+    view: &'a backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    first_label: BTreeMap<&'a str, RowId>,
+    by_source: BTreeMap<(&'a str, u32), Vec<&'a backend_engine::Row>>,
+}
+
+impl<'a> StructuralCallRows<'a> {
+    pub(crate) fn new(
+        view: &'a backend_engine::ViewRoot,
+        package: backend_engine::PackageKey,
+    ) -> Self {
+        let mut rows = Self {
+            view,
+            package,
+            first_label: BTreeMap::new(),
+            by_source: BTreeMap::new(),
+        };
+        for row in view.row_refs().filter(|row| row.package == Some(package)) {
+            rows.first_label.entry(&row.label).or_insert(row.id);
+            if let Some(location) = row.source.captured() {
+                rows.by_source
+                    .entry((location.path(), location.start_line()))
+                    .or_default()
+                    .push(row);
+            }
+        }
+        rows
+    }
+
+    pub(crate) fn mapped(&self, endpoint: &StructuralCallEndpoint) -> Option<RowId> {
+        match endpoint {
+            StructuralCallEndpoint::Binding {
+                source,
+                row,
+                location,
+                semantic_site_unique,
+                name,
+            } => {
+                if backend_engine::product_source_file_key(self.package.to_bytes(), location.path())
+                    != source.file
+                {
+                    return None;
+                }
+                if let Some(row) = self
+                    .view
+                    .row_ref(*row)
+                    .filter(|row| row.package == Some(self.package))
+                {
+                    return Some(row.id);
+                }
+                if !*semantic_site_unique {
+                    return None;
+                }
+                self.unique_source(location.path(), location.start_line(), name)
+            }
+            StructuralCallEndpoint::LegacyCoordinate(coordinate) => {
+                if let Some(&id) = self.first_label.get(coordinate.as_str()) {
+                    return Some(id);
+                }
+                let parsed = parsed_declaration_coordinate(coordinate)?;
+                self.unique_source(&parsed.path, parsed.line, &parsed.name)
+            }
+        }
+    }
+
+    fn unique_source(&self, path: &str, line: u32, name: &str) -> Option<RowId> {
+        let candidates = self.by_source.get(&(path, line))?;
+        let mut matches = candidates
+            .iter()
+            .filter(|row| label_names_declaration(&row.label, name));
+        let id = matches.next()?.id;
+        matches.next().is_none().then_some(id)
+    }
+}
+
+fn resident_call_endpoint(
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    endpoint: &StructuralCallEndpoint,
+) -> Option<RowId> {
+    match endpoint {
+        StructuralCallEndpoint::Binding { row, .. } => view
+            .row_ref(*row)
+            .filter(|row| row.package == Some(package))
+            .map(|row| row.id),
+        StructuralCallEndpoint::LegacyCoordinate(coordinate) => {
+            view.last_package_label(package, coordinate)
+        }
+    }
+}
+
+/// Projects borrowed exact/legacy endpoints from one admitted source version.
+pub(crate) fn structural_call_endpoint_relations_mapped(
+    view: &backend_engine::ViewRoot,
+    pairs: &[(&StructuralCallEndpoint, &StructuralCallEndpoint)],
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Vec<backend_engine::GraphRelation> {
+    let rows = StructuralCallRows::new(view, package);
+    let mut relations = BTreeSet::new();
+    for &(caller, callee) in pairs {
+        let (Some(caller), Some(callee)) = (rows.mapped(caller), rows.mapped(callee)) else {
+            continue;
+        };
+        relations.insert(backend_engine::GraphRelation::new(
+            caller,
+            callee,
+            backend_library::SemanticLinkKind::Calls,
+        ));
+    }
+    relations
+        .into_iter()
+        .filter(|relation| {
+            relation.from == source_id || (include_incoming && relation.to == source_id)
+        })
+        .collect()
+}
+
+/// Explicit legacy adapter for synthetic coordinate-only controls. Production
+/// graph and reference paths borrow the typed binding endpoints above.
+#[cfg(test)]
 pub(crate) fn structural_call_graph_relations_mapped(
     view: &backend_engine::ViewRoot,
     pairs: &[(String, String)],
@@ -1387,59 +1588,20 @@ pub(crate) fn structural_call_graph_relations_mapped(
     source_id: RowId,
     include_incoming: bool,
 ) -> Vec<backend_engine::GraphRelation> {
-    // Exact labels retain the first-row preference. Semantic-shaped labels
-    // use a borrowed source-location index rather than rescanning every view
-    // row for every endpoint. Multiple matching rows remain ambiguous.
-    let mut first_label = BTreeMap::<&str, RowId>::new();
-    let mut by_source = BTreeMap::<(&str, u32), Vec<&backend_engine::Row>>::new();
-    for row in view.row_refs() {
-        if row.package != Some(package) {
-            continue;
-        }
-        first_label.entry(&row.label).or_insert(row.id);
-        if let Some(location) = row.source.captured() {
-            by_source
-                .entry((location.path(), location.start_line()))
-                .or_default()
-                .push(row);
-        }
-    }
-    let resolve = |coordinate: &str| {
-        if let Some(&id) = first_label.get(coordinate) {
-            return Some(id);
-        }
-        let parsed = parsed_declaration_coordinate(coordinate)?;
-        let candidates = by_source.get(&(parsed.path.as_str(), parsed.line))?;
-        let mut matches = candidates
-            .iter()
-            .filter(|row| label_names_declaration(&row.label, &parsed.name));
-        let id = matches.next()?.id;
-        matches.next().is_none().then_some(id)
-    };
-    let mut relations = BTreeSet::new();
-    for (caller_coordinate, callee_coordinate) in pairs {
-        let Some(caller_id) = resolve(caller_coordinate) else {
-            continue;
-        };
-        let Some(callee_id) = resolve(callee_coordinate) else {
-            continue;
-        };
-        relations.insert(backend_engine::GraphRelation::new(
-            caller_id,
-            callee_id,
-            backend_library::SemanticLinkKind::Calls,
-        ));
-    }
-    relations
-        .into_iter()
-        .filter(|relation| {
-            if include_incoming {
-                relation.from == source_id || relation.to == source_id
-            } else {
-                relation.from == source_id
-            }
+    let endpoints = pairs
+        .iter()
+        .map(|(caller, callee)| {
+            (
+                StructuralCallEndpoint::LegacyCoordinate(caller.clone()),
+                StructuralCallEndpoint::LegacyCoordinate(callee.clone()),
+            )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let borrowed = endpoints
+        .iter()
+        .map(|(caller, callee)| (caller, callee))
+        .collect::<Vec<_>>();
+    structural_call_endpoint_relations_mapped(view, &borrowed, package, source_id, include_incoming)
 }
 
 /// Same-file and import-resolved call edges inferred from bounded declaration
@@ -1481,23 +1643,19 @@ pub(crate) fn structural_call_graph_relations_resident(
     let mut relations = BTreeSet::new();
     // Only materialize the requested neighborhood. Incoming edges use the
     // reverse adjacency built with the same exact source projection.
-    for (caller_coordinate, callee_coordinate) in
-        calls.neighborhood(&source.label, include_incoming)
-    {
-        let caller_id = view
-            .last_package_label(package, caller_coordinate)
-            .ok_or_else(|| {
-                BuiltinModelError(
-                    "structural call graph caller is absent from the published view".to_owned(),
-                )
-            })?;
-        let callee_id = view
-            .last_package_label(package, callee_coordinate)
-            .ok_or_else(|| {
-                BuiltinModelError(
-                    "structural call graph callee is absent from the published view".to_owned(),
-                )
-            })?;
+    for (caller, callee) in calls.neighborhood_for_row(source_id, &source.label, include_incoming) {
+        let caller_id = resident_call_endpoint(view, package, caller).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph caller is absent or ambiguous in the published view"
+                    .to_owned(),
+            )
+        })?;
+        let callee_id = resident_call_endpoint(view, package, callee).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph callee is absent or ambiguous in the published view"
+                    .to_owned(),
+            )
+        })?;
         if caller_id != source_id && (!include_incoming || callee_id != source_id) {
             continue;
         }
