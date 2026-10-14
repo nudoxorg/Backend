@@ -2,35 +2,130 @@
   "fixture": "scope-exactly-one",
   "inventory": {
     "source": "cargo metadata --no-deps --format-version 1 plus git ls-files",
-    "policy_paths": [".config/contracts", ".config/fixtures", ".config/nix/policy", ".config/nu/cutover"],
+    "policy_paths": [
+      ".config/contracts",
+      ".config/fixtures",
+      ".config/nix/policy",
+      ".config/nu/cutover"
+    ],
     "mechanical_scopes": {
       "apps": "product-surface",
       "crates": "shared-engine",
       "extensions": "integration-adapter",
       "frontends": "language-authority",
       "tests": "integration-evidence",
-      "tools": "workspace-tooling"
+      "tools": "workspace-tooling",
+      "vendor": "maintained-fork"
     },
     "shared_roots": {
       ".codex": "agent-configuration",
       ".config": "tooling-contracts",
       ".opencode": "agent-configuration",
-      "docs": "architecture-evidence"
+      "docs": "architecture-evidence",
+      ".cargo": "cargo-configuration",
+      "third_party": "compiler-authority",
+      "assets": "product-assets",
+      "audit": "audit-evidence",
+      "evidence": "test-evidence",
+      "Nudox-Design-System": "design-reference",
+      "workspace": "retired-workspace-prototype",
+      "Formula": "package-distribution",
+      "server": "server-tooling",
+      "vendor/gpui_ce_components_base": "vendored-source",
+      "vendor/gpui_ce_macos": "vendored-source",
+      "vendor/gpui_ce_platform": "vendored-source",
+      "vendor/gpui_ce_scheduler": "vendored-source",
+      "vendor/pyrefly_config_native_1_2": "vendored-source",
+      "vendor/ra_ap_hir_def": "vendored-source",
+      "vendor/ra_ap_project_model": "vendored-source",
+      "vendor/ra_ap_toolchain": "vendored-source",
+      "tests/surface": "surface-test-evidence",
+      "tools/package": "package-distribution"
     },
-    "shared_paths": [".envrc", ".git", ".gitignore", "Cargo.lock", "Cargo.toml", "README.md", "flake.lock", "flake.nix"]
+    "shared_paths": [
+      ".envrc",
+      ".git",
+      ".gitignore",
+      "Cargo.lock",
+      "Cargo.toml",
+      "README.md",
+      "flake.lock",
+      "flake.nix",
+      "tests/cargo-shared-cache.sh",
+      "tests/test_build_census.py",
+      "tests/test_fleet_capacity_census.py",
+      "tests/test_linux_proc_race.py",
+      "tests/test_nix_runtime_overlay_guard.py",
+      "tools/observe-rust-ra-reads.sh"
+    ]
   },
   "cases": [
-    {"path":"crates/version/src/lib.rs","scopes":["backend-version"]},
-    {"path":"frontends/rust/lib.rs","scopes":["backend-frontend-rust"]},
-    {"path":"extensions/turso/src/lib.rs","scopes":["backend-extension-turso"]},
-    {"path":"crates/local-service/src/lib.rs","scopes":["backend-local-service"]},
-    {"path":"tests/journeys/Cargo.toml","scopes":["backend-journeys"]},
-    {"path":"tools/workspace/src/lib.rs","scopes":["backend-workspace"]},
-    {"path":"docs/architecture/package-dag.json","scopes":["architecture-evidence"]},
-    {"path":".config/contracts/schema.json","scopes":["tooling-contracts"]},
-    {"path":".config/fixtures/control-plane/scope-exactly-one.json","scopes":["tooling-contracts"]},
-    {"path":".config/nix/policy/contracts.nix","scopes":["tooling-contracts"]},
-    {"path":".config/nu/cutover/main.nu","scopes":["tooling-contracts"]}
+    {
+      "path": "crates/version/src/lib.rs",
+      "scopes": [
+        "backend-version"
+      ]
+    },
+    {
+      "path": "frontends/rust/lib.rs",
+      "scopes": [
+        "backend-frontend-rust"
+      ]
+    },
+    {
+      "path": "extensions/turso/src/lib.rs",
+      "scopes": [
+        "backend-extension-turso"
+      ]
+    },
+    {
+      "path": "crates/local-service/src/lib.rs",
+      "scopes": [
+        "backend-local-service"
+      ]
+    },
+    {
+      "path": "tests/journeys/Cargo.toml",
+      "scopes": [
+        "backend-journeys"
+      ]
+    },
+    {
+      "path": "tools/workspace/src/lib.rs",
+      "scopes": [
+        "backend-workspace"
+      ]
+    },
+    {
+      "path": "docs/architecture/package-dag.json",
+      "scopes": [
+        "architecture-evidence"
+      ]
+    },
+    {
+      "path": ".config/contracts/schema.json",
+      "scopes": [
+        "tooling-contracts"
+      ]
+    },
+    {
+      "path": ".config/fixtures/control-plane/scope-exactly-one.json",
+      "scopes": [
+        "tooling-contracts"
+      ]
+    },
+    {
+      "path": ".config/nix/policy/contracts.nix",
+      "scopes": [
+        "tooling-contracts"
+      ]
+    },
+    {
+      "path": ".config/nu/cutover/main.nu",
+      "scopes": [
+        "tooling-contracts"
+      ]
+    }
   ],
   "invariant": "every governed path belongs to exactly one package or declared shared root"
 }

@@ -80,6 +80,7 @@ if $workspace_available {
                 "frontends"
                 "tests"
                 "tools"
+                "vendor"
             ] { [$expected] } else { [] }
             assert equal ($matches | length) 1 $"current Git path lacks exactly one generated scope: ($path)"
         }

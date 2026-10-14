@@ -20,6 +20,7 @@ def fast-flake-checks []: nothing -> list<string> {
         "tooling-contracts"
         "telemetry-config"
         "surface-smoke-contract"
+        "nu-check-failure-contract"
     ]
 }
 

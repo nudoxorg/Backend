@@ -51,6 +51,43 @@ let
       null;
 in
 {
+  nu-check-failure-contract =
+    let
+      success = pkgs.writeText "check-success.nu" (
+        helpers.nuCheckScript ''
+          ^sh -c "exit 0"
+          print VALIDATED
+        ''
+      );
+      externalFailure = pkgs.writeText "check-external-failure.nu" (
+        helpers.nuCheckScript ''
+          ^sh -c "exit 7"
+          print VALIDATED
+        ''
+      );
+      internalFailure = pkgs.writeText "check-internal-failure.nu" (
+        helpers.nuCheckScript ''
+          error make {msg: "expected controlled failure"}
+          print VALIDATED
+        ''
+      );
+    in
+    pkgs.runCommand "nudox-nu-check-failure-contract" { nativeBuildInputs = [ pkgs.nushell ]; } ''
+      nu --no-config-file ${success} > success.log
+      grep -qx VALIDATED success.log
+      for fixture in ${externalFailure} ${internalFailure}; do
+        if nu --no-config-file "$fixture" > failure.log 2>&1; then
+          echo "failed check was accepted" >&2
+          exit 1
+        fi
+        if grep -qx VALIDATED failure.log; then
+          echo "failed check continued to its validation marker" >&2
+          exit 1
+        fi
+      done
+      touch "$out"
+    '';
+
   surface-smoke-contract =
     pkgs.runCommand "nudox-surface-smoke-contract"
       {
@@ -341,6 +378,7 @@ in
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
       BACKEND_CONFIG_SNAPSHOT = "${../.}";
+      BACKEND_WORKSPACE_SNAPSHOT = toString workspaceRoot;
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
       BACKEND_LUNA_TOOLS = commands.roleBundles."luna-pair";
       BACKEND_TERRA_TOOLS = commands.roleBundles."terra-academic";
