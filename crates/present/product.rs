@@ -991,7 +991,7 @@ impl ProductView {
 fn fresh_index_attempt_affordance(
     status: &backend_library::IndexOperationStatus,
 ) -> crate::Affordance {
-    let backend_library::PackageReference::Local(path) = &status.package else {
+    let PackageReference::Local(path) = &status.package else {
         return crate::Affordance::None;
     };
     if !std::path::Path::new(path.as_str()).is_absolute() {
@@ -1536,7 +1536,7 @@ pub(crate) fn index_ticket_json(ticket: &backend_library::IndexJobTicket) -> Str
     .to_string()
 }
 
-fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> ProductRecord {
+fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
     let source = candidate
         .source
         .iter()
@@ -1653,10 +1653,10 @@ fn forge_package_detail_row(detail: &ForgePackageDetailRecord) -> ProductRecord 
         ),
     };
     let yanked = match &detail.registry.yanked {
-        backend_library::RegistryEvidenceFacet::Known(true) => "registry yanked",
-        backend_library::RegistryEvidenceFacet::Known(false) => "registry not yanked",
-        backend_library::RegistryEvidenceFacet::Absent => "registry yank state absent",
-        backend_library::RegistryEvidenceFacet::Unknown => "registry yank state unknown",
+        RegistryEvidenceFacet::Known(true) => "registry yanked",
+        RegistryEvidenceFacet::Known(false) => "registry not yanked",
+        RegistryEvidenceFacet::Absent => "registry yank state absent",
+        RegistryEvidenceFacet::Unknown => "registry yank state unknown",
     };
     let downloads = match &detail.registry.downloads {
         backend_library::RegistryDownloadCount::Exact(value) => {
@@ -1724,9 +1724,9 @@ fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecor
         .collect::<Vec<_>>();
     versions.sort();
     let kind = match group.kind {
-        backend_library::RegistrySearchGroupKind::Acquired => "acquired",
-        backend_library::RegistrySearchGroupKind::Discovered => "discovered · unacquired",
-        backend_library::RegistrySearchGroupKind::Forge => "forge source",
+        RegistrySearchGroupKind::Acquired => "acquired",
+        RegistrySearchGroupKind::Discovered => "discovered · unacquired",
+        RegistrySearchGroupKind::Forge => "forge source",
     };
     let mut tags = vec![
         kind.to_owned(),
@@ -1779,19 +1779,19 @@ fn forge_discovery_row(candidate: &backend_library::ForgeDiscoveryCandidate) -> 
         value.as_str().to_owned()
     });
     let readme = match &candidate.metadata.readme {
-        backend_library::ForgeFact::Recorded(readme) => {
+        ForgeFact::Recorded(readme) => {
             format!("recorded ({} bytes)", readme.as_str().len())
         }
-        backend_library::ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
+        ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
     };
     let dependencies = match &candidate.manifest.dependencies {
-        backend_library::DependencyFacts::Known(rows) => {
+        DependencyFacts::Known(rows) => {
             format!("{} known", rows.len())
         }
-        backend_library::DependencyFacts::Unknown(reason) => {
+        DependencyFacts::Unknown(reason) => {
             format!("unknown: {}", reason.as_str())
         }
-        backend_library::DependencyFacts::Unavailable(reason) => {
+        DependencyFacts::Unavailable(reason) => {
             format!("unavailable: {}", reason.as_str())
         }
     };
@@ -2178,7 +2178,7 @@ fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> Prod
 fn owner_row(record: &RegistryPackageRecord) -> ProductRecord {
     if matches!(
         &record.coordinate,
-        backend_library::PackageReference::Local(_)
+        PackageReference::Local(_)
     ) && record.coordinate.as_str().contains("::")
     {
         return ProductRecord::new(
@@ -2208,7 +2208,7 @@ fn metadata_view(
             heading,
             Fault::new(
                 crate::fault::FaultSlug::LaneUnavailable,
-                crate::fault::Operand::Text(heading.to_owned()),
+                Operand::Text(heading.to_owned()),
                 crate::fault::Cause::new(
                     crate::fault::CauseSlug::Unconfigured,
                     format!(
@@ -2235,7 +2235,7 @@ fn dependency_view(
                 heading,
                 Fault::new(
                     crate::fault::FaultSlug::LaneUnavailable,
-                    crate::fault::Operand::Text(heading.to_owned()),
+                    Operand::Text(heading.to_owned()),
                     crate::fault::Cause::new(
                         crate::fault::CauseSlug::NotCaptured,
                         reason.as_str().to_owned(),

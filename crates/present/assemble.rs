@@ -415,7 +415,7 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
 /// authority, and it is the only thing consulted here.
 fn package_identity(row: &Row) -> Identity {
     let identity = Identity::parse_with_key(&row.label, row.id.into());
-    if matches!(row.id, backend_library::RowId::Package(_)) {
+    if matches!(row.id, RowId::Package(_)) {
         row.signature
             .as_deref()
             .map(|name| identity.clone().with_manifest_name(name))
