@@ -44,8 +44,11 @@ pub struct NativeProgramNode {
 /// A member remains associated with its actual leaf, never a union program.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeProgramOwnedSourceRef<'a> {
+    /// Identity of the owning leaf program manifest, not the whole forest.
     pub program: [u8; 32],
+    /// Identity of the owning config node in a forest; absent for a legacy single program.
     pub node: Option<[u8; 32]>,
+    /// Exact source row borrowed from the owning leaf manifest.
     pub row: NativeProgramSourceRef<'a>,
 }
 
@@ -88,6 +91,16 @@ impl From<NativeProgramSourceManifest> for NativeProgramSources {
 }
 
 impl NativeProgramSources {
+    /// Builds a canonical, bounded config-reference graph for one toolchain.
+    ///
+    /// `root` indexes `nodes`; every node must be reachable from it, node paths
+    /// must be canonical and sorted, and reference edges must be in range and
+    /// acyclic. Node count, source count, and encoded bytes are bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns the manifest encoding or limit error when the graph violates
+    /// those identity, topology, or size constraints.
     pub fn from_forest(
         toolchain: ContentId<ToolchainDomain>,
         root: u32,
@@ -139,6 +152,15 @@ impl NativeProgramSources {
         })
     }
 
+    /// Decodes a legacy single-program manifest or the versioned forest envelope.
+    ///
+    /// Forest decoding revalidates graph topology, member identities, image
+    /// bindings, and canonical byte encoding before returning an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding, identity, or size error for malformed or
+    /// noncanonical bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, NativeProgramSourceManifestError> {
         if !bytes.starts_with(MAGIC) {
             return NativeProgramSourceManifest::decode(bytes).map(Into::into);
@@ -290,33 +312,55 @@ impl NativeProgramSources {
         }
     }
 
+    /// Returns whether this uses the forest envelope rather than the legacy format.
     pub fn is_forest(&self) -> bool {
         matches!(self.programs, Programs::Forest { .. })
     }
+
+    /// Returns the original manifest only for a legacy single-program owner.
+    ///
+    /// A forest has no synthetic union manifest, so this returns `None` there.
     pub fn single_program(&self) -> Option<&NativeProgramSourceManifest> {
         match &self.programs {
             Programs::Single(program) => Some(program),
             Programs::Forest { .. } => None,
         }
     }
+
+    /// Returns the stable identity of this membership owner.
+    ///
+    /// Legacy owners retain their program identity; forests identify the full
+    /// canonical envelope. Use each source row's `program` for leaf identity.
     pub fn membership_identity(&self) -> [u8; 32] {
         self.identity
     }
+
+    /// Returns this owner's canonical encoded bytes, borrowed for its lifetime.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// Returns the toolchain content identity shared by this owner and its leaves.
     pub fn toolchain(&self) -> ContentId<ToolchainDomain> {
         match &self.programs {
             Programs::Single(program) => program.toolchain(),
             Programs::Forest { toolchain, .. } => *toolchain,
         }
     }
+
+    /// Returns the root index and borrowed nodes for a forest; legacy owners have none.
     pub fn nodes(&self) -> Option<(u32, &[NativeProgramNode])> {
         match &self.programs {
             Programs::Single(_) => None,
             Programs::Forest { root, nodes, .. } => Some((*root, nodes)),
         }
     }
+
+    /// Iterates actual leaf source rows while preserving their owning identities.
+    ///
+    /// For forest rows, `node` identifies the owning config and `program`
+    /// identifies that leaf's manifest. Legacy rows have no config-node ID.
+    /// Each row borrows from this owner and cannot outlive it.
     pub fn sources(&self) -> impl Iterator<Item = NativeProgramOwnedSourceRef<'_>> {
         let (single, forest): (Option<&NativeProgramSourceManifest>, &[_]) = match &self.programs {
             Programs::Single(program) => (Some(program), &[]),

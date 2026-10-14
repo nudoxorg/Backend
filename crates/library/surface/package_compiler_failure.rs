@@ -384,10 +384,15 @@ impl<'de> Deserialize<'de> for PackageCompilerFragmentFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityPhaseFact {
+    /// Opening the selected project, native library, or authority image failed.
     Open,
+    /// Parsing the selected source or authority image failed.
     Parse,
+    /// Cross-file, symbol, import, or package resolution failed.
     Resolve,
+    /// Type checking or recursive type extraction failed.
     TypeCheck,
+    /// Projecting valid authority facts into canonical IR failed.
     Project,
 }
 
@@ -395,11 +400,17 @@ pub enum AuthorityPhaseFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityClassFact {
+    /// The authority rejected source or image syntax.
     Syntax,
+    /// A symbol, import, package, or project-graph binding could not be established.
     Binding,
+    /// A selected source lies outside the active semantic scope.
     SourceScope,
+    /// A required type fact could not be established.
     Type,
+    /// Loading or running the selected authority failed.
     Authority,
+    /// Canonical admission rejected the authority's complete fact set.
     Projection,
 }
 
@@ -407,8 +418,11 @@ pub enum AuthorityClassFact {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerAuthorityDiagnosticFacts {
+    /// Bytes retained in the bounded diagnostic prefix.
     pub retained_bytes: u32,
+    /// Total source-diagnostic bytes observed before bounded retention.
     pub observed_bytes: u64,
+    /// Whether the retained prefix omits observed diagnostic bytes.
     pub truncated: bool,
     /// Closed Python checker cause when available. Native diagnostic text and
     /// paths remain local-only and are not serialized into this summary.
