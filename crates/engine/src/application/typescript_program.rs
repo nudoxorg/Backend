@@ -338,6 +338,32 @@ const matcherEnvironment = sys => {
   }
   return {currentDirectory:path.resolve(currentDirectory), caseSensitive:caseSensitiveValue};
 };
+// Paths outside the admitted roots (the workspace and the TypeScript module
+// root) are not part of the program universe. Probing them cannot be witnessed
+// by the host, so the bridge answers "absent" without touching the disk and
+// records nothing (for example Vite's rooted `import logo from '/vite.svg'`
+// makes the compiler probe the filesystem root). The ancestor `node_modules`
+// and `node_modules/@types` negative candidates stay observed because the host
+// witnesses them by parent identity. This mirrors the host's
+// path_is_admitted / external_negative_module_candidate; MAX_PROJECT_ANCESTORS
+// is pinned to the host constant by a unit test.
+const MAX_PROJECT_ANCESTORS = 32;
+const admittedRoots = [path.resolve(workspaceRoot), path.resolve(compilerApiPath, '..', '..', '..')];
+const insideRoot = (candidate, root) =>
+  candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+const negativeModuleCandidates = new Set();
+{
+  let ancestor = path.dirname(path.resolve(workspaceRoot));
+  for (let count = 0; count < MAX_PROJECT_ANCESTORS; count++) {
+    negativeModuleCandidates.add(path.join(ancestor, 'node_modules'));
+    negativeModuleCandidates.add(path.join(ancestor, 'node_modules', '@types'));
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+}
+const outsideProgramUniverse = resolved =>
+  !admittedRoots.some(root => insideRoot(resolved, root)) && !negativeModuleCandidates.has(resolved);
 const chargeAccess = () => {
   if (accessOperations >= MAX_ACCESS_OPERATIONS) {
     throw closureFault('limit', 'TypeScript compiler filesystem access count exceeded its bound');
@@ -610,6 +636,10 @@ try {
         chargeAccess();
         const p = args[0];
         const resolvedPath = path.resolve(p);
+        if ((name === 'readFile' || name === 'fileExists' || name === 'directoryExists' || name === 'realpath')
+            && outsideProgramUniverse(resolvedPath)) {
+          return name === 'realpath' ? p : name === 'readFile' ? undefined : false;
+        }
         let value;
         let directoryViewPaths = [];
         let directoryRealpaths = [];
@@ -741,7 +771,12 @@ try {
     ? ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost)
     : {options:ts.getDefaultCompilerOptions(), fileNames:inferredRootNames, errors:[], projectReferences:[]};
   if (!parsed) throw new Error('getParsedCommandLineOfConfigFile returned no project');
-  if (configDiagnostics.length || (parsed.errors || []).length) throw new Error('selected config has Compiler API parse diagnostics');
+  if (configDiagnostics.length || (parsed.errors || []).length) {
+    // Name the first compiler diagnostics (code and text) so a refusal is actionable.
+    const described = configDiagnostics.concat(parsed.errors || []).slice(0, 2)
+      .map(item => 'TS' + item.code + ': ' + ts.flattenDiagnosticMessageText(item.messageText, ' ')).join('; ');
+    throw new Error('selected config has Compiler API parse diagnostics: ' + described);
+  }
   if (!admitProjectForest && parsed.projectReferences && parsed.projectReferences.length) {
     result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
       root_names:parsed.fileNames.map(name => path.resolve(name)),
@@ -1725,7 +1760,7 @@ fn select_config<'a>(
     let selected = super::typescript_host::select_project_config(
         inputs.package_root,
         inputs.config_candidates,
-    )?;
+    );
     if selected.is_some_and(|config| {
         config.dependency_authority
             != super::typescript_host::TypeScriptConfigDependencyAuthority::Program
@@ -2619,6 +2654,79 @@ mod tests {
             b"export const value = '\xff';".as_slice(),
         ] {
             assert!(super::compiler_api_utf8_text_sha256(unsupported).is_err());
+        }
+    }
+
+    #[test]
+    fn bridge_script_pins_the_hosts_negative_module_ancestor_bound() {
+        assert!(super::COMPILER_API_PROGRAM_SCRIPT.contains(&format!(
+            "const MAX_PROJECT_ANCESTORS = {};",
+            super::super::typescript_host::MAX_PROJECT_ANCESTORS
+        )));
+    }
+
+    #[test]
+    #[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+    fn rooted_specifiers_outside_the_admitted_roots_are_absent_without_observation() {
+        use std::{env, fs, path::PathBuf};
+
+        let node = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_NODE").expect("set the pinned Node executable"),
+        );
+        let compiler_api = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_TYPESCRIPT_API").expect("set the pinned TypeScript API"),
+        );
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "nudox-typescript-rooted-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create isolated TypeScript source fixture");
+        let fixture = TemporaryProgramRoot(root);
+        let root = fixture.0.as_path();
+        // Vite's public-directory import: TypeScript treats `/vite.svg` as a rooted
+        // module path and probes the filesystem root, which no program may witness.
+        fs::write(
+            root.join("main.ts"),
+            "import logo from '/vite.svg';\nexport const url: string = logo;\n",
+        )
+        .expect("write rooted import");
+        fs::write(
+            root.join("assets.d.ts"),
+            "declare module '*.svg' { const url: string; export default url; }\n",
+        )
+        .expect("write ambient svg module");
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","noEmit":true},"include":["*.ts"]}"#,
+        )
+        .expect("write config");
+        let config = fs::canonicalize(root.join("tsconfig.json")).expect("canonical config");
+        let canonical_root = fs::canonicalize(root).expect("canonical root");
+        let report = run_program_report(&canonical_root, &node, &compiler_api, Some(&config), &[]);
+        assert!(report.error.is_none(), "bridge error: {:?}", report.error);
+        let compiler_root = compiler_api
+            .ancestors()
+            .nth(3)
+            .expect("module root above typescript/lib/typescript.js")
+            .to_path_buf();
+        for access in &report.accesses {
+            let path = std::path::Path::new(&access.path);
+            let negative_candidate = path
+                .file_name()
+                .is_some_and(|name| name == "node_modules" || name == "@types");
+            assert!(
+                path.starts_with(&canonical_root)
+                    || path.starts_with(&compiler_root)
+                    || negative_candidate,
+                "outside probe was observed: {}",
+                access.path
+            );
         }
     }
 

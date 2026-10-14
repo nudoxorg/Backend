@@ -20,7 +20,7 @@ use thiserror::Error;
 use crate::application::{ToolchainProbeError, ToolchainProbeLimits};
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError};
 
-const MAX_PROJECT_ANCESTORS: usize = 32;
+pub(crate) const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_PNPM_WORKSPACE_BYTES: usize = 64 * 1024;
 const MAX_PROJECT_CONFIG_FILES: usize = 256;
@@ -2846,8 +2846,14 @@ fn collect_project_configs(
             &mut total_bytes,
         )?;
     }
-    let selected = select_project_config(&project_root, captured.values())?
-        .map(|config| config.path.to_path_buf());
+    let selection = select_project_config_with_basis(&project_root, captured.values());
+    if let Some(selection) = selection {
+        tracing::info!(target: "compiler.typescript_project",
+            config = %selection.config.path.display(),
+            basis = ?selection.basis, passed_over = selection.passed_over,
+            "selected TypeScript project config");
+    }
+    let selected = selection.map(|selection| selection.config.path.to_path_buf());
     let mut pending = selected
         .into_iter()
         .map(|path| (path, TypeScriptConfigDependencyAuthority::Program))
@@ -2952,47 +2958,144 @@ fn capture_project_config(
     Ok(())
 }
 
-/// Select by the admitted Angular target or nearest containing config, using
+/// Why [`select_project_config_with_basis`] chose one config, for diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptConfigSelectionBasis {
+    /// The one config a build producer (for example `angular.json`) selected.
+    ProducerSelected,
+    /// Several producer-selected configs; the nearest/ranked one was chosen.
+    ProducerSelectedAmong,
+    /// `tsconfig.json` in the nearest directory holding project configs, which
+    /// is what `tsc` and editors use for that directory.
+    Conventional,
+    /// The only project config in the nearest directory holding any.
+    OnlyCandidate,
+    /// Several named configs and no `tsconfig.json`; the ranked first was chosen.
+    RankedAmong,
+}
+
+/// One deterministic config choice and how many equally eligible configs it passed over.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TypeScriptConfigSelection<'a> {
+    pub(crate) config: &'a TypeScriptConfigInput,
+    pub(crate) basis: TypeScriptConfigSelectionBasis,
+    /// Eligible configs that were not chosen.
+    pub(crate) passed_over: usize,
+}
+
+/// Conventional role order for named configs sharing a directory with no
+/// `tsconfig.json`: application and build configs describe the shipped program,
+/// the shared `tsconfig.base.json` only carries options and ranks last.
+fn config_rank(config: &TypeScriptConfigInput) -> u8 {
+    match config.path.file_name().and_then(std::ffi::OsStr::to_str) {
+        Some("tsconfig.json") => 0,
+        Some("tsconfig.app.json") => 1,
+        Some("tsconfig.build.json") => 2,
+        Some("tsconfig.lib.json") => 3,
+        Some("tsconfig.base.json") => 5,
+        _ => 4,
+    }
+}
+
+/// Select by the admitted build target or the nearest containing config, using
 /// the same path-only policy before closure capture and compiler execution.
-pub(crate) fn select_project_config<'a>(
+///
+/// This never refuses for ambiguity; it follows a fixed, documented order so the
+/// same tree always yields the same program:
+///
+/// 1. A config selected by a build producer (Angular `build.options.tsConfig`).
+///    With several, prefer one whose directory contains the package root
+///    (nearest first), then one below it (shallowest first), then by
+///    [`config_rank`] and path.
+/// 2. Otherwise, among project configs whose directory contains the package
+///    root, only those in the nearest such directory compete. `tsconfig.json`
+///    wins there (the `tsc -p <dir>` default; a solution-style one expands to
+///    its `references` as a program forest), then [`config_rank`], then path.
+/// 3. No candidate selects no config (an inferred-project fallback).
+pub(crate) fn select_project_config_with_basis<'a>(
     package_root: &Path,
     configs: impl IntoIterator<Item = &'a TypeScriptConfigInput>,
-) -> Result<Option<&'a TypeScriptConfigInput>, TypeScriptProjectHostError> {
+) -> Option<TypeScriptConfigSelection<'a>> {
     let configs = configs.into_iter().collect::<Vec<_>>();
-    let selected = configs
+    let mut selected = configs
         .iter()
         .copied()
         .filter(|candidate| candidate.selected_build_config)
         .collect::<Vec<_>>();
-    if selected.len() == 1 {
-        return Ok(Some(selected[0]));
+    let package_depth = package_root.components().count();
+    let directory_depth = |config: &TypeScriptConfigInput| {
+        config
+            .path
+            .parent()
+            .map_or(0, |parent| parent.components().count())
+    };
+    match selected.len() {
+        0 => {}
+        1 => {
+            return Some(TypeScriptConfigSelection {
+                config: selected[0],
+                basis: TypeScriptConfigSelectionBasis::ProducerSelected,
+                passed_over: 0,
+            });
+        }
+        _ => {
+            selected.sort_by_cached_key(|config| {
+                let directory = config.path.parent().unwrap_or(Path::new("/"));
+                let (group, distance) = if package_root.starts_with(directory) {
+                    (0_u8, package_depth.saturating_sub(directory_depth(*config)))
+                } else if directory.starts_with(package_root) {
+                    (1, directory_depth(*config).saturating_sub(package_depth))
+                } else {
+                    (2, directory_depth(*config))
+                };
+                (group, distance, config_rank(*config), config.path.clone())
+            });
+            return Some(TypeScriptConfigSelection {
+                config: selected[0],
+                basis: TypeScriptConfigSelectionBasis::ProducerSelectedAmong,
+                passed_over: selected.len() - 1,
+            });
+        }
     }
-    if selected.len() > 1 {
-        return Err(TypeScriptProjectHostError::CompilerApiBridge {
-            message: "the host admitted more than one selected TypeScript build config".into(),
-        });
-    }
+    let nearest = configs
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.project_candidate)
+        .filter(|candidate| {
+            package_root.starts_with(candidate.path.parent().unwrap_or(Path::new("/")))
+        })
+        .map(directory_depth)
+        .max()?;
     let mut candidates = configs
         .into_iter()
         .filter(|candidate| candidate.project_candidate)
         .filter(|candidate| {
             package_root.starts_with(candidate.path.parent().unwrap_or(Path::new("/")))
         })
+        .filter(|candidate| directory_depth(*candidate) == nearest)
         .collect::<Vec<_>>();
-    candidates
-        .sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.path.components().count()));
-    match candidates.as_slice() {
-        [only] => Ok(Some(*only)),
-        [first, second, ..]
-            if first.path.components().count() == second.path.components().count() =>
-        {
-            Err(TypeScriptProjectHostError::CompilerApiBridge {
-                message: "the nearest TypeScript project config is ambiguous".into(),
-            })
-        }
-        [first, ..] => Ok(Some(*first)),
-        [] => Ok(None),
-    }
+    candidates.sort_by_cached_key(|config| (config_rank(*config), config.path.clone()));
+    let first = *candidates.first()?;
+    let basis = if candidates.len() == 1 {
+        TypeScriptConfigSelectionBasis::OnlyCandidate
+    } else if config_rank(first) == 0 {
+        TypeScriptConfigSelectionBasis::Conventional
+    } else {
+        TypeScriptConfigSelectionBasis::RankedAmong
+    };
+    Some(TypeScriptConfigSelection {
+        config: first,
+        basis,
+        passed_over: candidates.len() - 1,
+    })
+}
+
+/// The config chosen by [`select_project_config_with_basis`].
+pub(crate) fn select_project_config<'a>(
+    package_root: &Path,
+    configs: impl IntoIterator<Item = &'a TypeScriptConfigInput>,
+) -> Option<&'a TypeScriptConfigInput> {
+    select_project_config_with_basis(package_root, configs).map(|selection| selection.config)
 }
 
 fn validate_config_graph_acyclic(
@@ -4757,6 +4860,14 @@ fn bundle_admission_error(
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum TypeScriptProjectHostError {
+    /// A host failure paired with sanitized, project-relative public cause text.
+    /// Typed classification always follows `source`; only the text is added.
+    #[error("{source}")]
+    Described {
+        cause: backend_library::interface::TypeScriptFailureCause,
+        #[source]
+        source: Box<TypeScriptProjectHostError>,
+    },
     #[error("TypeScript compiler package version {package_version} admission refused: {source}")]
     CompilerPackageAdmission {
         package_version: Box<str>,
@@ -5954,9 +6065,7 @@ printf 'Version 5.9.3\n'
         let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
             .expect("unselected editor configuration does not block the root program");
         let root = fixture.0.join("tsconfig.json");
-        let selected = select_project_config(&fixture.0, &configs)
-            .expect("shared selector")
-            .expect("root program");
+        let selected = select_project_config(&fixture.0, &configs).expect("root program");
         assert_eq!(selected.path.as_ref(), root.as_path());
         assert_eq!(
             selected.dependency_authority,
@@ -6035,9 +6144,7 @@ printf 'Version 5.9.3\n'
             angular_build_config_paths(&fixture.0, &module_root).expect("selected app path");
         let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
             .expect("only actual app authority is expanded");
-        let selected = select_project_config(&fixture.0, &configs)
-            .expect("select app")
-            .expect("app");
+        let selected = select_project_config(&fixture.0, &configs).expect("app");
         assert!(selected.path.ends_with("tsconfig.app.json"));
         assert_eq!(
             selected.dependency_authority,
@@ -6100,27 +6207,286 @@ printf 'Version 5.9.3\n'
         );
     }
 
+    fn selected_name(configs: &[TypeScriptConfigInput], package_root: &Path) -> String {
+        select_project_config(package_root, configs)
+            .and_then(|config| config.path.file_name())
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+    }
+
     #[test]
-    fn ambiguous_path_selection_refuses_before_expanding_unselected_configs() {
+    fn conventional_tsconfig_wins_over_named_siblings_without_refusing() {
         let fixture = Fixture::new();
         let modules = fixture.install("5.9.3");
         let module_root = fs::canonicalize(modules).expect("canonical module root");
-        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write first candidate");
-        fs::write(fixture.0.join("tsconfig.app.json"), "{}").expect("write second candidate");
-        for selected in [
-            Vec::new(),
-            vec![
-                fixture.0.join("tsconfig.json"),
-                fixture.0.join("tsconfig.app.json"),
-            ],
-        ] {
-            assert!(matches!(
-                collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected),
-                Err(TypeScriptProjectHostError::CompilerApiBridge { .. })
-            ));
+        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write conventional config");
+        fs::write(fixture.0.join("tsconfig.app.json"), "{}").expect("write named sibling");
+        fs::write(fixture.0.join("tsconfig.node.json"), "{}").expect("write named sibling");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("equally near configs are not ambiguous");
+        let selection = select_project_config_with_basis(&fixture.0, &configs).expect("selection");
+        assert_eq!(selection.config.path.file_name().unwrap(), "tsconfig.json");
+        assert_eq!(
+            selection.basis,
+            TypeScriptConfigSelectionBasis::Conventional
+        );
+        assert_eq!(selection.passed_over, 2);
+        for name in ["tsconfig.app.json", "tsconfig.node.json"] {
+            let sibling = configs
+                .iter()
+                .find(|config| config.path.ends_with(name))
+                .expect("sibling stays witnessed");
+            assert_eq!(
+                sibling.dependency_authority,
+                TypeScriptConfigDependencyAuthority::Unselected
+            );
         }
-        let selected = [fixture.0.join("tsconfig.app.json")];
-        assert!(collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected).is_ok());
+    }
+
+    #[test]
+    fn named_configs_without_a_conventional_default_choose_by_documented_rank() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        for (names, expected) in [
+            (
+                vec!["tsconfig.server.json", "tsconfig.react.json"],
+                "tsconfig.react.json",
+            ),
+            (
+                vec!["tsconfig.base.json", "tsconfig.spec.json"],
+                "tsconfig.spec.json",
+            ),
+            (
+                vec!["tsconfig.lib.json", "tsconfig.build.json"],
+                "tsconfig.build.json",
+            ),
+            (
+                vec![
+                    "tsconfig.zeta.json",
+                    "tsconfig.app.json",
+                    "tsconfig.build.json",
+                ],
+                "tsconfig.app.json",
+            ),
+            (vec!["tsconfig.base.json"], "tsconfig.base.json"),
+        ] {
+            let package = fixture.0.join(expected.replace('.', "-"));
+            fs::create_dir_all(&package).expect("create case directory");
+            for name in &names {
+                fs::write(package.join(name), "{}").expect("write named config");
+            }
+            let configs = collect_project_configs(&package, &fixture.0, &module_root, &[])
+                .expect("named variants never refuse the project");
+            assert_eq!(selected_name(&configs, &package), expected, "{names:?}");
+            // Selection is a pure function of paths: the same tree yields the same choice.
+            let mut reversed = configs.clone();
+            reversed.reverse();
+            assert_eq!(selected_name(&reversed, &package), expected, "{names:?}");
+        }
+    }
+
+    #[test]
+    fn several_producer_selected_configs_degrade_to_the_nearest_ranked_one() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::create_dir_all(fixture.0.join("projects/lib")).expect("create lib");
+        fs::create_dir_all(fixture.0.join("projects/app")).expect("create app");
+        fs::write(
+            fixture.0.join("angular.json"),
+            r#"{"projects":{
+                "lib":{"architect":{"build":{"options":{"tsConfig":"projects/lib/tsconfig.lib.json"}}}},
+                "app":{"architect":{"build":{"options":{"tsConfig":"projects/app/tsconfig.app.json"}}}},
+                "root":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+        )
+        .expect("write multi-project Angular workspace");
+        for relative in [
+            "tsconfig.json",
+            "tsconfig.app.json",
+            "projects/lib/tsconfig.lib.json",
+            "projects/app/tsconfig.app.json",
+        ] {
+            fs::write(fixture.0.join(relative), "{}").expect("write config");
+        }
+        let (selected, _) =
+            angular_build_config_paths(&fixture.0, &module_root).expect("read Angular targets");
+        assert_eq!(selected.len(), 3);
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("more than one selected build config is not a refusal");
+        let selection = select_project_config_with_basis(&fixture.0, &configs).expect("selection");
+        assert_eq!(
+            selection.basis,
+            TypeScriptConfigSelectionBasis::ProducerSelectedAmong
+        );
+        assert_eq!(selection.passed_over, 2);
+        assert_eq!(
+            selection.config.path.as_ref(),
+            module_path(&fixture.0, "tsconfig.app.json")
+        );
+        assert_eq!(
+            selection.config.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Program
+        );
+        let ignored = configs
+            .iter()
+            .find(|config| config.path.ends_with("projects/lib/tsconfig.lib.json"))
+            .expect("other selected build config stays witnessed");
+        assert_eq!(
+            ignored.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Unselected
+        );
+
+        // Only nested selected builds: the shallowest wins, then rank, then path.
+        fs::remove_file(fixture.0.join("tsconfig.app.json")).expect("remove root app config");
+        fs::write(
+            fixture.0.join("angular.json"),
+            r#"{"projects":{
+                "lib":{"architect":{"build":{"options":{"tsConfig":"projects/lib/tsconfig.lib.json"}}}},
+                "app":{"architect":{"build":{"options":{"tsConfig":"projects/app/tsconfig.app.json"}}}}}}"#,
+        )
+        .expect("rewrite workspace");
+        let (selected, _) =
+            angular_build_config_paths(&fixture.0, &module_root).expect("read Angular targets");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("capture nested selected configs");
+        assert_eq!(selected_name(&configs, &fixture.0), "tsconfig.app.json");
+    }
+
+    fn module_path(root: &Path, relative: &str) -> PathBuf {
+        fs::canonicalize(root.join(relative)).expect("canonical config")
+    }
+
+    #[test]
+    fn nearest_directory_wins_and_ancestor_conventional_config_is_not_ambiguous() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let package = fixture.0.join("packages/a");
+        fs::create_dir_all(&package).expect("create package");
+        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write root config");
+        fs::write(fixture.0.join("tsconfig.base.json"), "{}").expect("write shared base");
+        fs::write(
+            package.join("tsconfig.json"),
+            r#"{"extends":"../../tsconfig.base.json"}"#,
+        )
+        .expect("write package config");
+        let configs = collect_project_configs(&package, &fixture.0, &module_root, &[])
+            .expect("monorepo package");
+        assert_eq!(
+            select_project_config(&package, &configs)
+                .unwrap()
+                .path
+                .as_ref(),
+            module_path(&package, "tsconfig.json")
+        );
+        let base = configs
+            .iter()
+            .find(|config| config.path.ends_with("tsconfig.base.json"))
+            .expect("extended base is captured");
+        assert_eq!(
+            base.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Inheritance
+        );
+        // Indexing the repository root selects its own conventional config.
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("repository root");
+        assert_eq!(
+            select_project_config(&fixture.0, &configs)
+                .unwrap()
+                .path
+                .as_ref(),
+            module_path(&fixture.0, "tsconfig.json")
+        );
+    }
+
+    #[test]
+    fn solution_style_config_expands_directory_and_file_references() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::create_dir_all(fixture.0.join("packages/lib")).expect("create referenced directory");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"files":[],"references":[
+                {"path":"./tsconfig.app.json"},
+                {"path":"./tsconfig.node.json"},
+                {"path":"./packages/lib"}]}"#,
+        )
+        .expect("write solution config");
+        fs::write(
+            fixture.0.join("tsconfig.app.json"),
+            r#"{"extends":"./tsconfig.base.json","include":["src"]}"#,
+        )
+        .expect("write app");
+        fs::write(
+            fixture.0.join("tsconfig.node.json"),
+            r#"{"include":["vite.config.ts"]}"#,
+        )
+        .expect("write node");
+        fs::write(
+            fixture.0.join("tsconfig.base.json"),
+            r#"{"compilerOptions":{"strict":true}}"#,
+        )
+        .expect("write base");
+        fs::write(
+            fixture.0.join("packages/lib/tsconfig.json"),
+            r#"{"include":["src"]}"#,
+        )
+        .expect("write directory-referenced project");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("solution style layout");
+        let root = select_project_config(&fixture.0, &configs).expect("solution root");
+        assert_eq!(root.path.as_ref(), module_path(&fixture.0, "tsconfig.json"));
+        assert_eq!(root.references.len(), 3);
+        for relative in [
+            "tsconfig.app.json",
+            "tsconfig.node.json",
+            "packages/lib/tsconfig.json",
+        ] {
+            let referenced = configs
+                .iter()
+                .find(|config| config.path.as_ref() == module_path(&fixture.0, relative))
+                .expect("referenced project captured");
+            assert_eq!(
+                referenced.dependency_authority,
+                TypeScriptConfigDependencyAuthority::Program,
+                "{relative}"
+            );
+            assert!(
+                root.references
+                    .iter()
+                    .any(|reference| **reference == *referenced.path)
+            );
+        }
+        let base = configs
+            .iter()
+            .find(|config| config.path.ends_with("tsconfig.base.json"))
+            .expect("inherited base captured");
+        assert_eq!(
+            base.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Inheritance
+        );
+    }
+
+    #[test]
+    fn solution_reference_cycles_remain_typed_refusals() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"files":[],"references":[{"path":"./tsconfig.app.json"}]}"#,
+        )
+        .expect("write solution");
+        fs::write(
+            fixture.0.join("tsconfig.app.json"),
+            r#"{"include":["src"],"references":[{"path":"./tsconfig.json"}]}"#,
+        )
+        .expect("write cycle back to the solution");
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+            Err(TypeScriptProjectHostError::ConfigCycle { .. })
+        ));
     }
 
     #[test]
