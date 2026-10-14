@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Validate time-bounded emulation exclusions before test selection."""
+"""Validate owned, time-bounded emulation filters and source ignores before selection."""
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
@@ -66,6 +68,20 @@ def main() -> int:
                 print(f"quarantine {platform}: {error}", file=sys.stderr)
         else:
             print(f"quarantine {platform}: {len(document['exclude'])} owned exclusions valid on {today}")
+    from source_ignores import validate_inventory
+    try:
+        document = json.loads((ROOT / "source-ignores.json").read_text())
+        errors = validate(document, today)
+        if not errors:
+            errors = validate_inventory(ROOT.parent.parent, document)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        errors = [str(error)]
+    if errors:
+        failed = True
+        for error in errors:
+            print(f"quarantine source: {error}", file=sys.stderr)
+    else:
+        print(f"quarantine source: {len(document['exclude'])} owned Rust attributes valid on {today}")
     return 1 if failed else 0
 
 
