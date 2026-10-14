@@ -8,7 +8,7 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 
 /// Controlled root hydration that supplies no new producer revision. A
 /// generation advance here would hide a missing same-root attachment wake.
-struct StableRoot;
+pub(super) struct StableRoot;
 
 impl crate::runtime::actor::EngineClient for StableRoot {
     fn execute(

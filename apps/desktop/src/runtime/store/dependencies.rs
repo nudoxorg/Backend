@@ -12,14 +12,41 @@ use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{CargoBrowseContext, Overlay, Route, View};
 use std::sync::Arc;
 
+/// The exact live owner of a read, independent of its route or resource key.
+/// Retained data can still paint after this lease loses admission.
+#[derive(Clone, Debug)]
+pub(crate) struct ReadAuthorityLease {
+    root: VersionedRoot,
+    attachment: Option<OwnerAttachment>,
+}
+
+impl ReadAuthorityLease {
+    pub(crate) fn capture(store: &DataStore) -> Option<Self> {
+        let lease = Self {
+            root: store.snapshot().key(),
+            attachment: store.current_owner_attachment(),
+        };
+        lease.admits(store).then_some(lease)
+    }
+
+    pub(crate) fn admits(&self, store: &DataStore) -> bool {
+        self.root.same_authority(store.snapshot().key())
+            && store.owner_serving()
+            && store.current_owner_attachment() == self.attachment
+            && self
+                .attachment
+                .as_ref()
+                .is_none_or(|attachment| store.admits_owner_attachment(attachment))
+    }
+}
+
 /// One read-backed input's admission across the deferred intent boundary.
 /// No-gate harness attachments are synthetic and prove no real-owner acceptance.
 #[derive(Clone, Debug)]
 pub(crate) struct RouteReadLease {
     route: Route,
     overlay: Option<Overlay>,
-    root: VersionedRoot,
-    attachment: Option<OwnerAttachment>,
+    authority: ReadAuthorityLease,
     dependency: (PageKey, Stamp),
 }
 
@@ -29,8 +56,7 @@ impl RouteReadLease {
         let lease = Self {
             route: snapshot.route().clone(),
             overlay: snapshot.overlay(),
-            root: snapshot.key(),
-            attachment: store.current_owner_attachment(),
+            authority: ReadAuthorityLease::capture(store)?,
             dependency,
         };
         lease.admits(store).then_some(lease)
@@ -40,16 +66,10 @@ impl RouteReadLease {
         let snapshot = store.snapshot();
         snapshot.route() == &self.route
             && snapshot.overlay() == self.overlay
-            && self.root.same_authority(snapshot.key())
-            && store.owner_serving()
-            && store.current_owner_attachment() == self.attachment
-            && self
-                .attachment
-                .as_ref()
-                .is_none_or(|attachment| store.admits_owner_attachment(attachment))
+            && self.authority.admits(store)
             && RouteDependencies::new(&self.route, self.overlay).admits_native_stamp(
                 store,
-                self.root,
+                self.authority.root,
                 &self.dependency,
             )
     }

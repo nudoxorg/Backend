@@ -873,7 +873,7 @@ impl Shell {
                     cx.notify();
                 }
             }
-            StoreEvent::Snapshot(Branch::Root) => cx.notify(),
+            StoreEvent::Snapshot(_) if event.read_authority_changed() => cx.notify(),
             StoreEvent::Snapshot(_) => {}
             StoreEvent::PackagesPublished(_) => {}
         }

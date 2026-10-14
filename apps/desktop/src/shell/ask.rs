@@ -18,9 +18,9 @@
 use super::kit::{kind_of, search_result_route, text};
 use super::region::Links;
 use crate::core::{ReadHoldReason, Resource, ResourceAdmission, ResourceTerminal, VersionedRoot, admit_resource};
-use crate::model::pages::{KeyError, MatchReason, PageKey, SearchPage, SearchQuery, SearchRow};
+use crate::model::pages::{KeyError, MatchReason, PageKey, SearchPage, SearchQuery, SearchRow, Stamp};
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Overlay, Route};
-use crate::runtime::store::{Branch, StoreEvent};
+use crate::runtime::store::{Branch, ReadAuthorityLease, StoreEvent};
 use facet::icons::{self, KindSize};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Space};
@@ -231,11 +231,18 @@ impl Ask {
             InputEvent::Focus | InputEvent::Blur => {}
         });
         let store = links.store.clone();
-        let landed = cx.subscribe(&store, |ask: &mut Self, _, event: &StoreEvent, cx| {
+        let landed = cx.subscribe(&store, |ask: &mut Self, store, event: &StoreEvent, cx| {
             let search_changed = matches!((event, ask.draft.query()),
                 (StoreEvent::Resource(PageKey::Search(query)), Some(mine)) if query == mine);
-            if search_changed || event.is_branch(Branch::Root) {
+            if search_changed || event.read_authority_changed() {
                 cx.notify();
+            }
+            if event.read_authority_changed() && store.read(cx).owner_serving()
+                && let Some(query) = ask.draft.query().cloned()
+            {
+                // Replacement ownership revokes prior live reads. Renew this
+                // active query without changing its draft or dropping old rows.
+                store.update(cx, |store, cx| store.ensure(PageKey::Search(query), cx));
             }
         });
         Self {
@@ -546,7 +553,7 @@ impl Ask {
         if !self.current_editor(cx) { return; }
         let outcome = match (self.draft.query(), self.all_results(cx)) {
             (Some(query), Some(route)) if !self.choices(cx).is_empty() =>
-                follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, cx),
+                follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, SearchReadLease::capture(&self.links, query, cx).as_ref(), cx),
             _ => self.empty_submission(cx),
         };
         self.complete_submission(outcome, cx);
@@ -641,6 +648,14 @@ impl Ask {
     fn read_status(&self, cx: &App) -> (Option<SharedString>, Option<backend_library::SemanticSearchStatus>) {
         if let Some(status) = self.draft.status() { return (Some(status.into()), None); }
         let Some((results, root, serving)) = self.search_resource(cx) else { return (None, None) };
+        if !serving && let Some(fault) = self.links.store.read(cx).owner_fault() {
+            let words = if results.loaded_value().is_some() {
+                format!("Earlier search results · index owner unavailable · {fault} · links unavailable")
+            } else {
+                format!("Search unavailable · {fault}")
+            };
+            return (Some(words.into()), None);
+        }
         match admit_resource(&results, root, serving) {
             ResourceAdmission::Current(page) if self.draft.query().is_some_and(|query| page.query.as_ref() != query.text.as_ref()) =>
                 (Some("Search replied for a different query; links unavailable.".into()), None),
@@ -759,6 +774,35 @@ fn current_search(links: &Links, query: &SearchQuery, cx: &App, accepts: impl Fn
         .current_value().is_some_and(|page| page.query.as_ref() == query.text.as_ref() && accepts(page))
 }
 
+/// Bind a painted result to the exact owner and search resource it displayed.
+#[derive(Clone, Debug)]
+struct SearchReadLease {
+    authority: ReadAuthorityLease,
+    query: SearchQuery,
+    stamp: Stamp,
+}
+
+impl SearchReadLease {
+    fn capture(links: &Links, query: &SearchQuery, cx: &App) -> Option<Self> {
+        let store = links.store.read(cx);
+        if !current_search(links, query, cx, |_| true) {
+            return None;
+        }
+        Some(Self {
+            authority: ReadAuthorityLease::capture(store)?,
+            query: query.clone(),
+            stamp: store.stamp(&PageKey::Search(query.clone())),
+        })
+    }
+
+    fn admits(&self, links: &Links, query: &SearchQuery, cx: &App) -> bool {
+        let store = links.store.read(cx);
+        &self.query == query
+            && self.authority.admits(store)
+            && store.stamp(&PageKey::Search(query.clone())) == self.stamp
+    }
+}
+
 /// A painted Link cannot outlive the editor query that produced it.
 fn current_input_query(input: &Entity<InputState>, query: &SearchQuery, cx: &App) -> bool {
     SearchQuery::new(&input.read(cx).value().to_string(), SearchQuery::DEFAULT_LIMIT)
@@ -770,29 +814,63 @@ fn stale_submission() -> SubmissionOutcome {
         "That search result is no longer verified by the current index. Search again.".into()))
 }
 
-fn follow_row(links: &Links, input: &Entity<InputState>, query: &SearchQuery, route: &Route,
-    revision: u64, current_revision: &Cell<u64>, cx: &App) -> SubmissionOutcome {
-    if current_revision.get() != revision || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
-        || !current_input_query(input, query, cx) {
+fn follow_row(
+    links: &Links,
+    input: &Entity<InputState>,
+    query: &SearchQuery,
+    route: &Route,
+    revision: u64,
+    current_revision: &Cell<u64>,
+    lease: Option<&SearchReadLease>,
+    cx: &App,
+) -> SubmissionOutcome {
+    if current_revision.get() != revision
+        || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
+        || !current_input_query(input, query, cx)
+    {
         return SubmissionOutcome::Superseded;
     }
-    if current_row_route(links, query, route, cx) { SubmissionOutcome::Navigate(route.clone()) }
-    else { stale_submission() }
+    if lease.is_some_and(|lease| lease.admits(links, query, cx))
+        && current_row_route(links, query, route, cx)
+    {
+        SubmissionOutcome::Navigate(route.clone())
+    } else {
+        stale_submission()
+    }
 }
 
 fn current_row_route(links: &Links, query: &SearchQuery, route: &Route, cx: &App) -> bool {
-    current_search(links, query, cx, |page| page.rows.iter().take(usize::from(query.limit))
-        .any(|row| row_route(row).as_ref() == Some(route)))
+    current_search(links, query, cx, |page| {
+        page.rows
+            .iter()
+            .take(usize::from(query.limit))
+            .any(|row| row_route(row).as_ref() == Some(route))
+    })
 }
 
-fn follow_all(links: &Links, input: &Entity<InputState>, query: &SearchQuery, route: &Route,
-    revision: u64, current_revision: &Cell<u64>, cx: &App) -> SubmissionOutcome {
-    if current_revision.get() != revision || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
-        || !current_input_query(input, query, cx) {
+fn follow_all(
+    links: &Links,
+    input: &Entity<InputState>,
+    query: &SearchQuery,
+    route: &Route,
+    revision: u64,
+    current_revision: &Cell<u64>,
+    lease: Option<&SearchReadLease>,
+    cx: &App,
+) -> SubmissionOutcome {
+    if current_revision.get() != revision
+        || links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
+        || !current_input_query(input, query, cx)
+    {
         return SubmissionOutcome::Superseded;
     }
-    if current_search(links, query, cx, |_| true) { SubmissionOutcome::Navigate(route.clone()) }
-    else { stale_submission() }
+    if lease.is_some_and(|lease| lease.admits(links, query, cx))
+        && current_search(links, query, cx, |_| true)
+    {
+        SubmissionOutcome::Navigate(route.clone())
+    } else {
+        stale_submission()
+    }
 }
 
 /// Where `query` sits in `name`, ignoring case: a whole-word query first,
@@ -941,6 +1019,7 @@ impl Ask {
             let query = self.draft.query().cloned().expect("an all-results route has a query");
             let revision = self.revision.get();
             let current_revision = self.revision.clone();
+            let lease = SearchReadLease::capture(&links, &query, cx);
             list = list.child(
                 native_search_control(div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
                     .role(Role::Link).aria_label("Open every search result as a page")
@@ -949,7 +1028,7 @@ impl Ask {
                     .hover(|style| style.bg(palette.tint)).focus_visible(|style| style.bg(palette.tint)).cursor_pointer()
                     .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page")),
                     &self.all_focus, cx.weak_entity(), move |cx| {
-                        follow_all(&links, &input, &query, &route, revision, &current_revision, cx)
+                        follow_all(&links, &input, &query, &route, revision, &current_revision, lease.as_ref(), cx)
                     }),
             );
         }
@@ -1042,11 +1121,12 @@ impl Ask {
             let query = self.draft.query().cloned().expect("a result route has a query");
             let revision = self.revision.get();
             let current_revision = self.revision.clone();
+            let lease = SearchReadLease::capture(&links, &query, cx);
             let handle = self.row_focus.iter().find(|(known, occurrence, _)| known == &route && *occurrence == choice.route_occurrence)
                 .map(|(_, _, handle)| handle).expect("every mounted route has a focus handle");
             row = native_search_control(row.focus_visible(|style| style.bg(palette.tint))
                 .cursor_pointer().hover(|style| style.bg(palette.tint)), handle, cx.weak_entity(), move |cx| {
-                    follow_row(&links, &input, &query, &route, revision, &current_revision, cx)
+                    follow_row(&links, &input, &query, &route, revision, &current_revision, lease.as_ref(), cx)
                 });
         } else {
             let weak = cx.weak_entity();
@@ -1222,11 +1302,11 @@ mod tests {
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
         rig.frame(120);
         rig.settle();
-        let (links, query, route, all_route, old_revision, current_revision) = ask.read_with(&rig.cx, |ask, cx| {
+        let (links, query, route, all_route, old_revision, current_revision, lease) = ask.read_with(&rig.cx, |ask, cx| {
             let choice = ask.choices(cx).into_iter().next().expect("a current routed result");
             (ask.links.clone(), ask.draft.query().cloned().expect("valid query"),
                 choice.route.expect("verified route"), ask.all_results(cx).expect("served Find route"),
-                ask.revision.get(), ask.revision.clone())
+                ask.revision.get(), ask.revision.clone(), super::SearchReadLease::capture(&ask.links, ask.draft.query().expect("valid query"), cx))
         });
         rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.step(1, window, cx)));
         rig.settle();
@@ -1249,11 +1329,11 @@ mod tests {
             && text.content == "Search query is too long (maximum 256 characters)."));
         rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
         rig.cx.update(|_, cx| {
-            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, cx);
+            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, lease.as_ref(), cx);
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         rig.cx.update(|_, cx| {
-            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, cx);
+            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, lease.as_ref(), cx);
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         assert_eq!(rig.route(), committed, "rejected input and a retained row cannot navigate");
@@ -1265,11 +1345,11 @@ mod tests {
         rig.settle();
         assert!(!ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).is_empty()));
         rig.cx.update(|_, cx| {
-            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, cx);
+            let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, lease.as_ref(), cx);
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         rig.cx.update(|_, cx| {
-            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, cx);
+            let outcome = super::follow_all(&links, &input, &query, &all_route, old_revision, &current_revision, lease.as_ref(), cx);
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         assert_eq!(rig.route(), committed, "a callback from the old draft stays inert after the same query returns");
@@ -1756,6 +1836,283 @@ mod tests {
         rig.keys("secondary-k");
     }
 
+    /// Controlled stable producer revision keeps an Owner-only wake observable.
+    fn owner_ask(
+        cx: &mut TestAppContext,
+    ) -> (Rig, crate::runtime::owner::OwnerGate, VersionedRoot) {
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+            4,
+        );
+        let gate =
+            crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+        let mut rig = crate::shell::tests::rig_with_engine_gate(
+            cx,
+            Some(page_route("RelationDirection")),
+            1440.0,
+            900.0,
+            ReadPool::start(2, |_| Fixture).expect("controlled search pool"),
+            crate::shell::jump_tests::StableRoot,
+            Some(gate.clone()),
+        );
+        rig.go(crate::navigation::Intent::SetMotion(
+            crate::model::MotionPreference::Reduced,
+        ));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        assert_eq!(
+            rig.graph
+                .store
+                .read_with(&rig.cx, |store, _| store.snapshot().key()),
+            root
+        );
+        (rig, gate, root)
+    }
+
+    #[gpui::test]
+    fn ask_renews_on_same_root_owner_replacement_without_borrowing_retired_result_actions(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::runtime::owner::OwnerState;
+        use crate::runtime::store::{Branch, StoreEvent};
+        let (mut rig, gate, root) = owner_ask(cx);
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let (links, input, query, route, all_route, revision, current_revision, lease, renders) =
+            ask.read_with(&rig.cx, |ask, cx| {
+                let query = ask.draft.query().cloned().expect("served draft");
+                (
+                    ask.links.clone(),
+                    ask.input.clone(),
+                    query.clone(),
+                    ask.choices(cx)[0].route.clone().expect("current result"),
+                    ask.all_results(cx).expect("current Find"),
+                    ask.revision.get(),
+                    ask.revision.clone(),
+                    super::SearchReadLease::capture(&ask.links, &query, cx)
+                        .expect("paint-time owner lease"),
+                    ask.renders(),
+                )
+            });
+        let key = crate::model::pages::PageKey::Search(query.clone());
+        let (stamp, former) = rig.graph.store.read_with(&rig.cx, |store, _| {
+            (
+                store.stamp(&key),
+                store.current_owner_attachment().expect("first owner"),
+            )
+        });
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let _ask_watch = rig
+            .cx
+            .update(|_, cx| cx.observe(&ask, move |_, _| observed.set(observed.get() + 1)));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _store_watch = rig.cx.update(|_, cx| {
+            cx.subscribe(&rig.graph.store, move |_, event: &StoreEvent, _| {
+                observed.borrow_mut().push(event.clone())
+            })
+        });
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        // No scheduler turn: only the final Ready is observed, with unchanged
+        // revision and search bytes. The retired paint lease still must fail.
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready {
+            key: root,
+            mode: crate::model::ServiceMode::Attached,
+        });
+        assert_eq!(
+            rig.graph
+                .store
+                .read_with(&rig.cx, |store, _| store.stamp(&key)),
+            stamp,
+            "the old action refuses before any resource transition or watcher delivery"
+        );
+        rig.cx.update(|_, cx| {
+            assert!(matches!(
+                super::follow_row(
+                    &links,
+                    &input,
+                    &query,
+                    &route,
+                    revision,
+                    &current_revision,
+                    Some(&lease),
+                    cx
+                ),
+                super::SubmissionOutcome::Refused(_)
+            ));
+            assert!(matches!(
+                super::follow_all(
+                    &links,
+                    &input,
+                    &query,
+                    &all_route,
+                    revision,
+                    &current_revision,
+                    Some(&lease),
+                    cx
+                ),
+                super::SubmissionOutcome::Refused(_)
+            ));
+        });
+        rig.cx.run_until_parked();
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| event.is_branch(Branch::Owner))
+        );
+        assert!(
+            !events.borrow().iter().any(|event| [
+                Branch::Root,
+                Branch::Route,
+                Branch::Overlay,
+                Branch::Settings,
+                Branch::GraphFocus
+            ]
+            .iter()
+            .any(|branch| event.is_branch(*branch))),
+            "only Owner and its genuinely renewed resources may change"
+        );
+        assert!(
+            notifications.get() > 0,
+            "Ask itself observes exact Owner capability movement"
+        );
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.renders()) > renders);
+        assert!(
+            rig.cx.update(|window, _| window.a11y_frame_number()) > frame,
+            "ordinary dirty frame committed the renewed Ask"
+        );
+        rig.graph.store.read_with(&rig.cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert!(!store.admits_owner_attachment(&former));
+            assert_ne!(store.current_owner_attachment(), Some(former));
+        });
+        assert_eq!(
+            input.read_with(&rig.cx, |input, _| input.value().to_string()),
+            "RelationLabel"
+        );
+        assert_eq!(
+            ask.read_with(&rig.cx, |ask, _| ask.revision.get()),
+            revision
+        );
+        crate::runtime::wait::until(
+            "same-root Owner renews the active Ask query without typing",
+            || {
+                rig.cx.run_until_parked();
+                ask.read_with(&rig.cx, |ask, cx| {
+                    super::SearchReadLease::capture(&ask.links, &query, cx).is_some()
+                }) && rig
+                    .graph
+                    .store
+                    .read_with(&rig.cx, |store, _| store.pool_activity().is_idle())
+            },
+        );
+        rig.cx.update(|_, cx| {
+            let current = super::SearchReadLease::capture(&links, &query, cx).expect("replacement owner lease");
+            assert!(matches!(super::follow_row(&links, &input, &query, &route, revision, &current_revision, Some(&current), cx),
+                super::SubmissionOutcome::Navigate(ref actual) if actual == &route));
+            assert!(matches!(super::follow_all(&links, &input, &query, &all_route, revision, &current_revision, Some(&current), cx),
+                super::SubmissionOutcome::Navigate(ref actual) if actual == &all_route));
+        });
+    }
+
+    #[gpui::test]
+    fn ask_repaints_repeated_owner_failure_with_stable_retained_search_and_retires_old_retry(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::runtime::owner::OwnerState;
+        use crate::runtime::store::{Branch, StoreEvent};
+        let (mut rig, gate, root) = owner_ask(cx);
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let query = ask.read_with(&rig.cx, |ask, _| {
+            ask.draft.query().cloned().expect("served draft")
+        });
+        let key = crate::model::pages::PageKey::Search(query.clone());
+        let bytes = rig.graph.store.read_with(&rig.cx, |store, _| {
+            store
+                .search(&query)
+                .loaded_arc()
+                .expect("useful search")
+                .clone()
+        });
+        gate.publish(OwnerState::Failed("same Ask owner refusal".into()));
+        rig.cx.run_until_parked();
+        let (stamp, old_retry, notice, graph) = rig.graph.store.read_with(&rig.cx, |store, _| {
+            (
+                store.stamp(&key),
+                store.current_owner_retry().expect("first failure"),
+                store.notice().cloned(),
+                store.graph_focus().cloned(),
+            )
+        });
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let _ask_watch = rig
+            .cx
+            .update(|_, cx| cx.observe(&ask, move |_, _| observed.set(observed.get() + 1)));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _store_watch = rig.cx.update(|_, cx| {
+            cx.subscribe(&rig.graph.store, move |_, event: &StoreEvent, _| {
+                observed.borrow_mut().push(event.clone())
+            })
+        });
+        let renders = ask.read_with(&rig.cx, |ask, _| ask.renders());
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        gate.publish(OwnerState::Failed("same Ask owner refusal".into()));
+        rig.cx.run_until_parked();
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)]);
+        assert!(notifications.get() > 0);
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.renders()) > renders);
+        assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
+        rig.graph.store.read_with(&rig.cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert_eq!(store.stamp(&key), stamp);
+            assert_eq!(store.notice().cloned(), notice);
+            assert_eq!(store.graph_focus().cloned(), graph);
+            assert!(Arc::ptr_eq(
+                store
+                    .search(&query)
+                    .loaded_arc()
+                    .expect("retained offline result"),
+                &bytes
+            ));
+            assert_ne!(store.current_owner_retry(), Some(old_retry.clone()));
+        });
+        assert!(!rig.graph.store.update(&mut rig.cx, |store, cx| {
+            store.retry_owner_at(&old_retry, key, cx)
+        }));
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input.clone());
+        assert_eq!(
+            input.read_with(&rig.cx, |input, _| input.value().to_string()),
+            "RelationLabel"
+        );
+        assert!(ask.read_with(&rig.cx, |ask, cx| {
+            ask.choices(cx).iter().all(|choice| choice.route.is_none())
+        }));
+        assert!(
+            ask.read_with(&rig.cx, |ask, cx| ask.read_status(cx).0.is_some()),
+            "retained rows remain visible with explicit unavailable words"
+        );
+        let json = rig
+            .cx
+            .update(|window, _| window.debug_a11y_tree_json())
+            .expect("passively renewed Ask tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree");
+        assert!(
+            tree["nodes"]
+                .as_object()
+                .expect("nodes")
+                .values()
+                .any(|node| node["aria"]["role"].as_str() == Some("Status")
+                    && node["aria"]["label"]
+                        .as_str()
+                        .is_some_and(|label| label.contains("same Ask owner refusal")))
+        );
+    }
+
     fn assert_refusal(rig: &mut crate::shell::tests::Rig, draft: &str, words: &str) {
         assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), Some(crate::navigation::Overlay::CommandPalette));
         let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
@@ -2091,5 +2448,4 @@ mod tests {
         rig.keys("shift-tab");
         assert_native_result_visible(&mut rig, "Result 16:");
     }
-
 }

@@ -36,7 +36,7 @@ mod publication;
 mod owner_read_tests;
 
 pub(crate) use self::dependencies::{
-    ContentAdmission, ContentFailure, RouteDependencies, RouteReadLease,
+    ContentAdmission, ContentFailure, ReadAuthorityLease, RouteDependencies, RouteReadLease,
 };
 use self::keeper::SnapshotKeeper;
 pub(crate) use self::keeper::PendingSave;
@@ -118,6 +118,14 @@ impl StoreEvent {
     #[must_use]
     pub fn is_branch(&self, branch: Branch) -> bool {
         matches!(self, Self::Snapshot(changed) if *changed == branch)
+    }
+
+    /// The producer revision or its live reading capability changed. Cached
+    /// read consumers must repaint admission even when retained data and its
+    /// resource stamp are unchanged; this event does not authorize an action.
+    #[must_use]
+    pub const fn read_authority_changed(&self) -> bool {
+        matches!(self, Self::Snapshot(Branch::Root | Branch::Owner))
     }
 }
 
@@ -687,6 +695,11 @@ impl DataStore {
     #[must_use]
     pub fn owner_serving(&self) -> bool {
         self.owner.is_current_serving()
+    }
+
+    /// The current gate's typed refusal, including one not yet observed by UI.
+    pub(crate) fn owner_fault(&self) -> Option<OwnerFault> {
+        self.owner.current_fault()
     }
 
     /// Visible auxiliary readers also revalidate a superseded observation.

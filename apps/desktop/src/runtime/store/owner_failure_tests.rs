@@ -400,11 +400,11 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     let sink = Rc::clone(&events);
     let captured = Rc::clone(&capabilities);
     let subscription: Subscription = cx.update(|cx| {
-        let mut watch = Watch::new(store.read(cx), [PageKey::Health], &[Branch::GraphFocus]);
+        let mut watch = Watch::new(store.read(cx), [PageKey::Health], &[Branch::Owner, Branch::GraphFocus]);
         cx.subscribe(store, move |store, event: &StoreEvent, cx| {
             if watch.changed(store.read(cx), event) {
                 sink.borrow_mut().push(event.clone());
-                if event.is_branch(Branch::GraphFocus) {
+                if event.is_branch(Branch::Owner) {
                     captured
                         .borrow_mut()
                         .push(store.read(cx).current_owner_retry());
@@ -424,6 +424,7 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     let stamp = store.read_with(cx, |store, _| store.stamp(&PageKey::Health));
     events.borrow_mut().clear();
     let before = capabilities.borrow().len();
+    let presentation = store.read_with(cx, |store, _| (store.graph_focus().cloned(), store.notice().cloned()));
     gate.publish(OwnerState::Failed(first.clone()));
     crate::runtime::wait::until("repeat reaches capability subscriber", || {
         cx.run_until_parked();
@@ -431,10 +432,12 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     });
     assert_eq!(
         events.borrow().as_slice(),
-        &[StoreEvent::Snapshot(Branch::GraphFocus)],
+        &[StoreEvent::Snapshot(Branch::Owner)],
         "capability repaint is separate from resource churn"
     );
     store.update(cx, |store, cx| {
+        assert_eq!((store.graph_focus().cloned(), store.notice().cloned()), presentation,
+            "a new Retry capability keeps the visible graph and fault notice unchanged");
         assert_eq!(store.stamp(&PageKey::Health), stamp);
         assert_eq!(
             store.health().terminal(),
@@ -697,7 +700,7 @@ fn actual_watcher_replaces_changed_seeded_quiet_faults_and_keeps_identical_failu
     let sink = Rc::clone(&events);
     let observed_key = key.clone();
     let subscription: Subscription = cx.update(|cx| {
-        let mut watch = Watch::new(store.read(cx), [observed_key], &[Branch::GraphFocus]);
+        let mut watch = Watch::new(store.read(cx), [observed_key], &[Branch::Owner, Branch::GraphFocus]);
         cx.subscribe(store, move |store, event: &StoreEvent, cx| {
             if watch.changed(store.read(cx), event) {
                 sink.borrow_mut().push(event.clone());
@@ -728,20 +731,26 @@ fn actual_watcher_replaces_changed_seeded_quiet_faults_and_keeps_identical_failu
     let stamp = store.read_with(cx, |store, _| store.stamp(&key));
     let old_retry = store.read_with(cx, |store, _| store.current_owner_retry().expect("retry"));
     events.borrow_mut().clear();
+    let presentation = store.read_with(cx, |store, _| (store.graph_focus().cloned(), store.notice().cloned()));
     gate.publish(OwnerState::Failed(first.clone()));
     crate::runtime::wait::until("same seeded fault refreshes retry capability", || {
         cx.run_until_parked();
         events
             .borrow()
             .iter()
-            .any(|event| event.is_branch(Branch::GraphFocus))
+            .any(|event| event.is_branch(Branch::Owner))
     });
+    assert_eq!(events.borrow().as_slice(), &[StoreEvent::Snapshot(Branch::Owner)]);
+    assert_eq!(store.read_with(cx, |store, _| (store.graph_focus().cloned(), store.notice().cloned())), presentation,
+        "same seeded fault renews capability without changing graph presentation");
     assert!(!events.borrow().iter().any(|event| event.touches(&key)));
     assert_eq!(store.read_with(cx, |store, _| store.stamp(&key)), stamp);
     assert_ne!(
         store.read_with(cx, |store, _| store.current_owner_retry()),
-        Some(old_retry)
+        Some(old_retry.clone())
     );
+    store.update(cx, |store, cx| assert!(!store.retry_owner_at(&old_retry, key.clone(), cx),
+        "the prior seeded fault's callback cannot consume the new Retry"));
     events.borrow_mut().clear();
     let changed = OwnerFault::Lost("changed failure on retained seeded bytes".into());
     gate.publish(OwnerState::Failed(changed.clone()));
