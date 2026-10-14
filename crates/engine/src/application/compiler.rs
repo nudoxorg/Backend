@@ -4762,6 +4762,12 @@ pub(crate) fn python_authority_failure_kind(
 ) -> PythonAuthorityFailureKind {
     use PythonCheckerError as E;
     match error {
+        E::UnsupportedPythonEnvironmentVersion { .. }
+        | E::PythonEnvironmentVersionMismatch { .. }
+        | E::PythonInterpreterSelectionMismatch { .. }
+        | E::PythonInterpreterSelectionUnavailable { .. } => {
+            PythonAuthorityFailureKind::EnvironmentCaptureRefused
+        }
         E::EnvironmentCaptureMissing => PythonAuthorityFailureKind::EnvironmentInputMissing,
         E::EnvironmentCapture { source } => match source.as_ref() {
             E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
