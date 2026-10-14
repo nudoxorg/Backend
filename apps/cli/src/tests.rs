@@ -54,51 +54,63 @@ fn root() -> ViewRoot {
     )
     .expect("incomplete root")
 }
-#[test]
-fn injected_transport_preserves_identity_and_freshness() {
+// Targeted transport fixture, not compiler/indexing proof: use an admitted
+// complete empty view so a Failed reply cannot make freshness tests pass.
+fn certified_search_fixture() -> (CommandDto, ReplyDto) {
+    let empty = backend_library::Library::new();
+    let library =
+        backend_library::Library::with_coverage(fixture_projection_capability(empty.view().basis))
+            .expect("producer-admitted empty library");
     let request = CommandDto::new(
         7,
         Command::Search(Query::new(
             "Thing",
-            backend_library::view_state_root(&[]),
+            library.revision_root(),
             QueryLimit::default(),
         )),
     );
-    let produced = backend_library::Library::new().execute_dto(request.clone());
+    let reply = library.execute_dto(request.clone());
+    assert!(matches!(
+        &reply.reply,
+        CommandReply::Search(snapshot) if snapshot.freshness == Freshness::Current
+    ));
+    admit_reply(&request, reply.clone()).expect("valid positive admission control");
+    (request, reply)
+}
+
+#[test]
+fn injected_transport_preserves_identity_and_freshness() {
+    let (request, expected) = certified_search_fixture();
     let mut transport = Checked {
-        reply: Some(produced),
+        reply: Some(expected.clone()),
     };
-    let reply = execute_dto_with_transport(&mut transport, &request).expect("reply");
-    assert_eq!(reply.request_id, 7);
+    let observed = execute_dto_with_transport(&mut transport, &request).expect("reply");
+    // The complete DTO includes the successful snapshot, basis, freshness,
+    // correlation and any producer evidence, not merely request_id.
+    assert_eq!(observed, expected);
 }
 
 #[test]
 fn mismatched_basis_and_unknown_freshness_are_rejected() {
-    let expected = backend_library::view_state_root(&[]);
+    let (request, reply) = certified_search_fixture();
     let other = backend_library::view_state_root(&[("other".to_owned(), "root".to_owned())]);
-    let request = CommandDto::new(
-        1,
-        Command::Search(Query::new("x", expected, QueryLimit::default())),
-    );
-    let basis = Basis::new(other, object_version(b"source"));
-    let snapshot = ViewSnapshot {
-        root: ViewRoot::new_incomplete(
-            view_key(b"view"),
-            basis,
-            Frontier::new(basis.branch, basis.log, basis.schema, other, 0),
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("incomplete root"),
-        freshness: Freshness::Unknown,
-        next: None,
-        graph_relations: None,
-        rich_graph: None,
-    };
-    let result = admit_reply(&request, ReplyDto::new(1, CommandReply::Search(snapshot)));
+    let mut wrong_basis = request.clone();
+    wrong_basis.command = Command::Search(Query::new("Thing", other, QueryLimit::default()));
+    // Change only the requested basis; the positive reply is still current.
     assert!(matches!(
-        result,
+        admit_reply(&wrong_basis, reply.clone()),
         Err(ClientError::Protocol(message)) if message.contains("revision")
+    ));
+
+    let mut unknown = reply;
+    let CommandReply::Search(snapshot) = &mut unknown.reply else {
+        panic!("fixture must retain a successful search");
+    };
+    snapshot.freshness = Freshness::Unknown;
+    // Keep the matching request/root and change only freshness this time.
+    assert!(matches!(
+        admit_reply(&request, unknown),
+        Err(ClientError::FreshnessMismatch)
     ));
 }
 
@@ -133,6 +145,10 @@ fn compatibility_engine_has_no_unavailable_fallback() {
     let mut fake = Fake;
     let reply = execute(&mut fake, Command::Packages);
     assert_eq!(reply.request_id, 1);
+    assert!(matches!(
+        &reply.reply,
+        CommandReply::Error(message) if message == "fake"
+    ));
     assert!(run_json(&reply).contains(&format!("\"version\":{DTO_VERSION}")));
 }
 
