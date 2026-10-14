@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
+from contextlib import contextmanager
 import difflib
 import fcntl
 import json
@@ -38,6 +39,7 @@ import tempfile
 import time
 import threading
 from pathlib import Path
+import perf_context
 
 ROOT = Path(__file__).resolve().parents[2]
 SURFACE = ROOT / "tests" / "surface"
@@ -70,6 +72,65 @@ def emit_performance(name: str, performance: dict) -> None:
     with OUTPUT_LOCK:
         print("SURFACE-PERFORMANCE " + json.dumps(
             {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
+
+
+@contextmanager
+def _context_value(variable: ContextVar, value):
+    token = variable.set(value)
+    try:
+        yield
+    finally:
+        variable.reset(token)
+
+
+def _validated_encoding(value: object) -> str:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 65536:
+        raise ValueError
+    return value
+
+
+def _write_diagnostic(stream, encoded: str) -> None:
+    with OUTPUT_LOCK:
+        print("CI-PERF-CONTEXT " + encoded, file=stream, flush=True)
+
+
+def _emit_diagnostics(record: dict) -> None:
+    encoded, failure = perf_context.observe(perf_context.encode, record)
+    if failure is None:
+        encoded, failure = perf_context.observe(_validated_encoding, encoded)
+    if failure is not None:
+        record["encoding"] = failure
+        encoded, failure = perf_context.observe(perf_context.encode_identity, record)
+        if failure is not None:
+            return
+
+    failure = perf_context.observe(_write_diagnostic, sys.stdout, encoded)[1]
+    if failure is None:
+        return
+    record["output"] = failure
+    fallback, failure = perf_context.observe(perf_context.encode_identity, record)
+    if failure is None:
+        perf_context.observe(_write_diagnostic, sys.stderr, fallback)
+
+
+def _record_owner_threads(diagnostics: dict | None, pid: int) -> None:
+    if diagnostics is None or sys.exc_info()[0] is not None:
+        return
+    value, failure = perf_context.observe(perf_context.owner_threads, pid)
+    diagnostics["owner_threads_end"] = failure if failure is not None else value
+
+
+def _start_diagnostics(provenance: dict, case_name: str) -> dict:
+    diagnostics = {"schema": 1, **provenance, "case": case_name}
+    value, failure = perf_context.observe(perf_context.system)
+    diagnostics["start"] = failure if failure is not None else value
+    return diagnostics
+
+
+def _finish_diagnostics(diagnostics: dict) -> None:
+    value, failure = perf_context.observe(perf_context.system)
+    diagnostics["end"] = failure if failure is not None else value
+    _emit_diagnostics(diagnostics)
 
 
 def stable(value):
@@ -871,9 +932,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     finally:
         try:
             diagnostics = CASE_DIAGNOSTICS.get()
-            if diagnostics is not None:
-                from perf_context import owner_threads
-                diagnostics["owner_threads_end"] = owner_threads(owner.process.pid)
+            _record_owner_threads(diagnostics, owner.process.pid)
         finally:
             owner.stop()
     record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
@@ -904,35 +963,38 @@ def print_candidate(name: str, record: dict) -> None:
 
 
 def execute_case(case: dict, bin_dir: Path) -> tuple[dict | None, float, str | None]:
-    log(f"case {case['name']}")
-    token = CURRENT_CASE.set(case['name'])
-    started = time.monotonic()
-    provenance = RUN_PROVENANCE.get()
-    diagnostics = None
-    if provenance is not None:
-        from perf_context import encode, system
-        diagnostics = {"schema": 1, **provenance, "case": case["name"], "start": system()}
-    context_token = CASE_DIAGNOSTICS.set(diagnostics)
-    try:
-        if case.get("kind") == "cli-contract":
-            from cli_contract import run_cases
-            # Shared scratch paths and direct stdout in this small runner.
-            with OUTPUT_LOCK:
-                record = {"performance": run_cases(bin_dir)}
-        else:
-            record = run_case(case, bin_dir)
-        return record, time.monotonic() - started, None
-    except Exception as error:  # one broken case must not hide the others
-        return None, time.monotonic() - started, str(error)
-    finally:
+    case_name = case["name"]
+    with _context_value(CURRENT_CASE, case_name), _context_value(CASE_DIAGNOSTICS, None):
+        started = time.monotonic()
+        log(f"case {case_name}")
+        provenance = RUN_PROVENANCE.get()
+        diagnostics = (_start_diagnostics(provenance, case_name)
+                       if provenance is not None else None)
         try:
-            if diagnostics is not None:
-                diagnostics["end"] = system()
-                with OUTPUT_LOCK:
-                    print("CI-PERF-CONTEXT " + encode(diagnostics), flush=True)
+            with _context_value(CASE_DIAGNOSTICS, diagnostics):
+                try:
+                    if case.get("kind") == "cli-contract":
+                        from cli_contract import run_cases
+                        # Shared scratch paths and direct stdout in this small runner.
+                        with OUTPUT_LOCK:
+                            record = {"performance": run_cases(bin_dir)}
+                    else:
+                        record = run_case(case, bin_dir)
+                    result = (record, time.monotonic() - started, None)
+                except Exception as error:  # one broken case must not hide the others
+                    result = (None, time.monotonic() - started, str(error))
+            return result
         finally:
-            CASE_DIAGNOSTICS.reset(context_token)
-            CURRENT_CASE.reset(token)
+            # Preserve a control-flow exception already unwinding from the
+            # product case. Otherwise ordinary diagnostic failures are recorded
+            # by the shared observer, while cancellation is allowed to escape.
+            if diagnostics is not None and sys.exc_info()[0] is None:
+                _finish_diagnostics(diagnostics)
+
+
+def _invoke_case(case: dict, bin_dir: Path, provenance: dict | None) -> tuple[dict | None, float, str | None]:
+    with _context_value(RUN_PROVENANCE, provenance):
+        return execute_case(case, bin_dir)
 
 
 def bounded_text(value: str, limit: int) -> str:
@@ -992,14 +1054,9 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     provenance = ({"source_sha": args.source_sha,
                    "artifact_manifest_sha256": args.artifact_digest}
                   if args.ci_report else None)
-    def invoke(case):
-        token = RUN_PROVENANCE.set(provenance)
-        try:
-            return execute_case(case, args.bin_dir.resolve())
-        finally:
-            RUN_PROVENANCE.reset(token)
     with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        results = list(executor.map(invoke, cases))
+        results = list(executor.map(
+            lambda case: _invoke_case(case, args.bin_dir.resolve(), provenance), cases))
     for case, (record, elapsed, error) in zip(cases, results):
         entry = {"state": "failed", "seconds": {}}
         evidence[case["name"]] = entry

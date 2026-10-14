@@ -408,6 +408,280 @@ class ParallelCaseTests(unittest.TestCase):
         self.assertIn("unique scratch", error)
 
 
+class DiagnosticIsolationTests(unittest.TestCase):
+    CASE = {"name": "diagnostic-fixture"}
+    PROVENANCE = {"source_sha": "a" * 40, "artifact_manifest_sha256": "b" * 64}
+
+    def saved_context(self):
+        return (
+            surface.CURRENT_CASE.set("outer-case"),
+            surface.RUN_PROVENANCE.set({"source_sha": "outer-provenance"}),
+            surface.CASE_DIAGNOSTICS.set({"case": "outer-diagnostics"}),
+        )
+
+    def assert_context_restored(self):
+        self.assertEqual(surface.CURRENT_CASE.get(), "outer-case")
+        self.assertEqual(surface.RUN_PROVENANCE.get(), {"source_sha": "outer-provenance"})
+        self.assertEqual(surface.CASE_DIAGNOSTICS.get(), {"case": "outer-diagnostics"})
+
+    def reset_context(self, tokens):
+        surface.CASE_DIAGNOSTICS.reset(tokens[2])
+        surface.RUN_PROVENANCE.reset(tokens[1])
+        surface.CURRENT_CASE.reset(tokens[0])
+
+    def test_diagnostic_setup_failure_is_unavailable_and_product_still_runs(self):
+        import contextlib
+        import io
+        import json
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        observed = []
+
+        def product(case, bin_dir):
+            observed.append((surface.CURRENT_CASE.get(), dict(surface.CASE_DIAGNOSTICS.get())))
+            return {"performance": {"seconds": {}}}
+
+        try:
+            with patch.object(perf_context, "system", side_effect=[RuntimeError("secret setup text"), {"sample": "end"}]), \
+                    patch.object(surface, "run_case", side_effect=product), \
+                    contextlib.redirect_stdout(stdout):
+                result = surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertEqual(result[0], {"performance": {"seconds": {}}})
+            self.assertIsNone(result[2])
+            self.assertEqual(observed[0][0], self.CASE["name"])
+            self.assertEqual(observed[0][1]["start"], {"available": False, "error_class": "RuntimeError"})
+            self.assertNotIn("end", observed[0][1])
+            record = json.loads(next(line.split(" ", 1)[1] for line in stdout.getvalue().splitlines()
+                                     if line.startswith("CI-PERF-CONTEXT ")))
+            self.assertEqual(record["start"], {"available": False, "error_class": "RuntimeError"})
+            self.assertEqual(record["end"], {"sample": "end"})
+            self.assertEqual(record["source_sha"], self.PROVENANCE["source_sha"])
+            self.assertEqual(record["artifact_manifest_sha256"], self.PROVENANCE["artifact_manifest_sha256"])
+            self.assertNotIn("secret setup text", stdout.getvalue())
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_end_collection_failure_preserves_product_failure(self):
+        import contextlib
+        import io
+        import json
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        product_error = "product setup failed"
+        try:
+            with patch.object(perf_context, "system", side_effect=[{"sample": "start"}, RuntimeError("secret end text")]), \
+                    patch.object(surface, "run_case", side_effect=RuntimeError(product_error)), \
+                    contextlib.redirect_stdout(stdout):
+                result = surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertEqual(result[0], None)
+            self.assertEqual(result[2], product_error)
+            record = json.loads(next(line.split(" ", 1)[1] for line in stdout.getvalue().splitlines()
+                                     if line.startswith("CI-PERF-CONTEXT ")))
+            self.assertEqual(record["end"], {"available": False, "error_class": "RuntimeError"})
+            self.assertNotIn("secret end text", stdout.getvalue())
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_product_cancellation_survives_end_collection_failure_and_resets_context(self):
+        import asyncio
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        product_cancel = asyncio.CancelledError("product cancelled")
+        diagnostic_cancel = asyncio.CancelledError("diagnostic cancelled")
+
+        def cancel_product(case, bin_dir):
+            self.assertEqual(surface.CURRENT_CASE.get(), self.CASE["name"])
+            self.assertEqual(surface.RUN_PROVENANCE.get(), self.PROVENANCE)
+            self.assertEqual(surface.CASE_DIAGNOSTICS.get()["case"], self.CASE["name"])
+            raise product_cancel
+
+        try:
+            with patch.object(perf_context, "system", side_effect=[{"sample": "start"}, diagnostic_cancel]) as system, \
+                    patch.object(perf_context, "encode") as encode, \
+                    patch.object(surface, "run_case", side_effect=cancel_product), \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(asyncio.CancelledError, "product cancelled") as raised:
+                    surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIs(raised.exception, product_cancel)
+            system.assert_called_once()
+            encode.assert_not_called()
+            self.assertFalse(any(line.startswith("CI-PERF-CONTEXT ") for line in stdout.getvalue().splitlines()))
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_diagnostic_setup_cancellation_propagates_and_resets_context(self):
+        import asyncio
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        cancelled = asyncio.CancelledError("setup cancelled")
+        try:
+            with patch.object(perf_context, "system", side_effect=cancelled) as system, \
+                    patch.object(surface, "run_case") as run_case, \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(asyncio.CancelledError, "setup cancelled") as raised:
+                    surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIs(raised.exception, cancelled)
+            system.assert_called_once()
+            run_case.assert_not_called()
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_diagnostic_end_cancellation_propagates_and_resets_context(self):
+        import asyncio
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        cancelled = asyncio.CancelledError("end cancelled")
+        try:
+            with patch.object(perf_context, "system", side_effect=[{"sample": "start"}, cancelled]) as system, \
+                    patch.object(surface, "run_case", return_value={"performance": {"seconds": {}}}), \
+                    patch.object(perf_context, "encode") as encode, \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(asyncio.CancelledError, "end cancelled") as raised:
+                    surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIs(raised.exception, cancelled)
+            self.assertEqual(system.call_count, 2)  # setup and end sampling both ran
+            encode.assert_not_called()
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_diagnostic_encoding_cancellation_propagates_and_resets_context(self):
+        import asyncio
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        cancelled = asyncio.CancelledError("encoding cancelled")
+        try:
+            with patch.object(perf_context, "system", return_value={"sample": "ok"}) as system, \
+                    patch.object(perf_context, "encode", side_effect=cancelled), \
+                    patch.object(surface, "run_case", return_value={"performance": {"seconds": {}}}), \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(asyncio.CancelledError, "encoding cancelled") as raised:
+                    surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIs(raised.exception, cancelled)
+            self.assertEqual(system.call_count, 2)
+            self.assertFalse(any(line.startswith("CI-PERF-CONTEXT ") for line in stdout.getvalue().splitlines()))
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_diagnostic_output_cancellation_propagates_and_resets_context(self):
+        import asyncio
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import perf_context
+
+        cancelled = asyncio.CancelledError("output cancelled")
+
+        class DiagnosticOutputCancellation(io.StringIO):
+            def write(self, value):
+                if "CI-PERF-CONTEXT " in value:
+                    raise cancelled
+                return super().write(value)
+
+        tokens = self.saved_context()
+        stdout, stderr = DiagnosticOutputCancellation(), io.StringIO()
+        try:
+            with patch.object(perf_context, "system", return_value={"sample": "ok"}), \
+                    patch.object(surface, "run_case", return_value={"performance": {"seconds": {}}}), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                with self.assertRaisesRegex(asyncio.CancelledError, "output cancelled") as raised:
+                    surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIs(raised.exception, cancelled)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_encoder_failure_emits_bounded_error_class_without_changing_success(self):
+        import contextlib
+        import io
+        import json
+        from unittest.mock import patch
+        import perf_context
+
+        tokens = self.saved_context()
+        stdout = io.StringIO()
+        try:
+            with patch.object(perf_context, "system", return_value={"sample": "ok"}), \
+                    patch.object(perf_context, "encode", side_effect=ValueError("credential-like secret")), \
+                    patch.object(surface, "run_case", return_value={"performance": {"seconds": {}}}), \
+                    contextlib.redirect_stdout(stdout):
+                result = surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIsNone(result[2])
+            record = json.loads(next(line.split(" ", 1)[1] for line in stdout.getvalue().splitlines()
+                                     if line.startswith("CI-PERF-CONTEXT ")))
+            self.assertEqual(record["encoding"], {"available": False, "error_class": "ValueError"})
+            self.assertEqual(record["source_sha"], self.PROVENANCE["source_sha"])
+            self.assertEqual(record["artifact_manifest_sha256"], self.PROVENANCE["artifact_manifest_sha256"])
+            self.assertNotIn("credential-like secret", stdout.getvalue())
+            self.assertLessEqual(len(json.dumps(record).encode("utf-8")), 65536)
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+    def test_output_failure_falls_back_to_stderr_without_changing_success(self):
+        import contextlib
+        import io
+        import json
+        from unittest.mock import patch
+        import perf_context
+
+        class DiagnosticOutputFailure(io.StringIO):
+            def write(self, value):
+                if "CI-PERF-CONTEXT " in value:
+                    raise OSError("secret output destination")
+                return super().write(value)
+
+        tokens = self.saved_context()
+        stdout, stderr = DiagnosticOutputFailure(), io.StringIO()
+        try:
+            with patch.object(perf_context, "system", return_value={"sample": "ok"}), \
+                    patch.object(surface, "run_case", return_value={"performance": {"seconds": {}}}), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = surface._invoke_case(self.CASE, Path("/fixture/bin"), self.PROVENANCE)
+            self.assertIsNone(result[2])
+            record = json.loads(next(line.split(" ", 1)[1] for line in stderr.getvalue().splitlines()
+                                     if line.startswith("CI-PERF-CONTEXT ")))
+            self.assertEqual(record["output"], {"available": False, "error_class": "OSError"})
+            self.assertEqual(record["source_sha"], self.PROVENANCE["source_sha"])
+            self.assertEqual(record["artifact_manifest_sha256"], self.PROVENANCE["artifact_manifest_sha256"])
+            self.assertNotIn("secret output destination", stderr.getvalue())
+            self.assert_context_restored()
+        finally:
+            self.reset_context(tokens)
+
+
 class CIEvidenceTests(unittest.TestCase):
     def exercise(self, damage=False, head=None, dirty=False, jobs=1):
         import contextlib

@@ -1,9 +1,9 @@
 """Bounded read-only observations; never inputs to performance pass/fail."""
+import hashlib
 from datetime import datetime, timezone
 import json
 import math
 import os
-import hashlib
 import re
 from pathlib import Path
 
@@ -153,6 +153,54 @@ def owner_threads(pid: int, proc: Path = Path('/proc'), ticks: int | None = None
             'top': rows[:10], 'scope': 'Live owner threads at case end; excludes exited threads.'}
 
 
+def _error_class(name: object) -> str:
+    if not isinstance(name, str) or len(name) > 80 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        return 'Exception'
+    return name
+
+
+def unavailable(error: Exception) -> dict:
+    """Return safe failure metadata without exposing an exception message."""
+    return {'available': False, 'error_class': _error_class(type(error).__name__)}
+
+
+def observe(call, *args, **kwargs) -> tuple[object | None, dict | None]:
+    """Run an optional observation; only ordinary failures become metadata."""
+    try:
+        return call(*args, **kwargs), None
+    except Exception as error:
+        return None, unavailable(error)
+
+
+def _identity_record(record: dict) -> dict:
+    """Bound the identity/error portion shared by every compact encoding."""
+    identity = {'observations_truncated': True}
+    schema = record.get('schema')
+    identity['schema'] = schema if type(schema) is int else 1
+    for key in ('source_sha', 'artifact_manifest_sha256', 'case'):
+        value = record.get(key)
+        if not isinstance(value, str):
+            continue
+        identity[key] = value[:128]
+        if len(value) > 128:
+            identity[f'{key}_sha256'] = hashlib.sha256(value.encode('utf-8', errors='surrogatepass')).hexdigest()
+            identity[f'{key}_truncated'] = True
+    for phase in ('start', 'end', 'owner_threads_end', 'encoding', 'output'):
+        value = record.get(phase)
+        if not isinstance(value, dict) or value.get('available') is not False:
+            continue
+        failure = {'available': False}
+        if 'error_class' in value:
+            failure['error_class'] = _error_class(value.get('error_class'))
+        identity[phase] = failure
+    return identity
+
+
+def encode_identity(record: dict) -> str:
+    """Serialize bounded identities and error classes after an encoder failure."""
+    return json.dumps(_identity_record(record), sort_keys=True)
+
+
 def encode(record: dict) -> str:
     """Keep one retained event bounded even when proc data needs JSON escaping."""
     encoded = json.dumps(record, sort_keys=True)
@@ -170,16 +218,5 @@ def encode(record: dict) -> str:
     encoded = json.dumps(compact, sort_keys=True)
     if len(encoded.encode('utf-8')) <= 65536:
         return encoded
-    # Diagnostic collection cannot turn a product pass into a technical failure.
-    identity = {'observations_truncated': True}
-    schema = compact.get('schema')
-    identity['schema'] = schema if type(schema) is int else 1
-    for key in ('source_sha', 'artifact_manifest_sha256', 'case'):
-        value = compact.get(key)
-        if not isinstance(value, str):
-            continue
-        identity[key] = value[:128]
-        if len(value) > 128:
-            identity[f'{key}_sha256'] = hashlib.sha256(value.encode('utf-8', errors='surrogatepass')).hexdigest()
-            identity[f'{key}_truncated'] = True
-    return json.dumps(identity, sort_keys=True)
+    # Keep source and artifact identity if observations need a compact record.
+    return encode_identity(compact)
