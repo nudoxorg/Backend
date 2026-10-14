@@ -1741,6 +1741,17 @@ impl CommandAdapter {
                                 )
                             })
                     }) {
+                        if active.is_some() && terminal_outcome.is_none() {
+                            // A worker may already have committed this job's refusal
+                            // while the owner has yet to install it and write its typed
+                            // terminal receipt. A read must not decide that outcome for
+                            // the live job: it could only persist a generic failure and
+                            // so replace the refusal's cause.
+                            return self
+                                .index_operations
+                                .observation(operation_key, active)?
+                                .ok_or(IndexOperationJournalError::Missing);
+                        }
                         let (reason, detail, compiler_failure) = match terminal_outcome {
                             Some(outcome) => index_operation_failure(Some(outcome)),
                             None => (
@@ -10494,6 +10505,20 @@ mod tests {
                 adapter.poll_deferred(daemon);
                 std::thread::yield_now();
             }
+            // The worker's commit is selected but the owner has yet to write the
+            // typed terminal receipt. A status read in this window reports the
+            // live job and leaves the operation row to the owner.
+            assert!(matches!(
+                adapter
+                    .resolve_index_operation(daemon, operation, None)
+                    .expect("status read while the refusal retires"),
+                backend_library::IndexOperationObservation::Known(
+                    backend_library::IndexOperationStatus {
+                        state: backend_library::IndexOperationState::Active { .. },
+                        ..
+                    }
+                )
+            ));
             let mut indexing = adapter.indexing.take().expect("retained refusal job");
             let IndexJobWork::PublicationRetiring { worker, outcome } =
                 std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
@@ -11048,7 +11073,7 @@ mod tests {
     }
 
     fn finish_search_lane(adapter: &mut CommandAdapter, daemon: &mut ProductDaemon) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + control_deadline();
         while adapter.search_lane.active() {
             assert!(
                 adapter.poll_deferred(daemon).is_empty(),
@@ -11331,7 +11356,7 @@ mod tests {
         assert!(before_abandon > baseline);
         adapter.abandon_reply(2603);
         assert!(runtime.memory_budget().used() < before_abandon);
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + control_deadline();
         while !producer.entered.exists() {
             assert!(adapter.poll_deferred(daemon).is_empty());
             assert!(std::time::Instant::now() < deadline);
