@@ -274,8 +274,12 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, answers: dict)
     text = config["bounded_search_query"]
     reference = query("bounded search reference", ["search", text, "--limit", "200"])
     # The fixture authors two lowercase language methods at these public paths.
-    paths = {row.get("identity", {}).get("path") for row in reference.get("records", [])}
-    if not {"src/Duke.java", "src/main.cpp"}.issubset(paths):
+    methods = {
+        (row.get("identity", {}).get("path"), row.get("language"))
+        for row in reference.get("records", [])
+        if row.get("identity", {}).get("name") == "language" and row.get("kind") == "function"
+    }
+    if not {("src/Duke.java", "java"), ("src/main.cpp", "cpp")}.issubset(methods):
         raise RuntimeError("bounded search: reference lost authored Java/C++ language methods")
     for limit in (1, 3):
         bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
