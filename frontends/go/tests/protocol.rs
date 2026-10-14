@@ -456,7 +456,7 @@ fn generic_call_authority_image_distinguishes_calls_from_values()
         ),
         (
             "PlainParentheses",
-            "One",
+            "Plain",
             Class::Func,
             Kind::Call,
             "example.com/genericcalls/exports",

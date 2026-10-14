@@ -7,7 +7,7 @@ func ExplicitMultiple() { _ = renamed.Two[int, string](1, "x") }
 func Inferred() { _ = renamed.One(1) }
 func Parenthesized() { _ = (renamed.One[int])(1) }
 func MultipleParentheses() { _ = ((renamed.Two[int, string]))(1, "x") }
-func PlainParentheses() { _ = (renamed.One)(1) }
+func PlainParentheses() { _ = (renamed.Plain)(1) }
 func InstantiatedValue() { _ = renamed.One[int] }
 
 func LocalOne[T any](value T) T { return value }

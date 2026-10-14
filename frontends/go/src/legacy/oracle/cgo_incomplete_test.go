@@ -6,10 +6,9 @@ import (
 	"testing"
 )
 
-// An incomplete named type (nil underlying, no checker) makes go/types panic
-// inside under() when NewMethodSet or IsInterface expands it. sqlite3's cgo
-// types hit that panic and used to abort the oracle. The name must be
-// recorded and the call must return.
+// An incomplete named type (nil underlying, no checker) may return nil or
+// panic when go/types expands it. sqlite3's cgo types used to abort the
+// oracle on that panic. Both behaviors must retain the unresolved name.
 func TestIncompleteNamedPromotedMethodsDoNotPanic(t *testing.T) {
 	pkg := types.NewPackage("example.com/cgo", "cgo")
 	obj := types.NewTypeName(token.NoPos, pkg, "Row", nil)
@@ -21,6 +20,19 @@ func TestIncompleteNamedPromotedMethodsDoNotPanic(t *testing.T) {
 		t.Fatalf("incomplete named must not produce promoted methods, got %#v", methods)
 	}
 	assertUnresolved(t, s, "example.com/cgo.Row")
+}
+
+func TestIncompleteNamedUnderlyingRetainsUnresolvedIdentity(t *testing.T) {
+	pkg := types.NewPackage("example.com/incomplete", "incomplete")
+	obj := types.NewTypeName(token.NoPos, pkg, "Row", nil)
+	named := types.NewNamed(obj, nil, nil)
+
+	s := &serializer{}
+	s.collectCgo(named, 0)
+	assertUnresolved(t, s, "example.com/incomplete.Row")
+	if names := s.unresolvedList(); len(names) != 1 {
+		t.Fatalf("unresolved = %v, want exactly one incomplete name", names)
+	}
 }
 
 // A struct field whose type is package C must be listed and must not be

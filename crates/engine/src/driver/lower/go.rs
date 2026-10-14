@@ -88,6 +88,82 @@ use crate::driver::lower::{
 };
 use crate::driver::types::{FactFault, FactRejection};
 
+mod demand;
+
+/// A typed stop remains distinct from a projection rejection during demand.
+#[derive(Debug)]
+pub(crate) enum DemandError {
+    Projection(GoCollectError),
+    Stopped(crate::driver::types::WorkStopped),
+}
+
+impl From<GoCollectError> for DemandError {
+    fn from(cause: GoCollectError) -> Self {
+        Self::Projection(cause)
+    }
+}
+
+pub(crate) fn controlled_resource_plan(
+    source: &[u8],
+    image: &[u8],
+    permit: crate::driver::types::WorkPermit<'_>,
+) -> Result<super::ResourcePlan, DemandError> {
+    permit.checkpoint().map_err(DemandError::Stopped)?;
+    demand::ImageDemand::measure(validated_image(source, image)?, Some(permit))?.resource_plan()
+}
+
+/// Reserves the complete package authority rather than guessing its demand
+/// from the one primary source whose bytes bind the image.
+#[cfg(test)]
+pub(crate) fn resource_plan(
+    source: &[u8],
+    image: &[u8],
+) -> Result<super::ResourcePlan, GoCollectError> {
+    demand::ImageDemand::measure(validated_image(source, image)?, None)
+        .and_then(demand::ImageDemand::resource_plan)
+        .map_err(|error| match error {
+            DemandError::Projection(cause) => cause,
+            DemandError::Stopped(_) => unreachable!("uncontrolled direct demand test"),
+        })
+}
+
+/// Borrows a contiguous owner run already proved sorted by GoImage. Both
+/// reservation and projection use this allocation-free lookup.
+fn owner_run(
+    count: usize,
+    owner: u32,
+    mut at: impl FnMut(usize) -> Result<u32, ImageError>,
+) -> Result<std::ops::Range<usize>, GoCollectError> {
+    let mut boundary = |strict: bool| -> Result<usize, GoCollectError> {
+        let (mut low, mut high) = (0, count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let found = at(middle).map_err(GoCollectError::Image)?;
+            if found < owner || (strict && found == owner) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low)
+    };
+    let start = boundary(false)?;
+    Ok(start..boundary(true)?)
+}
+
+fn validated_image<'image>(
+    source: &[u8],
+    image: &'image [u8],
+) -> Result<GoImage<'image>, GoCollectError> {
+    let image = GoImage::open(image).map_err(GoCollectError::Image)?;
+    let expected = Sha256::digest(source).into();
+    let observed = image.source_digest();
+    if observed != expected {
+        return Err(GoCollectError::SourceBinding { expected, observed });
+    }
+    Ok(image)
+}
+
 /// Exact rejection while borrowing one validated Go authority image.
 ///
 /// The shared driver failure match owns the terminal arms and lies outside
@@ -984,12 +1060,7 @@ pub(crate) fn collect<'source>(
     image_bytes: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), GoCollectError> {
-    let image = GoImage::open(image_bytes).map_err(GoCollectError::Image)?;
-    let expected = Sha256::digest(source).into();
-    let observed = image.source_digest();
-    if observed != expected {
-        return Err(GoCollectError::SourceBinding { expected, observed });
-    }
+    let image = validated_image(source, image_bytes)?;
     // Intern the three empty pooled lists first so the default
     // `::new(0)` coordinates always name genuine empty lists.
     let _ = facts
@@ -1937,7 +2008,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         let mut declared_members = fields.clone();
         declared_members.extend(interface_methods.iter().map(|(ordinal, _)| *ordinal));
         let image_version = self.image.version();
-        for method_index in 0..self.image.method_count() {
+        for method_index in owner_run(self.image.method_count(), index as u32, |position| {
+            self.image.method(position).map(|row| row.owner)
+        })? {
             let method = self
                 .image
                 .method(method_index)
@@ -1993,7 +2066,13 @@ impl<'x, 'source> Projector<'x, 'source> {
                     lane_terminal_ordinal(type_ordinal, declaration.name.len(), fault)
                 })?;
         }
-        for method_set_index in 0..self.image.method_set_count() {
+        let method_set_run = match declaration.type_root {
+            Some(owner) => owner_run(self.image.method_set_count(), owner, |position| {
+                self.image.method_set(position).map(|row| row.owner)
+            })?,
+            None => 0..0,
+        };
+        for method_set_index in method_set_run {
             let method_set = self
                 .image
                 .method_set(method_set_index)
@@ -2066,7 +2145,11 @@ impl<'x, 'source> Projector<'x, 'source> {
             .declaration(index)
             .map_err(GoCollectError::Image)?
             .package;
-        for parameter_index in 0..self.image.type_parameter_count() {
+        for parameter_index in owner_run(
+            self.image.type_parameter_count(),
+            index as u32,
+            |position| self.image.type_parameter(position).map(|row| row.owner),
+        )? {
             let row = self
                 .image
                 .type_parameter(parameter_index)
@@ -2852,19 +2935,22 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         ordinal: usize,
     ) -> Result<Option<&'source [u8]>, GoCollectError> {
-        let parameter = self
-            .image
-            .signature_parameters()
-            .enumerate()
-            .find_map(|(_, row)| match row {
-                Ok(row) if row.owner == owner && row.ordinal == ordinal as u32 => {
-                    Some(Ok(row.name))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(GoCollectError::Image(error))),
-            })
-            .transpose()?
-            .unwrap_or(&[]);
+        let run = owner_run(self.image.signature_parameter_count(), owner, |index| {
+            self.image.signature_parameter(index).map(|row| row.owner)
+        })?;
+        let parameter = match run
+            .start
+            .checked_add(ordinal)
+            .filter(|index| *index < run.end)
+        {
+            Some(index) => {
+                self.image
+                    .signature_parameter(index)
+                    .map_err(GoCollectError::Image)?
+                    .name
+            }
+            None => &[],
+        };
         Ok((!parameter.is_empty() && parameter != b"_").then_some(parameter))
     }
 
@@ -3644,10 +3730,10 @@ impl WithShape for SemanticTypeRecord<'_> {
 }
 
 /// The member-run row indices of one struct or interface row.
-fn member_run(row: &backend_frontend_go::legacy::TypeRow<'_>) -> Vec<usize> {
+fn member_run(row: &backend_frontend_go::legacy::TypeRow<'_>) -> std::ops::Range<usize> {
     let start = index_of(row.members.0);
     let count = row.members.1 as usize;
-    (start..start + count).collect()
+    start..start + count
 }
 
 /// The embedded-run row indices of one interface row.
@@ -3674,10 +3760,9 @@ fn embedded_name<'image>(row: &backend_frontend_go::legacy::TypeRow<'image>) -> 
 }
 
 /// Splits one validated NUL-separated name blob into its non-empty parts.
-fn blank_separated(blob: &[u8]) -> Vec<&[u8]> {
+fn blank_separated(blob: &[u8]) -> impl Iterator<Item = &[u8]> {
     blob.split(|byte| *byte == 0)
         .filter(|part| !part.is_empty())
-        .collect()
 }
 
 /// Converts one validated u32 coordinate to its row index.
@@ -3731,11 +3816,242 @@ mod tests {
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
 
+    fn assert_image_demand_matches_projection<'source>(
+        source: &'source [u8],
+        image: &'source [u8],
+    ) -> FactSet<'source> {
+        let plan = resource_plan(source, image).expect("checked package image demand");
+        let mut facts = FactSet::with_primary_source(
+            plan,
+            u32::try_from(source.len()).expect("bounded primary source"),
+        );
+        collect(source, image, &mut facts).expect("projection into measured storage");
+        assert_eq!(facts.len(), plan.facts);
+        assert_eq!(facts.total_children, plan.product_children);
+        assert_eq!(facts.total_type_children, plan.declared_type_children);
+        assert_eq!(facts.occurrence_len, plan.occurrences);
+        assert_eq!(facts.doc_len, plan.docs);
+        assert_eq!(facts.extension_atom_len, plan.extension_atoms);
+        assert_eq!(facts.type_parameter_len, plan.type_parameters);
+        assert_eq!(facts.type_parameter_bound_len, plan.type_parameter_bounds);
+        assert_eq!(facts.free_predicate_len, plan.free_predicates);
+        assert_eq!(facts.anonymous_rows, plan.anonymous_rows);
+        assert_eq!(facts.anonymous_children_total, plan.anonymous_type_children);
+        assert_eq!(facts.computed_rows, plan.computed_rows);
+        assert_eq!(facts.computed_children_total, plan.computed_type_children);
+        assert_eq!(
+            facts
+                .atom_list_len
+                .max(facts.type_list_len)
+                .max(facts.entity_list_len),
+            plan.ref_lists,
+        );
+        facts
+    }
+
+    #[test]
+    fn reused_signature_roots_reserve_carriers_for_every_callable() {
+        let source = vec![b' '; SPAN_END as usize];
+        let mut fixture = Fixture::new();
+        let int = fixture.basic(b"int");
+        let signature = fixture.func(&[int], &[int], false);
+        for name in [b"First".as_slice(), b"Second", b"Third", b"Fourth"] {
+            fixture.declaration(KIND_FUNC, name, Some(signature));
+        }
+        let image = fixture.encode(&source).expect("shared-signature image");
+        let facts = assert_image_demand_matches_projection(&source, &image);
+        assert_eq!(
+            facts.len(),
+            12,
+            "two carriers and one executable per traversal"
+        );
+        assert_eq!(facts.total_children, 8);
+        assert_eq!(
+            facts.type_list_len, 9,
+            "empty list plus two distinct lists per callable"
+        );
+        demand::assert_control_boundaries(&image);
+    }
+
+    #[test]
+    fn borrowed_owner_runs_find_absent_and_repeated_owners_without_full_scan() {
+        let owners = [0u32, 1, 1, 1, 3, 3, 7];
+        for (owner, expected) in [(0, 0..1), (1, 1..4), (2, 4..4), (3, 4..6), (8, 7..7)] {
+            assert_eq!(
+                owner_run(owners.len(), owner, |index| Ok(owners[index])).expect("sorted run"),
+                expected
+            );
+        }
+        let mut reads = 0;
+        assert_eq!(
+            owner_run(4096, 2047, |index| {
+                reads += 1;
+                Ok(index as u32)
+            })
+            .expect("large sorted run"),
+            2047..2048
+        );
+        assert!(
+            reads <= 26,
+            "owner lookup must be logarithmic, observed {reads}"
+        );
+    }
+
+    #[test]
+    fn actual_go_tiny_primary_reserves_complete_sibling_package_projection() {
+        use crate::driver::{
+            CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
+            SemanticAuthorityInput, ToolchainSelection, compile_semantic,
+        };
+        use backend_frontend_go::legacy::GoOracle;
+        use backend_frontend_go::legacy::oracle::{
+            GoOracleChildEnvironment, GoOracleConfiguration,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(std::path::PathBuf::from)
+            .expect("COMPILER_GO_COMPILER must name a genuine installed Go compiler")
+            .canonicalize()
+            .expect("canonical genuine Go compiler");
+        let discovery = std::process::Command::new(&go)
+            .args(["env", "-json", "GOROOT"])
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .output()
+            .expect("actual selected Go discovery");
+        assert!(discovery.status.success());
+        let discovery: serde_json::Value =
+            serde_json::from_slice(&discovery.stdout).expect("actual Go discovery JSON");
+        let goroot = std::path::PathBuf::from(discovery["GOROOT"].as_str().expect("actual GOROOT"))
+            .canonicalize()
+            .expect("canonical GOROOT");
+        let root = tempfile::tempdir().expect("owned Go demand regression");
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).expect("owned project");
+        let project = project.canonicalize().expect("canonical project");
+        std::fs::write(
+            project.join("go.mod"),
+            "module example.com/demand\n\ngo 1.23\n",
+        )
+        .expect("offline module");
+        let primary = project.join("tiny.go");
+        let source = b"package demand\nfunc Tiny() {}\n";
+        std::fs::write(&primary, source).expect("tiny primary source");
+        let mut sibling = String::from(concat!(
+            "package demand\n",
+            "type Constraint interface { ~int | ~string }\n",
+            "type Box[T Constraint] struct { Values map[string][]T; Callback func(*T) *T }\n",
+            "func (b *Box[T]) Get(value T) T { return value }\n",
+            "type Outer interface { A(interface { Inner() }); Z() interface { Result(interface { Deep() }) } }\n",
+            "const Answer = 42\n",
+        ));
+        for ordinal in 0..500 {
+            sibling.push_str(&format!(
+                "// F{ordinal:04} retains sibling documentation.\nfunc F{ordinal:04}(value int) (int, error) {{ return value, nil }}\n"
+            ));
+        }
+        std::fs::write(project.join("sibling.go"), &sibling).expect("large real sibling source");
+        let modules = root.path().join("modules");
+        std::fs::create_dir(&modules).expect("empty offline module cache");
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            modules,
+            root.path()
+                .canonicalize()
+                .expect("canonical fixture root")
+                .join("build-cache"),
+        )
+        .expect("genuine selected Go authority");
+        let toolchain_identity = environment.toolchain_identity();
+        let oracle = GoOracle::default()
+            .with_configuration(
+                GoOracleConfiguration::go_toolchain(go.clone()).expect("Go command"),
+            )
+            .with_child_environment(environment)
+            .expect("closed Go environment");
+        let witness = oracle
+            .package_authority_witness_cancellable(&project, None)
+            .expect("actual selected package witness");
+        assert!(witness.is_complete());
+        let image = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &primary, &project, &witness, None,
+            )
+            .expect("actual source-bound whole-package compiler image");
+        let profile = LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125);
+        let old_plan = super::super::ResourcePlan::for_source(profile, source.len());
+        let mut old_facts = FactSet::with_primary_source(old_plan, source.len() as u32);
+        assert!(collect(source, &image, &mut old_facts).is_err());
+        assert_eq!(
+            old_facts.len(),
+            old_plan.facts,
+            "source estimate fails before package is complete"
+        );
+        let facts = assert_image_demand_matches_projection(source, &image);
+        assert!(facts.len() > 2000);
+        assert!(facts.doc_len >= 500);
+        assert!(facts.anonymous_rows > 0 && facts.anonymous_children_total > 0);
+        assert!(facts.type_parameter_len > 0 && facts.type_parameter_bound_len > 0);
+        assert_eq!(facts.primary_source_len, Some(source.len() as u32));
+        for name in [b"Tiny".as_slice(), b"F0499"] {
+            let ordinal = facts.names[..facts.len()]
+                .iter()
+                .position(|candidate| *candidate == name)
+                .expect("complete package declaration inventory");
+            assert_eq!(
+                facts.provenance.source_spans()[ordinal].is_some(),
+                name == b"Tiny",
+                "sibling facts must not claim the tiny primary file's source extent"
+            );
+        }
+        drop(facts);
+
+        let resolved =
+            ResolvedToolchain::from_version(NativeTool::GoCompiler, &go, &toolchain_identity)
+                .expect("actual selected Go identity");
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostics = [];
+        let mut output = vec![0xa5; 1024 * 1024];
+        let compiled = compile_semantic(
+            CompileRequest {
+                profile,
+                stage: Stage::LowerIr,
+                source,
+                declaration_scope: crate::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(resolved),
+                authority: SemanticAuthorityInput::Go { image: &image },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &cancelled,
+                },
+            },
+            CompileScratch {
+                diagnostic_output: &mut diagnostics,
+                native_work: root.path(),
+            },
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        )
+        .expect("public compiler reserves measured package demand");
+        assert!(compiled.ir.items().any(|item| item.name() == b"Tiny"));
+        assert!(compiled.ir.items().any(|item| item.name() == b"F0499"));
+        assert!(compiled.ir.items().len() > 2000);
+        assert_eq!(compiled.artifact.source.byte_len, source.len() as u32);
+        let length = compiled.artifact.fragment.as_ref().len();
+        drop(compiled);
+        assert!(output[length..].iter().all(|byte| *byte == 0xa5));
+    }
+
     #[test]
     fn actual_go_ignored_platform_image_admits_without_active_package_spans() {
         use backend_frontend_go::legacy::GoOracle;
         use backend_frontend_go::legacy::oracle::{
-            GoDependencyClosureFailure, GoOracleChildEnvironment, GoOracleConfiguration, OracleError,
+            GoDependencyClosureFailure, GoOracleChildEnvironment, GoOracleConfiguration,
+            OracleError,
         };
 
         let go = std::env::var_os("COMPILER_GO_COMPILER")
@@ -6479,6 +6795,10 @@ mod tests {
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
+        assert_eq!(
+            resource_plan(b"package demo\n", &exact_image)?.facts,
+            crate::driver::lower::MAX_EMISSION_FACTS
+        );
         let mut exact_facts = FactSet::new();
         collect(b"package demo\n", &exact_image, &mut exact_facts).map_err(TestError::Collect)?;
 
@@ -6506,6 +6826,20 @@ mod tests {
             file: None,
         });
         let image = fix.encode(b"package demo\n")?;
+        assert!(
+            matches!(
+                resource_plan(b"package demo\n", &image),
+                Err(GoCollectError::Lowering(
+                    LoweringUnsupported::GoProjection {
+                        fault: PortableGoProjectionFault::Admission {
+                            cause: backend_semantic::vocabulary::ProjectionAdmissionFault::Capacity,
+                            ..
+                        }
+                    }
+                ))
+            ),
+            "measured demand must retain the original protocol fact limit"
+        );
         let mut facts = FactSet::new();
         match collect(b"package demo\n", &image, &mut facts) {
             Err(GoCollectError::Rejected(rejection))
@@ -7670,7 +8004,8 @@ mod tests {
             || ir
                 .entity(method.id())
                 .ok_or(TestError::Missing("method item"))?
-                .parent != Some(runner.id())
+                .parent
+                != Some(runner.id())
         {
             return Err(TestError::Missing("method declaration and receiver join"));
         }
@@ -7696,7 +8031,9 @@ mod tests {
             seen[index] += 1;
         }
         if seen != [1, 1, 1] {
-            return Err(TestError::Missing("exact method value and invocation occurrences"));
+            return Err(TestError::Missing(
+                "exact method value and invocation occurrences",
+            ));
         }
         Ok(())
     }

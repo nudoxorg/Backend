@@ -1366,6 +1366,18 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 // and appends the member and package documentation rows whose owner
 // coordinates only exist now.
 func (p *imagePlan) finalize() error {
+	// A method signature may recursively emit another anonymous interface.
+	// Those rows are allocated after their outer owner but emitted before
+	// its method-set entry. Sort the complete plane after recursion; retain
+	// duplicates so the reader's strict owner/name law still rejects them.
+	sort.SliceStable(p.methodSets, func(i, j int) bool {
+		left, right := p.methodSets[i], p.methodSets[j]
+		if left.owner != right.owner {
+			return left.owner < right.owner
+		}
+		return bytes.Compare(p.atoms[left.name.offset:left.name.offset+left.name.length],
+			p.atoms[right.name.offset:right.name.offset+right.name.length]) < 0
+	})
 	for index := range p.memberRequests {
 		requests := p.memberRequests[index]
 		if len(requests) == 0 {

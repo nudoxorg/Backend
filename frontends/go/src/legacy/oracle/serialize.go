@@ -432,6 +432,12 @@ func (s *serializer) collectCgo(t types.Type, depth int) {
 			}()
 			u = t.Underlying()
 		}()
+		// Incomplete named types may return nil without panicking. Record
+		// their identity before stopping this branch in either case.
+		if u == nil {
+			s.noteUnresolved(q)
+			return
+		}
 		s.collectCgo(u, depth+1)
 	case *types.Pointer:
 		s.collectCgo(t.Elem(), depth+1)
