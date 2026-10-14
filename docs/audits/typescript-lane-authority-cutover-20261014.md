@@ -1,6 +1,6 @@
 # Native TypeScript lane authority cutover
 
-Code source: `77e65ab90e` on `codex/tsz-execution-cutover-20261014`, based on canonical `3aa8462a1a`. This is a source review candidate. Native compilation, regression execution, and real project indexing are **UNRUN**. No ASP, GymBroApp, Guava, or zod recovery is claimed.
+Code parent: `bf40fcd895be01e87119afebb80724a6cda5d60a` on `codex/tsz-execution-cutover-20261014`, based on canonical `3aa8462a1a`. Root, Sol, and Luna cleared this code parent in source review. Native compilation, regression execution, and real project indexing are **UNRUN**. No ASP, GymBroApp, Guava, or zod recovery is claimed.
 
 The current coordinator already checks each admitted forest program once, then lends its checked image to selected-file lowering. Canonical has the prepared/checked image states, sealed checker indexes, project views and shared pure query cache, exact module/file-format authority, admitted query-budget identity, and stop poisoning. PR 200 (`f008b015b2`, open and unmerged) contains older foundations; replacing current image code with that older branch would discard later lifetime and checked-image work. This cutover extends those current foundations.
 
