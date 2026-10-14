@@ -150,6 +150,34 @@ pub fn bounded_text(text: &str) -> String {
     format!("{}{}", &text[..end], MARKER)
 }
 
+/// Encodes one answer, lowering its detail until it fits the budget.
+///
+/// No read fails because of its size: a list an answer carries is already cut
+/// to a window, and an answer that is still too large (an enormous signature,
+/// a `full` request on a large declaration) is encoded one detail level lower
+/// rather than refused. The detail actually used is returned beside the
+/// payload so a caller can say so. Only a summary that cannot fit is refused.
+pub fn encode_answer_fitting(
+    answer: &Answer,
+    detail: Detail,
+    next_cursor: Option<&str>,
+    budget: usize,
+) -> Result<(EncodedPayload, Detail), BudgetExceeded> {
+    let mut level = detail;
+    loop {
+        match encode_answer(answer, level, next_cursor, budget) {
+            Ok(payload) => return Ok((payload, level)),
+            Err(error) => {
+                level = match level {
+                    Detail::Full => Detail::Standard,
+                    Detail::Standard => Detail::Summary,
+                    Detail::Summary => return Err(error),
+                };
+            }
+        }
+    }
+}
+
 /// Serializes one answer from typed DTOs through a hard-cap writer.
 ///
 /// The normal CLI/MCP answer path uses this function. It never lowers an
@@ -186,6 +214,7 @@ pub fn encode_answer(
                     externals: list
                         .collapsed_externals()
                         .map(crate::dto::ExternalsDto::new),
+                    window: list.window().map(crate::dto::WindowDto::new),
                 },
                 budget,
             ),
@@ -232,6 +261,7 @@ pub fn encode_answer(
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
                         page: outline.page,
+                        window: outline.window,
                     },
                     budget,
                 )
@@ -275,6 +305,7 @@ pub fn encode_answer(
                         package_source_membership_page: product.package_source_membership_page,
                         semantic_data: product.semantic_data,
                         package_discovery: product.package_discovery,
+                        window: product.window,
                     },
                     budget,
                 )
@@ -535,6 +566,16 @@ struct SummaryPageDto<'a> {
     language: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prose: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prose_omitted_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    members: Vec<crate::dto::MemberGroupDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<crate::dto::WindowDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    relations: Vec<crate::dto::RelationGroupDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_fault: Option<FaultDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -543,11 +584,21 @@ struct SummaryPageDto<'a> {
 
 impl<'a> SummaryPageDto<'a> {
     fn new(page: &PageProjection<'a>) -> Self {
+        let prose = page.prose_view();
         Self {
             identity: SummaryIdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name()),
             language: page.language().name(),
             signature: page.signature().map(crate::signature::Signature::text),
+            prose: PageDto::prose_of(&prose),
+            prose_omitted_bytes: (prose.omitted_bytes() > 0).then_some(prose.omitted_bytes()),
+            members: PageDto::members_of(page),
+            window: page
+                .listing()
+                .map(crate::Listing::window)
+                .filter(|window| window.is_cut())
+                .map(crate::dto::WindowDto::new),
+            relations: PageDto::relations_of(page),
             source_fault: page.source_fault().map(FaultDto::new),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
@@ -646,6 +697,8 @@ struct SummaryRecordsDto<'a> {
     semantic_search: Option<backend_library::SemanticSearchStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     externals: Option<crate::dto::ExternalsDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<crate::dto::WindowDto>,
 }
 
 #[derive(Serialize)]
@@ -680,6 +733,8 @@ struct SummaryOutlineDto {
     unnamed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<crate::dto::OutlinePageDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<crate::dto::WindowDto>,
 }
 
 #[derive(Serialize)]
@@ -720,6 +775,8 @@ struct SummaryProductDto {
     semantic_data: Option<crate::product::ProductSemanticData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<crate::dto::WindowDto>,
 }
 
 #[derive(Default)]

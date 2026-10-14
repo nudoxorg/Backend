@@ -68,6 +68,27 @@ impl OutlineEntry {
         &self.children
     }
 
+    /// The text a window fingerprints this entry by.
+    fn sort_key(&self) -> &str {
+        self.identity
+            .as_ref()
+            .map_or("", |identity| identity.coordinate().as_str())
+    }
+
+    /// The bytes this entry costs as one line of an indented outline.
+    fn row_bytes(&self, depth: usize) -> usize {
+        let trail = self
+            .identity
+            .as_ref()
+            .map_or(0, |identity| identity.trail_within(None).len());
+        depth
+            .min(16)
+            .saturating_mul(2)
+            .saturating_add(self.name().len())
+            .saturating_add(trail)
+            .saturating_add(8)
+    }
+
     /// Returns the displayed name, falling back to the key tag.
     #[must_use]
     pub fn name(&self) -> String {
@@ -173,6 +194,7 @@ pub struct OutlineTree {
     roots: Box<[OutlineEntry]>,
     truncation: Truncation,
     page: Option<OutlinePageState>,
+    window: Option<crate::window::Window>,
 }
 
 impl OutlineTree {
@@ -187,6 +209,7 @@ impl OutlineTree {
             package,
             roots: roots.into(),
             page: None,
+            window: None,
             truncation: match extent {
                 OutlineExtent::Complete => Truncation::Complete,
                 OutlineExtent::Truncated => Truncation::Truncated,
@@ -226,6 +249,59 @@ impl OutlineTree {
 
     pub(crate) fn page(&self) -> Option<&OutlinePageState> {
         self.page.as_ref()
+    }
+
+    /// Returns where the declarations were cut to a window, when they were.
+    #[must_use]
+    pub const fn window(&self) -> Option<crate::window::Window> {
+        self.window
+    }
+
+    /// Cuts the outline to one window of its declarations, in outline order.
+    ///
+    /// A declaration whose parent falls outside the window is listed at the
+    /// level of its nearest listed ancestor, the way an owner page lists a row
+    /// whose parent is on another page: no declaration is invented, and none
+    /// inside the window is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stale-cursor fault when the caller resumes an outline that
+    /// has changed, and a usage fault when its cursor is malformed.
+    pub(crate) fn windowed(
+        mut self,
+        request: crate::window::WindowRequest,
+    ) -> Result<Self, crate::fault::Fault> {
+        use crate::window::{Window, WindowKind, fingerprint};
+        // An owner-paged outline is already one page of the list; its own
+        // cursor continues it.
+        if self.page.is_some() {
+            return Ok(self);
+        }
+        let mut entries = Vec::new();
+        for root in self.roots.iter() {
+            flatten(root, 0, &mut entries);
+        }
+        let print = fingerprint(entries.iter().map(|(_, entry)| entry.sort_key()));
+        let start = request.start(WindowKind::Outline, print, entries.len())?;
+        let text = entries
+            .iter()
+            .map(|(depth, entry)| entry.row_bytes(*depth))
+            .collect::<Vec<_>>();
+        // A typed node carries its whole coordinate, which the readable row
+        // abbreviates to a trail: three times the text is a safe estimate.
+        let typed = text.iter().map(|bytes| bytes.saturating_mul(3)).collect::<Vec<_>>();
+        let window = Window::select(WindowKind::Outline, request, start, print, &text, &typed);
+        if window.is_cut() {
+            let mut seen = 0_usize;
+            let mut kept = Vec::new();
+            for root in self.roots.iter() {
+                cut(root, &mut seen, &window.range(), &mut kept);
+            }
+            self.roots = kept.into_boxed_slice();
+            self.window = Some(window);
+        }
+        Ok(self)
     }
 
     /// Returns the package this outline describes.
@@ -268,6 +344,39 @@ impl OutlineTree {
         self.roots
             .iter()
             .fold(0_usize, |total, root| total.saturating_add(walk(root)))
+    }
+}
+
+fn flatten<'a>(entry: &'a OutlineEntry, depth: usize, out: &mut Vec<(usize, &'a OutlineEntry)>) {
+    out.push((depth, entry));
+    for child in entry.children() {
+        flatten(child, depth.saturating_add(1), out);
+    }
+}
+
+/// Keeps the entries whose position in outline order is inside `range`,
+/// promoting the listed descendants of an entry that is not.
+fn cut(
+    entry: &OutlineEntry,
+    seen: &mut usize,
+    range: &core::ops::Range<usize>,
+    out: &mut Vec<OutlineEntry>,
+) {
+    let position = *seen;
+    *seen += 1;
+    let mut children = Vec::new();
+    for child in entry.children() {
+        cut(child, seen, range, &mut children);
+    }
+    if range.contains(&position) {
+        out.push(OutlineEntry {
+            identity: entry.identity.clone(),
+            tag: entry.tag,
+            kind: entry.kind,
+            children: children.into_boxed_slice(),
+        });
+    } else {
+        out.extend(children);
     }
 }
 

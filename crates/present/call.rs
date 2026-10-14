@@ -13,6 +13,7 @@
 
 use crate::fault::{Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
+use crate::window::WindowRequest;
 use backend_library::{
     CommandId, CompileExecutionIntent, IndexJobTicket, IndexSearchCursor, OverrideEvidence,
     PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
@@ -304,6 +305,14 @@ pub enum Request {
     },
     /// One durable product operation.
     Surface(Box<SurfaceCommand>),
+    /// A request for one window of a list the answer carries whole: the
+    /// caller's row bound and the cursor of the window to resume at.
+    Windowed {
+        /// The request that produces the complete list.
+        request: Box<Request>,
+        /// Which window of that list the caller asked for.
+        window: WindowRequest,
+    },
 }
 
 fn query_cursor(invocation: &Invocation, query: Request) -> Result<Request, Fault> {
@@ -335,6 +344,42 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
 ///
 /// Returns the same typed operand admission faults as [`lower`].
 pub fn lower_with_opener(
+    invocation: &Invocation,
+    project: &str,
+    opener: &TreeOpener,
+) -> Result<Request, Fault> {
+    let request = lower_whole(invocation, project, opener)?;
+    if !pages_by_window(&request) {
+        return Ok(request);
+    }
+    let window = WindowRequest::parse(invocation.option("limit"), invocation.option("cursor"))?;
+    Ok(if window == WindowRequest::first() {
+        request
+    } else {
+        Request::Windowed {
+            request: Box::new(request),
+            window,
+        }
+    })
+}
+
+/// Whether the answer to `request` is one complete list that a window cuts,
+/// rather than a page the owner already pages with its own cursor.
+fn pages_by_window(request: &Request) -> bool {
+    match request {
+        Request::Page(_)
+        | Request::Source(_)
+        | Request::Neighbourhood { .. }
+        | Request::Outline(_) => true,
+        Request::Surface(command) => matches!(
+            **command,
+            SurfaceCommand::References { .. } | SurfaceCommand::Read { .. }
+        ),
+        _ => false,
+    }
+}
+
+fn lower_whole(
     invocation: &Invocation,
     project: &str,
     opener: &TreeOpener,

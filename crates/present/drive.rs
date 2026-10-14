@@ -36,6 +36,7 @@ use crate::product::{ProductRecord, ProductView};
 use crate::record::{Record, RecordList};
 use crate::shelf::Shelf;
 use crate::status::Status;
+use crate::window::{WindowCursor, WindowRequest};
 use backend_client::ClientError;
 use backend_library::{
     CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IndexSearchCursor, IntentId,
@@ -54,6 +55,9 @@ pub enum ContinuationCursor {
     Page(PageContinuation),
     /// An opaque durable index-search continuation.
     IndexSearch(IndexSearchCursor),
+    /// A presentation window over one complete list the owner never paged: a
+    /// declaration's members, a package outline, a reference list.
+    Window(WindowCursor),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -264,9 +268,34 @@ impl Answer {
     #[must_use]
     pub fn cursor(&self) -> Option<ContinuationCursor> {
         match self {
-            Self::Records(records) => records.continuation().map(ContinuationCursor::Page),
-            Self::Outline(outline) => outline.continuation().map(ContinuationCursor::Page),
-            Self::Product(product) => product.cursor_family().cloned(),
+            Self::Page(page) => page
+                .listing()
+                .and_then(|listing| listing.window().next())
+                .map(ContinuationCursor::Window),
+            Self::Records(records) => records
+                .continuation()
+                .map(ContinuationCursor::Page)
+                .or_else(|| {
+                    records
+                        .window()
+                        .and_then(crate::window::Window::next)
+                        .map(ContinuationCursor::Window)
+                }),
+            Self::Outline(outline) => outline
+                .continuation()
+                .map(ContinuationCursor::Page)
+                .or_else(|| {
+                    outline
+                        .window()
+                        .and_then(crate::window::Window::next)
+                        .map(ContinuationCursor::Window)
+                }),
+            Self::Product(product) => product.cursor_family().cloned().or_else(|| {
+                product
+                    .window()
+                    .and_then(crate::window::Window::next)
+                    .map(ContinuationCursor::Window)
+            }),
             _ => None,
         }
     }
@@ -280,6 +309,50 @@ impl Answer {
 /// operand the caller supplied already attached.
 pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Fault> {
     match request {
+        Request::Windowed { request, window } => windowed(engine, request, *window),
+        other => windowed(engine, other, WindowRequest::first()),
+    }
+}
+
+/// Answers one request, then cuts any complete list the answer carries to the
+/// window the caller asked for (the first, sized by the budget, when it asked
+/// for none). A list the owner pages itself keeps its own cursor.
+fn windowed(
+    engine: &mut dyn Engine,
+    request: &Request,
+    window: WindowRequest,
+) -> Result<Answer, Fault> {
+    let answer = answer_whole(engine, request)?;
+    match (request, answer) {
+        (Request::Page(_), Answer::Page(page)) => {
+            crate::listing::window_members(*page, window).map(Box::new).map(Answer::Page)
+        }
+        (Request::Source(_), Answer::Page(page)) => {
+            crate::listing::window_source(*page, window).map(Box::new).map(Answer::Page)
+        }
+        (Request::Neighbourhood { .. }, Answer::Records(list)) => {
+            list.windowed(window).map(Box::new).map(Answer::Records)
+        }
+        (Request::Outline(_), Answer::Outline(tree)) => {
+            tree.windowed(window).map(Box::new).map(Answer::Outline)
+        }
+        // Only the commands whose grammar takes a `cursor` window their rows;
+        // every other product list is paged by its own owner.
+        (Request::Surface(command), Answer::Product(view))
+            if matches!(
+                **command,
+                SurfaceCommand::References { .. } | SurfaceCommand::Read { .. }
+            ) =>
+        {
+            view.windowed(window).map(Box::new).map(Answer::Product)
+        }
+        (_, answer) => Ok(answer),
+    }
+}
+
+fn answer_whole(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Fault> {
+    match request {
+        Request::Windowed { request, .. } => answer_whole(engine, request),
         Request::ResumeQuery { query, cursor } => {
             if !matches!(
                 query.as_ref(),
@@ -714,6 +787,14 @@ impl<'text> NameOperand<'text> {
             file: None,
             line: None,
         };
+        // `path:line::Trail::Leaf`, the handle a members or relations list
+        // prints: the file and line qualify the declaration, and the trail's
+        // last segment is the name to resolve.
+        if let Some((head, trail)) = text.split_once("::")
+            && let Some(qualified) = Self::qualified(head, trail)
+        {
+            return qualified;
+        }
         let Some((qualifier, name)) = text.rsplit_once("::") else {
             return plain;
         };
@@ -740,6 +821,27 @@ impl<'text> NameOperand<'text> {
             file: Some(file),
             line,
         }
+    }
+
+    /// Reads `head` as `file` or `file:line` and `trail` as the declaration's
+    /// symbol path, when `head` names a source file.
+    fn qualified(head: &'text str, trail: &'text str) -> Option<Self> {
+        let leaf = trail.rsplit("::").next().filter(|leaf| !leaf.is_empty())?;
+        let (file, line) = match head.rsplit_once(':') {
+            Some((file, digits))
+                if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                (file, digits.parse::<u32>().ok())
+            }
+            _ => (head, None),
+        };
+        let reads_as_file = crate::language::Language::from_path(&PackagePath::new(file))
+            != crate::language::Language::Unknown;
+        (!file.is_empty() && reads_as_file).then_some(Self {
+            name: leaf,
+            file: Some(file),
+            line,
+        })
     }
 
     /// The final name segment, which a match must carry exactly.
@@ -2188,5 +2290,36 @@ mod address_resolution_controls {
             vec![SCHEDULER],
             "the stale coordinate points at where the declaration is now"
         );
+    }
+}
+
+#[cfg(test)]
+mod handle_operand_tests {
+    use super::NameOperand;
+
+    #[test]
+    fn a_listed_handle_names_its_file_line_and_final_segment() {
+        // The handle a members or relations list prints: `path:line::Trail`.
+        let nested = NameOperand::parse("src/color.go:278::Color::Add");
+        assert_eq!(
+            (nested.file, nested.line, nested.leaf()),
+            (Some("src/color.go"), Some(278), "Add")
+        );
+        let flat = NameOperand::parse("src/lib/scheduler.ts:21::generateSchedule");
+        assert_eq!(
+            (flat.file, flat.line, flat.leaf()),
+            (Some("src/lib/scheduler.ts"), Some(21), "generateSchedule")
+        );
+        // A file without a line, the form a reference row names a caller by.
+        let file_only = NameOperand::parse("emoji/core.py::version");
+        assert_eq!(
+            (file_only.file, file_only.line, file_only.leaf()),
+            (Some("emoji/core.py"), None, "version")
+        );
+        // Relative names and type paths are not file qualifiers.
+        for plain in ["Color::Add", "std::fmt::Display", "Add", "module::function"] {
+            let operand = NameOperand::parse(plain);
+            assert_eq!((operand.file, operand.line), (None, None), "{plain}");
+        }
     }
 }

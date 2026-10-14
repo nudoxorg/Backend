@@ -36,6 +36,9 @@ use backend_library::{
 use crate::identity::KeyTag;
 use serde::{Deserialize, Serialize};
 
+/// The tag a reference row carries when the producer captured no source span.
+const SITE_NOT_CAPTURED: &str = "site not captured";
+
 /// One product record: a title, an operand to pass back, and its tags.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductRecord {
@@ -52,6 +55,7 @@ pub struct ProductRecord {
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
     extent: Option<backend_library::DeclarationReadExtent>,
+    compact: bool,
 }
 
 impl ProductRecord {
@@ -72,6 +76,7 @@ impl ProductRecord {
             history_status: None,
             compiler_profile: None,
             extent: None,
+            compact: false,
         }
     }
 
@@ -193,6 +198,31 @@ impl ProductRecord {
     #[must_use]
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// Marks the row as one a readable rendering spells on a single line: its
+    /// title already names the declaration, so the operand is not repeated,
+    /// and the evidence tags that only say a span was not captured stay in the
+    /// typed projection.
+    #[must_use]
+    pub(crate) fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Returns whether the readable rendering spells this row on one line.
+    #[must_use]
+    pub const fn is_compact(&self) -> bool {
+        self.compact
+    }
+
+    /// Returns the tags the readable rendering prints after the title.
+    pub fn readable_tags(&self) -> impl Iterator<Item = &str> {
+        let compact = self.compact;
+        self.tags
+            .iter()
+            .map(String::as_str)
+            .filter(move |tag| !compact || !tag.starts_with(SITE_NOT_CAPTURED))
     }
 
     /// Returns the typed native registry facts carried by this row.
@@ -386,6 +416,7 @@ pub struct ProductView {
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
     semantic_data: Option<ProductSemanticData>,
     package_discovery: Option<PackageDiscoveryProjection>,
+    window: Option<crate::window::Window>,
 }
 
 /// Exact metadata lookup evidence retained by CLI and MCP presentation.
@@ -581,6 +612,81 @@ impl ProductView {
     #[must_use]
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()
+    }
+
+    /// Returns where the rows were cut to a window, when they were.
+    #[must_use]
+    pub const fn window(&self) -> Option<crate::window::Window> {
+        self.window
+    }
+
+    /// Whether this answer is nothing but a list of rows, which a window can
+    /// cut. An answer that also carries a receipt, a fault or a page of an
+    /// owner-paged list is never cut here.
+    fn is_plain_list(&self) -> bool {
+        !self.records.is_empty()
+            && self.fault.is_none()
+            && self.index_search_page.is_none()
+            && self.index_job.is_none()
+            && self.index_operation.is_none()
+            && self.index_progress_poll.is_none()
+            && self.selected_source_frontier.is_none()
+            && self.package_source_membership_page.is_none()
+            && self.semantic_data.is_none()
+            && self.package_discovery.is_none()
+    }
+
+    /// Cuts a plain list of rows to one window: as many rows as fit the
+    /// budget, or the caller's `limit`, starting at its cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stale-cursor fault when the caller resumes a list that has
+    /// changed or an answer that was never cut, and a usage fault when its
+    /// cursor is malformed.
+    pub(crate) fn windowed(mut self, request: crate::window::WindowRequest) -> Result<Self, Fault> {
+        use crate::window::{Window, WindowKind, fingerprint};
+        if !self.is_plain_list() {
+            if request.cursor().is_some() {
+                return Err(Fault::from_client_error(
+                    &backend_client::ClientError::StaleCursor,
+                    Operand::Argument("cursor".to_owned()),
+                ));
+            }
+            return Ok(self);
+        }
+        let print = fingerprint(self.records.iter().flat_map(|record| {
+            std::iter::once(record.title())
+                .chain(record.operand())
+                .chain(record.tags().iter().map(String::as_str))
+        }));
+        let start = request.start(WindowKind::Rows, print, self.records.len())?;
+        let text = self
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .title()
+                    .len()
+                    .saturating_add(record.operand().map_or(0, str::len))
+                    .saturating_add(record.tags().iter().map(|tag| tag.len() + 3).sum::<usize>())
+                    .saturating_add(4)
+            })
+            .collect::<Vec<_>>();
+        let typed = self
+            .records
+            .iter()
+            .map(|record| {
+                serde_json::to_vec(&crate::dto::ProductRecordDto::new(record))
+                    .map_or(usize::MAX / 4, |bytes| bytes.len() + 1)
+            })
+            .collect::<Vec<_>>();
+        let window = Window::select(WindowKind::Rows, request, start, print, &text, &typed);
+        if window.is_cut() {
+            self.records = self.records[window.range()].to_vec().into_boxed_slice();
+            self.window = Some(window);
+        }
+        Ok(self)
     }
 
     /// Returns exact package metadata evidence, separate from acquired records.
@@ -914,6 +1020,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            window: None,
         }
     }
 
@@ -933,6 +1040,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            window: None,
         }
     }
 
@@ -950,6 +1058,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            window: None,
         }
     }
 
@@ -967,6 +1076,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            window: None,
         }
     }
 
@@ -984,6 +1094,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            window: None,
         }
     }
 }
@@ -2759,13 +2870,20 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
             span.start,
             span.end
         )),
-        None => tags.push("site not captured".to_owned()),
+        None => tags.push(SITE_NOT_CAPTURED.to_owned()),
     }
-    ProductRecord::new(
-        record.site.as_str().to_owned(),
-        Some(record.site.as_str().to_owned()),
-        tags,
-    )
+    // The title is the shortest spelling that names the using declaration
+    // again; the exact coordinate stays in the typed operand.
+    let site = crate::identity::Identity::parse(record.site.as_str());
+    let title = match (site.path(), record.evidence.source.as_ref()) {
+        // A compiler-addressed site spells no path of its own; the span that
+        // proves the use names the file the using declaration is in.
+        (None, Some(span)) if site.shape() == crate::identity::IdentityShape::Semantic => {
+            format!("{}::{}", span.file.as_str(), site.trail().joined())
+        }
+        _ => crate::listing::handle(&site),
+    };
+    ProductRecord::new(title, Some(record.site.as_str().to_owned()), tags).compact()
 }
 
 fn diff_row(record: &DiffRecord) -> ProductRecord {
@@ -3464,11 +3582,11 @@ mod tests {
                 .and_then(IndexSearchPageInfo::next_cursor),
             Some("mcp1-signed-token")
         );
+        // The next call is spelled with its cursor in the text.
         assert!(
             crate::markdown::product(&projected)
-                .contains("copy `structuredContent.surface.data.next_cursor` to `command.cursor`")
+                .contains("`command.cursor` = `mcp1-signed-token`")
         );
-        assert!(!crate::markdown::product(&projected).contains("mcp1-signed-token"));
         assert!(!crate::markdown::product(&projected).contains("owner-v4-token"));
         assert!(matches!(
             projected.cursor_family(),

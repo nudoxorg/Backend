@@ -388,16 +388,18 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
         ],
         Some(12),
     );
+    // The semantic lane is the compiler's coverage. Embeddings are an optional
+    // vector feature the owner reports through the same entry: unconfigured
+    // vectors never turn the compiler lane into a ✗.
     assert_eq!(
         thin.render(),
-        "~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured"
+        "~lanes exact✓12 names✓12 graph◐3/7 semantic✓12"
     );
-    // The graph lane is still working, so that is what the reader is waiting
-    // on. The semantic lane is off in this deployment and is still shown as
-    // unavailable — it just is not the answer to "what is this owner doing".
+    // The graph lane is still working, so that is what the reader is waiting on.
     assert_eq!(thin.readiness(), "indexing");
-    assert!(thin.has_unavailable());
+    assert!(!thin.has_unavailable());
     assert!(!thin.has_failed_lane());
+    assert!(!thin.is_quiet(), "work is moving: the line is worth printing");
 
     // Every lane the deployment declared finished; one it never configured did
     // not. That owner is ready, and saying otherwise leaves a healthy project
@@ -414,11 +416,15 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(
         unconfigured.render(),
-        "~lanes exact✓12 names✓12 graph✓12 semantic✗ unconfigured"
+        "~lanes exact✓12 names✓12 graph✓12 semantic✓12"
     );
     assert_eq!(unconfigured.readiness(), "ready");
-    assert!(unconfigured.has_unavailable());
+    assert!(!unconfigured.has_unavailable());
     assert!(!unconfigured.has_failed_lane());
+    assert!(
+        unconfigured.is_quiet(),
+        "a complete project with optional vectors off has nothing to say"
+    );
 
     // A lane that was asked to answer and could not is a different statement
     // and must never be folded into the one above.
@@ -434,6 +440,8 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(failed.readiness(), "unavailable");
     assert!(failed.has_failed_lane());
+    assert!(failed.render().ends_with("semantic✗ offline"));
+    assert!(!failed.is_quiet());
 
     let silent = CoverageLine::new(&[], None);
     assert_eq!(silent.render(), "~lanes exact· names· graph· semantic·");
@@ -863,16 +871,13 @@ fn a_record_renders_identity_first_and_never_clips_the_coordinate() {
     );
     let rendered = text::records(&list, None, Theme::plain().with_width(Width::new(40)));
     let lines: Vec<&str> = rendered.lines().collect();
+    // A ready result leads with its rows: no lane statement.
     assert_eq!(
         lines.first().copied(),
-        Some("~lanes exact✓1 names✓1 graph✓1 semantic✓1")
-    );
-    assert_eq!(
-        lines.get(1).copied(),
         Some("● polyglot › src/lib.rs:2 › ferris  ƒ function · rs")
     );
     assert_eq!(
-        lines.get(2).copied(),
+        lines.get(1).copied(),
         Some("  /abs/polyglot::src/lib.rs:2::ferris")
     );
     assert!(rendered.contains("pub fn ferris() -> Beacon"));
@@ -1262,15 +1267,33 @@ fn continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback() {
         ContinuationTarget::McpTool("backend.search"),
     );
     assert!(
-        mcp.contains("Continue `backend.search` with the same arguments"),
+        mcp.contains("next page: call `backend.search` with the same arguments"),
         "{mcp}"
     );
     assert!(
-        mcp.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"),
-        "{mcp}"
+        mcp.contains(&format!("\"cursor\":\"{token}\"")),
+        "an agent that cannot see structuredContent pages from the text: {mcp}"
     );
-    assert!(!mcp.contains(token), "{mcp}");
     assert!(!mcp.contains("raise `limit`"), "{mcp}");
+
+    // A caller that has the call's own arguments gets the whole call spelled.
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("query".to_owned(), "ferris".into());
+    arguments.insert("limit".to_owned(), 5.into());
+    let call = markdown::answer_with_cursor(
+        &paged,
+        Some(token),
+        ContinuationTarget::McpCall {
+            tool: "backend.search",
+            arguments: &arguments,
+        },
+    );
+    assert!(
+        call.contains(&format!(
+            "next page: backend.search {{\"cursor\":\"{token}\",\"limit\":5,\"query\":\"ferris\"}}"
+        )),
+        "{call}"
+    );
 
     let nonpaged = RecordList::new(
         "ferris",
@@ -1290,25 +1313,24 @@ fn continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback() {
 }
 
 #[test]
-fn structured_continuation_previews_do_not_scale_with_the_opaque_token() {
-    let token = "mcp2-opaque-owner-material-".repeat(1024);
+fn every_continuation_note_spells_the_exact_cursor() {
+    // A text-only reader pages from the note, so the note carries the whole
+    // cursor on every surface. The MCP issues short handles so this is cheap;
+    // the note itself never abbreviates what it is given.
+    let token = "mcp3-1791999999-0123456789ab-0123456789abcdef0123456789abcdef";
     for target in [
         ContinuationTarget::McpTool("backend.search"),
         ContinuationTarget::McpTool("backend.query"),
         ContinuationTarget::McpTool("backend.index_search"),
         ContinuationTarget::McpSurfaceCommand,
+        ContinuationTarget::CliOption,
     ] {
-        let short = crate::continuation_note(target, "short");
-        let long = crate::continuation_note(target, &token);
-        assert_eq!(long, short, "the structured channel owns the entire token");
-        assert!(long.contains("structuredContent"));
-        assert!(long.contains("cursor"));
+        let note = crate::continuation_note(target, token);
+        assert!(note.contains(token), "{target:?}: {note}");
+        assert!(!note.contains("structuredContent"), "{target:?}: {note}");
     }
-    let cli = crate::continuation_note(ContinuationTarget::CliOption, &token);
-    assert!(
-        cli.contains(&token),
-        "a text-only CLI must retain the exact operand"
-    );
+    let note = crate::continuation_note(ContinuationTarget::McpSurfaceCommand, token);
+    assert!(note.contains("backend.surface") && note.contains("`command.cursor`"), "{note}");
 }
 
 #[test]
@@ -1323,7 +1345,6 @@ fn mcp_summary_list_previews_include_exact_rows_within_the_text_budget() {
         vec![record; 25],
     )
     .with_continuation(Some(PageContinuation::from_cursor(Cursor::new())));
-    let coverage = list.coverage().render();
     let answer = Answer::Records(Box::new(list));
     let cursor = "exact opaque signed cursor";
     let preview = markdown::summary_with_cursor(
@@ -1331,25 +1352,24 @@ fn mcp_summary_list_previews_include_exact_rows_within_the_text_budget() {
         Some(cursor),
         ContinuationTarget::McpTool("backend.graph"),
     );
-    assert!(preview.starts_with(&coverage));
+    assert!(!preview.contains("~lanes"), "a ready result says nothing of its lanes");
     assert!(preview.contains("25 row(s)"));
-    assert!(preview.contains("`structuredContent.records`"));
-    assert!(preview.contains("Continue `backend.graph` with the same arguments"));
-    assert!(!preview.contains(cursor));
+    assert!(preview.contains("next page: call `backend.graph` with the same arguments"));
+    assert!(preview.contains(cursor), "the cursor is in the text");
     assert!(preview.contains(&format!("`{DECLARATION}`")));
     assert!(preview.contains("`ferris` · function · rust"));
     assert!(!preview.contains("a long retained description"));
     assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
     let row = format!("• `ferris` · function · rust\n  `{DECLARATION}`\n");
     let expected = format!(
-        "{coverage}\n{}{total} row(s) on this page; showing {total} exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+        "{}{total} row(s)\n… more rows; next page: call `backend.graph` with the same arguments and `\"cursor\":\"{cursor}\"`\n",
         row.repeat(25),
         total = 25,
     );
     assert_eq!(preview, expected, "MCP preview remains typed and compact");
-    assert_eq!(preview.len(), 2113, "fixed fixture output byte cost");
+    assert_eq!(preview.len(), 1950, "fixed fixture output byte cost");
     assert_eq!(preview.len(), expected.len(), "measured UTF-8 output bytes");
-    assert_eq!(estimate_tokens(preview.len()), 529, "estimated token cost");
+    assert_eq!(estimate_tokens(preview.len()), 488, "estimated token cost");
     assert_eq!(estimate_tokens(preview.len()), expected.len().div_ceil(4));
     assert_eq!(
         markdown::summary_with_cursor(&answer, Some(cursor), ContinuationTarget::CliOption),
@@ -1367,7 +1387,7 @@ fn mcp_summary_list_previews_include_exact_rows_within_the_text_budget() {
     let preview =
         markdown::summary_with_cursor(&empty, None, ContinuationTarget::McpTool("backend.graph"));
     assert!(preview.contains("no graph edges at this coordinate"));
-    assert!(!preview.contains("Continue"));
+    assert!(!preview.contains("next page"));
 }
 
 #[test]
@@ -1393,8 +1413,8 @@ fn mcp_summary_budget_omits_only_whole_rows_and_keeps_exact_coordinates() {
         markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
 
     assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
-    assert!(preview.contains("40 row(s) on this page"));
-    assert!(preview.contains("omitted from text preview"));
+    assert!(preview.contains("40 row(s) · showing"));
+    assert!(preview.contains("omitted from this text"));
     assert!(preview.contains("`structuredContent.records`"));
     let rendered = preview
         .lines()
@@ -1467,7 +1487,7 @@ fn mcp_summary_code_spans_preserve_backticks_and_omit_visual_line_controls() {
     let preview =
         markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
     assert!(!preview.contains("forged"));
-    assert!(preview.contains("1 omitted from text preview"));
+    assert!(preview.contains("1 omitted from this text"));
 }
 
 #[test]
@@ -1876,7 +1896,10 @@ fn a_references_reply_renders_sites_with_their_provenance() {
     let view = product_view(&reply);
     assert_eq!(view.heading(), "references to pkg::semantic::callee");
     let record = view.records().first().expect("record");
-    assert_eq!(record.title(), "pkg::semantic::caller");
+    // The title is the shortest spelling that names the using declaration
+    // again: its file (from the span that proves the use) and its name. The
+    // exact coordinate stays in the typed operand.
+    assert_eq!(record.title(), "src/main.rs::caller");
     assert_eq!(record.operand(), Some("pkg::semantic::caller"));
     let tags = record.tags();
     assert!(tags.contains(&"calls".to_owned()), "tags are {tags:?}");
@@ -2205,12 +2228,12 @@ fn shrinking_record_preview_retains_correct_counts_coverage_and_next_call() {
         ContinuationTarget::McpTool("backend.resolve"),
     );
     let minimum = markdown::shorten_record_preview(&full, 0).expect("recognized shared preview");
-    assert!(minimum.contains("showing 0 exact coordinate(s); 25 omitted"));
-    assert!(minimum.contains("Continue `backend.resolve`"));
-    assert!(minimum.starts_with(&match &answer {
-        Answer::Records(list) => list.coverage().render(),
-        _ => unreachable!(),
-    }));
+    assert!(minimum.contains("25 row(s) · showing 0; 25 omitted from this text"));
+    assert!(minimum.contains("next page: call `backend.resolve`"));
+    assert!(
+        !minimum.starts_with('~'),
+        "a ready result leads with its rows, not its lanes"
+    );
     for budget in 0..=full.len() {
         let preview =
             markdown::shorten_record_preview(&full, budget).expect("valid shared preview");
@@ -2218,10 +2241,14 @@ fn shrinking_record_preview_retains_correct_counts_coverage_and_next_call() {
             .lines()
             .filter(|line| line.starts_with("• "))
             .count();
-        assert!(preview.contains(&format!(
-            "showing {shown} exact coordinate(s); {} omitted",
-            25 - shown
-        )));
+        if shown == 25 {
+            assert!(preview.contains("\n25 row(s)\n"), "{preview}");
+        } else {
+            assert!(preview.contains(&format!(
+                "25 row(s) · showing {shown}; {} omitted from this text",
+                25 - shown
+            )));
+        }
         assert_eq!(
             preview
                 .lines()
@@ -2229,18 +2256,18 @@ fn shrinking_record_preview_retains_correct_counts_coverage_and_next_call() {
                 .collect::<Vec<_>>(),
             vec![exact.clone(); shown]
         );
-        assert!(preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"));
-        assert!(!preview.contains("signed-token"));
+        assert!(preview.contains("next page: call `backend.resolve` with the same arguments"));
+        assert!(
+            preview.contains("signed-token"),
+            "the cursor survives every shrink: {preview}"
+        );
         assert!(preview.len() <= budget.max(minimum.len()));
         assert_eq!(
             markdown::shorten_record_preview(&preview, 0).as_deref(),
             Some(minimum.as_str())
         );
     }
-    let forged = full.replace(
-        "showing 25 exact coordinate(s)",
-        "showing 24 exact coordinate(s)",
-    );
+    let forged = full.replace("\n25 row(s)\n", "\n26 row(s)\n");
     assert!(markdown::shorten_record_preview(&forged, 0).is_none());
     let partial = full.replacen(&format!("  ``{exact}``\n"), "  `unfinished\n", 1);
     assert!(markdown::shorten_record_preview(&partial, 0).is_none());
@@ -2271,14 +2298,14 @@ fn legacy_unpaged_record_preview_retains_counts_beyond_native_page_credit() {
     let minimum =
         markdown::shorten_record_preview(&preview, 0).expect("bounded legacy collection text");
     assert!(minimum.contains(&format!(
-        "{total} row(s) on this page; showing 0 exact coordinate(s); {total} omitted"
+        "{total} row(s) · showing 0; {total} omitted from this text"
     )));
     assert!(minimum.contains("more rows at this revision; raise `limit`"));
     let short = markdown::shorten_record_preview(&preview, 1000).expect("legacy partial text");
     let shown = short.lines().filter(|line| line.starts_with("• ")).count();
     assert!(shown > 0 && shown < total);
     assert!(short.contains(&format!(
-        "showing {shown} exact coordinate(s); {} omitted",
+        "showing {shown}; {} omitted from this text",
         total - shown
     )));
     assert!(short.len() <= 1000);
@@ -2581,4 +2608,117 @@ fn an_import_reads_the_way_its_language_writes_one() {
         display_text_in(import, Language::Go, value).as_deref(),
         Some("import Alphabet from crate")
     );
+}
+
+#[test]
+fn a_ready_result_says_nothing_about_lanes_or_optional_vectors_and_status_says_it_once() {
+    let record = Record::from_row(&declaration_row());
+    let ready = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![record.clone()],
+    )
+    .with_semantic_search_status(SemanticSearchStatus::Unavailable {
+        reason: SemanticSearchReason::Unconfigured,
+    });
+    for target in [
+        ContinuationTarget::McpTool("backend.search"),
+        ContinuationTarget::CliOption,
+    ] {
+        let rendered =
+            markdown::answer_with_cursor(&Answer::Records(Box::new(ready.clone())), None, target);
+        assert!(!rendered.contains("~lanes"), "{rendered}");
+        assert!(!rendered.contains("semantic-search"), "{rendered}");
+        assert!(!rendered.contains("embedding-setup"), "{rendered}");
+    }
+    assert!(!text::records(&ready, None, Theme::plain()).contains("~lanes"));
+    assert!(ready.coverage().is_quiet());
+    // The per-query status stays in the typed projection.
+    assert_eq!(
+        RecordListDto::new(&ready).semantic_search,
+        Some(SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::Unconfigured
+        })
+    );
+
+    // A lane that is still moving, or a vector search that failed, is said
+    // first, briefly, with no setup instruction.
+    let moving = RecordList::new(
+        "ferris",
+        CoverageLine::new(
+            &[Coverage::Complete, Coverage::Partial { lane: Lane::Graph, completed: 1, total: 2 }],
+            Some(1),
+        ),
+        vec![record.clone()],
+    );
+    let rendered = markdown::answer_with_cursor(
+        &Answer::Records(Box::new(moving)),
+        None,
+        ContinuationTarget::McpTool("backend.search"),
+    );
+    assert!(rendered.starts_with("~lanes exact✓1 names✓1 graph◐1/2"), "{rendered}");
+    let failed = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![record],
+    )
+    .with_semantic_search_status(SemanticSearchStatus::Unavailable {
+        reason: SemanticSearchReason::ProviderUnavailable,
+    });
+    let rendered = markdown::answer_with_cursor(
+        &Answer::Records(Box::new(failed)),
+        None,
+        ContinuationTarget::McpTool("backend.search"),
+    );
+    assert!(rendered.contains("semantic-search unavailable (provider-unavailable)"), "{rendered}");
+    assert!(!rendered.contains("embedding-setup"), "{rendered}");
+
+    // Status is where the optional setup is said, once.
+    let library = backend_library::Library::new();
+    let report = backend_library::HealthReport::from_root(library.view(), library.cursor());
+    let status = Status::from_report(&report, Some(ProjectRef::new(PROJECT)));
+    let rendered = markdown::status(&status);
+    assert_eq!(rendered.matches("embedding-setup").count(), 1, "{rendered}");
+}
+
+#[test]
+fn an_external_placeholder_is_named_without_its_content_address() {
+    let coordinate = format!("{PROJECT}::external::symbol:{}::io.Writer", "ab".repeat(32));
+    let row = backend_library::Row::new(
+        RowId::Symbol(symbol_key(&coordinate)),
+        basis(),
+        coordinate.clone(),
+    )
+    .with_kind(DeclarationKind::Interface);
+    let list = RecordList::new(
+        "Writer",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![Record::from_row(&row)],
+    );
+    for rendered in [
+        markdown::answer_with_cursor(
+            &Answer::Records(Box::new(list.clone())),
+            None,
+            ContinuationTarget::McpTool("backend.resolve"),
+        ),
+        markdown::records(&list, None),
+        text::records(&list, None, Theme::plain()),
+    ] {
+        assert!(rendered.contains("io.Writer"), "{rendered}");
+        assert!(rendered.contains("external"), "{rendered}");
+        assert!(!rendered.contains(&"ab".repeat(32)), "no 64-hex coordinate: {rendered}");
+    }
+    // The typed projection keeps the exact coordinate.
+    assert_eq!(RecordListDto::new(&list).records[0].identity.coordinate, coordinate);
+}
+
+#[test]
+fn a_shelf_with_a_published_row_count_does_not_also_call_the_declaration_count_unavailable() {
+    let entry = ShelfEntry::new(Identity::parse(PROJECT), Readiness::Ready)
+        .with_published_rows(Some(RowCount::new(161)));
+    let tags = entry.count_tags();
+    assert!(tags.iter().any(|tag| tag == "161 row(s)"), "{tags:?}");
+    assert!(!tags.iter().any(|tag| tag.contains("unavailable")), "{tags:?}");
+    let bare = ShelfEntry::new(Identity::parse(PROJECT), Readiness::Ready);
+    assert!(bare.count_tags().iter().any(|tag| tag.contains("declaration count unavailable")));
 }

@@ -526,6 +526,16 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     ArgumentKind::Limit,
     "Maximum rows in this page, 1 to 200.",
 );
+const MEMBER_LIMIT: ArgumentSpec = ArgumentSpec::optional(
+    "limit",
+    ArgumentKind::Limit,
+    "Maximum members in this page, 1 to 200; omitted, as many as fit a response budget.",
+);
+const SOURCE_LIMIT: ArgumentSpec = ArgumentSpec::optional(
+    "limit",
+    ArgumentKind::Limit,
+    "Maximum source lines in this page, 1 to 200; omitted, as many as fit a response budget.",
+);
 const CURSOR: ArgumentSpec = ArgumentSpec::optional(
     "cursor",
     ArgumentKind::Cursor,
@@ -611,10 +621,10 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate from a search or outline result.",
+            "Exact declaration coordinate from a search or outline result, or a `path:line::name` handle as listed under members and relations.",
         )],
-        options: &[],
-        when: "Reach for this immediately after search: it is the cheapest complete answer about one declaration.",
+        options: &[MEMBER_LIMIT, CURSOR],
+        when: "Reach for this immediately after search: it is the cheapest complete answer about one declaration: signature, documentation, every member as one line, and the first relations. A type with many members pages: follow the `next page` line, or pass `limit` and `cursor`.",
     },
     CommandGrammar {
         name: "source",
@@ -623,9 +633,9 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate from a search or outline result.",
+            "Exact declaration coordinate from a search or outline result, or a `path:line::name` handle.",
         )],
-        options: &[],
+        options: &[SOURCE_LIMIT, CURSOR],
         when: "Use when the signature and documentation are not enough and you need the code itself.",
     },
     CommandGrammar {
@@ -635,10 +645,10 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate to centre the neighbourhood on.",
+            "Exact declaration coordinate to centre the neighbourhood on, or a `path:line::name` handle.",
         )],
-        options: &[],
-        when: "Use after you have a coordinate to see callers and callees in this package. Package-level dependents are a separate call.",
+        options: &[LIMIT, CURSOR],
+        when: "Use after you have a coordinate to see callers and callees in this package, one row each, paged. Package-level dependents are a separate call.",
     },
     CommandGrammar {
         name: "references",
@@ -647,10 +657,10 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate whose uses are requested.",
+            "Exact declaration coordinate whose uses are requested, or a `path:line::name` handle.",
         )],
-        options: &[],
-        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
+        options: &[LIMIT, CURSOR],
+        when: "Use to answer where is this symbol used: one row per use with the relation kind and the authority class. A long list pages: follow the `next page` line, or pass `limit` and `cursor`.",
     },
     CommandGrammar {
         name: "read",
@@ -661,7 +671,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinates; each is answered or refused on its own.",
         )],
-        options: &[],
+        options: &[LIMIT, CURSOR],
         when: "Use instead of several show calls when you already know every coordinate you need.",
     },
     CommandGrammar {
@@ -692,8 +702,8 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[],
-        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for.",
+        options: &[LIMIT, CURSOR],
+        when: "Use to learn a package's shape before searching it, when you do not yet know what to search for. A large package pages: follow the `next page` line, or pass `limit` and `cursor`.",
     },
     CommandGrammar {
         name: "resolve",
@@ -726,9 +736,9 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate to traverse from.",
+            "Exact declaration coordinate to traverse from, or a `path:line::name` handle.",
         )],
-        options: &[],
+        options: &[LIMIT, CURSOR],
         when: "Use to follow one declaration outward along calls and references in its package.",
     },
     CommandGrammar {

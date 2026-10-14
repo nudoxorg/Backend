@@ -25,11 +25,23 @@ pub enum ContinuationTarget<'a> {
     CliOption,
     /// The named MCP tool accepts the token through its `cursor` argument.
     McpTool(&'a str),
+    /// The named MCP tool, called with these exact arguments, accepts the
+    /// token through its `cursor` argument. The note spells the whole call.
+    McpCall {
+        /// Tool name.
+        tool: &'a str,
+        /// The arguments of the call that produced this page.
+        arguments: &'a serde_json::Map<String, serde_json::Value>,
+    },
     /// The generic MCP surface accepts its nested index-search cursor.
     McpSurfaceCommand,
 }
 
-/// Names the next call, retaining tokens only when there is no structured channel.
+/// Names the next call, with the cursor spelled out.
+///
+/// A model reads the text block, and an agent that cannot see the typed
+/// channel cannot page without it, so the exact token is in the text. The MCP
+/// issues tokens short enough for that to be cheap.
 #[must_use]
 pub fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String {
     match target {
@@ -37,9 +49,40 @@ pub fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String
             format!("next cursor (continue the same command with `--cursor`): `{cursor}`")
         }
         ContinuationTarget::McpTool(tool) => format!(
-            "Continue `{tool}` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`."
+            "next page: call `{tool}` with the same arguments and `\"cursor\":\"{cursor}\"`"
         ),
-        ContinuationTarget::McpSurfaceCommand => "Continue `backend.surface` with the same arguments; copy `structuredContent.surface.data.next_cursor` to `command.cursor`.".to_owned(),
+        ContinuationTarget::McpCall { tool, arguments } => {
+            // Sorted keys: serde_json orders an object by whichever features
+            // the build unified, and the call a model copies must not vary.
+            let mut next = std::collections::BTreeMap::new();
+            for (name, value) in arguments.iter() {
+                next.insert(name.as_str(), value.clone());
+            }
+            next.insert("cursor", serde_json::Value::String(cursor.to_owned()));
+            let call = serde_json::to_string(&next).unwrap_or_default();
+            format!("next page: {tool} {call}")
+        }
+        ContinuationTarget::McpSurfaceCommand => format!(
+            "next page: call `backend.surface` with the same command and `command.cursor` = `{cursor}`"
+        ),
+    }
+}
+
+/// The single closing line of a windowed list: how many rows remain, and the
+/// next call when the caller issued a cursor for it.
+#[must_use]
+pub fn next_page_line(
+    remaining: usize,
+    noun: &str,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    match cursor {
+        Some(cursor) => format!(
+            "… {remaining} more {noun}; {}",
+            continuation_note(target, cursor)
+        ),
+        None => format!("… {remaining} more {noun}; this rendering does not include the continuation token"),
     }
 }
 

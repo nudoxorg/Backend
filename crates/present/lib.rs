@@ -67,6 +67,7 @@ mod glyph;
 mod grammar;
 mod identity;
 mod language;
+mod listing;
 mod outline;
 #[cfg(test)]
 mod owner_recovery_tests;
@@ -89,6 +90,9 @@ mod signature;
 mod status;
 mod startup_recovery;
 mod token_count;
+mod window;
+#[cfg(test)]
+mod window_tests;
 
 pub use startup_recovery::{StartupRecoveryContext, StartupRecoveryWorkspace};
 
@@ -104,7 +108,8 @@ pub use browse::{
 pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
     EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, bounded_text,
-    encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
+    encode_answer, encode_answer_fitting, encode_serializable, encode_value, estimate_tokens,
+    oversized_fault,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower,
@@ -123,8 +128,8 @@ pub use dto::{
     IdentityDto, IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,
     OutlineNodeDto, OutlinePageDto, PageDto, ProductDto, ProductIndexSearchPageDto,
     ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto,
-    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value,
-    fault_value,
+    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, WindowDto,
+    answer_value, fault_value,
 };
 pub use fault::{
     Affordance, Candidate, Cause, CauseSlug, Fault, FaultSlug, MAX_FAULT_CANDIDATES, Operand,
@@ -142,19 +147,21 @@ pub use identity::{
 pub use language::Language;
 pub use outline::{OutlineEntry, OutlineTree, row_resolver};
 pub use page::{
-    Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
-    Truncation,
+    Listing, Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine,
+    SourceSite, Truncation,
 };
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
     ProductView, product_view, product_view_for_command,
 };
-pub use projection::{PageProjection, PageSection};
+pub use listing::handle;
+pub use projection::{PageProjection, PageSection, ProseView, RelationView, SourceView};
 pub use readiness::{PublishedFacts, ReadinessState};
 pub use record::{CollapsedExternals, Record, RecordList, RecordState, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
+    next_page_line,
     text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
@@ -163,6 +170,11 @@ pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use status::{
     CapabilitySummary, EmbeddingState, FamilyRollup, PublishedRows, ReasonRollup, Sequence,
     SlotCount, Status, VisiblePublicationState, unavailable_name,
+};
+
+pub use window::{
+    MAX_WINDOW_ROWS, WINDOW_DTO_BUDGET, WINDOW_PREFIX, WINDOW_TEXT_BUDGET, WINDOW_TEXT_CEILING,
+    Window, WindowCursor, WindowKind, WindowRequest, fingerprint, one_line,
 };
 
 pub use token_count::{CL100K_POLICY, CL100K_VOCABULARY_SHA256, Cl100kError, cl100k_tokens};

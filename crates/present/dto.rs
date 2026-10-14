@@ -19,7 +19,7 @@ use crate::drive::Answer;
 use crate::fault::{Affordance, Fault};
 use crate::identity::Identity;
 use crate::outline::{OutlineEntry, OutlineTree};
-use crate::page::{Page, Prose, Source};
+use crate::page::{Listing, Page, Prose};
 use crate::product::{IndexJobProjection, ProductView};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
@@ -159,6 +159,22 @@ impl IdentityDto {
                 .collect(),
             key: identity.key().tag().map(|tag| tag.to_string()),
             semantic_data: identity_semantic_data(identity),
+        }
+    }
+}
+
+impl IdentityDto {
+    /// Projects one identity as a row of a list: every field a reader needs to
+    /// name the declaration again, without the two a list of hundreds cannot
+    /// afford to repeat on each row. The owning project is the prefix of the
+    /// coordinate, and the exact selected-symbol operand is what a `show` of
+    /// the row returns.
+    #[must_use]
+    pub fn listed(identity: &Identity) -> Self {
+        Self {
+            project: None,
+            semantic_data: None,
+            ..Self::new(identity)
         }
     }
 }
@@ -434,13 +450,21 @@ pub struct PageDto {
     /// The classified signature tokens.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tokens: Vec<SignatureTokenDto>,
-    /// The producer's captured documentation, as paragraphs.
+    /// The producer's captured documentation, as paragraphs, cut to the
+    /// detail's budget.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prose: Vec<String>,
-    /// Members grouped by kind.
+    /// How many bytes of documentation the budget left out, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose_omitted_bytes: Option<usize>,
+    /// Members grouped by kind: the window this response carries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<MemberGroupDto>,
-    /// Labelled relation groups.
+    /// Where the member list was cut; the next window's cursor is the
+    /// envelope's `nextCursor`. Absent when the page was not windowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowDto>,
+    /// Labelled relation groups: how many each label holds, and the first few.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<RelationGroupDto>,
     /// The captured source, when there is any.
@@ -470,6 +494,21 @@ pub struct SummaryPageDto {
     /// The retained signature text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// The first paragraph of the documentation, on one line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prose: Vec<String>,
+    /// How many bytes of documentation the summary left out, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose_omitted_bytes: Option<usize>,
+    /// The members this response carries, named: kind and identity only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<MemberGroupDto>,
+    /// Where the member list was cut, when the page was windowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowDto>,
+    /// How many related declarations each label holds; none are listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<RelationGroupDto>,
     /// Why captured source is unavailable, when the producer supplied a fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_fault: Option<FaultDto>,
@@ -483,6 +522,10 @@ pub struct SummaryPageDto {
 pub struct MemberGroupDto {
     /// The shared declaration kind.
     pub kind: String,
+    /// How many members of this kind the whole list holds, when the page was
+    /// windowed; `members` carries only this response's window of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
     /// The members.
     pub members: Vec<RecordDto>,
 }
@@ -492,8 +535,41 @@ pub struct MemberGroupDto {
 pub struct RelationGroupDto {
     /// The group label.
     pub label: String,
-    /// The related declarations.
+    /// How many related declarations the page holds under this label. The
+    /// `relations` list carries only the first few; `related` lists them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    /// The related declarations listed.
     pub relations: Vec<IdentityDto>,
+}
+
+/// Where a window cut one list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WindowDto {
+    /// Which list was cut: `members`, `rows`, `declarations` or `source lines`.
+    pub list: String,
+    /// The zero-based index of the first row shown.
+    pub offset: usize,
+    /// How many rows this response shows.
+    pub shown: usize,
+    /// How many rows the whole list holds.
+    pub total: usize,
+    /// Whether rows follow; the cursor is the envelope's `nextCursor`.
+    pub more: bool,
+}
+
+impl WindowDto {
+    /// Projects one window.
+    #[must_use]
+    pub fn new(window: crate::window::Window) -> Self {
+        Self {
+            list: window.kind().noun().to_owned(),
+            offset: window.offset(),
+            shown: window.shown(),
+            total: window.total(),
+            more: window.has_more(),
+        }
+    }
 }
 
 /// Captured source text.
@@ -507,6 +583,9 @@ pub struct SourceDto {
     pub lines: Vec<String>,
     /// Whether the retained text is complete.
     pub extent: String,
+    /// How many captured lines the detail's budget left out, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_lines: Option<usize>,
 }
 
 impl PageDto {
@@ -519,6 +598,7 @@ impl PageDto {
     /// Projects the fields chosen by the shared typed page policy.
     #[must_use]
     pub fn from_projection(page: &PageProjection<'_>) -> Self {
+        let prose = page.prose_view();
         Self {
             identity: IdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name().to_owned()),
@@ -531,79 +611,101 @@ impl PageDto {
                 .iter()
                 .map(SignatureTokenDto::new)
                 .collect(),
-            prose: page
-                .prose()
-                .included()
-                .unwrap_or_default()
-                .iter()
-                .map(|block| match block {
-                    Prose::Text(text) | Prose::Code(text) | Prose::Link { label: text, .. } => {
-                        text.clone()
-                    }
-                })
-                .collect(),
-            members: page
-                .members()
-                .included()
-                .unwrap_or_default()
-                .iter()
-                .map(|group| MemberGroupDto {
-                    kind: group.kind().name().to_owned(),
-                    members: group
-                        .members()
-                        .iter()
-                        .map(|member| RecordDto {
-                            identity: IdentityDto::new(member.identity()),
-                            kind: member.kind().map(|kind| kind.name().to_owned()),
-                            language: None,
-                            state: None,
-                            signature: member.signature().map(Signature::text),
-                            // A member's own first documentation line is worth
-                            // a field but not a second text line: the page's
-                            // Markdown keeps one line per member, and a program
-                            // that wants the sentence reads it here.
-                            summary: member.summary().map(ToOwned::to_owned),
-                            score: None,
-                        })
-                        .collect(),
-                })
-                .collect(),
-            relations: page
-                .relations()
-                .included()
-                .unwrap_or_default()
-                .iter()
-                .map(|group| RelationGroupDto {
-                    label: group.label().as_str().to_owned(),
-                    relations: group
-                        .relations()
-                        .iter()
-                        .map(|relation| IdentityDto::new(relation.identity()))
-                        .collect(),
-                })
-                .collect(),
-            source: page.source().included().and_then(source_dto),
+            prose: Self::prose_of(&prose),
+            prose_omitted_bytes: (prose.omitted_bytes() > 0).then_some(prose.omitted_bytes()),
+            members: Self::members_of(page),
+            window: page
+                .listing()
+                .map(Listing::window)
+                .filter(|window| window.is_cut())
+                .map(WindowDto::new),
+            relations: Self::relations_of(page),
+            source: page.source_view().as_ref().map(source_dto),
             source_fault: page.source_fault().map(FaultDto::new),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }
+
+    pub(crate) fn prose_of(prose: &crate::ProseView) -> Vec<String> {
+        prose
+            .blocks()
+            .iter()
+            .map(|block| match block {
+                Prose::Text(text) | Prose::Code(text) | Prose::Link { label: text, .. } => {
+                    text.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// The members this response carries, one lean row each. A summary names
+    /// them (kind and identity); standard and full add each signature and its
+    /// first documentation sentence.
+    pub(crate) fn members_of(page: &PageProjection<'_>) -> Vec<MemberGroupDto> {
+        let with_detail = !matches!(page.detail(), Detail::Summary);
+        let full = matches!(page.detail(), Detail::Full);
+        page.members()
+            .included()
+            .unwrap_or_default()
+            .iter()
+            .map(|group| MemberGroupDto {
+                kind: group.kind().name().to_owned(),
+                total: page
+                    .listing()
+                    .filter(|listing| listing.window().is_cut())
+                    .map(|listing| listing.kind_total(group.kind())),
+                members: group
+                    .members()
+                    .iter()
+                    .map(|member| crate::listing::member_dto(member, with_detail, full))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The relations this response carries: a count per label, and the first
+    /// few of each outside a summary.
+    pub(crate) fn relations_of(page: &PageProjection<'_>) -> Vec<RelationGroupDto> {
+        let full = matches!(page.detail(), Detail::Full);
+        page.relation_views()
+            .iter()
+            .map(|view| RelationGroupDto {
+                label: view.label().as_str().to_owned(),
+                total: Some(view.total()),
+                relations: view
+                    .shown()
+                    .iter()
+                    .map(|relation| {
+                        if full {
+                            IdentityDto::new(relation.identity())
+                        } else {
+                            IdentityDto::listed(relation.identity())
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
 }
 
-fn source_dto(source: &Source) -> Option<SourceDto> {
-    let Source::Captured {
-        site,
-        lines,
-        truncation,
-    } = source
-    else {
-        return None;
-    };
-    Some(SourceDto {
-        path: site.path().as_str().to_owned(),
-        line: site.line().get(),
-        lines: lines.iter().map(|line| line.text().to_owned()).collect(),
-        extent: truncation.name().to_owned(),
-    })
+fn source_dto(view: &crate::SourceView<'_>) -> SourceDto {
+    SourceDto {
+        path: view.site().path().as_str().to_owned(),
+        line: view.site().line().get(),
+        lines: view
+            .lines()
+            .iter()
+            .map(|line| line.text().to_owned())
+            .collect(),
+        extent: if view.is_cut() {
+            crate::Truncation::Truncated
+        } else {
+            crate::Truncation::Complete
+        }
+        .name()
+        .to_owned(),
+        omitted_lines: (view.omitted_lines() > 0).then_some(view.omitted_lines()),
+    }
 }
 
 /// One result record.
@@ -670,6 +772,11 @@ pub struct RecordListDto {
     /// listed. Omitted when the page had none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub externals: Option<ExternalsDto>,
+    /// Where a list the owner never paged (a declaration's neighbourhood) was
+    /// cut to a window; the next window's cursor is the envelope's
+    /// `nextCursor`. Absent for owner-paged lists and uncut ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowDto>,
 }
 
 /// External placeholders a result page collapsed into one summary.
@@ -709,6 +816,7 @@ impl RecordListDto {
             empty_reason: list.empty_reason().map(str::to_owned),
             semantic_search: list.coverage().semantic_search_status(),
             externals: list.collapsed_externals().map(ExternalsDto::new),
+            window: list.window().map(WindowDto::new),
         }
     }
 }
@@ -861,6 +969,10 @@ pub struct OutlineDto {
     /// Native paging scope, absent for the legacy plain outline query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<OutlinePageDto>,
+    /// Where the declarations were cut to a window; the next window's cursor
+    /// is the envelope's `nextCursor`. Absent when the outline was not cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowDto>,
 }
 
 impl OutlineDto {
@@ -871,8 +983,9 @@ impl OutlineDto {
             package: IdentityDto::new(tree.package()),
             roots: tree.roots().iter().map(OutlineNodeDto::new).collect(),
             extent: tree.truncation().name().to_owned(),
-            declarations: tree.count(),
+            declarations: tree.window().map_or_else(|| tree.count(), |window| window.total()),
             unnamed: tree.unresolved(),
+            window: tree.window().map(WindowDto::new),
             page: tree.page().map(|page| OutlinePageDto {
                 limit: page.limit,
                 more: page.continuation.is_some(),
@@ -1088,6 +1201,10 @@ pub struct ProductDto {
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+    /// Where the rows were cut to a window; the next window's cursor is the
+    /// envelope's `nextCursor`. Absent when the rows were not windowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowDto>,
 }
 
 /// Copyable CLI and MCP actions for the same admitted index observation.
@@ -1199,6 +1316,28 @@ pub struct ProductRecordDto {
     pub compiler_profile: Option<backend_library::SemanticLanguageProfile>,
 }
 
+impl ProductRecordDto {
+    /// Projects one product record.
+    #[must_use]
+    pub fn new(record: &crate::product::ProductRecord) -> Self {
+        Self {
+            extent: record.extent(),
+            title: record.title().to_owned(),
+            operand: record.operand().map(ToOwned::to_owned),
+            tags: record.tags().to_vec(),
+            native_metadata: record.native_metadata().cloned(),
+            source_metadata: record.source_metadata().cloned(),
+            forge: record.forge_details().cloned(),
+            forge_package_detail: record.forge_package_detail().cloned(),
+            discovery: record.discovery_details().cloned(),
+            package_group: record.package_group().cloned(),
+            local_declaration: record.local_declaration().cloned(),
+            history_status: record.history_status().cloned(),
+            compiler_profile: record.compiler_profile(),
+        }
+    }
+}
+
 impl ProductDto {
     /// Projects one product answer.
     #[must_use]
@@ -1218,21 +1357,7 @@ impl ProductDto {
             records: view
                 .records()
                 .iter()
-                .map(|record| ProductRecordDto {
-                    extent: record.extent(),
-                    title: record.title().to_owned(),
-                    operand: record.operand().map(ToOwned::to_owned),
-                    tags: record.tags().to_vec(),
-                    native_metadata: record.native_metadata().cloned(),
-                    source_metadata: record.source_metadata().cloned(),
-                    forge: record.forge_details().cloned(),
-                    forge_package_detail: record.forge_package_detail().cloned(),
-                    discovery: record.discovery_details().cloned(),
-                    package_group: record.package_group().cloned(),
-                    local_declaration: record.local_declaration().cloned(),
-                    history_status: record.history_status().cloned(),
-                    compiler_profile: record.compiler_profile(),
-                })
+                .map(ProductRecordDto::new)
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
             fault: view.fault().map(FaultDto::new),
@@ -1254,6 +1379,7 @@ impl ProductDto {
             package_source_membership_page: view.package_source_membership_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
             package_discovery: view.package_discovery().cloned(),
+            window: view.window().map(WindowDto::new),
         }
     }
 }

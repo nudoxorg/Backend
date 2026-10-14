@@ -19,6 +19,7 @@ use crate::glyph::RelationLabel;
 use crate::identity::{Identity, LineNumber, PackagePath};
 use crate::language::Language;
 use crate::signature::Signature;
+use crate::window::Window;
 use backend_library::{DeclarationKind, Fragment, SourceExcerptExtent, SymbolKey};
 
 /// One block of producer-captured documentation.
@@ -391,6 +392,43 @@ impl Source {
     }
 }
 
+/// Where a response cut a declaration's member list.
+///
+/// A page holds every member its producer captured, and a response carries a
+/// window of them. The listing says which window, and how many members of each
+/// kind the whole list holds, so a reader is told what a cut left out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Listing {
+    window: Window,
+    kinds: Box<[(DeclarationKind, usize)]>,
+}
+
+impl Listing {
+    /// Records one cut and the member count of each kind in the whole list.
+    #[must_use]
+    pub fn new(window: Window, kinds: Vec<(DeclarationKind, usize)>) -> Self {
+        Self {
+            window,
+            kinds: kinds.into_boxed_slice(),
+        }
+    }
+
+    /// Returns the cut.
+    #[must_use]
+    pub const fn window(&self) -> Window {
+        self.window
+    }
+
+    /// Returns how many members of `kind` the whole list holds.
+    #[must_use]
+    pub fn kind_total(&self, kind: DeclarationKind) -> usize {
+        self.kinds
+            .iter()
+            .find(|(candidate, _)| *candidate == kind)
+            .map_or(0, |(_, count)| *count)
+    }
+}
+
 /// One complete declaration page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Page {
@@ -403,6 +441,7 @@ pub struct Page {
     relations: Box<[RelationGroup]>,
     source: Source,
     notes: Box<[Fault]>,
+    listing: Option<Listing>,
 }
 
 impl Page {
@@ -420,6 +459,7 @@ impl Page {
             relations: Box::new([]),
             source,
             notes: Box::new([]),
+            listing: None,
         }
     }
 
@@ -463,6 +503,26 @@ impl Page {
     pub fn with_notes(mut self, notes: impl Into<Box<[Fault]>>) -> Self {
         self.notes = notes.into();
         self
+    }
+
+    /// Replaces the captured source, once a window has cut it.
+    #[must_use]
+    pub(crate) fn with_source(mut self, source: Source) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// Records how the member list was cut to a window.
+    #[must_use]
+    pub(crate) fn with_listing(mut self, listing: Listing) -> Self {
+        self.listing = Some(listing);
+        self
+    }
+
+    /// Returns where the member list was cut, when it was windowed.
+    #[must_use]
+    pub const fn listing(&self) -> Option<&Listing> {
+        self.listing.as_ref()
     }
 
     /// Returns the page's identity.

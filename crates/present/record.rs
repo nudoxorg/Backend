@@ -190,6 +190,8 @@ pub struct RecordList {
     empty_reason: Option<String>,
     /// External placeholders without facts, summarized rather than listed.
     externals: Option<CollapsedExternals>,
+    /// Where a complete list was cut to a window, when it was.
+    window: Option<crate::window::Window>,
 }
 
 impl RecordList {
@@ -208,7 +210,64 @@ impl RecordList {
             continuation: None,
             empty_reason: None,
             externals: None,
+            window: None,
         }
+    }
+
+    /// Returns where the rows were cut to a window, when they were. The owner
+    /// never paged such a list, so the window's cursor is the only way on.
+    #[must_use]
+    pub const fn window(&self) -> Option<crate::window::Window> {
+        self.window
+    }
+
+    /// Cuts a complete, unpaged list (a declaration's neighbourhood) to one
+    /// window of its rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stale-cursor fault when the caller resumes a list that has
+    /// changed, and a usage fault when its cursor is malformed.
+    pub(crate) fn windowed(
+        mut self,
+        request: crate::window::WindowRequest,
+    ) -> Result<Self, crate::fault::Fault> {
+        use crate::window::{Window, WindowKind, fingerprint};
+        let print = fingerprint(
+            self.records
+                .iter()
+                .map(|record| record.identity().coordinate().as_str()),
+        );
+        let start = request.start(WindowKind::Rows, print, self.records.len())?;
+        let text = self
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .identity()
+                    .coordinate()
+                    .as_str()
+                    .len()
+                    .saturating_add(record.identity().name().len())
+                    .saturating_add(32)
+            })
+            .collect::<Vec<_>>();
+        let typed = self
+            .records
+            .iter()
+            .map(|record| {
+                serde_json::to_vec(&crate::dto::RecordDto::new(record))
+                    .map_or(usize::MAX / 4, |bytes| bytes.len() + 1)
+            })
+            .collect::<Vec<_>>();
+        let window = Window::select(WindowKind::Rows, request, start, print, &text, &typed);
+        if window.is_cut() {
+            self.records = self.records[window.range()].to_vec().into_boxed_slice();
+            self.more = window.has_more();
+            self.continuation = None;
+            self.window = Some(window);
+        }
+        Ok(self)
     }
 
     /// Records that external placeholders without facts were collapsed into a

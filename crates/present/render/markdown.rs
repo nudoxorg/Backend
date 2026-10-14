@@ -18,19 +18,20 @@
 
 use core::fmt::Write as _;
 
-use super::{ContinuationTarget, Lines, continuation_note};
+use super::{ContinuationTarget, Lines, continuation_note, next_page_line};
 use crate::coverage::CoverageLine;
 use crate::drive::Answer;
 use crate::fault::Fault;
 use crate::glyph::KindGlyph;
 use crate::identity::ProjectRef;
 use crate::outline::{OutlineEntry, OutlineTree};
-use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
+use crate::listing::{handle, member_line};
+use crate::page::{MemberGroup, Page, Prose, Source};
 use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
 use crate::shelf::Shelf;
 use crate::status::Status;
-use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, bounded_text};
+use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, ProseView, SourceView, bounded_text};
 
 /// Renders one `~lanes` coverage statement.
 #[must_use]
@@ -74,12 +75,15 @@ pub fn answer_with_detail(
     target: ContinuationTarget<'_>,
 ) -> String {
     match value {
-        Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
+        Answer::Page(value) => {
+            page_projection_with(&PageProjection::new(value, detail), cursor, target)
+        }
         Answer::Records(_) if !matches!(target, ContinuationTarget::CliOption) => {
             summary_with_cursor(value, cursor, target)
         }
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
-        Answer::Product(value) => product_with_detail(value, detail),
+        Answer::Product(value) => product_with_cursor(value, detail, cursor, target),
+        Answer::Outline(value) => outline_with_cursor(value, cursor, target),
         _ => answer(value),
     }
 }
@@ -100,7 +104,9 @@ pub fn summary_with_cursor(
     };
     if list.is_empty() {
         let mut lines = Lines::new();
-        lines.push(coverage(list.coverage()));
+        if let Some(header) = coverage_header(list) {
+            lines.push(header);
+        }
         lines.push(list.empty_explanation());
         if let Some(note) = summary_continuation(list, cursor, target) {
             lines.push(note);
@@ -108,7 +114,11 @@ pub fn summary_with_cursor(
         return bounded_text(&lines.finish());
     }
 
-    let coverage_line = coverage(list.coverage());
+    // A fully ready result says nothing about its lanes: every response
+    // repeating "all lanes complete" is a line an agent pays for and never
+    // acts on. A result that is thin, still indexing or partly unavailable
+    // says so first.
+    let coverage_line = coverage_header(list).unwrap_or_default();
     let total = list.records().len();
     let mut footer = summary_continuation(list, cursor, target);
     // Placeholders without facts are one summary line ahead of any
@@ -128,14 +138,16 @@ pub fn summary_with_cursor(
     let count_reservation = record_preview_count(total, total, total);
     let heading_bytes = coverage_line
         .len()
-        .saturating_add(1)
+        .saturating_add(usize::from(!coverage_line.is_empty()))
         .saturating_add(count_reservation.len())
         .saturating_add(1);
     if footer.as_ref().is_some_and(|line| {
         line.len().saturating_add(1) > MAX_PREVIEW_TEXT_BYTES.saturating_sub(heading_bytes)
     }) {
-        footer = with_externals(if list.has_more() && list.continuation().is_some() {
-            Some("… more rows; use `structuredContent.nextCursor` to continue".to_owned())
+        footer = with_externals(if list.has_more()
+            && (list.continuation().is_some() || list.window().is_some())
+        {
+            Some("… more rows; the next-page cursor is `structuredContent.nextCursor`".to_owned())
         } else if list.has_more() {
             Some("… more rows at this revision; raise `limit` to see them".to_owned())
         } else {
@@ -164,8 +176,10 @@ pub fn summary_with_cursor(
     let count_line = record_preview_count(total, shown, omitted);
 
     let mut preview = String::with_capacity(fixed_bytes.saturating_add(rendered_rows.len()));
-    preview.push_str(&coverage_line);
-    preview.push('\n');
+    if !coverage_line.is_empty() {
+        preview.push_str(&coverage_line);
+        preview.push('\n');
+    }
     preview.push_str(&rendered_rows);
     preview.push_str(&count_line);
     preview.push('\n');
@@ -221,9 +235,17 @@ pub fn shorten_record_preview(text: &str, budget: usize) -> Option<String> {
 }
 
 fn record_preview_count(total: usize, shown: usize, omitted: usize) -> String {
+    if omitted == 0 {
+        return format!("{total} row(s)");
+    }
     format!(
-        "{total} row(s) on this page; showing {shown} exact coordinate(s); {omitted} omitted from text preview. Full page: `structuredContent.records`."
+        "{total} row(s) · showing {shown}; {omitted} omitted from this text, all rows in `structuredContent.records`"
     )
+}
+
+/// The lane statement a result leads with: absent when every lane is ready.
+fn coverage_header(list: &RecordList) -> Option<String> {
+    (!list.coverage().is_quiet()).then(|| coverage(list.coverage()))
 }
 
 /// A borrowed, fully validated layout of the renderer's own bounded row text.
@@ -236,37 +258,54 @@ struct RecordPreviewText<'a> {
 
 impl<'a> RecordPreviewText<'a> {
     fn parse(text: &'a str) -> Option<Self> {
-        let (coverage, mut rest) = text.split_once('\n')?;
-        if !coverage.starts_with('~') || text.len() > MAX_PREVIEW_TEXT_BYTES {
+        if text.len() > MAX_PREVIEW_TEXT_BYTES {
             return None;
         }
-        let header = &text[..coverage.len() + 1];
+        // The lane statement is present only when a lane is not ready.
+        let (header, mut rest) = if text.starts_with('~') {
+            let (coverage, rest) = text.split_once('\n')?;
+            (&text[..coverage.len() + 1], rest)
+        } else {
+            ("", text)
+        };
         let mut rows = Vec::new();
         while rest.starts_with("• ") {
             // Work and borrowed row indexes are bounded by the shared preview
             // bytes; legacy Related may describe more than one query page.
             let (label, after_label) = rest.split_once('\n')?;
-            let (coordinate, after_row) = after_label.split_once('\n')?;
             let label_end = preview_code_span_end(label.strip_prefix("• ")?)? + "• ".len();
-            let operand = coordinate.strip_prefix("  ")?;
-            if !label[label_end..].starts_with(" · ")
-                || preview_code_span_end(operand)? != operand.len()
-            {
+            if !label[label_end..].is_empty() && !label[label_end..].starts_with(" · ") {
                 return None;
             }
-            let consumed = rest.len() - after_row.len();
+            // A row is its label line and, for a declaration, its exact
+            // coordinate on the next line. A placeholder has no coordinate.
+            let (consumed, after_row) = match after_label.split_once('\n') {
+                Some((coordinate, after)) if coordinate.starts_with("  `") => {
+                    let operand = coordinate.strip_prefix("  ")?;
+                    if preview_code_span_end(operand)? != operand.len() {
+                        return None;
+                    }
+                    (rest.len() - after.len(), after)
+                }
+                _ => (rest.len() - after_label.len(), after_label),
+            };
             rows.push(&rest[..consumed]);
             rest = after_row;
         }
         let (count, footer) = rest.split_once('\n')?;
-        let (total, count) = count.split_once(" row(s) on this page; showing ")?;
-        let (shown, count) = count.split_once(" exact coordinate(s); ")?;
-        let omitted = count
-            .strip_suffix(" omitted from text preview. Full page: `structuredContent.records`.")?;
+        let (total, tail) = count.split_once(" row(s)")?;
         let total: usize = total.parse().ok()?;
-        let shown: usize = shown.parse().ok()?;
-        let omitted: usize = omitted.parse().ok()?;
-        if shown != rows.len() || shown.checked_add(omitted)? != total {
+        let (shown, omitted) = if tail.is_empty() {
+            (total, 0)
+        } else {
+            let tail = tail.strip_prefix(" · showing ")?;
+            let (shown, tail) = tail.split_once("; ")?;
+            let omitted = tail.strip_suffix(
+                " omitted from this text, all rows in `structuredContent.records`",
+            )?;
+            (shown.parse().ok()?, omitted.parse().ok()?)
+        };
+        if shown != rows.len() || usize::checked_add(shown, omitted)? != total {
             return None;
         }
         // The renderer emits either no footer, or an optional placeholder
@@ -278,7 +317,7 @@ impl<'a> RecordPreviewText<'a> {
                 lines.next();
             }
             if let Some(line) = lines.next()
-                && !(line.starts_with("Continue `") || line.starts_with("… more rows"))
+                && !(line.starts_with("next page:") || line.starts_with("… "))
             {
                 return None;
             }
@@ -323,10 +362,20 @@ fn summary_continuation(
     cursor: Option<&str>,
     target: ContinuationTarget<'_>,
 ) -> Option<String> {
+    if let Some(window) = list.window()
+        && window.has_more()
+    {
+        return Some(next_page_line(
+            window.remaining(),
+            window.kind().noun(),
+            cursor,
+            target,
+        ));
+    }
     if list.has_more() && list.continuation().is_some() {
         Some(cursor.map_or_else(
             || "… more rows; this rendering does not include the continuation token".to_owned(),
-            |cursor| continuation_note(target, cursor),
+            |cursor| format!("… more rows; {}", continuation_note(target, cursor)),
         ))
     } else if list.has_more() {
         Some("… more rows at this revision; raise `limit` to see them".to_owned())
@@ -338,12 +387,18 @@ fn summary_continuation(
 fn mcp_summary_record(record: &Record) -> Option<String> {
     let name = record.identity().name();
     let coordinate = record.identity().coordinate().as_str();
-    let mut tags = Vec::with_capacity(3);
+    // An external placeholder's coordinate is a content address nobody can
+    // read or retype; the name and the word `external` say what there is.
+    let external = record.identity().shape() == crate::identity::IdentityShape::External;
+    let mut tags = Vec::with_capacity(4);
     if let Some(kind) = record.kind() {
         tags.push(kind.name());
     }
     if record.language() != crate::language::Language::Unknown {
         tags.push(record.language().name());
+    }
+    if external {
+        tags.push("external");
     }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name());
@@ -352,7 +407,7 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     // spans add their delimiters and optional CommonMark padding below.
     let raw_bytes = name
         .len()
-        .saturating_add(coordinate.len())
+        .saturating_add(if external { 0 } else { coordinate.len() })
         .saturating_add(tags.iter().map(|tag| tag.len()).sum::<usize>())
         .saturating_add(tags.len().saturating_mul(4))
         .saturating_add(10);
@@ -364,10 +419,14 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     // sees. The typed payload still carries these exact values; this omission
     // affects only the human-readable projection.
     let name_ticks = inline_code_delimiter(name)?;
-    let coordinate_ticks = inline_code_delimiter(coordinate)?;
+    let coordinate_ticks = if external {
+        0
+    } else {
+        inline_code_delimiter(coordinate)?
+    };
 
     let name_padding = code_span_needs_padding(name);
-    let coordinate_padding = code_span_needs_padding(coordinate);
+    let coordinate_padding = !external && code_span_needs_padding(coordinate);
     let mut row = String::with_capacity(
         raw_bytes
             .saturating_add(name_ticks.saturating_mul(2))
@@ -381,9 +440,11 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
         let _ = write!(&mut row, " · {tag}");
     }
     row.push('\n');
-    row.push_str("  ");
-    append_code_span(&mut row, coordinate, coordinate_ticks, coordinate_padding);
-    row.push('\n');
+    if !external {
+        row.push_str("  ");
+        append_code_span(&mut row, coordinate, coordinate_ticks, coordinate_padding);
+        row.push('\n');
+    }
     if row.len() > MAX_PREVIEW_TEXT_BYTES {
         return None;
     }
@@ -501,6 +562,17 @@ pub fn page(page: &Page) -> String {
 /// Renders a borrowed typed page projection without reinterpreting JSON.
 #[must_use]
 pub fn page_projection(page: &PageProjection<'_>) -> String {
+    page_projection_with(page, None, ContinuationTarget::CliOption)
+}
+
+/// Renders a page projection whose member list may continue, naming the exact
+/// next call when the caller issued a cursor for it.
+#[must_use]
+pub fn page_projection_with(
+    page: &PageProjection<'_>,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", page.identity().trail_within(None)));
     lines.push(meta_line(page));
@@ -511,23 +583,195 @@ pub fn page_projection(page: &PageProjection<'_>) -> String {
         lines.push(signature.text());
         lines.push("```");
     }
-    if let Some(prose) = page.prose().included() {
-        push_prose(&mut lines, prose);
-    }
-    if let Some(members) = page.members().included() {
-        push_members(&mut lines, members, page.identity().project());
-    }
-    if let Some(relations) = page.relations().included() {
-        push_relations(&mut lines, relations, page.identity().project());
-    }
-    if let Some(source) = page.source().included() {
-        push_source(&mut lines, source, page.language().fence());
+    push_prose(&mut lines, &page.prose_view());
+    push_members(&mut lines, page, cursor, target);
+    push_relations(&mut lines, page);
+    if let Some(view) = page.source_view() {
+        push_source(&mut lines, &view, page.language().fence(), cursor, target);
+    } else if let Some(source) = page.source().included() {
+        push_unavailable_source(&mut lines, source);
     } else if let Some(reason) = page.source_fault() {
         lines.blank();
         lines.push(fault(reason));
     }
     push_notes(&mut lines, page.notes());
     lines.finish()
+}
+
+fn push_prose(lines: &mut Lines, prose: &ProseView) {
+    if prose.blocks().is_empty() && prose.omitted_bytes() == 0 {
+        return;
+    }
+    lines.blank();
+    for block in prose.blocks() {
+        match block {
+            Prose::Text(text) => lines.push(text),
+            Prose::Code(code) => {
+                lines.push("```");
+                lines.push(code);
+                lines.push("```");
+            }
+            Prose::Link { label, .. } => lines.push(format!("see {label}")),
+        }
+    }
+    if prose.omitted_bytes() > 0 {
+        lines.push(format!(
+            "… {} more byte(s) of documentation; request detail=full for all of it",
+            prose.omitted_bytes()
+        ));
+    }
+}
+
+/// The heading of a member list: every member, or the window a response cut.
+fn members_heading(page: &PageProjection<'_>) -> String {
+    match page.member_window() {
+        Some(window) if window.offset() > 0 || window.has_more() => format!(
+            "## members {}-{} of {}",
+            window.offset() + 1,
+            window.offset() + window.shown(),
+            window.total()
+        ),
+        Some(window) => format!("## members ({})", window.total()),
+        None => "## members".to_owned(),
+    }
+}
+
+/// How one group of members is counted: `(30)`, or `(10 of 56)` when the
+/// window cut the group.
+fn group_count(page: &PageProjection<'_>, group: &MemberGroup) -> String {
+    let shown = group.members().len();
+    match page.listing().map(|listing| listing.kind_total(group.kind())) {
+        Some(total) if total > shown => format!("{shown} of {total}"),
+        _ => shown.to_string(),
+    }
+}
+
+fn push_members(
+    lines: &mut Lines,
+    page: &PageProjection<'_>,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) {
+    let Some(groups) = page.members().included() else {
+        return;
+    };
+    if groups.is_empty() {
+        return;
+    }
+    lines.blank();
+    lines.push(members_heading(page));
+    for group in groups {
+        let heading = format!(
+            "{} {} ({})",
+            KindGlyph::new(group.kind()),
+            KindGlyph::plural(group.kind()),
+            group_count(page, group)
+        );
+        if matches!(page.detail(), Detail::Summary) {
+            let names = group
+                .members()
+                .iter()
+                .map(|member| member.identity().name().to_owned())
+                .collect::<Vec<_>>();
+            lines.push(format!("{heading}: {}", names.join(", ")));
+            continue;
+        }
+        lines.push(heading);
+        for member in group.members() {
+            lines.push(format!("  {}", member_line(member)));
+        }
+    }
+    if let Some(window) = page.member_window()
+        && window.has_more()
+    {
+        lines.push(next_page_line(
+            window.remaining(),
+            window.kind().noun(),
+            cursor,
+            target,
+        ));
+    }
+}
+
+fn push_relations(lines: &mut Lines, page: &PageProjection<'_>) {
+    let views = page.relation_views();
+    if views.is_empty() {
+        return;
+    }
+    lines.blank();
+    lines.push("## relations");
+    let mut cut = false;
+    for view in &views {
+        let mut line = format!("{} ({})", view.label().as_str(), view.total());
+        if !view.shown().is_empty() {
+            let names = view
+                .shown()
+                .iter()
+                .map(|relation| handle(relation.identity()))
+                .collect::<Vec<_>>();
+            let _ = write!(line, ": {}", names.join(", "));
+        }
+        let hidden = view.total().saturating_sub(view.shown().len());
+        if hidden > 0 {
+            cut = true;
+            if !view.shown().is_empty() {
+                let _ = write!(line, " … +{hidden} more");
+            }
+        }
+        lines.push(line);
+    }
+    if cut {
+        lines.push("every relation: `related`");
+    }
+}
+
+fn push_source(
+    lines: &mut Lines,
+    view: &SourceView<'_>,
+    fence: &str,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) {
+    lines.blank();
+    match view.window().filter(|window| window.is_cut()) {
+        Some(window) => lines.push(format!(
+            "## source lines {}-{} of {}",
+            window.offset() + 1,
+            window.offset() + window.shown(),
+            window.total()
+        )),
+        None => lines.push("## source"),
+    }
+    lines.push(format!("```{fence}"));
+    for line in view.lines() {
+        lines.push(format!("{:>4} {}", line.number().get(), line.text()));
+    }
+    lines.push("```");
+    if let Some(window) = view.window() {
+        if window.has_more() {
+            lines.push(next_page_line(
+                window.remaining(),
+                window.kind().noun(),
+                cursor,
+                target,
+            ));
+        }
+    } else if view.omitted_lines() > 0 {
+        lines.push(format!(
+            "… {} more source line(s); read them all with `source`",
+            view.omitted_lines()
+        ));
+    }
+    if view.upstream_truncated() && view.window().is_none_or(|window| !window.has_more()) {
+        lines.push("… source continues past the retained bound");
+    }
+}
+
+fn push_unavailable_source(lines: &mut Lines, source: &Source) {
+    if let Source::Sited { fault: reason, .. } | Source::Absent { fault: reason } = source {
+        lines.blank();
+        lines.push(fault(reason));
+    }
 }
 
 fn push_notes(lines: &mut Lines, notes: &[Fault]) {
@@ -556,93 +800,6 @@ fn meta_line(page: &PageProjection<'_>) -> String {
     parts.join(" · ")
 }
 
-fn push_prose(lines: &mut Lines, prose: &[Prose]) {
-    if prose.is_empty() {
-        return;
-    }
-    lines.blank();
-    for block in prose {
-        match block {
-            Prose::Text(text) => lines.push(text),
-            Prose::Code(code) => {
-                lines.push("```");
-                lines.push(code);
-                lines.push("```");
-            }
-            Prose::Link { label, .. } => lines.push(format!("see {label}")),
-        }
-    }
-}
-
-fn push_members(lines: &mut Lines, groups: &[MemberGroup], within: Option<&ProjectRef>) {
-    if groups.is_empty() {
-        return;
-    }
-    lines.blank();
-    lines.push("## members");
-    for group in groups {
-        lines.push(format!(
-            "{} {} ({})",
-            KindGlyph::new(group.kind()),
-            KindGlyph::plural(group.kind()),
-            group.members().len()
-        ));
-        for member in group.members() {
-            let mut line = format!("  {}", member.identity().trail_within(within));
-            if let Some(signature) = member.signature() {
-                let _ = write!(line, " — {}", signature.text());
-            }
-            lines.push(line);
-        }
-    }
-}
-
-fn push_relations(lines: &mut Lines, groups: &[RelationGroup], within: Option<&ProjectRef>) {
-    if groups.is_empty() {
-        return;
-    }
-    lines.blank();
-    lines.push("## relations");
-    for group in groups {
-        lines.push(format!(
-            "→ {} ({})",
-            group.label().as_str(),
-            group.relations().len()
-        ));
-        for relation in group.relations() {
-            lines.push(format!(
-                "  {}  `{}`",
-                relation.identity().trail_within(within),
-                relation.identity().coordinate()
-            ));
-        }
-    }
-}
-
-fn push_source(lines: &mut Lines, source: &Source, fence: &str) {
-    lines.blank();
-    match source {
-        Source::Captured {
-            lines: source_lines,
-            truncation,
-            ..
-        } => {
-            lines.push("## source");
-            lines.push(format!("```{fence}"));
-            for line in source_lines {
-                lines.push(format!("{:>4} {}", line.number().get(), line.text()));
-            }
-            lines.push("```");
-            if *truncation == Truncation::Truncated {
-                lines.push("… source continues past the retained bound");
-            }
-        }
-        Source::Sited { fault: reason, .. } | Source::Absent { fault: reason } => {
-            lines.push(fault(reason));
-        }
-    }
-}
-
 /// Renders one result page: the coverage line, then two lines per record.
 #[must_use]
 pub fn records(list: &RecordList, within: Option<&ProjectRef>) -> String {
@@ -656,19 +813,11 @@ fn records_with_cursor(
     target: ContinuationTarget<'_>,
 ) -> String {
     let mut lines = Lines::new();
-    lines.push(coverage(list.coverage()));
-    let cursor_note = if list.has_more() && list.continuation().is_some() {
-        cursor.map(|cursor| continuation_note(target, cursor))
-    } else {
-        None
-    };
-    if let Some(note) = &cursor_note {
-        lines.push(note);
-    } else if list.has_more() && list.continuation().is_some() {
-        lines.push("… more rows; this rendering does not include the continuation token");
+    if let Some(header) = coverage_header(list) {
+        lines.push(header);
     }
-    if list.has_more() && list.continuation().is_none() {
-        lines.push("… more rows at this revision; raise `limit` to see them");
+    if let Some(note) = summary_continuation(list, cursor, target) {
+        lines.push(note);
     }
     if list.is_empty() {
         lines.push(list.empty_explanation());
@@ -692,6 +841,9 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>) 
     if record.language() != crate::language::Language::Unknown {
         tags.push(record.language().name().to_owned());
     }
+    if record.identity().shape() == crate::identity::IdentityShape::External {
+        tags.push("external".to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
@@ -699,11 +851,23 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>) 
         let _ = write!(head, "  ·  {}", tags.join(" · "));
     }
     lines.push(head);
-    let mut detail = format!("`{}`", record.identity().coordinate());
+    // An external placeholder's coordinate is a content address; its name and
+    // the word `external` are all a reader can use.
+    let external = record.identity().shape() == crate::identity::IdentityShape::External;
+    let mut detail = if external {
+        String::new()
+    } else {
+        format!("`{}`", record.identity().coordinate())
+    };
     if let Some(signature) = record.signature() {
-        let _ = write!(detail, "  {}", signature.text());
+        if !detail.is_empty() {
+            detail.push_str("  ");
+        }
+        detail.push_str(&crate::window::one_line(&signature.text(), 160));
     }
-    lines.push(detail);
+    if !detail.is_empty() {
+        lines.push(detail);
+    }
 }
 
 /// Renders the shelf: one project per two lines.
@@ -758,43 +922,69 @@ pub fn shelf(shelf: &Shelf) -> String {
 /// Renders one outline as an indented tree of names.
 #[must_use]
 pub fn outline(tree: &OutlineTree) -> String {
+    outline_with_cursor(tree, None, ContinuationTarget::CliOption)
+}
+
+/// Renders one outline whose declarations may continue, naming the exact next
+/// call when the caller issued a cursor for it.
+#[must_use]
+pub fn outline_with_cursor(
+    tree: &OutlineTree,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", tree.package().trail_within(None)));
     lines.push(format!("`{}`", tree.package().coordinate()));
     lines.blank();
     for root in tree.roots() {
-        push_outline_entry(&mut lines, root, 0, tree.package().project());
+        push_outline_entry(&mut lines, root, 0);
     }
-    let mut summary = format!(
-        "{} declaration(s) · {}",
-        tree.count(),
-        tree.truncation().name()
-    );
+    let mut summary = match tree.window() {
+        Some(window) => format!(
+            "declarations {}-{} of {}",
+            window.offset() + 1,
+            window.offset() + window.shown(),
+            window.total()
+        ),
+        None => format!(
+            "{} declaration(s) · {}",
+            tree.count(),
+            tree.truncation().name()
+        ),
+    };
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
     lines.push(summary);
+    if let Some(window) = tree.window()
+        && window.has_more()
+    {
+        lines.push(next_page_line(
+            window.remaining(),
+            window.kind().noun(),
+            cursor,
+            target,
+        ));
+    }
     lines.finish()
 }
 
-fn push_outline_entry(
-    lines: &mut Lines,
-    entry: &OutlineEntry,
-    depth: usize,
-    within: Option<&ProjectRef>,
-) {
+fn push_outline_entry(lines: &mut Lines, entry: &OutlineEntry, depth: usize) {
     let indent = "  ".repeat(depth.min(16));
     let glyph = entry.kind().map_or_else(
         || "·".to_owned(),
         |kind| KindGlyph::new(kind).as_str().to_owned(),
     );
-    let mut line = format!("{indent}{glyph} {}", entry.name());
-    if let Some(identity) = entry.identity() {
-        let _ = write!(line, "  `{}`", identity.trail_within(within));
-    }
+    // One name per entry: the handle already ends in it, and it is the
+    // spelling every coordinate-taking command accepts back.
+    let line = match entry.identity() {
+        Some(identity) => format!("{indent}{glyph} {}", handle(identity)),
+        None => format!("{indent}{glyph} {}", entry.name()),
+    };
     lines.push(line);
     for child in entry.children() {
-        push_outline_entry(lines, child, depth.saturating_add(1), within);
+        push_outline_entry(lines, child, depth.saturating_add(1));
     }
 }
 
@@ -823,16 +1013,33 @@ pub fn status(status: &Status) -> String {
 /// Renders one durable product answer: a heading, then one record per row.
 #[must_use]
 pub fn product(view: &ProductView) -> String {
-    product_projection(view, None)
+    product_projection(view, None, None, ContinuationTarget::CliOption)
 }
 
 /// Renders the same receipt with a copyable MCP action retaining its detail.
 #[must_use]
 pub fn product_with_detail(view: &ProductView, detail: Detail) -> String {
-    product_projection(view, Some(detail))
+    product_projection(view, Some(detail), None, ContinuationTarget::CliOption)
 }
 
-fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
+/// Renders a product answer whose rows may continue, naming the exact next
+/// call when the caller issued a cursor for it.
+#[must_use]
+pub fn product_with_cursor(
+    view: &ProductView,
+    detail: Detail,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    product_projection(view, Some(detail), cursor, target)
+}
+
+fn product_projection(
+    view: &ProductView,
+    detail: Option<Detail>,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", view.heading()));
     if let Some(reason) = view.fault() {
@@ -858,18 +1065,39 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
     }
     for record in view.records() {
         let mut head = record.title().to_owned();
-        if !record.tags().is_empty() {
-            let _ = write!(head, "  ·  {}", record.tags().join(" · "));
+        let tags = record.readable_tags().collect::<Vec<_>>();
+        if !tags.is_empty() {
+            let _ = write!(head, "  ·  {}", tags.join(" · "));
         }
         lines.push(head);
-        if let Some(operand) = record.operand() {
+        if !record.is_compact()
+            && let Some(operand) = record.operand()
+        {
             lines.push(format!("`{operand}`"));
         }
         if let Some(status) = record.history_status() {
             lines.push(semantic_history_details(status));
         }
     }
-    lines.push(format!("{} row(s)", view.records().len()));
+    match view.window() {
+        Some(window) => {
+            lines.push(format!(
+                "rows {}-{} of {}",
+                window.offset() + 1,
+                window.offset() + window.shown(),
+                window.total()
+            ));
+            if window.has_more() {
+                lines.push(next_page_line(
+                    window.remaining(),
+                    window.kind().noun(),
+                    cursor,
+                    target,
+                ));
+            }
+        }
+        None => lines.push(format!("{} row(s)", view.records().len())),
+    }
     index_search_page_footer(view, &mut lines);
     index_job_footer(view, detail, &mut lines);
     lines.finish()

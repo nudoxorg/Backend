@@ -60,14 +60,17 @@ fn encoded(answer: &Answer, detail: Detail) -> Value {
 }
 
 #[test]
-fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
+fn page_projection_summary_names_the_page_and_omits_evidence_without_mutating_it() {
     let page = captured();
     let original = page.clone();
     let summary = PageProjection::new(&page, Detail::Summary);
     assert!(matches!(summary.source(), PageSection::OmittedByDetail));
-    assert!(matches!(summary.prose(), PageSection::OmittedByDetail));
-    assert!(matches!(summary.members(), PageSection::OmittedByDetail));
-    assert!(matches!(summary.relations(), PageSection::OmittedByDetail));
+    // A summary names what the declaration holds: the first line of its
+    // documentation, its members, and how many relations each label holds.
+    assert!(summary.prose().included().is_some());
+    assert!(summary.members().included().is_some());
+    assert!(summary.relations().included().is_some());
+    assert!(summary.relation_views().iter().all(|view| view.shown().is_empty()));
     assert!(matches!(
         summary.signature_tokens(),
         PageSection::OmittedByDetail
@@ -103,9 +106,23 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
             "identity",
             "kind",
             "language",
+            "members",
             "notes",
+            "prose",
+            "relations",
             "signature"
         ]
+    );
+    assert_eq!(value["prose"][0], PROSE);
+    assert_eq!(value["members"][0]["members"][0]["identity"]["name"], MEMBER);
+    assert!(value["members"][0]["members"][0].get("signature").is_none());
+    assert_eq!(value["relations"][0]["total"], 1);
+    assert!(
+        value["relations"][0]["relations"]
+            .as_array()
+            .expect("relations")
+            .is_empty(),
+        "a summary counts relations, it does not list them"
     );
     assert_eq!(value["identity"]["coordinate"], COORDINATE);
     assert_eq!(
@@ -138,18 +155,14 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
         assert!(rendered.contains(SIGNATURE));
         assert!(rendered.contains(NOTE));
         assert!(rendered.contains("src/entry.ts:42"));
-        for omitted in [
-            SOURCE,
-            PROSE,
-            MEMBER,
-            RELATION,
-            "## source",
-            "source-unavailable",
-        ] {
+        for omitted in [SOURCE, RELATION, "## source", "source-unavailable"] {
             assert!(
                 !rendered.contains(omitted),
                 "summary leaked {omitted}: {rendered}"
             );
+        }
+        for named in [PROSE, MEMBER] {
+            assert!(rendered.contains(named), "summary lost {named}: {rendered}");
         }
     }
     for detail in [Detail::Standard, Detail::Full] {
@@ -159,10 +172,14 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
         assert_eq!(value["source"]["line"], 42);
         assert_eq!(value["source"]["extent"], "truncated");
         assert_eq!(value["source"]["lines"][0], SOURCE);
+        // Each detail carries the source up to its own budget and says how
+        // many lines it left out.
+        let kept = if detail == Detail::Full { 200 } else { 40 };
         assert_eq!(
             value["source"]["lines"].as_array().expect("source").len(),
-            241
+            kept
         );
+        assert_eq!(value["source"]["omitted_lines"], 241 - kept);
         assert_eq!(value["prose"][0], PROSE);
         assert_eq!(
             value["members"][0]["members"][0]["identity"]["name"],
@@ -280,19 +297,24 @@ fn page_projection_summary_preserves_actual_source_and_section_faults() {
 }
 
 #[test]
-fn page_projection_oversize_evidence_refuses_atomically_without_omitting_faults() {
+fn page_projection_oversize_evidence_is_cut_to_its_budget_and_faults_are_never_dropped() {
     let line = LineNumber::new(42).expect("line");
     let mut page = page(Source::Captured {
         site: SourceSite::new(PackagePath::new("src/entry.ts"), line),
-        lines: Source::number_lines(&"source_body".repeat(DEFAULT_RESPONSE_BUDGET_BYTES), line),
+        lines: Source::number_lines(&"source_body\n".repeat(DEFAULT_RESPONSE_BUDGET_BYTES), line),
         truncation: Truncation::Complete,
     });
     let answer = Answer::Page(Box::new(page.clone()));
+    // No read fails because of its size: a million bytes of source is cut to
+    // the detail's budget and the cut is said, with the faults intact.
     for detail in [Detail::Standard, Detail::Full] {
-        let error = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
-            .expect_err("complete typed source is too large; no partial success");
-        assert_eq!(error.budget, DEFAULT_RESPONSE_BUDGET_BYTES);
-        assert!(error.bytes > error.budget);
+        let value = encoded(&answer, detail);
+        assert_eq!(value["source"]["extent"], "truncated", "{detail:?}");
+        assert!(value["source"]["omitted_lines"].as_u64().expect("omitted") > 1000);
+        assert_eq!(value["notes"][0]["detail"], NOTE);
+        let rendered = markdown::answer_with_detail(&answer, detail, None, ContinuationTarget::CliOption);
+        assert!(rendered.len() < 24 * 1024, "{detail:?}: {} bytes", rendered.len());
+        assert!(rendered.contains("more source line(s)"), "{rendered}");
     }
     let summary = encoded(&answer, Detail::Summary);
     assert!(summary.get("source").is_none());
@@ -311,6 +333,10 @@ fn page_projection_oversize_evidence_refuses_atomically_without_omitting_faults(
         )
         .is_err(),
         "summary cannot drop actual faults to manufacture a fitting answer"
+    );
+    assert!(
+        encode_answer_fitting(&answer, Detail::Full, None, DEFAULT_RESPONSE_BUDGET_BYTES).is_err(),
+        "the ladder lowers the detail; it never drops an actual fault"
     );
 }
 
