@@ -235,6 +235,34 @@ class SnapshotContinuationTests(unittest.TestCase):
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
 
+    def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
+        import copy
+        import json
+
+        def fixture(token):
+            reply = {"structuredContent": self.page(token), "_meta": {"backend/wireBudget": {
+                "bytes": 0, "estimatedTokens": 0, "bytesPerToken": 4,
+                "limitBytes": 49152, "limitTokens": 12000, "scope": "complete_jsonrpc_line"}}}
+            budget = reply["_meta"]["backend/wireBudget"]
+            for _ in range(10):
+                size = len(json.dumps({"jsonrpc": "2.0", "id": 2, "result": reply}, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+                if budget["bytes"] == size:
+                    break
+                budget.update(bytes=size, estimatedTokens=(size + 3) // 4)
+            surface.require_mcp_wire_budget(reply, size)
+            return {"mcp": {"calls": [{"call": {"tool": "backend.search", "arguments": {}}, "reply": reply}]}}, size
+
+        first, size = fixture("mcp2-first-proof")
+        other, _ = fixture("mcp2-a-different-longer-proof")
+        one = surface.normalize_surface_answers(first, {"mcp2-first-proof"})
+        two = surface.normalize_surface_answers(other, {"mcp2-a-different-longer-proof"})
+        self.assertEqual(one, two)
+        bad = copy.deepcopy(first["mcp"]["calls"][0]["reply"])
+        bad["_meta"]["backend/wireBudget"]["bytes"] += 1
+        with self.assertRaises(RuntimeError):
+            surface.require_mcp_wire_budget(bad, size)
+        self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
+
     def test_search_continuation_refuses_fault_repetition_and_scope_drift(self):
         first = self.page()
         following = {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": "second"}}], "more": False}

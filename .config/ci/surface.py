@@ -258,7 +258,10 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
                         continue
                     if message["id"] != identifier:
                         raise RuntimeError("interactive MCP: unexpected response identity")
-                    return message.get("result", message.get("error"))
+                    reply = message.get("result", message.get("error"))
+                    if isinstance(reply, dict) and "backend/wireBudget" in reply.get("_meta", {}):
+                        require_mcp_wire_budget(reply, len(line) + 1)
+                    return reply
 
             send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
                 "protocolVersion": "2025-11-25", "capabilities": {},
@@ -699,6 +702,45 @@ def normalize_continuations(value, proven_tokens: set[str]):
     return result
 
 
+def require_mcp_wire_budget(reply: dict, frame_size: int) -> None:
+    budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+    size, width, estimated, max_bytes, max_tokens = (budget.get(key) for key in
+        ("bytes", "bytesPerToken", "estimatedTokens", "limitBytes", "limitTokens"))
+    if any(type(number) is not int for number in (size, width, estimated, max_bytes, max_tokens)) or width <= 0 or max_bytes <= 0 or max_tokens <= 0:
+        raise RuntimeError("snapshot continuation: missing MCP wire accounting")
+    if budget.get("scope") != "complete_jsonrpc_line" or size != frame_size or estimated != (size + width - 1) // width or size > max_bytes:
+        raise RuntimeError("snapshot continuation: dishonest MCP wire accounting")
+
+
+def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
+    normalized = normalize_continuations(answers, proven_tokens)
+    # The MCP whole-line counter includes the opaque token as well as the
+    # inner answer budget. Validate it against the actual compact JSON-RPC
+    # envelope, then compare the normalized envelope without its own counters.
+    raw_calls = answers.get("mcp", {}).get("calls", [])
+    for identifier, (raw, projected) in enumerate(zip(raw_calls, normalized.get("mcp", {}).get("calls", [])), start=2):
+        reply = raw["reply"]
+        if reply.get("structuredContent", {}).get("nextCursor") is None:
+            continue
+        budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+        # The interactive driver already validated the raw line length.
+        # Recheck its arithmetic/limits before projecting the opaque proof.
+        require_mcp_wire_budget(reply, budget.get("bytes"))
+        width = budget["bytesPerToken"]
+
+        def frame_bytes(body):
+            envelope = {"jsonrpc": "2.0", "id": identifier, "result": body}
+            return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+
+        projected_budget = projected["reply"]["_meta"]["backend/wireBudget"]
+        projected_budget.pop("bytes")
+        projected_budget.pop("estimatedTokens")
+        payload_size = frame_bytes(projected["reply"])
+        projected_budget.update(normalizedFrameBytesExcludingCounters=payload_size,
+                                normalizedEstimatedTokensExcludingCounters=(payload_size + width - 1) // width)
+    return normalized
+
+
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
     for name, filename in expected.items():
         if not any(row.get("identity", {}).get("name") == name
@@ -807,7 +849,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         record["performance"].update(owner.usage())
     finally:
         owner.stop()
-    record["answers"] = stable(normalize_continuations(record["answers"], proven_tokens))
+    record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
     return record
 
 
@@ -836,7 +878,7 @@ def main() -> int:
     parser.add_argument(
         "--print-missing",
         action="store_true",
-        help="print the would-be snapshot of a case that has none, for review in CI logs",
+        help="print missing or changed candidate snapshots for review in CI logs",
     )
     args = parser.parse_args()
     # Fixed paths require exclusive ownership; another local run must never
@@ -903,6 +945,10 @@ def main() -> int:
             failed.append(case["name"])
             for problem in problems:
                 log(f"case {case['name']}: {problem}")
+            if args.print_missing and reviewed["answers"] != record["answers"]:
+                print(f"SURFACE-SNAPSHOT-BEGIN {case['name']}")
+                print(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False))
+                print(f"SURFACE-SNAPSHOT-END {case['name']}")
         else:
             log(f"case {case['name']} matches ({time.monotonic() - started:.1f}s, "
                 f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")

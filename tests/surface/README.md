@@ -286,3 +286,18 @@ driver keeps that session open, reads the real first response, then sends the
 returned token and effective operands on the same process. It does not claim
 cross-session portability for outline. A stateful subprocess control verifies
 that exchange independently of the native binary; real T2 verifies the product.
+
+The MCP `Digest` request explicitly uses limit 3, so its complete readable preview
+fits comfortably alongside the portable proof. CLI keeps its larger default
+page. The full preview text remains snapshotted; the harness does not discard
+it to hide adaptive clipping noise. Native pr-t1/606 proved all three offered
+continuations, but its default-limit preview varied by one row as proof lengths
+changed, motivating this bounded request.
+
+The interactive driver validates MCP whole-line byte accounting against the
+actual received JSON-RPC line, plus reported estimate arithmetic and byte limits.
+For token-bearing replies, snapshots compare canonical normalized frame bytes
+and estimates with their own counters omitted; all limits/policy fields remain.
+The `estimatedTokens` field is a bytes-per-token estimate, distinct from the
+product's cl100k token-policy admission. Changed-candidate logging uses the
+existing `--print-missing` flag for review and still fails the comparison.

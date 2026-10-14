@@ -113,7 +113,8 @@
         {
           "tool": "backend.search",
           "arguments": {
-            "query": "Digest"
+            "query": "Digest",
+            "limit": 3
           }
         },
         {
