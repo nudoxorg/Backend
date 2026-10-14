@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument("tier", choices=["smoke", "integration", "deep", "list"])
     parser.add_argument("--bin-dir", type=Path)
     parser.add_argument("--case", action="append")
-    parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 2)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 1)")
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--in-shell", action="store_true", help="CI: already inside the tier's declared Nix shell")

@@ -981,8 +981,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--case", action="append", help="run only these cases (default: all)")
-    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=2,
-                        help="concurrent isolated cases, 1–4 (default: 2)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=1,
+                        help="concurrent isolated cases, 1–4 (default: 1)")
     parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
     parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
     parser.add_argument(

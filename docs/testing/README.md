@@ -79,8 +79,8 @@ Both smoke and integration return a failing exit code when their own tier fails;
 smoke no longer runs an integration check whose failure it ignores. In CI the
 artifact manifest must be verified before selecting its binaries.
 
-Integration runs at most two isolated cases concurrently by default. Set
-`--jobs 1` for a serial measurement or `--jobs 2` through `--jobs 4` explicitly;
+Integration runs serially by default for performance isolation. Opt into
+`--jobs 2` through `--jobs 4` explicitly;
 this changes scheduling while preserving per-case comparisons and aggregate
 failure. Cases reuse the supplied binaries and never build the product.
 

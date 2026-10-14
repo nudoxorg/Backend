@@ -40,9 +40,8 @@ their checkout provides harness/configuration only, with no product build.
 
 ## Bounded case parallelism (W3.3)
 
-One invocation runs up to two isolated cases concurrently, reusing the same
-published binaries. Use `--jobs 1` for controlled serial measurements or choose
-up to four workers explicitly:
+One invocation runs serially by default to preserve performance isolation.
+Opt into up to four concurrent isolated cases, reusing the same published binaries:
 
 ```sh
 python3 .config/ci/test.py integration --bin-dir DIR --jobs 2
@@ -59,7 +58,7 @@ Reported case wall time measures execution, excluding time waiting for a worker.
 the case name and full measured timing/CPU/memory data. The report file remains
 available while the task container exists. Answer snapshots and performance
 limits are unchanged by selecting a worker count; the native rollout must prove
-that existing comparisons pass under the default concurrency. Cross-host noise
+that existing comparisons pass before enabling concurrency in CI. Cross-host noise
 calibration and durable independent Concourse artifact jobs remain separate work.
 
 ## Initial snapshot review
@@ -400,12 +399,13 @@ Python index/CPU baseline; keep its original memory and query baselines. No
 ratio, floor, source witness or public answer was changed. Final ordinary
 exact-head CI must still pass both real projects and the unchanged polyglot case.
 
-Two-worker native rollout review (484083 / pr-t1/679, `5ea548357`): all public
-answers, memory and owner-CPU guards matched. T2 consumer time fell from128s
-in the preceding serial676 run to85s, including shell/artifact setup. Individual
-cases overlapped; measured case wall time excludes waiting for a worker.
-The Go first cold source query took5.65s versus the serial3.65s baseline,
-slightly exceeding its5.475s limit. Owner CPU stayed16.44s (serial16.79s) and
-indexing28.58s remained within its guard, so calibrate only that cold-query wall
-baseline to the observed two-worker5.65s. Other values/ratios and all answers
-remain unchanged; an independent exact-head two-worker comparison is required.
+Two-worker experiment (484083 / pr-t1/679, `5ea548357`) reduced T2 consumer
+wall time from128s (serial676) to85s. All public answers, memory and owner CPU
+matched, but the Go cold query exceeded its existing wall limit. A second run
+(484136 / pr-t1/681, `afe2be041`) also exceeded polyglot/Python indexing wall
+limits (45.42s/10.18s), despite CPU21.41s/2.11s remaining within limits.
+The experimental Go query baseline increase was reverted. Default scheduling
+remains serial; explicit parallel runs keep the same performance gates and can
+fail from contention. Dedicated capacity and repeatable operating-mode calibration
+are needed before making parallelism the default. These trials are not a CI
+speed guarantee or completion of durable artifact fan-out.
