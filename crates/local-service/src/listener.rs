@@ -311,8 +311,16 @@ struct DeferredReply {
 /// A single-owner bounded Unix listener.
 #[cfg(any(unix, windows))]
 pub struct UnixListenerService<O: OwnerService> {
-    listener: backend_engine::LocalListener,
+    // Field order is the retirement order, because fields drop in declaration
+    // order after `Drop::drop` has run: the owner (every lock it holds), then
+    // the endpoint file, then the listening socket. While the owner still
+    // holds a lock the endpoint is still a live listener, so a client cannot
+    // conclude "no owner" and start a candidate that would find the lock held;
+    // and while the endpoint is still ours, no new owner can bind a path whose
+    // file this retirement is about to unlink.
     service: LocaldService<O>,
+    endpoint_file: EndpointFile,
+    listener: backend_engine::LocalListener,
     path: PathBuf,
     owner_binding: [u8; 32],
     stop: Arc<AtomicBool>,
@@ -409,8 +417,9 @@ impl<O: OwnerService> UnixListenerService<O> {
             stop: Arc::clone(&stop),
         });
         Ok(Self {
-            listener,
             service,
+            endpoint_file: EndpointFile(path.clone()),
+            listener,
             path,
             owner_binding,
             stop,
@@ -840,7 +849,18 @@ impl<O: OwnerService> Drop for UnixListenerService<O> {
         while let Some(worker) = self.workers.pop() {
             let _ = worker.join();
         }
-        let _ = std::fs::remove_file(&self.path);
+        // The endpoint file is unlinked by `endpoint_file`, after the owner.
+    }
+}
+
+/// Unlinks the endpoint socket file when dropped. It is its own field so the
+/// unlink happens after the owner is released and before the listening socket
+/// closes (see the field order of [`UnixListenerService`]).
+struct EndpointFile(PathBuf);
+
+impl Drop for EndpointFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -2126,6 +2146,80 @@ mod tests {
         );
         drop(listener);
         assert!(!path.exists(), "a retiring listener must unlink its socket");
+    }
+
+    /// The owner holds locks that a replacement candidate needs. A candidate
+    /// is started by a client that concluded "no owner" from a refused or
+    /// missing endpoint, so the endpoint must stay a live listener until the
+    /// owner has released everything, and only then disappear.
+    #[test]
+    fn retirement_releases_the_owner_before_the_endpoint_disappears() {
+        #[derive(Debug)]
+        struct LockHolder {
+            path: PathBuf,
+            seen: Arc<Mutex<Option<(bool, bool)>>>,
+        }
+        impl Drop for LockHolder {
+            fn drop(&mut self) {
+                // The moment the owner's locks are released: is the endpoint
+                // still a file, and does it still accept a dial?
+                let file = self.path.exists();
+                let dial = backend_engine::LocalStream::connect(&self.path).is_ok();
+                *self
+                    .seen
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = Some((file, dial));
+            }
+        }
+        impl OwnerService for LockHolder {
+            fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+                Ok(body.to_vec())
+            }
+            fn engine(
+                &mut self,
+                _request_id: u64,
+                _request: EngineRequest,
+            ) -> Result<EngineStatus, ProtocolError> {
+                Ok(EngineStatus::Accepted)
+            }
+            fn serve_one(&mut self) -> bool {
+                false
+            }
+            fn close(&mut self) {}
+        }
+        let path = socket_path("retire-order");
+        let seen = Arc::new(Mutex::new(None));
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_millis(250),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
+        };
+        let service = LocaldService::new(
+            LockHolder {
+                path: path.clone(),
+                seen: Arc::clone(&seen),
+            },
+            config.limits,
+        )
+        .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        listener.shutdown();
+        listener
+            .run()
+            .unwrap_or_else(|error| panic!("run: {error}"));
+        drop(listener);
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|poison| poison.into_inner()),
+            Some((true, true)),
+            "the owner must be released while the endpoint is still a live listener"
+        );
+        assert!(!path.exists(), "the endpoint is unlinked once retired");
     }
 
     #[test]

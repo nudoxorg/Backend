@@ -53,13 +53,14 @@ impl Engine for SessionEngine<'_> {
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
         match probe {
             Probe::Packages => self.session.packages(),
-            Probe::Index(path) => self.session.index(path),
+            Probe::Index(path) => self.session.index(path).map_err(nonrepeatable),
             Probe::IndexWithExecutionIntent {
                 path,
                 execution_intent,
             } => self
                 .session
-                .index_with_execution_intent(path, execution_intent),
+                .index_with_execution_intent(path, execution_intent)
+                .map_err(nonrepeatable),
             Probe::Remove(path) => self.session.remove(path).map_err(nonrepeatable),
             Probe::Document(at) => self.session.document(at),
             Probe::Source(at) => self.session.source(at),
@@ -121,7 +122,7 @@ impl Engine for SessionEngine<'_> {
                     None => session.surface(command),
                 })
             }
-            None => session.surface(command),
+            None => surface_once(session, command),
         }
     }
 
@@ -194,6 +195,24 @@ pub(crate) fn execute_with_recovery(
         },
         request,
     )
+}
+
+/// One surface exchange with no owner replacement. A command that changes
+/// state cannot be proven undelivered once its connection is lost, so the
+/// loss is reported as an unknown outcome; a bare disconnect then always
+/// means a read, which is what its fault wording promises.
+fn surface_once(
+    session: &mut Session,
+    command: SurfaceCommand,
+) -> Result<SurfaceReply, ClientError> {
+    let writes = backend_library::command_spec(command.id()).mutation
+        == backend_library::CommandMutation::Write;
+    let result = session.surface(command);
+    if writes {
+        result.map_err(nonrepeatable)
+    } else {
+        result
+    }
 }
 
 fn nonrepeatable(error: ClientError) -> ClientError {

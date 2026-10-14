@@ -80,7 +80,7 @@ impl Default for FrameLimits {
         Self {
             max_frame: MAX_FRAME,
             max_cursor: MAX_CURSOR,
-            max_frames_per_connection: 256,
+            max_frames_per_connection: backend_client::DEFAULT_CONNECTION_FRAME_BUDGET,
             transport,
         }
     }
