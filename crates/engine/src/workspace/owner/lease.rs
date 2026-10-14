@@ -214,7 +214,61 @@ impl WorkspaceDirectoryAdmission {
     /// Foreign directories, links, and unsafe components fail.
     /// The work is bounded by 64 components, independent of cache cardinality.
     pub fn admit(&self, relative: impl AsRef<Path>) -> io::Result<DirectoryCapability> {
-        let relative = relative.as_ref();
+        self.verify_authority()?;
+        let directory = self.admit_components(relative.as_ref(), None)?;
+        self.root.verify_path(&self.directory)?;
+        Ok(directory)
+    }
+
+    /// Admits every directory of a known set with the same checks as [`Self::admit`], flushing
+    /// each directory that gained entries once, after all of them exist, instead of once per
+    /// created directory.
+    ///
+    /// Creation of an empty private namespace is repeated by the next admission, so a crash part
+    /// way through loses nothing; on return every entry created here is flushed, so state written
+    /// beneath them afterwards never outlives the directories that hold it.
+    pub fn admit_all<I>(&self, relatives: I) -> io::Result<()>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<Path>,
+    {
+        self.verify_authority()?;
+        let mut unflushed = Vec::new();
+        for relative in relatives {
+            self.admit_components(relative.as_ref(), Some(&mut unflushed))?;
+        }
+        // The directories are independent barriers, so they are flushed together.
+        backend_platform::durability::flush_concurrently(&unflushed, |(path, directory)| {
+            directory
+                .sync_all()
+                .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
+        })?;
+        self.root.verify_path(&self.directory)
+    }
+
+    fn verify_authority(&self) -> io::Result<()> {
+        // Retaining authority keeps the kernel lease held across every chmod.
+        let _authority = &self.authority;
+        self.root.verify_path(&self.directory)?;
+        self.root.validate_private()?;
+        let (epoch, fence) = decode_owner_state(&read_private_owner_state(&self.root)?)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        if epoch != self.epoch || fence != self.fence {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "workspace owner was fenced",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Walks and creates the components of one relative directory. With `unflushed`, a created
+    /// entry is not flushed here; its containing directory is recorded once for the caller.
+    fn admit_components(
+        &self,
+        relative: &Path,
+        mut unflushed: Option<&mut Vec<(PathBuf, DirectoryCapability)>>,
+    ) -> io::Result<DirectoryCapability> {
         let names = relative
             .components()
             .take(65)
@@ -237,27 +291,28 @@ impl WorkspaceDirectoryAdmission {
                 "state directory component bound exceeded",
             ));
         }
-        // Retaining authority keeps the kernel lease held across every chmod.
-        let _authority = &self.authority;
-        self.root.verify_path(&self.directory)?;
-        self.root.validate_private()?;
-        let (epoch, fence) = decode_owner_state(&read_private_owner_state(&self.root)?)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if epoch != self.epoch || fence != self.fence {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "workspace owner was fenced",
-            ));
-        }
         let mut current = self.root.clone();
         let mut path = self.directory.clone();
         for name in names {
+            let parent_path = path.clone();
             path.push(name);
             current = (|| {
                 let child = match current.open_dir(name) {
                     Ok(child) => child,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        match current.create_private_dir(name) {
+                        let created = match unflushed.as_deref_mut() {
+                            Some(unflushed) => {
+                                let created = current.create_private_dir_unflushed(name);
+                                if created.is_ok()
+                                    && !unflushed.iter().any(|(recorded, _)| *recorded == parent_path)
+                                {
+                                    unflushed.push((parent_path.clone(), current.clone()));
+                                }
+                                created
+                            }
+                            None => current.create_private_dir(name),
+                        };
+                        match created {
                             Ok(child) => child,
                             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                                 current.open_dir(name)?
@@ -278,7 +333,6 @@ impl WorkspaceDirectoryAdmission {
                 io::Error::new(error.kind(), format!("{}: {error}", path.display()))
             })?;
         }
-        self.root.verify_path(&self.directory)?;
         Ok(current)
     }
 }
@@ -603,6 +657,64 @@ mod tests {
             .assert_current()
             .expect("cold fence");
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batched_admission_creates_the_same_private_tree_as_one_by_one_admission() {
+        let batched_directory = test_directory("batched-admission");
+        let single_directory = test_directory("single-admission");
+        let relatives = [
+            "compiler",
+            "compiler/artifacts",
+            "forge/coordination/leases",
+            "forge/content",
+            "forge/content/objects",
+            "compiler",
+        ];
+        let batched = OwnerLease::acquire(&batched_directory).expect("batched owner");
+        batched
+            .directory_admission()
+            .admit_all(relatives)
+            .expect("batch admitted");
+        let single = OwnerLease::acquire(&single_directory).expect("single owner");
+        let single_admission = single.directory_admission();
+        for relative in relatives {
+            single_admission.admit(relative).expect("one admitted");
+        }
+        for relative in [
+            "compiler",
+            "compiler/artifacts",
+            "forge",
+            "forge/coordination",
+            "forge/coordination/leases",
+            "forge/content",
+            "forge/content/objects",
+        ] {
+            assert_eq!(mode(&batched_directory.join(relative)), 0o700, "{relative}");
+            assert_eq!(
+                mode(&single_directory.join(relative)),
+                mode(&batched_directory.join(relative)),
+                "{relative}"
+            );
+        }
+        // Re-admission of an existing tree, and a batch mixing old and new entries, succeed.
+        batched
+            .directory_admission()
+            .admit_all(["compiler/artifacts", "registry/v1"])
+            .expect("repeat admission");
+        assert_eq!(mode(&batched_directory.join("registry/v1")), 0o700);
+        // A refused member fails the batch with the offending path named.
+        fs::write(batched_directory.join("special"), b"regular file").expect("non-directory");
+        let error = batched
+            .directory_admission()
+            .admit_all(["compiler", "special"])
+            .expect_err("file refused");
+        assert!(error.to_string().contains("special"), "{error}");
+        drop(batched);
+        drop(single);
+        let _ = fs::remove_dir_all(batched_directory);
+        let _ = fs::remove_dir_all(single_directory);
     }
 
     #[cfg(unix)]
