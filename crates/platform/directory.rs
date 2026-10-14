@@ -1225,6 +1225,21 @@ impl DirectoryCapability {
         }
     }
 
+    /// Selects one regular source file and returns its actual component name
+    /// with the held file. Windows obtains the spelling from kernel enumeration
+    /// and retains the existing no-reparse/single-link source checks.
+    #[cfg(windows)]
+    pub fn actual_source_child_file(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, File)> {
+        validate_component(name)?;
+        self.handle
+            .actual_source_child_file(name, maximum, checkpoint)
+    }
+
     /// Lists direct children with an explicit cardinality ceiling.
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntry>> {
         #[cfg(unix)]

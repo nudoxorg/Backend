@@ -1009,6 +1009,43 @@ impl WorkspaceRoot {
         matched.ok_or_else(|| invalid_data("selected directory disappeared during identity lookup"))
     }
 
+    /// Returns the kernel-enumerated name and held file of a selected regular
+    /// single-link source. Matching its full object ID admits genuine filesystem
+    /// case/short-name aliases, never another hard-link entry or a reparse point.
+    pub(crate) fn actual_source_child_file(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, File)> {
+        checkpoint()?;
+        let selected = self.open_file_read_source_checked(&[name])?;
+        let selected_id = FileId128::of_handle(selected.as_raw_handle())?;
+        let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
+        let mut matched = None;
+        for entry in enumerate_names_controlled(parent.handle(), maximum, checkpoint)? {
+            checkpoint()?;
+            if entry.id != selected_id {
+                continue;
+            }
+            let actual = parent.open_file_read_source_checked(&[&entry.name])?;
+            if super::file::identity_of(&selected)? != super::file::identity_of(&actual)? {
+                return Err(invalid_data(
+                    "selected source file changed during identity lookup",
+                ));
+            }
+            if matched.replace((entry.name, actual)).is_some() {
+                return Err(invalid_data("selected source file has ambiguous names"));
+            }
+        }
+        // Keep the named single-link condition through the final boundary;
+        // inode equality alone cannot authorize a newly created hard-link name.
+        ensure_regular_file_handle(selected.as_raw_handle())?;
+        checkpoint()?;
+        matched
+            .ok_or_else(|| invalid_data("selected source file disappeared during identity lookup"))
+    }
+
     /// Lists a source directory without imposing workspace-private ACLs.
     pub fn read_dir_source_checked_limited(
         &self,
