@@ -55,6 +55,7 @@ pub enum ProjectExecutionPhase {
     FileReset,
     FileCheck,
     FilePostprocess,
+    FileQuery,
     SourcePreparation,
     SourceStatements,
     SourcePostchecks,

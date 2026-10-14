@@ -417,6 +417,10 @@ impl<'a> ProjectCheckerSession<'a> {
                 file_index,
                 file_count: self.plan.program.files.len(),
             })?;
+        let query_span = tsz_common::ProjectExecutionSpan::new(
+            self.plan.execution_control(), tsz_common::ProjectExecutionPhase::FileQuery,
+            Some(tsz_common::ProjectExecutionFile { index: file_index, path: &file.file_name }),
+        );
         self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         let output = self
@@ -424,6 +428,7 @@ impl<'a> ProjectCheckerSession<'a> {
             .with_bound_file_checker_and_types(file_index, file, consume);
         self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        query_span.returned();
         Ok(output)
     }
 
