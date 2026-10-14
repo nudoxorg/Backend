@@ -2756,6 +2756,10 @@ pub struct LocalRuntimePackageAuthority {
     pub typescript: Option<ExplicitTypeScriptChecker>,
     /// Compiled native State producer or explicitly selected external per-file checker.
     pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
+    /// Independent host-policy interpreter capability for installed input capture.
+    /// It never names a project-selected venv executable.
+    pub python_interpreter:
+        Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
     /// One owner-shared request-time admission; lane workers never own independent caches.
     pub deferred_native_python: Option<Arc<DeferredNativePython>>,
     /// Rust Analyzer/Cargo authority.
@@ -3126,6 +3130,13 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
+    /// Borrow the independent host-policy Python installation selection.
+    pub fn python_interpreter_selection(
+        &self,
+    ) -> Option<&backend_frontend_python::legacy::checker::PythonInterpreterSelection> {
+        self.shared.python_interpreter.as_ref()
+    }
+
     /// Checks the exact retained local Python program, producer, selected binding,
     /// and all original source/config/environment fences. Public coverage stays
     /// unchanged; this is not a complete ambient host read-set certificate.
@@ -3248,6 +3259,7 @@ impl LocalCompilerClient {
             .package_authority
             .deferred_native_python
             .clone();
+        let python_interpreter = configuration.package_authority.python_interpreter.clone();
         let native_python_timeout = configuration.timeout;
         let capability_signal = Arc::new(CapabilitySignal::new());
         let (command_tx, command_rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
@@ -3292,6 +3304,7 @@ impl LocalCompilerClient {
                         python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         go_authority,
                         native_python,
+                        python_interpreter,
                         native_python_timeout,
                         native_python_observations: probe_tx,
                     }),
@@ -3889,6 +3902,8 @@ struct RuntimeShared {
     python_snapshots: Mutex<PythonSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
     native_python: Option<Arc<DeferredNativePython>>,
+    python_interpreter:
+        Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
     native_python_timeout: LocalCompilerTimeout,
     native_python_observations: Sender<ToolchainProbeObservation>,
 }
@@ -6173,6 +6188,7 @@ mod request_lease_tests {
             python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             go_authority: None,
             native_python: None,
+            python_interpreter: None,
             native_python_timeout: configuration.timeout,
             native_python_observations: channel().0,
         }

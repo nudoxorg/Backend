@@ -55,7 +55,7 @@ pub use project::{
 pub use project_configuration::PythonProjectConfigurationFault;
 pub use project_environment::{
     PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES, PythonDependencyRootKind,
-    PythonEnvironmentCapture, PythonEnvironmentInput,
+    PythonEnvironmentCapture, PythonEnvironmentInput, PythonInterpreterSelection,
 };
 
 use std::path::{Path, PathBuf};

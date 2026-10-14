@@ -675,11 +675,7 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
-    fn can_answer_short_control(
-        &self,
-        command: &Command,
-        origin: &DeferredCommandOrigin,
-    ) -> bool {
+    fn can_answer_short_control(&self, command: &Command, origin: &DeferredCommandOrigin) -> bool {
         if !answers_while_indexing(command) {
             return false;
         }
@@ -2865,6 +2861,7 @@ impl CommandAdapter {
             indexing.execution_intent,
             self.owner_cluster.is_some(),
             Arc::clone(&indexing.cancelled),
+            self.compiler.python_interpreter_selection().cloned(),
         )?;
         indexing._staged_project = Some(staged);
         self.spawn_index_scan(indexing, work)
@@ -3738,6 +3735,7 @@ impl CommandAdapter {
                     execution_intent,
                     self.owner_cluster.is_some(),
                     Arc::clone(&cancelled),
+                    self.compiler.python_interpreter_selection().cloned(),
                 )?;
                 self.spawn_index_scan(&mut indexing, work)?;
             }
@@ -7870,11 +7868,10 @@ mod tests {
             backend_engine::application::LocalCompilerCapabilityState::Unavailable,
             "closed fixture must retain an actual absent TypeScript SDK",
         );
-        let python = capabilities.for_profile(
-            backend_semantic::vocabulary::LanguageProfile::Python(
+        let python =
+            capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
                 backend_semantic::vocabulary::PythonVersion::Python314,
-            ),
-        );
+            ));
         assert_eq!(
             python.state(),
             backend_engine::application::LocalCompilerCapabilityState::Deferred,
@@ -7889,11 +7886,10 @@ mod tests {
 
     fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
         let capabilities = compiler.capabilities();
-        let python = capabilities.for_profile(
-            backend_semantic::vocabulary::LanguageProfile::Python(
+        let python =
+            capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
                 backend_semantic::vocabulary::PythonVersion::Python314,
-            ),
-        );
+            ));
         assert_eq!(
             python.state(),
             backend_engine::application::LocalCompilerCapabilityState::Ready,
