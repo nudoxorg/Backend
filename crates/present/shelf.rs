@@ -219,7 +219,13 @@ impl ShelfEntry {
                 tags.push(format!("{} declaration(s)", count.get()));
             }
             Some(_) => {}
-            None => tags.push("declaration count unavailable".to_owned()),
+            // With a published row count the line already carries a count; a
+            // second clause calling the declaration count unavailable only
+            // contradicts it. A reply carrying no count at all still says so.
+            None if indexing_rows.or(self.published_rows).is_none() => {
+                tags.push("declaration count unavailable".to_owned());
+            }
+            None => {}
         }
         tags
     }

@@ -286,7 +286,13 @@ impl CapabilitySummary {
         for rollup in &self.reasons {
             parts.push(format!("{} {}", rollup.count, rollup.name()));
         }
-        parts.push(format!("embedding {}", self.embedding.name()));
+        // Vector search is optional. Status is the one place that says how to
+        // turn it on; every other response stays silent about it.
+        if self.embedding == EmbeddingState::Unconfigured {
+            parts.push("embedding unconfigured (optional vector search; `nudox embedding-setup`)".to_owned());
+        } else {
+            parts.push(format!("embedding {}", self.embedding.name()));
+        }
         parts.join(" · ")
     }
 }
