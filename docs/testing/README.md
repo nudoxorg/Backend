@@ -173,3 +173,19 @@ The deep list currently names the implemented CLI laws; it does not claim to
 list every nightly platform/release test. A bot must bind its resolver to the
 same PR head before suggesting or scheduling these names. Dispatch authorization,
 replay protection and actual comment-triggered execution remain separate work.
+
+
+CI also retains `CI-ARTIFACT` byte inventories and `CI-PERF-CONTEXT` observations.
+The former binds each product binary, runtime export and smoke driver hash to
+its source and manifest, even after task payloads expire. It does not retain the
+payload itself. Source-verified T2 report mode records bounded CPU model/affinity,
+observed clock ranges, cgroup limits/pressure/counters, host CPU/I/O pressure and
+a top-ten live owner-thread CPU sample at case end. Missing data is explicit;
+exited threads are absent. Context events are capped at64KiB and never alter a
+snapshot, baseline, tolerance or case verdict. Use them to investigate failures,
+not to automatically exempt a slow result. Physical CPU frequency samples do
+not establish the clock rate throughout an operation.
+
+For a retained payload, inspect the same verified inventory without importing or
+launching it:
+`python3 .config/ci/t1_artifacts.py inventory ARTIFACT_DIR --source-sha FULL_SHA`.

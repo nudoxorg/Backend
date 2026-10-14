@@ -191,7 +191,9 @@ def main [
         BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"
         CARGO_PROFILE_DEV_DEBUG: "0"
         CARGO_PROFILE_TEST_DEBUG: "0"
-        CARGO_BUILD_JOBS: "8"
+        # The deep task sets its capacity budget; never silently widen it.
+        # Local runs keep the workspace's two-job default unless overridden.
+        CARGO_BUILD_JOBS: ($env.CARGO_BUILD_JOBS? | default "2")
         NIX_HARDENING_ENABLE: $test_hardening
     }
     | merge (

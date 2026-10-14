@@ -53,6 +53,8 @@ VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finish
 
 OUTPUT_LOCK = threading.Lock()
 CURRENT_CASE = ContextVar("surface_case", default=None)
+RUN_PROVENANCE = ContextVar("run_provenance", default=None)
+CASE_DIAGNOSTICS = ContextVar("case_diagnostics", default=None)
 
 
 def log(message: str) -> None:
@@ -867,7 +869,13 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             )
         record["performance"].update(owner.usage())
     finally:
-        owner.stop()
+        try:
+            diagnostics = CASE_DIAGNOSTICS.get()
+            if diagnostics is not None:
+                from perf_context import owner_threads
+                diagnostics["owner_threads_end"] = owner_threads(owner.process.pid)
+        finally:
+            owner.stop()
     record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
     return record
 
@@ -899,6 +907,12 @@ def execute_case(case: dict, bin_dir: Path) -> tuple[dict | None, float, str | N
     log(f"case {case['name']}")
     token = CURRENT_CASE.set(case['name'])
     started = time.monotonic()
+    provenance = RUN_PROVENANCE.get()
+    diagnostics = None
+    if provenance is not None:
+        from perf_context import encode, system
+        diagnostics = {"schema": 1, **provenance, "case": case["name"], "start": system()}
+    context_token = CASE_DIAGNOSTICS.set(diagnostics)
     try:
         if case.get("kind") == "cli-contract":
             from cli_contract import run_cases
@@ -911,7 +925,14 @@ def execute_case(case: dict, bin_dir: Path) -> tuple[dict | None, float, str | N
     except Exception as error:  # one broken case must not hide the others
         return None, time.monotonic() - started, str(error)
     finally:
-        CURRENT_CASE.reset(token)
+        try:
+            if diagnostics is not None:
+                diagnostics["end"] = system()
+                with OUTPUT_LOCK:
+                    print("CI-PERF-CONTEXT " + encode(diagnostics), flush=True)
+        finally:
+            CASE_DIAGNOSTICS.reset(context_token)
+            CURRENT_CASE.reset(token)
 
 
 def bounded_text(value: str, limit: int) -> str:
@@ -968,8 +989,17 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     failed = []
     report = {}
     evidence = {}
+    provenance = ({"source_sha": args.source_sha,
+                   "artifact_manifest_sha256": args.artifact_digest}
+                  if args.ci_report else None)
+    def invoke(case):
+        token = RUN_PROVENANCE.set(provenance)
+        try:
+            return execute_case(case, args.bin_dir.resolve())
+        finally:
+            RUN_PROVENANCE.reset(token)
     with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        results = list(executor.map(lambda case: execute_case(case, args.bin_dir.resolve()), cases))
+        results = list(executor.map(invoke, cases))
     for case, (record, elapsed, error) in zip(cases, results):
         entry = {"state": "failed", "seconds": {}}
         evidence[case["name"]] = entry

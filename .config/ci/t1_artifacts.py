@@ -74,6 +74,21 @@ def verify(root: Path, source_sha: str, target: str) -> dict:
     return manifest
 
 
+
+def inventory(root: Path, source_sha: str) -> dict:
+    """Read-only byte identities survive payload container expiry in CI events."""
+    return inventory_record(root, verify(root, source_sha, TARGET))
+
+
+def inventory_record(root: Path, manifest: dict) -> dict:
+    return {"schema": 1, "source_sha": manifest["source_sha"],
+            "target": manifest["target"], "artifact_manifest_sha256": digest(root / "manifest.json"),
+            "toolchain": manifest["toolchain"].encode("utf-8")[:1024].decode("utf-8", errors="replace"),
+            "toolchain_sha256": hashlib.sha256(manifest["toolchain"].encode("utf-8")).hexdigest(),
+            "toolchain_truncated": len(manifest["toolchain"].encode("utf-8")) > 1024,
+            "files": manifest["files"]}
+
+
 def publish(bin_dir: Path, destination: Path) -> None:
     sha = command("git", "rev-parse", "HEAD")
     if command("git", "status", "--porcelain", "--untracked-files=no"):
@@ -122,9 +137,12 @@ def publish(bin_dir: Path, destination: Path) -> None:
             "files": [{"path": path, "bytes": (root / path).stat().st_size, "sha256": digest(root / path)} for path in paths],
         }
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        verify(root, sha, TARGET)
+        manifest = verify(root, sha, TARGET)
         root.rename(destination)
     print(f"T1 artifacts: {sha} {TARGET}, {sum(item['bytes'] for item in manifest['files'])} bytes")
+    # The manifest was verified immediately before atomic publication; avoid
+    # hashing GiB payloads again just to retain their already-admitted hashes.
+    print("CI-ARTIFACT " + json.dumps(inventory_record(destination, manifest), sort_keys=True), flush=True)
 
 
 def main() -> None:
@@ -139,7 +157,13 @@ def main() -> None:
     consumer.add_argument("--target", default=TARGET)
     consumer.add_argument("--import-runtime", action="store_true", help="verify and import runtime without launching smoke (for T2 consumers)")
     consumer.add_argument("--smoke", action="store_true", help="import runtime closure and smoke the exact published binaries")
+    inspector = commands.add_parser("inventory", help="verify and print retained byte identities without executing anything")
+    inspector.add_argument("artifact", type=Path)
+    inspector.add_argument("--source-sha", required=True)
     args = parser.parse_args()
+    if args.action == "inventory":
+        print(json.dumps(inventory(args.artifact.absolute(), args.source_sha), sort_keys=True))
+        return
     if args.action == "publish":
         publish(args.bin_dir, args.output)
         return
