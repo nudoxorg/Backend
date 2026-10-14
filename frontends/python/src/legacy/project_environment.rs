@@ -352,9 +352,9 @@ impl PythonEnvironmentCapture {
                         let base = if base == "." {
                             PathBuf::new()
                         } else {
-                            normal_relative(base)?
+                            declared_relative(base)?
                         };
-                        Ok(Some(base.join(normal_relative(name)?)))
+                        Ok(Some(base.join(declared_relative(name)?)))
                     }
                     _ => Err(project_error(
                         "pyrightconfig.json",
@@ -933,6 +933,12 @@ fn site_packages_path(venv: &Path, version: [u32; 3]) -> PathBuf {
     }
 }
 
+fn declared_relative(path: &str) -> Result<PathBuf, CheckerError> {
+    // Config paths use the native platform's separators. The immutable wire
+    // always owns the canonical component spelling instead.
+    normal_relative(&canonical_path_spelling(Path::new(path))?)
+}
+
 fn normal_relative(path: &str) -> Result<PathBuf, CheckerError> {
     let value = Path::new(path);
     if path.is_empty()
@@ -941,7 +947,7 @@ fn normal_relative(path: &str) -> Result<PathBuf, CheckerError> {
         || !value
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
-        || value.components().collect::<PathBuf>().as_os_str() != value.as_os_str()
+        || canonical_path_spelling(value)? != path
     {
         return Err(project_error(
             "",
