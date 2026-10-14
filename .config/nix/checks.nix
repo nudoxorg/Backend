@@ -115,6 +115,9 @@ in
         mkdir -p .config/ci
         cp ${../ci/t1_artifacts.py} .config/ci/t1_artifacts.py
         cp ${../ci/source_identity.py} .config/ci/source_identity.py
+        cp ${../ci/cpu_placement.py} .config/ci/cpu_placement.py
+        cp ${../ci/test_cpu_placement.py} .config/ci/test_cpu_placement.py
+        python3 .config/ci/test_cpu_placement.py
         cp ${../ci/perf_context.py} .config/ci/perf_context.py
         cp ${../ci/test_perf_context.py} .config/ci/test_perf_context.py
         python3 .config/ci/test_perf_context.py
