@@ -287,7 +287,7 @@ fn effective_graph_limit_and_original_authority_remain_copyable_in_all_cli_views
             assert!(shell.contains("--limit 1"));
             assert_eq!(shell.contains("--authority"), authority.is_some());
             for text in [
-                backend_present::markdown::answer_with_detail(
+                markdown::answer_with_detail(
                     &Answer::Product(Box::new(view.clone())),
                     detail,
                     None,
@@ -312,13 +312,8 @@ fn effective_graph_limit_and_original_authority_remain_copyable_in_all_cli_views
                 assert!(text.contains("provenance:"));
             }
             let answer = Answer::Product(Box::new(view.clone()));
-            let bytes = backend_present::encode_answer(
-                &answer,
-                detail,
-                None,
-                DEFAULT_RESPONSE_BUDGET_BYTES,
-            )
-            .expect("borrowed native encoder");
+            let bytes = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("borrowed native encoder");
             assert_eq!(
                 backend_present::encode_package_graph_json(
                     &page,
@@ -450,8 +445,7 @@ fn actual_caller_id_is_admitted_before_selection_and_resumes_refuse_atomically()
     );
     assert_eq!(resumed_page["result"]["isError"], false, "{resumed_page}");
     assert_eq!(
-        resumed_page["result"]["structuredContent"]["package_graph_page"]["limit"],
-        baseline_limit,
+        resumed_page["result"]["structuredContent"]["package_graph_page"]["limit"], baseline_limit,
         "the calibration uses the unchanged issued resumed frontier"
     );
     assert_eq!(resumed_probe.product.surface_commands.len(), 1);
@@ -673,14 +667,20 @@ fn local_context() -> backend_present::StartupRecoveryContext {
 }
 
 fn wide_single_edge() -> Vec<PackageDependencyRecord> {
-    let source = PackageReference::parse(&format!("pkg:cargo/{}@1", "s".repeat(2000)))
+    wide_single_edge_with_spelling("s", "t")
+}
+
+fn wide_single_edge_with_spelling(
+    source_spelling: &str,
+    target_spelling: &str,
+) -> Vec<PackageDependencyRecord> {
+    let source = PackageReference::parse(&format!("pkg:cargo/{}@1", source_spelling.repeat(2000)))
         .expect("bounded source coordinate");
     // Keep both the resolved PURL and its exact name near the URL bound. The
     // 3000-byte spelling used to exceed that parser bound before reaching the
     // response-budget control this fixture is meant to exercise.
-    let target = "t".repeat(
-        backend_library::interface::MAX_PACKAGE_URL_BYTES - "pkg:cargo/@1".len(),
-    );
+    let target = target_spelling
+        .repeat(backend_library::interface::MAX_PACKAGE_URL_BYTES - "pkg:cargo/@1".len());
     vec![PackageDependencyRecord::new_with_source_authority(
         source,
         PackageGraphSourceAuthority::Local([7; 32]),
@@ -706,75 +706,181 @@ fn wide_single_edge() -> Vec<PackageDependencyRecord> {
 
 #[test]
 fn minimum_graph_refusal_offers_only_proven_local_cli_json_and_keeps_the_input() {
-    let rows = wide_single_edge();
-    for detail in ["summary", "standard", "full"] {
-        for exposure in [0, 1, 2] {
-            for attached in [false, true] {
-                let mut server = ready(Fake {
-                    native_graph_rows: Some(rows.clone()),
-                    cli_context: attached.then(local_context),
-                    ..Fake::default()
-                });
-                let args = json!({"package": rows[0].source.as_str(),"direction":"dependencies","authority":rows[0].source_authority.selector(),"limit":1,"detail":detail});
-                let native = PackageGraphPageRequest::new(
-                    rows[0].source.clone(),
-                    PackageGraphDirection::Dependencies,
-                    Some(rows[0].source_authority),
-                    1,
-                )
-                .expect("exact input");
-                let params = match exposure {
-                    0 => json!({"name":"backend.package_graph","arguments":args}),
-                    1 => {
-                        json!({"name":super::super::tools::CALL_TOOL,"arguments":{"name":"backend.package_graph","arguments":args}})
-                    }
-                    _ => {
-                        json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::PackageGraphPage{request:native.clone()},"detail":detail}})
-                    }
-                };
-                let reply = request(&mut server, "tools/call", &params);
-                assert_eq!(
-                    reply["result"]["isError"], true,
-                    "minimum complete readable row refuses: {reply}"
-                );
-                let fault = &reply["result"]["structuredContent"];
-                assert_eq!(fault["cause"], "oversized");
-                assert!(fault.get("package_graph_page").is_none());
-                assert!(fault.get("surface").is_none());
-                assert_eq!(fault.get("shell").is_some(), attached, "{reply}");
-                assert!(fault.get("call").is_none(), "JSON is not an MCP argument");
-                if attached {
+    // Keep the original byte and token pressure as a strict negative. A
+    // readable refusal does not prove that the separate CLI JSON fits.
+    // Positive spellings retain the exact source/target/requirement lengths;
+    // their named token counts, rather than a relaxed cap, admit the fallback.
+    let negative = wide_single_edge();
+    let positive = [("a", "t"), ("s", "a"), ("a", "a")]
+        .into_iter()
+        .map(|(source, target)| wide_single_edge_with_spelling(source, target))
+        .find(|rows| {
+            let native = PackageGraphPageRequest::new(
+                rows[0].source.clone(),
+                PackageGraphDirection::Dependencies,
+                Some(rows[0].source_authority),
+                1,
+            )
+            .expect("same bounded native input");
+            let page = page_for(&native, rows);
+            [Detail::Summary, Detail::Standard, Detail::Full]
+                .into_iter()
+                .all(|detail| {
+                    let args = json!({"limit":1});
+                    let invocation = McpInvocation::new(
+                        McpExposure::Direct,
+                        "backend.package_graph",
+                        args.as_object().expect("fixture arguments"),
+                    );
+                    backend_present::package_graph_json_alternative(
+                        &page,
+                        &native,
+                        detail,
+                        Some(local_context()),
+                    )
+                    .is_some()
+                        && backend_present::package_graph_markdown(&page, detail, invocation).len()
+                            > backend_present::MAX_PREVIEW_TEXT_BYTES
+                })
+        })
+        .expect("complete CLI JSON fits while the unchanged readable byte pressure refuses");
+    assert_eq!(
+        positive[0].source.as_str().len(),
+        negative[0].source.as_str().len()
+    );
+    assert_eq!(
+        positive[0].target.name.as_str().len(),
+        negative[0].target.name.as_str().len()
+    );
+    assert_eq!(
+        positive[0].target.requirement,
+        negative[0].target.requirement
+    );
+    assert_eq!(
+        positive[0]
+            .target
+            .resolved
+            .as_ref()
+            .expect("resolved")
+            .as_str()
+            .len(),
+        negative[0]
+            .target
+            .resolved
+            .as_ref()
+            .expect("resolved")
+            .as_str()
+            .len()
+    );
+    for (rows, cli_fits) in [(negative, false), (positive, true)] {
+        for detail in ["summary", "standard", "full"] {
+            for exposure in [0, 1, 2] {
+                for attached in [false, true] {
+                    let mut server = ready(Fake {
+                        native_graph_rows: Some(rows.clone()),
+                        cli_context: attached.then(local_context),
+                        ..Fake::default()
+                    });
+                    let args = json!({"package": rows[0].source.as_str(),"direction":"dependencies","authority":rows[0].source_authority.selector(),"limit":1,"detail":detail});
+                    let native = PackageGraphPageRequest::new(
+                        rows[0].source.clone(),
+                        PackageGraphDirection::Dependencies,
+                        Some(rows[0].source_authority),
+                        1,
+                    )
+                    .expect("exact input");
                     let expected_page = page_for(&native, &rows);
+                    let payload = backend_present::encode_package_graph_json(
+                        &expected_page,
+                        Detail::parse(detail).expect("detail"),
+                        DEFAULT_RESPONSE_BUDGET_BYTES,
+                    )
+                    .expect("complete compact CLI JSON byte projection");
+                    let mut cli_wire = payload.bytes.into_vec();
+                    cli_wire.push(b'\n');
+                    let cli_tokens =
+                        cl100k_tokens(std::str::from_utf8(&cli_wire).expect("JSON UTF-8"))
+                            .expect("both complete CLI projections have valid named-token counts");
+                    println!(
+                        "minimum graph CLI geometry: positive={cli_fits}, detail={detail}, bytes={}, tokens={cli_tokens:?}",
+                        cli_wire.len()
+                    );
+                    assert!(
+                        cli_wire.len() <= DEFAULT_RESPONSE_BUDGET_BYTES,
+                        "both complete CLI projections fit the unchanged byte cap"
+                    );
+                    if cli_fits {
+                        assert!(
+                            cli_tokens <= MCP_CL100K_TOKEN_LIMIT,
+                            "positive CLI projection fits the unchanged named-token cap"
+                        );
+                    } else {
+                        assert!(
+                            cli_tokens > MCP_CL100K_TOKEN_LIMIT,
+                            "original complete CLI projection refuses specifically on valid named-token pressure"
+                        );
+                    }
                     let advice = backend_present::package_graph_json_alternative(
                         &expected_page,
                         &native,
                         Detail::parse(detail).expect("detail"),
                         Some(local_context()),
-                    )
-                    .expect("complete JSON fits");
+                    );
                     assert_eq!(
-                        fault["shell"],
-                        advice.shell().expect("exact existing CLI route")
+                        advice.is_some(),
+                        cli_fits,
+                        "independent complete CLI JSON proof"
                     );
-                    let shell = fault["shell"].as_str().expect("shell");
-                    assert!(shell.contains("--format json"));
-                    assert!(shell.contains("/observed/bundle/backend-cli"));
-                    assert!(!shell.contains("nudox"));
-                    assert!(!shell.contains("authority.secret"));
-                    assert!(
-                        reply["result"]["content"][0]["text"]
-                            .as_str()
-                            .expect("readable refusal")
-                            .contains("Run on the machine serving this request")
+                    let params = match exposure {
+                        0 => json!({"name":"backend.package_graph","arguments":args}),
+                        1 => {
+                            json!({"name":super::super::tools::CALL_TOOL,"arguments":{"name":"backend.package_graph","arguments":args}})
+                        }
+                        _ => {
+                            json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::PackageGraphPage{request:native.clone()},"detail":detail}})
+                        }
+                    };
+                    let reply = request(&mut server, "tools/call", &params);
+                    assert_eq!(
+                        reply["result"]["isError"], true,
+                        "minimum complete readable row refuses: {reply}"
                     );
+                    let fault = &reply["result"]["structuredContent"];
+                    assert_eq!(fault["cause"], "oversized");
+                    assert!(fault.get("package_graph_page").is_none());
+                    assert!(fault.get("surface").is_none());
+                    assert_eq!(
+                        fault.get("shell").is_some(),
+                        attached && cli_fits,
+                        "{reply}"
+                    );
+                    assert!(fault.get("call").is_none(), "JSON is not an MCP argument");
+                    if attached && cli_fits {
+                        let advice = advice.expect("independently proved complete JSON fits");
+                        assert_eq!(
+                            fault["shell"],
+                            advice.shell().expect("exact existing CLI route")
+                        );
+                        let shell = fault["shell"].as_str().expect("shell");
+                        assert!(shell.contains("--format json"));
+                        assert!(shell.contains("/observed/bundle/backend-cli"));
+                        assert!(!shell.contains("nudox"));
+                        assert!(!shell.contains("authority.secret"));
+                        assert!(
+                            reply["result"]["content"][0]["text"]
+                                .as_str()
+                                .expect("readable refusal")
+                                .contains("Run on the machine serving this request")
+                        );
+                    }
+                    assert_eq!(
+                        server.product.surface_commands.len(),
+                        1,
+                        "no metadata dial or repeat at limit one"
+                    );
+                    assert!(wire_fits(&reply, ResponseTransport::StdioLine));
+                    assert!(wire_tokens(&reply).expect("tokens") <= MCP_CL100K_TOKEN_LIMIT);
                 }
-                assert_eq!(
-                    server.product.surface_commands.len(),
-                    1,
-                    "no metadata dial or repeat at limit one"
-                );
-                assert!(wire_fits(&reply, ResponseTransport::StdioLine));
-                assert!(wire_tokens(&reply).expect("tokens") <= MCP_CL100K_TOKEN_LIMIT);
             }
         }
     }
