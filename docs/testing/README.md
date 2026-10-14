@@ -39,7 +39,8 @@ Mixed changes, source-to-doc renames and unknown or incomplete diffs run normal 
 Markdown outside that explicit list does not automatically skip CI.
 
 T1/T2 are live advisory checks; required fast remains unchanged under D11.
-Both legacy Backend pipelines remain paused under D12.
+Both retired Backend pipelines were removed under D13; the required fast,
+advisory T1/T2 and scheduled deep pipelines remain active.
 
 T1 can publish its successful build for a later task by setting
 `CI_T1_ARTIFACT_ROOT` to an output directory outside the checkout. The runner
@@ -68,6 +69,7 @@ pending (W3.2).
 ```sh
 python3 .config/ci/test.py integration --bin-dir .local/target/debug
 python3 .config/ci/test.py integration --bin-dir /path/to/artifact/bin --case cli-usage
+python3 .config/ci/test.py integration --bin-dir /path/to/artifact/bin --case python-blinker
 python3 .config/ci/test.py list
 ```
 

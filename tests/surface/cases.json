@@ -122,6 +122,55 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "python-blinker",
+      "project_env": "NUDOX_SURFACE_PYTHON_BLINKER",
+      "upstream": "pypi:blinker@1.9.0",
+      "languages": [
+        "python"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "NamedSignal": "src/blinker/base.py",
+        "make_id": "src/blinker/_utilities.py"
+      },
+      "cli": [
+        [
+          "search",
+          "NamedSignal"
+        ],
+        [
+          "search",
+          "make_id"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "NamedSignal",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "make_id",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

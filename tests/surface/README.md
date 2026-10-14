@@ -33,8 +33,8 @@ exclude compiler subprocesses and CLI/MCP resource use. Linux `/proc` is require
 The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
-CI_T2_EXTERNAL=1 delegates T2 to an isolated parallel consumer. Local T1
-commands retain the advisory integration step by default. Consumers verify and
+T2 runs as an isolated parallel consumer in CI and as the explicit integration
+command locally. Smoke and integration have separate verdicts. Consumers verify and
 import the exact artifact runtime before entering the pinned surface shell;
 their checkout provides harness/configuration only, with no product build.
 
@@ -309,3 +309,69 @@ preview. All three offered continuations passed their live checks and wire
 accounting passed. Indexing was 189.84s, owner CPU 187.16s and owner peak RSS
 381,068KiB. The independent comparison against this reviewed candidate is the
 merge gate; no tolerance was changed.
+
+## Whole Python project: Blinker 1.9.0 (W2.3)
+
+The second upstream project is the complete MIT-licensed PyPI source distribution
+of Blinker 1.9.0, pinned by the existing fleet archive URL and SHA-256 in
+`.config/nix/corpus-pins.json`. The selected Nix fetcher extracts the full archive,
+including tests, docs and packaging metadata; it does not install the package,
+execute upstream scripts, vendor sources or fetch the rest of the legacy corpus.
+
+Blinker exercises a Python `src/` package, classes and inheritance, type-annotated
+functions, weak references, async methods and test/documentation sources.
+CLI and MCP must find ready Python `NamedSignal` in `src/blinker/base.py` and
+`make_id` in `src/blinker/_utilities.py` before snapshot admission. Full native
+profile completion is required; structural-only or missing-source results fail.
+The shared harness records search/outline/packages answers, validates offered
+continuations, and captures indexing/query wall time plus owner CPU and peak RSS.
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --case python-blinker
+```
+
+Initial native source/result review and an independent exact-head comparison are
+required before accepting the new golden. This is a second real-project slice;
+it does not complete the representative per-language corpus or GUI coverage.
+
+Initial source/result review (483413 / pr-t1/663, `9db7f5e91`): full native Python
+publication root `9cf9af16cf6c39eb75f46e066b1b78d6c0ca7d3d202dc5c7db782df9606dbadd`.
+CLI/MCP both find ready Python `NamedSignal` as a struct at
+`src/blinker/base.py:464` and `make_id` as a function at
+`src/blinker/_utilities.py:42`, verified against the pinned source. MCP search
+records equal the first three CLI records. Packages names the ready project
+`blinker`. Source-less context/import rows remain in the golden; embedding-based
+search remains explicitly unconfigured. CLI/MCP outlines are honestly truncated
+at 200/100 declarations; this case does not claim exhaustive outline traversal.
+Both offered MCP continuations (NamedSignal search and same-session outline)
+passed real native consumption before normalization, with full wire accounting
+and readable previews retained.
+
+Initial indexing was 3.30s, owner CPU 1.82s and owner peak 279,160KiB. This first
+performance sample is provisional. The independent exact-head comparison must
+match the reviewed answers and the existing performance guards before merge.
+
+### Hybrid-core performance calibration (W2.5, 2026-10-14)
+
+After #249, normal artifact-backed runs measured the same Go answers/root with
+indexing 23.18–42.11s and owner CPU 16.36–31.27s. The first two fast samples alone
+were too narrow for a stable baseline. Same-artifact diagnostics in the failed
+663 task isolated logical CPU 0 (max 4.8 GHz) versus 12 (max 3.5 GHz): owner CPU 16.24s
+versus27.55s with identical answers/root. Only these diagnostic subprocesses were
+pinned; production scheduling and worker capabilities remain unchanged. Their
+single-CPU wall times 37.81/62.58s also constrain the Go compiler children and
+are not normal unconstrained job timings.
+
+Use the slower **normal** 663 sample for Go index 42.11s, owner CPU 31.27s and
+first source search 3.65s. Keep the 1.5x time/CPU ratios, existing floors, memory
+baseline and every answer unchanged. This still rejects the pre-optimization
+189.84s/187.16s behavior; it accommodates the CPU-class sensitivity observed with
+identical artifacts. Cross-host variability remains uncalibrated, and the tiers
+remain advisory until the separately approved required-check cutover.
+
+The same Python artifact's independent CPU 12 run matched every reviewed answer,
+including normalized continuation accounting. It measured index 4.56s and owner
+CPU 3.14s (versus normal 663 sample 3.30s/1.82s). Use 4.56s/3.14s as the initial
+Python index/CPU baseline; keep its original memory and query baselines. No
+ratio, floor, source witness or public answer was changed. Final ordinary
+exact-head CI must still pass both real projects and the unchanged polyglot case.
