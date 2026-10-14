@@ -41,7 +41,7 @@ pub(super) use capture::DisplayCapture;
 use backend_platform::durable::BoundedWriter;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Read as _};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -160,18 +160,11 @@ fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
 }
 
 fn fingerprint_file(file: &mut File) -> io::Result<Digest> {
-    use sha2::Digest as _;
-    use std::io::Read as _;
+    use std::io::Seek as _;
 
-    const MAX_EXECUTABLE_BYTES: u64 = 512 << 20;
     let before = file.metadata()?;
     if !before.is_file() {
         return Err(io::Error::other("executable is not a regular file"));
-    }
-    if before.len() > MAX_EXECUTABLE_BYTES {
-        return Err(io::Error::other(
-            "executable exceeds fingerprint byte limit",
-        ));
     }
     let before_modified = before.modified()?;
     #[cfg(unix)]
@@ -184,23 +177,11 @@ fn fingerprint_file(file: &mut File) -> io::Result<Digest> {
             before.ctime_nsec(),
         )
     };
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(b"nudox.desktop.mapping.executable.v1\0");
-    let mut scratch = [0; 64 << 10];
-    let mut total = 0_u64;
-    loop {
-        let count = file.read(&mut scratch)?;
-        if count == 0 {
-            break;
-        }
-        total += count as u64;
-        if total > MAX_EXECUTABLE_BYTES {
-            return Err(io::Error::other(
-                "executable grew beyond fingerprint byte limit",
-            ));
-        }
-        hasher.update(&scratch[..count]);
-    }
+    // The held running-image handle is the authority; its observed length
+    // bounds work. Hash that extent with fixed scratch instead of refusing
+    // valid large binaries or chasing an EOF that another writer can move.
+    file.rewind()?;
+    let digest = fingerprint_extent(file, before.len())?;
     let after = file.metadata()?;
     #[cfg(unix)]
     let identity_changed = {
@@ -209,14 +190,30 @@ fn fingerprint_file(file: &mut File) -> io::Result<Digest> {
     };
     #[cfg(not(unix))]
     let identity_changed = false;
-    if total != before.len()
-        || after.len() != before.len()
+    if after.len() != before.len()
         || after.modified()? != before_modified
         || identity_changed
     {
         return Err(io::Error::other(
             "executable changed during fingerprint read",
         ));
+    }
+    Ok(digest)
+}
+
+fn fingerprint_extent(reader: &mut impl Read, mut remaining: u64) -> io::Result<Digest> {
+    use sha2::Digest as _;
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"nudox.desktop.mapping.executable.v1\0");
+    let mut scratch = [0; 64 << 10];
+    while remaining != 0 {
+        let count = remaining.min(64 << 10);
+        let wanted = usize::try_from(count)
+            .map_err(|_| io::Error::other("fingerprint chunk does not fit address space"))?;
+        reader.read_exact(&mut scratch[..wanted])?;
+        hasher.update(&scratch[..wanted]);
+        remaining -= count;
     }
     Ok(Digest(hasher.finalize().into()))
 }

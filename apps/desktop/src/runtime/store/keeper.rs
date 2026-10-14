@@ -377,6 +377,7 @@ mod tests {
         ));
         crate::host::private_dir(&directory).expect("fixture");
         let file = SnapshotFile::in_data(&directory);
+        assert!(file.read(&[PageKey::Orbit]).is_none(), "a real launch prepares this build before saving its first snapshot");
         let mut keeper = SnapshotKeeper::default();
         keeper.file = Some(file.clone());
         let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);

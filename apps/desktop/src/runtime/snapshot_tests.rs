@@ -414,13 +414,61 @@ fn executable_fingerprint_distinguishes_equal_sizes_and_unknown_identity_never_s
         !snapshot.serves(root),
         "two absent build identities cannot authorize a cache hit"
     );
-    let oversized = dir.join("oversized");
-    std::fs::File::create(&oversized)
-        .expect("sparse executable")
-        .set_len((512_u64 << 20) + 1)
-        .expect("large file");
-    assert!(fingerprint_executable(&oversized).is_err());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn executable_fingerprint_streams_large_images_and_observes_their_tail() {
+    use std::io::{Seek as _, SeekFrom};
+
+    let dir = scratch("large-image-fingerprint");
+    let path = dir.join("image");
+    let mut image = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("private sparse image");
+    image.set_len((512_u64 << 20) + 1).expect("large image");
+    image.seek(SeekFrom::End(-1)).expect("tail");
+    image.write_all(&[1]).expect("first tail");
+    let first = fingerprint_file(&mut image).expect("large image is fingerprinted from its start");
+    image.seek(SeekFrom::End(-1)).expect("same-size replacement tail");
+    image.write_all(&[2]).expect("different tail");
+    let second = fingerprint_file(&mut image).expect("replacement is fingerprinted from its start");
+    assert_ne!(first, second, "the full image, including its last byte, defines the mapping identity");
+    drop(image);
+    std::fs::remove_dir_all(dir).expect("private image removed");
+}
+
+#[test]
+fn executable_fingerprint_work_is_bounded_by_the_observed_extent() {
+    struct EndlessImage {
+        bytes_read: u64,
+        largest_request: usize,
+    }
+    impl Read for EndlessImage {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            self.largest_request = self.largest_request.max(out.len());
+            self.bytes_read += u64::try_from(out.len()).expect("scratch fits u64");
+            out.fill(7);
+            Ok(out.len())
+        }
+    }
+    let length = (3_u64 << 16) + 7;
+    let mut reader = EndlessImage { bytes_read: 0, largest_request: 0 };
+    let observed = fingerprint_extent(&mut reader, length).expect("bounded image extent");
+    assert_eq!(reader.bytes_read, length, "a moving EOF cannot extend the read");
+    assert_eq!(reader.largest_request, 64 << 10, "scratch is independent of image size");
+    use sha2::Digest as _;
+    let mut expected = sha2::Sha256::new();
+    expected.update(b"nudox.desktop.mapping.executable.v1\0");
+    expected.update(vec![7; usize::try_from(length).expect("small control extent")]);
+    assert_eq!(observed, Digest(expected.finalize().into()));
+    assert_eq!(
+        fingerprint_extent(&mut b"truncated".as_slice(), 10).expect_err("an incomplete extent is refused").kind(),
+        io::ErrorKind::UnexpectedEof,
+    );
 }
 
 #[test]
