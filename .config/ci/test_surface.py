@@ -409,7 +409,7 @@ class ParallelCaseTests(unittest.TestCase):
 
 
 class CIEvidenceTests(unittest.TestCase):
-    def exercise(self, damage=False, head=None, dirty=False):
+    def exercise(self, damage=False, head=None, dirty=False, jobs=1):
         import contextlib
         import hashlib
         import io
@@ -453,12 +453,14 @@ class CIEvidenceTests(unittest.TestCase):
                         "performance": {"seconds": {"cli add": 11}, "cpu_seconds": 1.2, "peak_rss_kib": 1024}}
 
             args = ["surface.py", "--bin-dir", str(artifact / "bin"), "--ci-report", str(evidence),
-                    "--source-sha", sha, "--report", str(legacy)]
-            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    "--source-sha", sha, "--report", str(legacy), "--jobs", str(jobs)]
+            stdout = io.StringIO()
+            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     code = surface.main()
                 except SystemExit as error:
                     code = error.code
+            self.last_stdout = stdout.getvalue()
             return code, ran, (json.loads(evidence.read_text()) if evidence.exists() else None), (json.loads(legacy.read_text()) if legacy.exists() else None)
 
     def test_source_bound_report_preserves_failed_and_successful_peers(self):
@@ -475,6 +477,28 @@ class CIEvidenceTests(unittest.TestCase):
         self.assertIn("native setup refused", report["cases"]["gamma"]["detail"])
         self.assertEqual(set(legacy), {"alpha", "beta"})
         self.assertEqual(legacy["alpha"]["seconds"], {"cli add": 11})
+
+    def test_parallel_context_is_bound_and_survives_a_failed_case(self):
+        import json
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"FORGEJO_TOKEN": "private-diagnostic-token"}):
+            code, ran, report, legacy = self.exercise(jobs=2)
+        self.assertEqual(code, 1)
+        records = [json.loads(line[len("CI-PERF-CONTEXT "):]) for line in self.last_stdout.splitlines()
+                   if line.startswith("CI-PERF-CONTEXT ")]
+        self.assertEqual({r["case"] for r in records}, {"alpha", "beta", "gamma"})
+        for record in records:
+            self.assertEqual(record["source_sha"], report["source_sha"])
+            self.assertEqual(record["artifact_manifest_sha256"], report["artifact_manifest_sha256"])
+            self.assertIn("start", record)
+            self.assertIn("end", record)
+            self.assertLess(len(json.dumps(record)), 65536)
+        self.assertNotIn("private-diagnostic-token", self.last_stdout)
+        self.assertIsNone(surface.CASE_DIAGNOSTICS.get())
+        self.assertIsNone(surface.RUN_PROVENANCE.get())
+        self.assertEqual(report["cases"]["beta"]["state"], "failed")
+        self.assertIn("native setup refused", report["cases"]["gamma"]["detail"])
 
     def test_changed_artifact_or_checkout_cannot_emit_source_bound_evidence(self):
         for options in ({"damage": True}, {"head": "c" * 40}, {"dirty": True}):

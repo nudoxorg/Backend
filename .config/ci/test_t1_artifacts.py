@@ -41,6 +41,37 @@ class ArtifactTests(unittest.TestCase):
     def test_complete_artifact(self):
         self.assertEqual(verify(self.root, SHA, TARGET)["source_sha"], SHA)
 
+    def test_retained_inventory_binds_the_actual_payload_without_environment(self):
+        with patch.dict(os.environ, {"FORGEJO_TOKEN": "private-token"}):
+            record = t1_artifacts.inventory(self.root, SHA)
+        self.assertEqual(record["artifact_manifest_sha256"], digest(self.root / "manifest.json"))
+        self.assertEqual(record["files"], self.manifest["files"])
+        self.assertEqual(record["source_sha"], SHA)
+        self.assertNotIn("runtime_env", record)
+        self.assertNotIn("private-token", json.dumps(record))
+        (self.root / "bin/backend-cli").write_bytes(b"tampered")
+        with self.assertRaises(ValueError):
+            t1_artifacts.inventory(self.root, SHA)
+
+    def test_inventory_toolchain_preview_is_bounded_and_its_full_identity_retained(self):
+        import hashlib
+        self.manifest["toolchain"] = "\x00" * 20000
+        self.save()
+        record = t1_artifacts.inventory(self.root, SHA)
+        self.assertLess(len(json.dumps(record).encode("utf-8")), 16384)
+        self.assertTrue(record["toolchain_truncated"])
+        self.assertEqual(record["toolchain_sha256"], hashlib.sha256(self.manifest["toolchain"].encode()).hexdigest())
+        self.assertEqual(record["artifact_manifest_sha256"], digest(self.root / "manifest.json"))
+
+    def test_inventory_cli_is_read_only_and_does_not_import_or_launch(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with patch("sys.argv", ["t1_artifacts.py", "inventory", str(self.root), "--source-sha", SHA]), patch.object(t1_artifacts.subprocess, "run") as run, contextlib.redirect_stdout(output):
+            t1_artifacts.main()
+        self.assertEqual(json.loads(output.getvalue())["artifact_manifest_sha256"], digest(self.root / "manifest.json"))
+        run.assert_not_called()
+
     def test_exact_source_and_target_required(self):
         for source, target in [("c" * 40, TARGET), (SHA, "aarch64-unknown-linux-gnu"), ("a" * 8, TARGET)]:
             with self.assertRaises(ValueError):
