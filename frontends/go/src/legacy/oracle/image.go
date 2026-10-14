@@ -1724,8 +1724,8 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 // writeAuthorityImage emits the complete authority image for one
 // caller-selected source file onto destination.
 func writeAuthorityImage(destination io.Writer, sourcePath string, output *Output) error {
-	if len(output.Errors) > 0 {
-		return fmt.Errorf("refusing Go authority image: package load error: %s", output.Errors[0])
+	if refusal := output.loadRefusalFor(sourcePath); refusal != "" {
+		return fmt.Errorf("refusing Go authority image: package load error: %s", refusal)
 	}
 	source, err := os.ReadFile(sourcePath)
 	if err != nil {
