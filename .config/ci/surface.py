@@ -312,6 +312,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
         require_cli_success("cli add", answer)
+        log("index terminal receipt: " + json.dumps(answer.get("json"), sort_keys=True))
         # Indexing is setup: require success above, then snapshot the verdict.
         # The caller journal embeds fresh random operation/receipt identities;
         # search/outline/packages below snapshot the published product state.
