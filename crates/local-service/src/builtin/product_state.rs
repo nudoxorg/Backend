@@ -717,6 +717,7 @@ impl ProductState {
             ),
             // The command adapter answers these before product state is asked.
             SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::CapturedProjectTree { .. }
             | SurfaceCommand::PackageSourceMembership { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::CargoPackageSourceInventory { .. }

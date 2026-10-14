@@ -579,3 +579,81 @@ fn the_lockfile_alone_still_explains_the_tree() {
             .all(|package| package.why.is_empty() && package.role == PackageRole::Unknown)
     );
 }
+
+#[test]
+fn captured_project_tree_wire_is_bound_and_cannot_authorize_cargo_files() {
+    let root = native_test_paths::absolute("/captured/python-project");
+    let package = crate::PackageReference::Local(crate::ProductText::new(root.clone()).expect("root"));
+    let page = crate::PackageSourceMembershipPageResultV1::Unavailable {
+        package: package.clone(), reason: crate::PackageSourceMembershipUnavailableV1::ProjectNotSelected,
+    };
+    let tree = ProjectTree::from_captured_membership(root.clone(), page.clone()).expect("typed unavailable tree");
+    assert!(tree.retained_request_binding().is_none());
+    let command = crate::CommandDto::new(17, crate::Command::Surface(crate::SurfaceCommand::CapturedProjectTree {
+        root: crate::ProductText::new(root.clone()).expect("request root"),
+    }));
+    let reply = crate::ReplyDto::new(17, crate::CommandReply::Surface(crate::SurfaceReply::ProjectTree(Box::new(tree.clone()))));
+    let wire = serde_json::to_vec(&reply).expect("captured wire");
+    let decoded = crate::decode_reply_body(&wire).expect("strict captured reply");
+    crate::admit_reply(&command, &decoded).expect("same requested root");
+    let cargo = crate::CommandDto::new(17, crate::Command::Surface(crate::SurfaceCommand::ProjectTree {
+        root: crate::ProductText::new(root.clone()).expect("Cargo root"),
+    }));
+    assert!(crate::admit_reply(&cargo, &decoded).is_err(), "captured files cannot satisfy a Cargo dependency request");
+    let foreign = native_test_paths::absolute("/captured/foreign-project");
+    let other = crate::CommandDto::new(17, crate::Command::Surface(crate::SurfaceCommand::CapturedProjectTree {
+        root: crate::ProductText::new(foreign.clone()).expect("foreign root"),
+    }));
+    assert!(crate::admit_reply(&other, &decoded).is_err());
+    assert!(ProjectTree::from_captured_membership(foreign, page).is_none(), "page package must match tree root");
+    let mut forged = tree.clone();
+    forged.observation = Some(ProjectTreeObservationV1::Retained { binding: tree.request_binding().expect("display binding") });
+    assert!(!forged.has_admissible_shape(), "captured inventory grants no Cargo observation");
+    let mut forged_name = tree.clone();
+    forged_name.name = "a different project".to_owned();
+    assert!(!forged_name.has_admissible_shape(), "display name must identify the bound root");
+    let mut forged = tree;
+    forged.health.coverage = AdvisoryCoverage::Complete;
+    assert!(!forged.has_admissible_shape(), "a source tree does not fabricate dependency advisory completeness");
+}
+
+#[test]
+fn captured_project_tree_keeps_stale_and_invalid_inventory_distinct_from_empty() {
+    let root = native_test_paths::absolute("/captured/typescript-project");
+    let package = crate::PackageReference::Local(crate::ProductText::new(root.clone()).expect("root"));
+    for page in [
+        crate::PackageSourceMembershipPageResultV1::Stale {
+            package: package.clone(), current_source_relation_root: Some([4; 32]), current_source_version: Some([5; 32]),
+        },
+        crate::PackageSourceMembershipPageResultV1::Unavailable {
+            package: package.clone(), reason: crate::PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        },
+    ] {
+        let tree = ProjectTree::from_captured_membership(root.clone(), page.clone()).expect("negative inventory preserved");
+        let decoded: ProjectTree = serde_json::from_slice(&serde_json::to_vec(&tree).expect("encode tree")).expect("decode tree");
+        assert_eq!(decoded, tree);
+        let TreeSource::CapturedSource { membership } = decoded.source else { panic!("captured source variant"); };
+        assert_eq!(*membership, page);
+    }
+}
+
+#[test]
+fn cargo_project_tree_keeps_public_capability_and_cannot_satisfy_source_mode() {
+    let mut tree = tree(&rustsec());
+    let root = tree.root.clone();
+    tree.observation = Some(ProjectTreeObservationV1::Retained {
+        binding: ProjectTreeRequestBindingV1::for_paths(std::path::Path::new(&root), &root).expect("Cargo root binding"),
+    });
+    let cargo = crate::CommandDto::new(21, crate::Command::Surface(crate::SurfaceCommand::ProjectTree {
+        root: crate::ProductText::new(root.clone()).expect("root"),
+    }));
+    let source = crate::CommandDto::new(21, crate::Command::Surface(crate::SurfaceCommand::CapturedProjectTree {
+        root: crate::ProductText::new(root).expect("root"),
+    }));
+    let reply = crate::ReplyDto::new(21, crate::CommandReply::Surface(crate::SurfaceReply::ProjectTree(Box::new(tree.clone()))));
+    let decoded = crate::decode_reply_body(&serde_json::to_vec(&reply).expect("Cargo wire")).expect("typed Cargo reply");
+    crate::admit_reply(&cargo, &decoded).expect("existing Cargo request remains publicly admitted");
+    assert!(tree.retained_request_binding().is_some(), "Cargo source binding retained");
+    assert!(!tree.packages.is_empty(), "resolved dependency rows retained");
+    assert!(crate::admit_reply(&source, &decoded).is_err(), "live Cargo cannot substitute for captured source inventory");
+}

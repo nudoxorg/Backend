@@ -383,3 +383,90 @@ fn the_cli_prints_the_same_sentences() {
         assert!(text.contains(line), "missing {line:?} in:\n{text}");
     }
 }
+
+#[test]
+fn captured_project_tree_presentation_retains_paths_languages_and_native_continuation() {
+    use backend_library::{PackageReference, PackageSourceMembershipCursorV1, PackageSourceMembershipPageResultV1 as Page, PackageSourceMembershipFileV1, PackageSourceMembershipLanguageV1 as Language};
+    let root = backend_library::native_test_paths::absolute("/captured/mixed-project");
+    let package = PackageReference::parse(&root).expect("local root");
+    let files = [Language::Rust, Language::TypeScript, Language::Python, Language::Go].into_iter().enumerate().map(|(at, language)| PackageSourceMembershipFileV1 {
+        file_key: [at as u8 + 1; 32], path: format!("src/group{at}/file"), language,
+        content_version: [7; 32], source_identity: None,
+    }).collect::<Vec<_>>();
+    let cursor = PackageSourceMembershipCursorV1 {
+        schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA, package: package.clone(),
+        project_key: [8; 32], source_relation_root: [9; 32], source_version: [10; 32],
+        membership_page: 0, membership_offset: 3, ordinal: 3, last_file_key: [4; 32],
+    };
+    let page = Page::Page {
+        package, project_key: [8; 32], source_relation_root: [9; 32], source_version: [10; 32],
+        file_count: 5, start_offset: 0,
+        scope: backend_library::PackageSourceMembershipScopeV1::IndexedProjectMembership,
+        exclusions: backend_library::PackageSourceMembershipExclusionsV1::NotCaptured,
+        files: files.into_boxed_slice(), next: Some(cursor.clone()),
+    };
+    let source_tree = ProjectTree::from_captured_membership(root, page.clone()).expect("captured first page");
+    let reading = read_tree(&source_tree);
+    assert!(reading.lede.contains("partial"));
+    assert_eq!(reading.captured_sources.as_deref(), Some(&page), "GUI receives real typed files, language and native cursor");
+    assert!(reading.roles.is_empty()); assert!(reading.inventory.is_empty());
+    let view = crate::product_view(&backend_library::SurfaceReply::ProjectTree(Box::new(source_tree)));
+    assert_eq!(view.package_source_membership_page(), Some(&page));
+    assert!(view.note().expect("coverage qualification").contains("compiler publication"));
+    let dto = crate::dto::ProductDto::new(&view);
+    let encoded = serde_json::to_value(&dto).expect("structured source tree");
+    assert_eq!(encoded["package_source_membership_page"]["next"]["ordinal"], 3);
+    assert_eq!(encoded["package_source_membership_page"]["files"][2]["language"], "python");
+    let decoded: crate::dto::ProductDto = serde_json::from_value(encoded).expect("closed typed projection");
+    assert_eq!(decoded.package_source_membership_page, Some(page));
+    assert!(view.records().iter().any(|row| row.title() == "src/group2/file"));
+}
+
+#[test]
+fn captured_project_tree_unavailable_presentation_does_not_claim_empty_success() {
+    let root = backend_library::native_test_paths::absolute("/captured/unavailable");
+    let page = backend_library::PackageSourceMembershipPageResultV1::Unavailable {
+        package: backend_library::PackageReference::parse(&root).expect("local root"),
+        reason: backend_library::PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+    };
+    let tree = ProjectTree::from_captured_membership(root, page.clone()).expect("typed unavailable tree");
+    assert!(read_tree(&tree).lede.contains("unavailable"));
+    assert_eq!(read_tree(&tree).captured_sources.as_deref(), Some(&page));
+    let view = crate::product_view(&backend_library::SurfaceReply::ProjectTree(Box::new(tree)));
+    assert_eq!(view.package_source_membership_page(), Some(&page));
+    assert!(view.note().expect("unavailable reason").contains("unavailable"));
+    assert!(view.records().is_empty());
+}
+
+#[test]
+fn project_tree_sources_selector_is_shared_by_cli_and_mcp_and_defaults_to_cargo() {
+    use crate::{Invocation, Request, grammar_for, lower};
+    let root = backend_library::native_test_paths::absolute("/captured/polyglot");
+    let grammar = grammar_for("project-tree").expect("tree grammar");
+    assert_eq!(grammar.tool(), "backend.project_tree");
+    assert!(grammar.options().iter().any(|option| option.name() == "sources" && option.kind() == crate::ArgumentKind::Flag));
+    let mut cli = Invocation::new(grammar); cli.push(root.clone());
+    let default = lower(&cli, &root).expect("default Cargo CLI");
+    let Request::Surface(default) = default else { panic!("surface request"); };
+    assert!(matches!(default.as_ref(), backend_library::SurfaceCommand::ProjectTree { .. }));
+    let mcp_default = Invocation::from_json(grammar, serde_json::json!({"path": root, "sources": false}).as_object().expect("arguments")).expect("MCP default selector");
+    let Request::Surface(other) = lower(&mcp_default, &root).expect("MCP default") else { panic!("surface request"); };
+    assert_eq!(default, other);
+    cli.raise("sources");
+    let Request::Surface(sources) = lower(&cli, &root).expect("captured CLI") else { panic!("surface request"); };
+    assert!(matches!(sources.as_ref(), backend_library::SurfaceCommand::CapturedProjectTree { .. }));
+    let mcp = Invocation::from_json(grammar, serde_json::json!({"path": root, "sources": true}).as_object().expect("arguments")).expect("MCP captured selector");
+    let Request::Surface(other) = lower(&mcp, &root).expect("captured MCP") else { panic!("surface request"); };
+    assert_eq!(sources, other);
+    assert!(Invocation::from_json(grammar, serde_json::json!({"path": root, "sources": "true"}).as_object().expect("arguments")).is_err(), "selector must be a boolean");
+    assert_eq!(sources.id(), backend_library::CommandId::ProjectTree, "existing tool/command family preserved");
+}
+
+#[test]
+fn cargo_tree_reading_retains_crate_inventory_and_excludes_captured_file_inventory() {
+    let tree = tree();
+    let reading = read_tree(&tree);
+    assert!(reading.captured_sources.is_none());
+    assert!(!reading.inventory.is_empty());
+    assert!(!reading.roles.is_empty());
+}
