@@ -322,6 +322,9 @@ let
         pkgs.coreutils
         pkgs.jdk25
       ];
+      NUDOX_SURFACE_TYPESCRIPT_QUERY_CORE =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).typescript-query-core;
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;

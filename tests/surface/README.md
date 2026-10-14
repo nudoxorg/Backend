@@ -464,3 +464,17 @@ They are not a claim of authored declarations or exhaustive Digest coverage.
 Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
 snapshots retain every prior performance baseline and tolerance. Rust measured
 20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.
+
+## TypeScript whole-project case (W2.3)
+
+`typescript-query-core` uses the complete MIT `@tanstack/query-core@5.62.8`
+published archive, reusing the existing fleet pin (SHA-256 in
+`.config/nix/corpus-pins.json`). Extraction retains every source, generated build,
+manifest and license file. No files or dependencies are removed to simplify the
+index. Native TypeScript witnesses are the authored `QueryClient` class at
+`src/queryClient.ts:61` and `CancelledError` at `src/retryer.ts:58`; CLI/MCP search,
+outline and package checks use the same public harness as the other real projects.
+The npm package has no runtime dependencies. Its published sources are the tested
+project, rather than a claim to cover TanStack's entire multi-package repository.
+Candidate answers/performance require explicit review and an independent ordinary
+comparison before this case can be called green.

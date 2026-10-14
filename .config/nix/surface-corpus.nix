@@ -22,8 +22,30 @@ let
   percentEncodingArchive =
     assert builtins.length percentEncodingPin == 1;
     pkgs.fetchurl { inherit (builtins.head percentEncodingPin) url hash; };
+  queryCorePin = builtins.filter (
+    candidate: candidate.coordinate == "npm:@tanstack/query-core@5.62.8"
+  ) pins;
+  queryCoreArchive =
+    assert builtins.length queryCorePin == 1;
+    pkgs.fetchurl { inherit (builtins.head queryCorePin) url hash; };
 in
 {
+  typescript-query-core =
+    pkgs.runCommand "nudox-surface-typescript-query-core-5.62.8"
+      {
+        nativeBuildInputs = [
+          pkgs.gnutar
+          pkgs.gzip
+        ];
+      }
+      ''
+        mkdir "$out"
+        tar -xzf ${queryCoreArchive} --strip-components=1 -C "$out"
+        test -f "$out/package.json"
+        test -f "$out/src/queryClient.ts"
+        test -f "$out/src/retryer.ts"
+        test -f "$out/LICENSE"
+      '';
   rust-percent-encoding =
     pkgs.runCommand "nudox-surface-rust-percent-encoding-2.3.2"
       {
