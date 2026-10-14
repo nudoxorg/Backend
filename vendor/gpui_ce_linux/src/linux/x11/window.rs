@@ -3,8 +3,8 @@ use x11rb::connection::RequestConnection;
 
 use crate::linux::X11ClientStatePtr;
 use gpui::{
-    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    AnyWindowHandle, Bounds, Decorations, DevicePixels, DrawResult, ForegroundExecutor, GpuSpecs,
+    Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
     Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
     Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowDecorations, WindowKind, WindowParams, popup::PopupNotSupportedError, px,
@@ -1726,6 +1726,10 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, scene: &Scene) {
+        let _ = self.draw_result(scene);
+    }
+
+    fn draw_result(&self, scene: &Scene) -> DrawResult {
         let mut inner = self.0.state.borrow_mut();
 
         if inner.renderer.device_lost() {
@@ -1737,21 +1741,26 @@ impl PlatformWindow for X11Window {
                 window_id: self.0.x_window,
                 visual_id: inner.visual_id,
             };
-            match inner.renderer.recover(&raw_window) {
-                Ok(()) => {}
+            inner.force_render_after_recovery = true;
+            return match inner.renderer.recover(&raw_window) {
+                Ok(()) => DrawResult::Deferred,
                 Err(err) => {
                     log::warn!("GPU recovery failed, will retry on next frame: {err}");
+                    DrawResult::Failed
                 }
-            }
-
-            inner.force_render_after_recovery = true;
-            return;
+            };
         }
 
-        inner.renderer.draw(scene);
+        let presented = inner.renderer.draw(scene);
 
         if inner.renderer.needs_redraw() {
             inner.force_render_after_recovery = true;
+        }
+
+        if presented {
+            DrawResult::Presented
+        } else {
+            DrawResult::Deferred
         }
     }
 
