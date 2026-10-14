@@ -381,14 +381,19 @@ let
     arm64-emu = pkgs.mkShell (
       crossAttrs
       // {
-        packages = crossAttrs.packages ++ [
-          pkgs.cargo-nextest
-          pkgs.qemu-user
-          # Process tests run host tools as children (the embedding fixtures
-          # are Python scripts); an emulated test execs them natively.
-          pkgs.python3
-          pkgs.coreutils
-        ];
+        packages =
+          crossAttrs.packages
+          ++ [
+            pkgs.cargo-nextest
+            pkgs.qemu-user
+            # Process tests run host tools as children (the embedding fixtures
+            # are Python scripts); an emulated test execs them natively.
+            pkgs.python3
+            pkgs.coreutils
+          ]
+          # Process-group laws require full ps field selection; the task image's
+          # BusyBox ps is not the declared process-inspection authority.
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.procps ];
         # The pinned process tools the Linux lane's shell exports (corpus-env):
         # without them, tests that clear their environment exit 127.
         NUDOX_TEST_COREUTILS_BIN = corpusEnv.NUDOX_TEST_COREUTILS_BIN;
