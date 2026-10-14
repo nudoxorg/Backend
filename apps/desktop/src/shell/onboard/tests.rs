@@ -39,6 +39,32 @@ fn first_run(cx: &mut TestAppContext, width: f32) -> Rig {
     rig_with_reads(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0, ReadPool::start(2, |_| NothingYet).expect("pool"))
 }
 
+/// Long onboarding prose has a natural content height inside the shared
+/// Reader, rather than being squeezed into the visible window at large text.
+#[gpui::test]
+fn empty_home_prose_remains_scrollable_at_200_percent(cx: &mut TestAppContext) {
+    for width in [1280.0, 390.0] {
+        let mut rig = first_run(cx, width);
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        rig.go(Intent::ZoomTo { display, percent: 200 });
+        rig.cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.0)));
+        rig.settle();
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let (height, max, mounted) = reader.read_with(rig.cx, |reader, _| reader.mounted_scroll_geometry());
+        assert!(height > gpui::px(0.0) && max > gpui::px(0.0) && mounted.is_some());
+        rig.keys("end");
+        assert!((f32::from(reader.read_with(rig.cx, |reader, _| reader.scroll_offset().y)) + f32::from(max)).abs() <= 1.0);
+        rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+        rig.repaint();
+        let private = rig.cx.update(|window, _| window.painted_texts().iter()
+            .find(|text| text.text.as_ref() == "Your source stays on this machine.")
+            .map(|text| text.bounds)).expect("the final onboarding line is actually painted");
+        let viewport = rig.cx.debug_bounds("reader-scroll").expect("actual Reader viewport");
+        assert!(private.left() >= viewport.left() && private.right() <= viewport.right()
+            && private.top() >= viewport.top() && private.bottom() <= viewport.bottom());
+    }
+}
+
 /// Mount the same focus-independent action listeners as host launch. Native
 /// menu dispatch must still work when no Shell focus handle is in the current
 /// rendered dispatch path.

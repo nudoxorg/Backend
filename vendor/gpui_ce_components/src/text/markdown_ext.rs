@@ -43,6 +43,12 @@ pub struct MarkdownRenderContext<'a> {
 }
 
 impl<'a> MarkdownRenderContext<'a> {
+    /// Current document allocation supplied through TextViewStyle, in GPUI
+    /// logical pixels. This is presentation metadata, never document origin.
+    pub fn container_width(&self) -> Option<gpui::Pixels> {
+        self.context.style.container_width
+    }
+
     pub(crate) fn new(context: &'a super::node::NodeContext, cx: &App) -> Self {
         let admission = crate::global_state::UiGlobalState::global(cx)
             .text_view_admission()

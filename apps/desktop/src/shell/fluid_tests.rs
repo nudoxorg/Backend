@@ -24,6 +24,29 @@ use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 /// The phone sizes the brief names.
 const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)];
 
+/// The ordinary cached product path must not mount a departing drawer that
+/// the person never opened. Inspect intermediate native key frames, rather
+/// than settling past the very transient observed in GUI27.
+#[gpui::test]
+fn zoom_does_not_reveal_a_closed_drawer_on_the_cached_product_path(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1280.0, 800.0);
+    rig.cx.update(|_, cx| facet::probe::disable(cx));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Full));
+    for step in 1..=5 {
+        rig.native_press("secondary-=");
+        for _ in 0..10 {
+            rig.frame(16);
+            rig.repaint();
+            assert!(rig.cx.debug_bounds("shelf-drawer").is_none(),
+                "zoom step {step}: no requested drawer means no drawer pixels or targets");
+        }
+    }
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| {
+        store.snapshot().settings().zoom.percent(&display)
+    }), 200);
+}
+
 fn frame(rig: &mut Rig) -> super::Frame {
     rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
 }

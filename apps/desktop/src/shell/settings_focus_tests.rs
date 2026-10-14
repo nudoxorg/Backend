@@ -54,11 +54,13 @@ struct WithMarkdown {
 }
 
 impl gpui::Render for WithMarkdown {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use facet::ActiveFacet as _;
         gpui::div().relative().size_full().child(self.shell.clone()).child(
             gpui::div().absolute().left(gpui::px(300.0)).top(gpui::px(200.0)).w(gpui::px(350.0)).h(gpui::px(80.0))
                 .id("unmatched-markdown").debug_selector(|| "unmatched-markdown".into())
-                .child(super::markdown::view("native-document", "Actual selectable Markdown native origin")),
+                .child(super::markdown::view("native-document", "Actual selectable Markdown native origin",
+                    facet::Measure::new(gpui::px(350.0), &cx.facet()))),
         )
     }
 }

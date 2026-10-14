@@ -32,6 +32,35 @@ pub struct AskGeometry {
     pub preview_left: Option<Pixels>,
 }
 
+/// A drawer's current viewport-relative rectangle. Openness is a fraction,
+/// independent of the pixel width that changes under resize and text zoom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawerGeometry {
+    pub plate: Bounds<Pixels>,
+    pub openness: f32,
+}
+
+impl DrawerGeometry {
+    #[must_use]
+    pub fn resolve(frame: &Frame, viewport: Size<Pixels>, status: Pixels, openness: f32) -> Self {
+        let openness = openness.clamp(0.0, 1.0);
+        let width = frame.drawer.min(viewport.width).max(px(0.0));
+        Self {
+            plate: Bounds::new(
+                point(width * (openness - 1.0), frame.titlebar.min(viewport.height)),
+                size(width, (viewport.height - frame.titlebar - status).max(px(0.0))),
+            ),
+            openness,
+        }
+    }
+
+    /// A fully closed drawer owns no painted pixels, scrim or native targets.
+    #[must_use]
+    pub fn visible(self) -> bool {
+        self.openness > 0.001 && self.plate.size.width > px(0.0) && self.plate.size.height > px(0.0)
+    }
+}
+
 /// One remembered placement decision. The panel leaves at the readability
 /// floor and returns only after a little more room is available, so repeated
 /// resize events near that floor cannot alternate sheet and panel.
@@ -198,6 +227,36 @@ mod tests {
 
     fn near(a: Pixels, b: f32) -> bool {
         (f32::from(a) - b).abs() < 0.01
+    }
+
+    #[test]
+    fn a_closed_drawer_never_enters_the_viewport_during_text_zoom_or_resize() {
+        let modes = Modes::new();
+        for (width, height, scale) in [
+            (1280.0, 800.0, 1.0), (1280.0, 800.0, 1.1),
+            (1280.0, 800.0, 1.25), (1280.0, 800.0, 1.5),
+            (1280.0, 800.0, 1.75), (1280.0, 800.0, 2.0),
+            (360.0, 640.0, 2.0), (1380.0, 880.0, 1.0),
+        ] {
+            let frame = Frame::resolve(input(width, scale), &modes);
+            let drawer = DrawerGeometry::resolve(&frame, size(px(width), px(height)), frame.status, 0.0);
+            assert!(!drawer.visible());
+            assert_eq!(drawer.plate.right(), px(0.0), "{width} px at {scale}: closed means fully outside");
+        }
+    }
+
+    #[test]
+    fn drawer_progress_preserves_occupancy_in_the_current_room() {
+        for (width, height, scale) in [(1280.0, 800.0, 2.0), (360.0, 640.0, 2.0), (320.0, 120.0, 4.0)] {
+            let frame = at(width, scale);
+            for openness in [0.0, 0.25, 0.5, 1.0] {
+                let drawer = DrawerGeometry::resolve(&frame, size(px(width), px(height)), frame.status, openness);
+                assert!(drawer.plate.left() <= px(0.0));
+                assert!(drawer.plate.right() <= px(width));
+                assert!(drawer.plate.size.height >= px(0.0));
+                assert!(near(drawer.plate.right(), f32::from(drawer.plate.size.width) * openness));
+            }
+        }
     }
 
     #[test]

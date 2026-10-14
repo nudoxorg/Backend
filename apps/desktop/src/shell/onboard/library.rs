@@ -266,6 +266,9 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
         div()
             .flex()
             .flex_col()
+            .w_full()
+            .min_w(px(0.0))
+            .flex_none()
             .items_center()
             .gap(measure.space(Space::Gutter))
             .py(measure.space(Space::Chapter))
@@ -276,11 +279,15 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             )
             .child(
                 text(ty::LEDE, &measure, palette.ink0)
+                    .max_w_full()
+                    .min_w(px(0.0))
                     .text_center()
                     .child(lede),
             )
             .child(
                 text(ty::ROW, &measure, palette.ink2)
+                    .w_full()
+                    .min_w(px(0.0))
                     .text_center()
                     .child(how),
             )
@@ -298,20 +305,23 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             .child(find)
             .child(
                 quiet(find_how, &measure, palette)
+                    .w_full()
                     .text_center()
                     .min_w(px(0.0)),
             )
-            .child(quiet(private, &measure, palette))
+            .child(quiet(private, &measure, palette).max_w_full().min_w(px(0.0)))
             .children(rust.map(|(words, missing)| {
                 if missing {
                     text(ty::ROW, &measure, palette.ink1)
                         .text_center()
+                        .max_w_full()
                         .min_w(px(0.0))
                         .child(words)
                         .into_any_element()
                 } else {
                     quiet(words, &measure, palette)
                         .text_center()
+                        .max_w_full()
                         .min_w(px(0.0))
                         .into_any_element()
                 }

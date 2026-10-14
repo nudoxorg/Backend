@@ -43,6 +43,32 @@ fn keys_page(cx: &mut TestAppContext) -> Rig {
     rig
 }
 
+/// Settings' lower rows must be reachable, not merely present in AX beneath
+/// the viewport. Exercise the real Reader extent and then click the mounted
+/// Full radio at 200%, including a narrow drawer layout.
+#[gpui::test]
+fn appearance_controls_below_the_fold_remain_reachable_at_200_percent(cx: &mut TestAppContext) {
+    for width in [1280.0, 390.0] {
+        let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 800.0);
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        rig.go(Intent::ZoomTo { display, percent: 200 });
+        rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+        let (_, height, max, mounted) = scroll(&mut rig);
+        assert!(height > 0.0 && max > 0.0 && mounted.is_some());
+        rig.keys("end");
+        near(scroll(&mut rig).0, -max);
+        let control = super::tests::native_bounds(&mut rig, "RadioButton", "Full", true)
+            .expect("Full is mounted after scrolling to the lower settings");
+        let viewport = rig.cx.debug_bounds("reader-scroll").expect("actual Reader viewport");
+        assert!(control.left() >= viewport.left() && control.right() <= viewport.right()
+            && control.top() >= viewport.top() && control.bottom() <= viewport.bottom());
+        rig.cx.simulate_click(control.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion),
+            crate::model::MotionPreference::Full);
+    }
+}
+
 #[gpui::test]
 fn page_home_and_end_use_the_mounted_reader_extent(cx: &mut TestAppContext) {
     let mut rig = keys_page(cx);

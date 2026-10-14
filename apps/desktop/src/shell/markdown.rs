@@ -13,7 +13,7 @@ use gpui::{
     App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, Window, div, px,
 };
-use gpui_component::text::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView};
+use gpui_component::text::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView, TextViewStyle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
@@ -45,8 +45,9 @@ pub(crate) fn emit_link_action(
 }
 
 /// Builds one selectable Markdown document with stable heading anchors.
-pub(crate) fn view(id: impl Into<ElementId>, source: impl Into<SharedString>) -> TextView {
+pub(crate) fn view(id: impl Into<ElementId>, source: impl Into<SharedString>, measure: Measure) -> TextView {
     TextView::markdown(id, source)
+        .style(TextViewStyle::default().container_width(measure.width()))
         .background_parse()
         .selectable(true)
         .on_link_click(emit_link_action)
@@ -59,9 +60,11 @@ pub(crate) fn scoped_view(
     id: impl Into<ElementId>,
     source: impl Into<SharedString>,
     scope: DocumentPaintIdentity,
+    measure: Measure,
 ) -> TextView {
     let extensions = scoped_extensions(scope);
     TextView::markdown(id, source)
+        .style(TextViewStyle::default().container_width(measure.width()))
         .background_parse()
         .selectable(true)
         .on_link_click(emit_link_action)
@@ -131,13 +134,13 @@ fn extensions_for(scope: Option<DocumentPaintIdentity>) -> MarkdownExtensions {
                 .markdown(inline),
             )
         })
-        .block_renderer_with_context("readme-heading-anchor", move |node, context, window, cx| {
+        .block_renderer_with_context("readme-heading-anchor", move |node, context, _window, cx| {
             let Some(data) = node.data::<HeadingData>() else {
                 return div().into_any_element();
             };
             let id = data.element_id.clone();
             let facet = cx.facet();
-            let measure = Measure::new(window.viewport_size().width, &facet);
+            let measure = Measure::new(context.container_width().unwrap_or_default(), &facet);
             let palette = facet.palette();
             let role = measure.role(match data.level {
                 1 => ty::HEAD,
@@ -288,7 +291,8 @@ mod tests {
         left: f32,
     }
     impl Render for DocumentFixture {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use facet::ActiveFacet as _;
             let painted = self.document.paint(self.place, self.stamp);
             div()
                 .size_full()
@@ -298,6 +302,7 @@ mod tests {
                     ElementId::Name(SharedString::from(painted.identity().document_id())),
                     SharedString::from(Arc::clone(&self.document.source)),
                     painted.identity(),
+                    Measure::new(window.viewport_size().width - px(self.left), &cx.facet()),
                 ))
         }
     }

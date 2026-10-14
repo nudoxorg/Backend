@@ -1,0 +1,535 @@
+{
+  "schema": "nudox.gui27-source-bound-responsive-review.v1",
+  "observed_source": "3183000a7788d20c2d4bef362a68869a24500cac",
+  "observed_binary_sha256": "af7d79ab988dc2cbe2991a2e8deda2a210d6d3184c03f0c6f6a0f48b5734c183",
+  "ordinary_binary_bytes": 726409696,
+  "source_edit_base": "c7cc731f24982a31d23a904279581a1d96273f60",
+  "actual_outer_receipt_sha256": "72a7e5afc43c7352654dbc684cc289741b1db5639afda188cee418bd4f0d53bd",
+  "actual_driver_receipt_sha256": "d5bf9a7dcb41117df94aa995083571d4dc3e7b4693c4e385a82d478f219ca73e",
+  "actual_phase_result": "failed; original GUI27 receipt preserved",
+  "all_24_pngs_and_ax_reviewed": true,
+  "scope_closed_and_permit_released": true,
+  "cases": [
+    {
+      "case": "startup-at-0500ms",
+      "png_sha256": "6eb36c5005b0d5ed7ff616b35e8f35204cba9b9af2275d6eeda94de39ec42d4d",
+      "png_relative_path": "output/focus-diagnostic/startup-at-0500ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-reading",
+      "note": "Nonblank PNG shows Library reading; no launch-relative 0.5 second pixel proof.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "startup-at-1000ms",
+      "png_sha256": "338cb180870cc29a76053431d9e70c475779d71412446bfd0bafa104ba7e78b5",
+      "png_relative_path": "output/focus-diagnostic/startup-at-1000ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-reading",
+      "note": "Nonblank PNG still shows reading. Target offset is from certification detection.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "startup-at-3000ms",
+      "png_sha256": "22bf7516391fc776480964728faa7de8bed4f786e4006f542f9c68c5763f2132",
+      "png_relative_path": "output/focus-diagnostic/startup-at-3000ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "image-ax-timing-difference",
+      "note": "PNG still shows reading; later AX-after reports0packages. These are not one exact painted frame.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "startup-at-10000ms",
+      "png_sha256": "8eeb0440e6cbff73b9093412407cb91d56e45b35d92168e11fcd20dc522fd7fc",
+      "png_relative_path": "output/focus-diagnostic/startup-at-10000ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-settled-home",
+      "note": "PNG visibly shows empty Home and Library0packages with no injected input.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "before-native-focus",
+      "png_sha256": "83054a4c419fc8a0a35d5ef0b4561bbd35f0476600a4b4b65312414ca7bc2a6c",
+      "png_relative_path": "output/focus-diagnostic/before-native-focus/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "after-native-focus",
+      "png_sha256": "adffa6edac4e3bcc499303e947729a6c8815ac721a1b8dbc2676d222a5264963",
+      "png_relative_path": "output/focus-diagnostic/after-native-focus/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": null,
+        "motion": null,
+        "settings_page": null,
+        "shelf_open": null
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "after-native-resize",
+      "png_sha256": "35ae3cb9e62ed5450706fabe0a8871d267238ebe2de564c7b2063822638ce3e2",
+      "png_relative_path": "output/focus-diagnostic/after-native-resize/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "System",
+        "settings_page": null,
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "text-200-percent",
+      "png_sha256": "2f487f7a041398576bdbb0d3b4d519f6edcd4d5e1cf6e247b0279a1689fe263c",
+      "png_relative_path": "output/focus-diagnostic/text-200-percent/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "product-layout-failure",
+      "note": "Offscreen left Library sliver is visible. Prose extends below viewport; actual scroll reachability was not exercised.",
+      "persisted": {
+        "zoom": {
+          "00000000-0000-0000-0000-000000000000": 5
+        },
+        "motion": "System",
+        "settings_page": null,
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "settings-at-zoom",
+      "png_sha256": "eb2ce11f44fc1f0e192b02f2085d0ddf6644a3d2776828fd8181b6f320bb9625",
+      "png_relative_path": "output/focus-diagnostic/settings-at-zoom/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "responsive-rail-observed-scroll-unrun",
+      "note": "Settings uses an icon rail at200%; lower Motion row is below viewport. Do not call vertical cropping a failure until scroll is tested.",
+      "persisted": {
+        "zoom": {
+          "00000000-0000-0000-0000-000000000000": 5
+        },
+        "motion": "System",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "text-reset",
+      "png_sha256": "bd6bab89a92b11ecd6b0732f6d0ba619c70756f941201d5e0cfda04998403b58",
+      "png_relative_path": "output/focus-diagnostic/text-reset/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "System",
+        "settings_page": null,
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "settings",
+      "png_sha256": "3c07dd10d05ff13384986fdfc53e23bfc44a59d760ce18f6c3937746cb60e7ef",
+      "png_relative_path": "output/focus-diagnostic/settings/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "System",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "bounds-moved-reduced",
+      "png_sha256": "44cd9554acd1feb3bec16fdb232c8db819b8634bdcfab83ac5310a786efce9b2",
+      "png_relative_path": "output/focus-diagnostic/bounds-moved-reduced/window.png",
+      "geometry": {
+        "X": 72,
+        "Y": 40,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "System",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "bounds-restored-reduced",
+      "png_sha256": "d7bd1dfb6fc8ce87d8b1fe8ecdc001e392388943938a1731db732eee639b37a3",
+      "png_relative_path": "output/focus-diagnostic/bounds-restored-reduced/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "System",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "motion-reduced",
+      "png_sha256": "2bc6168a8bec1075b302e4c97dac8c9dbc7b616db20b57d288c334503795c67a",
+      "png_relative_path": "output/focus-diagnostic/motion-reduced/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "requested-selection-observed",
+      "note": "PNG highlightsReduced and saved motion isReduced. No continuous animation proof.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Reduced",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "motion-full",
+      "png_sha256": "d8d3da69513c12ac82693cbe0c2fb57626865b5fa0b562ec52f9d65618638e6e",
+      "png_relative_path": "output/focus-diagnostic/motion-full/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "requested-selection-observed",
+      "note": "Direct fullsize PNG highlightsFull, notReduced; saved motion isFull. Requested-versus-effective mismatch is unconfirmed.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": "appearance",
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "settings-escape",
+      "png_sha256": "db4f29c08a653b6946f4838b990bde056932218e373f71b7b992862d6c7e047a",
+      "png_relative_path": "output/focus-diagnostic/settings-escape/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-native-control-frame",
+      "note": "Retained actual PNG/AX/geometry evidence; no additional indexing, restart or graph credit.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": true
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "shelf-motion-0050ms",
+      "png_sha256": "95cb7c53eb1cee48623b66491ff0917bc08ce7bac2bc9cc87e65242ad36150bb",
+      "png_relative_path": "output/focus-diagnostic/shelf-motion-0050ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "dock-collapse-observed",
+      "note": "Ctrl+backslash collapses the full inline shelf toward its spine; this is not a drawer opening.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "shelf-motion-0150ms",
+      "png_sha256": "f9c382da85ae1639ccf1329117f78551cc7a72afd643843ed81e2f916ebe0f2a",
+      "png_relative_path": "output/focus-diagnostic/shelf-motion-0150ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "collapsed-spine-observed",
+      "note": "Inline spine is visible; sparse frames do not establish smooth animation.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "shelf-motion-0350ms",
+      "png_sha256": "7c2e6e99c48586c099aac9448dd6b111a55265e7b76d0cc0c23e533af29be203",
+      "png_relative_path": "output/focus-diagnostic/shelf-motion-0350ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "collapsed-spine-observed",
+      "note": "Spine remains collapsed; no drawer is requested by this wide-window toggle.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "shelf-motion-0700ms",
+      "png_sha256": "5ef707bff0d3ce79d4bb673e0d6ce6b1c1860c3f6f909556e6e0a457bc54935a",
+      "png_relative_path": "output/focus-diagnostic/shelf-motion-0700ms/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "collapsed-spine-observed",
+      "note": "Spine remains collapsed; no continuous animation capture.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "shelf-escape",
+      "png_sha256": "7c7ecee8386197f8a10c8fd807fcbe5cd695b8cf8a2c088df4a57e6a09a1d09c",
+      "png_relative_path": "output/focus-diagnostic/shelf-escape/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "expected-no-drawer-dismissal",
+      "note": "Escape leaves the persisted inline collapse in place. No open drawer was present to dismiss.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "ask",
+      "png_sha256": "6094429eaa9207a5fcf1ae849dfc9490b35d175dce263e808ff2745226d0ec30",
+      "png_relative_path": "output/focus-diagnostic/ask/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "empty-query-input-only",
+      "note": "Focused native input and scrim are visible. Blank query on empty workspace provides no suggestions or full search proof.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "ask-escape",
+      "png_sha256": "2fd3388eb8a16012aaedb31da06640f505524103b979e78d1f2c6a2f2d053979",
+      "png_relative_path": "output/focus-diagnostic/ask-escape/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1280,
+        "HEIGHT": 800
+      },
+      "classification": "observed-return-home",
+      "note": "Ask input/scrim are dismissed; collapsed spine remains as chosen.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    },
+    {
+      "case": "after-original-size-restore",
+      "png_sha256": "43f99b0ddf9271eddc4b14843fdd353b127e970a596ce99fb6851bd34968b680",
+      "png_relative_path": "output/focus-diagnostic/after-original-size-restore/window.png",
+      "geometry": {
+        "X": 32,
+        "Y": 10,
+        "WIDTH": 1380,
+        "HEIGHT": 880
+      },
+      "classification": "observed-geometry-harness-failure",
+      "note": "Actual X32/Y10/W1380/H880 and native focus are restored. Explicit zoom{} is the sparse Reset default; the observer wrongly required nonempty zoom.",
+      "persisted": {
+        "zoom": {},
+        "motion": "Full",
+        "settings_page": null,
+        "shelf_open": false
+      },
+      "exact_frame_acceptance": false
+    }
+  ],
+  "units_and_contract": {
+    "viewport": "Window.viewport_size supplies GPUI logical Pixels; display DevicePixels conversion is separate. Text zoom scales facet metrics, not the native window dimensions.",
+    "responsive_room": "facet Room design width equals the owning region allocation divided by text_scale; existing DOCK/BAR/ASK/NOTES hysteresis ladders remain the responsive authority.",
+    "drawer": "Animate semantic openness0..1 and derive current pixel bounds from that fraction and current drawer width. Closed remains fully outside after resize or zoom; no unrequested pixels, scrim or native targets.",
+    "reader": "Root allocations may shrink on both axes; Reader content keeps natural height in one vertical GPUI scroller. Nested source/document table viewports keep their own horizontal scrolling.",
+    "overlays": "Ask text and controls use the full results-content allocation from AskScene, while the occupied animated rectangle and preview remain sourced from AskGeometry. Graph captions use Reader allocation.",
+    "documents": "Markdown block renderer receives container width through TextViewStyle/MarkdownRenderContext from the Reader Measure. Immutable Markdown extension and document identities remain unchanged; style width changes reuse parsed documents.",
+    "optional_rust_status": "Both installed-toolchain status and missing-toolchain remediation retain centered wrapping text with max_w_full and min_w(0), so their intrinsic text width cannot exceed the Home allocation. No path or remediation text is removed.",
+    "document_selection": "Full TextViewStyle equality and selection_revision invalidation remain intact. Container width can change custom-heading typography even at unchanged outer bounds; the adapter stores coordinate endpoints and block keys rather than stable character offsets. Current-frame registration alone does not prove saved selection remains valid after reflow. Selection persistence across allocation changes is not accepted by this source repair."
+  },
+  "source_specific_hypotheses": {
+    "confirmed_by_code": "The old closed over-x track targets minus drawer pixel width. Zoom changes that target without opening the drawer, animating it across the viewport edge and mounting a false departing drawer.",
+    "shared_width_mismatches": "Ask, graph captions and custom README headings formerly borrowed whole-window width; their enclosing plate/Reader allocations can be narrower. They now consume the owner allocation.",
+    "vertical_reachability": "Home and Settings already use Reader scroll; natural-height and min-width constraints are explicit in the repair. Their lower content needs native scroll reachability verification.",
+    "motion_selection": "appearance builds the requested radio selection from snapshot.settings.motion; direct Full/Reduced pixels match saved preferences. No speculative preference invalidation fix is applied.",
+    "shelf_action": "Shell.toggle_shelf uses persisted inline preference in wide mode and transient drawer state in narrow mode. The four GUI27 Shelf frames exercised wide-mode collapse only.",
+    "blank_ask": "Empty query paints input and veil; no typed result, publication, compilation, graph, history or restart evidence exists.",
+    "selection_safety": "Source inspection includes TextView.render style inequality, TextViewState.on_prepaint size/revision fences, selection_adapter update_layout_revision, and base TextSelection frame-generation registration and coordinate endpoint resolution. Existing same_size_style_reflow_invalidates_finished_selection and replacement/append controls must retain their behavior; no vendor selection contract is weakened."
+  },
+  "validation": {
+    "rustfmt_parse": "PASS:15 changed Rust files parsed by installed genuine rustfmt1.97.1 with no file writes; no compilation",
+    "git_diff_check": "PASS",
+    "new_layout_controls": "UNRUN:closed-drawer model acrosszoom/resize; intermediate native zoom frames without probe; emptyHome200%scroll; Settings200%scroll and actualFullradio activation",
+    "compiler_and_all_tests": "UNRUN:requires fresh managed guard and permit",
+    "new_native_product_pixels": "UNRUN:new atomic source has not been built or executed"
+  },
+  "required_runtime_gates": [
+    "Build a new ordinary app from the committed source/tree under fresh canonical fleet guard, exact managed permit and all original disk/memory/cumulative caps; old318ELF does not validate this repair.",
+    "Repeat no-input startup preserving PNG versus AX timing and actual spawn-relative capture times; no synthetic resize rescue of blank startup.",
+    "Inject five zoomkeys150ms apart; inspect every native frame for an unrequested drawer/sliver at200% and after resize/Reset underFull andReduced.",
+    "Open the responsive shelf drawer through its actual toggle at a narrow logical viewport; verify navigation, native focus, Escape and restored preferences.",
+    "Scroll actualHome200%to final prose and Settings200%to Motion; activate visible native radio controls and compare painted selection to persisted sparsezoom/motion.",
+    "At390px and200%, inspect and scroll both Home Rust status branches using a real installed toolchain with a long rustc path and actual missing-toolchain remediation; every word must remain reachable without horizontal clipping.",
+    "Exercise typed populatedAskresults, docs/source tables, Graph and preview at narrow owner allocations with exact source/owner receipts; no fabricated scene or graph fixtures as product proof.",
+    "Select and copy README text before and after real allocation changes, including changes that keep the680px document bounds constant. Existing invalidation may clear selection; persistence is an unresolved acceptance gate and requires a stable character-endpoint contract before changing stale-geometry fences.",
+    "Continuous motion capture remains UNRUN while realizedFFmpeg has no x11grab; sparsePNG snapshots do not establish smoothness."
+  ]
+}

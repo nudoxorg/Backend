@@ -27,7 +27,7 @@ use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement, Role,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, ScrollHandle, div, px,
+    Subscription, Task, Window, ScrollHandle, Pixels, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use std::cell::Cell;
@@ -207,6 +207,8 @@ pub(crate) struct Ask {
     /// keeps the shown place instead of opening the first row.
     walked: bool,
     renders: u64,
+    /// The full results content width supplied by the owning Ask scene.
+    measure_width: Pixels,
     pending: Option<Task<()>>,
     scroll: ScrollHandle,
     /// One pending keyboard request; resolved only by the current painted list.
@@ -247,12 +249,21 @@ impl Ask {
             selected: 0,
             walked: false,
             renders: 0,
+            measure_width: px(0.0),
             pending: None,
             scroll: ScrollHandle::new(),
             scroll_request: None,
             row_focus: Vec::new(),
             all_focus: cx.focus_handle().tab_stop(true),
             _subscriptions: vec![typed, landed],
+        }
+    }
+
+    pub(crate) fn set_measure_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.max(px(0.0));
+        if self.measure_width != width {
+            self.measure_width = width;
+            cx.notify();
         }
     }
 
@@ -888,8 +899,7 @@ impl Ask {
         self.renders = self.renders.saturating_add(1);
         let facet = cx.facet();
         let palette = facet.palette();
-        let viewport = window.viewport_size();
-        let measure = Measure::new(viewport.width, &facet);
+        let measure = Measure::new(self.measure_width, &facet);
         let choices = self.choices(cx);
         let all_results = self.all_results(cx).filter(|_| !choices.is_empty());
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
@@ -899,7 +909,7 @@ impl Ask {
         self.apply_result_scroll(&choices, &scroll_map, cx);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
-            .flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll);
+            .flex_1().min_w_0().min_h_0().overflow_x_hidden().overflow_y_scroll().track_scroll(&self.scroll);
         if let Some(status) = semantic_status {
             let status_words = semantic_search_label(status);
             list = list.child(

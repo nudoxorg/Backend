@@ -2181,7 +2181,7 @@ impl Reader {
         let any_wide = leaves.iter().any(|leaf| leaf.wide);
         let reading = folio + beside;
         let column_width = if any_wide { wide_measure.width().max(reading).min(content) } else { reading };
-        let mut column = div().flex().flex_col().gap(gap).w(column_width).max_w(content);
+        let mut column = div().flex().flex_col().flex_none().min_w(px(0.0)).gap(gap).w(column_width).max_w(content);
         for leaf in leaves {
             let is_wide = leaf.wide;
             // Each block prints under the one edge (reading order, by clip).
@@ -3069,7 +3069,10 @@ impl Render for Reader {
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
             let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| map.show(&current.route, source.as_ref(), window, cx));
+            map.update(cx, |map, cx| {
+                map.set_measure_width(self.core.width(), cx);
+                map.show(&current.route, source.as_ref(), window, cx);
+            });
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);
@@ -3225,6 +3228,8 @@ impl Render for Reader {
         let stack = div()
             .relative()
             .w_full()
+            .min_w(px(0.0))
+            .flex_none()
             .flex()
             .justify_center()
             .child(offset(div().id(("place", current.key)).child(body)).x(drift));
@@ -3247,13 +3252,16 @@ impl Render for Reader {
         let content_layout = Rc::new(Cell::new(None));
         let content = ScrollContent {
             layout: Rc::clone(&content_layout),
-            child: div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale))
+            child: div().w_full().min_w(px(0.0)).flex_none().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale))
                 .child(stack).into_any_element(),
         };
         let scroller = div()
             .id("reader-scroll")
             .debug_selector(|| "reader-scroll".to_owned())
             .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_x_hidden()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .key_context(super::keys::READER_VIEWPORT)

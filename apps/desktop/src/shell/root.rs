@@ -14,7 +14,7 @@ use facet::overlay::float;
 use gpui_component::FocusTrapElement as _;
 use gpui_component::WindowExt as _;
 use super::focus::{Target, Zone};
-use super::frame::{Frame, FrameInput, ShelfMode};
+use super::frame::{DrawerGeometry, Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Hinted, Step};
 use super::keyboard::KeyboardClaim;
 use super::keys::{self, CONTEXT};
@@ -2620,10 +2620,11 @@ impl Render for Shell {
             });
             self.drawer_focus.focus(window, cx);
         }
-        let drawer = f32::from(frame.drawer);
-        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
-
-        self.drawer_departing = !over && over_x > -drawer + 0.5;
+        // Animate presence, never a negative pixel offset. Changing a closed
+        // drawer's width must not manufacture an entrance during text zoom.
+        let openness = self.motion.animate("shelf-over-open", if over { 1.0 } else { 0.0 }, spec::SETTLE, window, cx);
+        let drawer_geometry = DrawerGeometry::resolve(&frame, viewport, px(status_height), openness);
+        self.drawer_departing = !over && drawer_geometry.visible();
         if !over && !self.drawer_departing {
             if let Some(saved) = self.drawer_return.take() {
                 self.shelf_over.update(cx, |shelf, _| shelf.targets.set_active(false));
@@ -2648,6 +2649,7 @@ impl Render for Shell {
             cx,
         );
         self.ask_results_mounted = ask_scene.live_results;
+        self.ask.update(cx, |ask, cx| ask.set_measure_width(ask_scene.content_width, cx));
         let background_input_allowed = !self.ask_open && !over && self.background_input_allowed()
             && snapshot.overlay() != Some(Overlay::AddProject);
         self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));
@@ -2690,6 +2692,8 @@ impl Render for Shell {
 
         let body = div()
             .flex_1()
+            .w_full()
+            .min_w(px(0.0))
             .min_h(px(0.0))
             .flex()
             .children((shelf_width > 0.5).then(|| {
@@ -2812,6 +2816,8 @@ impl Render for Shell {
                 div()
                     .relative()
                     .size_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
                     .flex()
                     .flex_col()
                     .child(measured(
@@ -2840,13 +2846,13 @@ impl Render for Shell {
         } else if self.hand_open {
             self.hand_open = false;
         }
-        if over || over_x > -drawer + 0.5 {
+        if over || drawer_geometry.visible() {
             // The drawer's scrim: the page dims as the shelf slides over it,
             // and a click on the strip of page left beside it puts it away. The
             // whole is a deferred draw above the page's own (a fanned hand of
             // tiles paints deferred too, and must not cover the drawer) and
             // below the float layer's cards (`float::PRIORITY`).
-            let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
+            let opened = drawer_geometry.openness;
             let shelf_body = measured(&self.shelf_over, StyleRefinement::default().size_full());
             let shelf_body: AnyElement = if over && !self.ask_open
                 && snapshot.overlay() != Some(Overlay::AddProject)
@@ -2860,8 +2866,8 @@ impl Render for Shell {
                     div()
                         .id("shelf-over")
                         .absolute()
-                        .top(frame.titlebar)
-                        .bottom(px(status_height))
+                        .top(drawer_geometry.plate.origin.y)
+                        .h(drawer_geometry.plate.size.height)
                         .left_0()
                         .right_0()
                         .child(
@@ -2885,6 +2891,7 @@ impl Render for Shell {
                         .child(
                             div()
                                 .id("shelf-drawer")
+                                .debug_selector(|| "shelf-drawer".to_owned())
                                 .role(gpui::Role::Dialog)
                                 .aria_label("Library shelf")
                                 .track_focus(&self.drawer_focus)
@@ -2893,8 +2900,8 @@ impl Render for Shell {
                                 .absolute()
                                 .top_0()
                                 .bottom_0()
-                                .left(px(over_x))
-                                .w(frame.drawer)
+                                .left(drawer_geometry.plate.origin.x)
+                                .w(drawer_geometry.plate.size.width)
                                 .bg(palette.g2)
                                 .child(shelf_body)
                                 .focus_trap("shelf-drawer-trap", &self.drawer_focus),
