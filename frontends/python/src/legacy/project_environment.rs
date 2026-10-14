@@ -1362,23 +1362,52 @@ fn canonical_trusted_directory(
     installation: &Path,
     control: PythonProjectControl<'_>,
 ) -> Result<PathBuf, CheckerError> {
+    canonical_trusted_directory_with_io(
+        selected,
+        installation,
+        control,
+        Path::canonicalize,
+        |path| backend_platform::DirectoryCapability::open_read_only_source(path),
+    )
+}
+
+/// A directory operation's success or error cannot outrank a stop that arrived
+/// during that operation. The callback is the same real checkpoint in production.
+fn controlled_directory_io<T>(
+    operation: impl FnOnce() -> std::io::Result<T>,
+    mut check: impl FnMut() -> Result<(), CheckerError>,
+) -> Result<T, CheckerError> {
+    check()?;
+    let result = operation();
+    check()?;
+    result.map_err(io_error)
+}
+
+fn canonical_trusted_directory_with_io<T>(
+    selected: &Path,
+    installation: &Path,
+    control: PythonProjectControl<'_>,
+    canonicalize: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+    open: impl FnOnce(&Path) -> std::io::Result<T>,
+) -> Result<PathBuf, CheckerError> {
     checkpoint(control)?;
     normal_absolute(selected)?;
     normal_absolute(installation)?;
-    let actual = selected.canonicalize().map_err(io_error)?;
+    let actual = controlled_directory_io(|| canonicalize(selected), || checkpoint(control))?;
     normal_absolute(&actual)?;
     // The existing component codec removes only the native verbatim-drive
     // wrapper. Decoded local witnesses therefore compare the same absolute
     // component identity as producer-side canonical paths, without folding.
     let actual_components = PathBuf::from(canonical_path_spelling(&actual)?);
     let installation_components = PathBuf::from(canonical_path_spelling(installation)?);
+    checkpoint(control)?;
     if !actual_components.starts_with(&installation_components) {
         return Err(project_error(
             "",
             "trusted interpreter directory escapes its selected installation",
         ));
     }
-    backend_platform::DirectoryCapability::open_read_only_source(&actual).map_err(io_error)?;
+    controlled_directory_io(|| open(&actual), || checkpoint(control))?;
     checkpoint(control)?;
     Ok(actual)
 }
@@ -1392,7 +1421,10 @@ fn validate_stdlib_selection(
         &interpreter.installation,
         control,
     )?;
-    if canonical_path_spelling(&current)? != canonical_path_spelling(&interpreter.stdlib)? {
+    let matches =
+        canonical_path_spelling(&current)? == canonical_path_spelling(&interpreter.stdlib)?;
+    checkpoint(control)?;
+    if !matches {
         return Err(project_error(
             "",
             "trusted interpreter stdlib selection changed during capture",
@@ -2356,6 +2388,94 @@ mod tests {
             ],
             interpreter: Some(interpreter),
         }
+    }
+
+    #[test]
+    fn stdlib_io_stops_outrank_operation_errors_success_and_outside_root_refusal()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let installation = root.path.clone();
+        let selected = installation.join("stdlib");
+        let cancelled = AtomicBool::new(false);
+        for failure in [false, true] {
+            cancelled.store(false, Ordering::Release);
+            let result = canonical_trusted_directory_with_io(
+                &selected,
+                &installation,
+                control(&cancelled),
+                |_| {
+                    cancelled.store(true, Ordering::Release);
+                    if failure {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "controlled canonicalization error",
+                        ))
+                    } else {
+                        Ok(installation.parent().unwrap().join("outside-selected-root"))
+                    }
+                },
+                |_| -> std::io::Result<()> {
+                    panic!("stop must precede confinement or opening");
+                },
+            );
+            assert!(matches!(result, Err(CheckerError::Cancelled { .. })));
+        }
+        for failure in [false, true] {
+            cancelled.store(false, Ordering::Release);
+            let result = canonical_trusted_directory_with_io(
+                &selected,
+                &installation,
+                control(&cancelled),
+                |path| Ok(path.to_path_buf()),
+                |_| {
+                    cancelled.store(true, Ordering::Release);
+                    if failure {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "controlled directory-open error",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(result, Err(CheckerError::Cancelled { .. })));
+        }
+        // Inject a clock checkpoint at the exact post-I/O boundary. This proves
+        // both variants without scheduler-dependent waits or sleeping threads.
+        for failure in [false, true] {
+            let mut checks = 0usize;
+            let result = controlled_directory_io(
+                || {
+                    if failure {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "controlled deadline I/O error",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    checks += 1;
+                    if checks == 2 {
+                        Err(CheckerError::Deadline {
+                            phase: "controlled-directory-io",
+                        })
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(CheckerError::Deadline {
+                    phase: "controlled-directory-io"
+                })
+            ));
+            assert_eq!(checks, 2);
+        }
+        Ok(())
     }
 
     #[test]
