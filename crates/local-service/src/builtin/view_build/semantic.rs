@@ -1066,9 +1066,59 @@ impl<'a> StructuralSites<'a> {
 /// Implementation blocks and parameters are not counted: they have no
 /// structural twin. A key with exactly one entity on each side pairs without
 /// a span.
+/// The marker name the module owner row of a source file carries: the file
+/// stem is its name, which is what the structural module row of that file
+/// is called, so the two are one declaration.
+fn module_owner_stem<'p>(
+    kind: backend_semantic::ir::ItemKind,
+    name: Option<&[u8]>,
+    path: &'p str,
+) -> Option<&'p str> {
+    (kind == backend_semantic::ir::ItemKind::Module
+        && name == Some(backend_semantic::ir::MODULE_OWNER_NAME))
+    .then(|| std::path::Path::new(path).file_stem().and_then(|stem| stem.to_str()))
+    .flatten()
+}
+
+/// Whether `entity` is a copy of a declaration another file of the package
+/// writes. A Go image holds every declaration of its package: those of its own
+/// file, and copies of the siblings' that have no source in this file. The
+/// copy is not a declaration of this file; the image of the file that writes
+/// the declaration publishes its row. A member (a field, say) has no source of
+/// its own: it is written in the file of the declaration it belongs to, so it
+/// is a copy exactly when that declaration is.
+pub(crate) fn is_sibling_copy(
+    language: backend_semantic::vocabulary::Language,
+    image: &SemanticImageView<'_>,
+    entity: &backend_semantic::ir::SemanticEntity,
+    path: &str,
+) -> bool {
+    use backend_semantic::ir::{ItemKind, SemanticReader as _};
+    if language != backend_semantic::vocabulary::Language::Go || entity.kind == ItemKind::Module {
+        return false;
+    }
+    let mut current = *entity;
+    // Parents are strictly outer declarations: a short chain, bounded anyway.
+    for _ in 0..16 {
+        if current
+            .source
+            .is_some_and(|span| image.atom(span.file()) == Some(path.as_bytes()))
+        {
+            return false;
+        }
+        match current.parent.and_then(|parent| image.entity(parent)) {
+            Some(parent) if parent.kind != ItemKind::Module => current = parent,
+            _ => return true,
+        }
+    }
+    true
+}
+
 fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     session: &DocumentationSession<'_, Reader>,
     declarations: &[&'a backend_compile::SourceDeclaration],
+    path: &str,
+    is_copy: impl Fn(&backend_semantic::ir::SemanticEntity) -> bool,
 ) -> Result<BTreeMap<DeclarationIdentity, &'a backend_compile::SourceDeclaration>, BuiltinModelError>
 {
     let mut sites = BTreeMap::new();
@@ -1100,7 +1150,8 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
             entity.entity.kind,
             backend_semantic::ir::ItemKind::Implementation
                 | backend_semantic::ir::ItemKind::Parameter
-        ) {
+        ) || is_copy(&entity.entity)
+        {
             continue;
         }
         let family = declaration_family(declaration_kind(entity.entity.kind));
@@ -1108,6 +1159,8 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
             // Structural declarations have no anonymous callable identifier.
             continue;
         };
+        let name = module_owner_stem(entity.entity.kind, Some(name), path)
+            .map_or(name, str::as_bytes);
         semantic.entry((name.to_vec(), family)).or_default().push((
             entity.entity.source.map(|span| span.start()),
             entity.entity.version.identity(),
@@ -1158,7 +1211,10 @@ pub(super) fn project_image_rows(
     site_declarations: &[&backend_compile::SourceDeclaration],
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let sites = semantic_sites(&session, site_declarations)?;
+    let language = backend_semantic::vocabulary::Language::from(profile);
+    let sites = semantic_sites(&session, site_declarations, path, |entity| {
+        is_sibling_copy(language, image, entity, path)
+    })?;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -1173,7 +1229,12 @@ pub(super) fn project_image_rows(
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+        if is_sibling_copy(language, image, &entity.entity, path) {
+            continue;
+        }
         let name = super::semantic_display_name(entity.name)?;
+        let name = module_owner_stem(entity.entity.kind, entity.name.named_bytes(), path)
+            .unwrap_or(name);
         let identity = entity.entity.version.identity();
         let coordinate = semantic_coordinate(&project.label, identity, name);
         let symbol = semantic_symbol(project.package, identity);
@@ -1257,7 +1318,11 @@ pub(super) fn project_image_rows(
                     "project semantic parent is outside the canonical entity closure".to_owned(),
                 ));
             }
-            row = row.with_parent(semantic_symbol(project.package, parent_identity));
+            // A parent that is only a copy has no row here; the structural
+            // lane still parents the declaration under the one that does.
+            if !is_sibling_copy(language, image, &parent.entity, path) {
+                row = row.with_parent(semantic_symbol(project.package, parent_identity));
+            }
         }
         projected.push(ProjectedRow {
             row,

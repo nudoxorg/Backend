@@ -69,9 +69,84 @@ pub(crate) struct ProjectCallableIndex {
     proven_tsz_coordinates:
         BTreeMap<([u8; 32], String, [u8; 32], u32, u32, ItemKind), Vec<DeclarationIdentity>>,
     python_program_identity: Option<[u8; 32]>,
+    /// The import path of the project's Go module, when it has one: the root
+    /// every in-project Go import path is relative to.
+    go_module: Option<String>,
+    /// The package-relative files the selected images were compiled from, per
+    /// language. A join keyed by files may answer for files that are all here
+    /// even when the language's publication is not complete: no declaration
+    /// of those files is unseen.
+    covered: BTreeMap<backend_semantic::vocabulary::Language, BTreeSet<String>>,
+}
+
+/// The module path a Go project declares in its `go.mod`, when it has one.
+///
+/// Import paths of Go packages are rooted at it, which no directory name of
+/// the project can stand in for.
+pub(crate) fn go_module_path(root: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(root.join("go.mod"))
+        .ok()?
+        .take(64 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    text.lines().find_map(|line| {
+        let module = line.trim().strip_prefix("module")?;
+        if !module.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let module = module.split("//").next().unwrap_or_default().trim();
+        let module = module.trim_matches(|c| c == '"' || c == '`');
+        (!module.is_empty() && !module.contains(char::is_whitespace)).then(|| module.to_owned())
+    })
 }
 
 impl ProjectCallableIndex {
+    /// Names the module path the project's Go import paths are rooted at.
+    #[must_use]
+    pub(crate) fn with_go_module(mut self, module: Option<String>) -> Self {
+        self.go_module = module;
+        self
+    }
+
+    /// The project files a package specifier names, as written in `caller_path`.
+    ///
+    /// A Go import path inside the project's own module names exactly one
+    /// directory, and one outside it names none of the project's files;
+    /// without a known module Go paths fall back to matching directory names.
+    pub(crate) fn specifier_paths(
+        &self,
+        specifier: &str,
+        caller_path: &str,
+        project_paths: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        if let Some(module) = self.go_module.as_deref()
+            && caller_path.ends_with(".go")
+            && !specifier.starts_with('.')
+            && specifier.contains('/')
+        {
+            let directory = if specifier == module {
+                Some("")
+            } else {
+                specifier
+                    .strip_prefix(module)
+                    .and_then(|rest| rest.strip_prefix('/'))
+            };
+            return directory.map_or_else(BTreeSet::new, |directory| {
+                project_paths
+                    .iter()
+                    .filter(|path| {
+                        path.ends_with(".go")
+                            && path.rsplit_once('/').map_or("", |(parent, _)| parent) == directory
+                    })
+                    .cloned()
+                    .collect()
+            });
+        }
+        resolve_specifier_paths(specifier, caller_path, project_paths)
+    }
+
     pub(crate) fn build_from_bytes(images: &[&[u8]]) -> Result<Self, BuiltinModelError> {
         let mut opened = Vec::with_capacity(images.len());
         for bytes in images {
@@ -216,6 +291,7 @@ impl ProjectCallableIndex {
         let tsz_program_identity = (manifest_complete && legacy_image_program)
             .then(|| typescript_program_identity(&source_manifest))
             .flatten();
+        let mut covered = BTreeMap::<_, BTreeSet<String>>::new();
         for image in images {
             let image = *image;
             let path = compiled_source_path(image)?;
@@ -223,6 +299,16 @@ impl ProjectCallableIndex {
                 ImageProvenance::Captured { source, .. } => Some(*source.identity),
                 ImageProvenance::Unavailable => None,
             };
+            let language = match image.image_facts().provenance {
+                ImageProvenance::Captured { recipe, .. } => Some(recipe.profile.language()),
+                ImageProvenance::Unavailable => None,
+            };
+            if let Some(language) = language {
+                covered.entry(language).or_default().insert(path.clone());
+            }
+            // Name-keyed joins need the language's whole publication; joins
+            // keyed by files only need those files (see `resolves_through`).
+            let complete = may_resolve_scope(image, scopes);
             let owning_programs = program_members.get(
                 &super::source_availability::NativeProgramImageBacking::of(image.as_ref()),
             );
@@ -280,9 +366,12 @@ impl ProjectCallableIndex {
                         }
                     }
                 }
-                // Partial targets remain available to exact-coordinate joins.
-                // They cannot enter a different complete lane's name-based index.
-                if !may_resolve_scope(image, scopes) {
+                // A copy of a sibling's declaration is supplied by the image of
+                // the file that writes it; indexing it again would make one
+                // declaration look like several.
+                if language.is_some_and(|language| {
+                    super::semantic::is_sibling_copy(language, image, &entity.entity, &path)
+                }) {
                     continue;
                 }
                 // Anonymous callables participate in exact source-span joins,
@@ -299,6 +388,7 @@ impl ProjectCallableIndex {
                         .or_default()
                         .push(identity);
                     if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
+                        .filter(|_| complete)
                     {
                         by_owner_name
                             .entry((immediate.clone(), name.to_owned()))
@@ -327,7 +417,7 @@ impl ProjectCallableIndex {
                         .or_default()
                         .push(identity);
                 }
-                if entity.entity.kind == ItemKind::Field {
+                if entity.entity.kind == ItemKind::Field && complete {
                     if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
                     {
                         field_by_owner_name
@@ -342,10 +432,12 @@ impl ProjectCallableIndex {
                         }
                     }
                 }
-                if matches!(
-                    entity.entity.kind,
-                    ItemKind::Constant | ItemKind::Static | ItemKind::Variant
-                ) {
+                if complete
+                    && matches!(
+                        entity.entity.kind,
+                        ItemKind::Constant | ItemKind::Static | ItemKind::Variant
+                    )
+                {
                     if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
                     {
                         value_by_owner_name_kind
@@ -373,11 +465,30 @@ impl ProjectCallableIndex {
             tsz_program_identity,
             proven_tsz_coordinates,
             python_program_identity,
+            go_module: None,
+            covered,
         })
     }
 
     fn may_resolve_scope(&self, image: &SemanticImageView<'_>) -> bool {
         may_resolve_scope(image, &self.scopes)
+    }
+
+    /// Whether a join keyed by `paths` may answer for `image`'s language: its
+    /// publication is complete, or every file the paths name was compiled, so
+    /// no declaration of them is unseen and a unique match is a real one.
+    fn resolves_through(&self, image: &SemanticImageView<'_>, paths: &BTreeSet<String>) -> bool {
+        if self.may_resolve_scope(image) {
+            return true;
+        }
+        let ImageProvenance::Captured { recipe, .. } = image.image_facts().provenance else {
+            return false;
+        };
+        !paths.is_empty()
+            && self
+                .covered
+                .get(&recipe.profile.language())
+                .is_some_and(|covered| paths.iter().all(|path| covered.contains(path)))
     }
 
     pub(crate) fn resolve(
@@ -820,9 +931,6 @@ pub(crate) fn foreign_package_call_retarget(
     {
         return Ok(Some(identity));
     }
-    if !callable_index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     if matches!(image.image_facts().provenance,
         ImageProvenance::Captured { recipe, .. }
             if matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::Python(_)))
@@ -864,11 +972,17 @@ pub(crate) fn foreign_package_call_retarget(
         let Some(module) = python_record_module_specifier(path, display) else {
             return Ok(None);
         };
-        let resolved_paths = resolve_specifier_paths(module, caller_path, project_paths);
+        let resolved_paths = callable_index.specifier_paths(module, caller_path, project_paths);
+        if !callable_index.resolves_through(image, &resolved_paths) {
+            return Ok(None);
+        }
         return Ok(callable_index.resolve_mention(&resolved_paths, display, ItemKind::Record));
     }
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = callable_index.specifier_paths(specifier, caller_path, project_paths);
+    if !callable_index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(callable_index.resolve(&resolved_paths, display))
 }
 
@@ -971,9 +1085,6 @@ pub(crate) fn foreign_package_mention_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1000,7 +1111,10 @@ pub(crate) fn foreign_package_mention_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(index.resolve_mention(&resolved_paths, display, kind))
 }
 
@@ -1011,9 +1125,6 @@ pub(crate) fn foreign_package_import_mention_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1040,7 +1151,10 @@ pub(crate) fn foreign_package_import_mention_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(index.resolve_import_mention(&resolved_paths, display))
 }
 
@@ -1087,10 +1201,14 @@ pub(crate) fn join_project_mention(
     index: &ProjectCallableIndex,
     published: &BTreeSet<DeclarationIdentity>,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !matches!(
+    use backend_semantic::ir::LinkKind;
+    // A type named as a base or as an implemented interface is mentioned the
+    // way a type named in a signature is.
+    let names_a_type = matches!(
         link_kind,
-        backend_semantic::ir::LinkKind::TypeReference | backend_semantic::ir::LinkKind::Imports
-    ) {
+        LinkKind::TypeReference | LinkKind::Implements | LinkKind::Inherits
+    );
+    if !names_a_type && link_kind != LinkKind::Imports {
         return Ok(None);
     }
     let identity = if let Some(identity) =
@@ -1101,7 +1219,7 @@ pub(crate) fn join_project_mention(
         foreign_package_import_mention_retarget(image, external, caller_path, project_paths, index)?
     {
         Some(identity)
-    } else if matches!(link_kind, backend_semantic::ir::LinkKind::TypeReference) {
+    } else if names_a_type {
         foreign_qualified_type_mention_retarget(image, external, index)?
     } else {
         None
@@ -1116,9 +1234,6 @@ pub(crate) fn foreign_package_field_static_constant_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1145,7 +1260,10 @@ pub(crate) fn foreign_package_field_static_constant_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     let static_match = index.resolve_mention(&resolved_paths, display, ItemKind::Static);
     let constant_match = index.resolve_mention(&resolved_paths, display, ItemKind::Constant);
     match (static_match, constant_match) {
@@ -1161,9 +1279,6 @@ pub(crate) fn foreign_package_field_function_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1190,7 +1305,10 @@ pub(crate) fn foreign_package_field_function_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     let static_match = index.resolve_mention(&resolved_paths, display, ItemKind::Static);
     let constant_match = index.resolve_mention(&resolved_paths, display, ItemKind::Constant);
     match (static_match, constant_match) {
@@ -1206,9 +1324,6 @@ pub(crate) fn foreign_package_field_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1235,7 +1350,10 @@ pub(crate) fn foreign_package_field_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(index.resolve_mention(&resolved_paths, display, ItemKind::Field))
 }
 
@@ -1327,9 +1445,6 @@ pub(crate) fn foreign_package_value_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1362,7 +1477,10 @@ pub(crate) fn foreign_package_value_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(index.resolve_mention(&resolved_paths, display, kind))
 }
 
@@ -1373,9 +1491,6 @@ pub(crate) fn foreign_package_function_value_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
-    if !index.may_resolve_scope(image) {
-        return Ok(None);
-    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1402,7 +1517,10 @@ pub(crate) fn foreign_package_function_value_retarget(
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
-    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let resolved_paths = index.specifier_paths(specifier, caller_path, project_paths);
+    if !index.resolves_through(image, &resolved_paths) {
+        return Ok(None);
+    }
     Ok(index.resolve(&resolved_paths, display))
 }
 
@@ -1521,7 +1639,7 @@ pub(crate) fn foreign_display_name(
 #[cfg(test)]
 mod tsz_source_coordinate_tests {
     use super::{
-        ProjectCallableIndex, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, join_project_call,
+        ProjectCallableIndex, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, go_module_path, join_project_call,
         join_project_field, typescript_program_identity,
     };
     use backend_semantic::ir::{
@@ -1575,7 +1693,68 @@ mod tsz_source_coordinate_tests {
             tsz_program_identity: Some(program),
             proven_tsz_coordinates: BTreeMap::new(),
             python_program_identity: None,
+            go_module: None,
+            covered: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn a_go_import_path_inside_the_module_names_exactly_its_directory() {
+        let paths = [
+            "cache.go",
+            "decoder.go",
+            "sub/x.go",
+            "sub/deep/y.go",
+            "other/cache.go",
+        ]
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let index = index([1; 32], [2; 32]).with_go_module(Some("github.com/gorilla/schema".to_owned()));
+        let files = |specifier: &str, caller: &str| {
+            index
+                .specifier_paths(specifier, caller, &paths)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            files("github.com/gorilla/schema", "sub/x.go"),
+            vec!["cache.go", "decoder.go"],
+            "the module's root package is the files at the root"
+        );
+        assert_eq!(
+            files("github.com/gorilla/schema/sub", "decoder.go"),
+            vec!["sub/x.go"]
+        );
+        assert!(
+            files("github.com/gorilla/mux", "decoder.go").is_empty(),
+            "a package of another module has no file here"
+        );
+        assert!(files("github.com/gorilla/schema/missing", "decoder.go").is_empty());
+        let unknown = index([1; 32], [2; 32]);
+        assert!(
+            !unknown
+                .specifier_paths("github.com/gorilla/schema/sub", "decoder.go", &paths)
+                .is_empty(),
+            "without a module path the directory names are matched, as before"
+        );
+    }
+
+    #[test]
+    fn the_module_path_comes_from_go_mod() {
+        let root = std::env::temp_dir().join(format!("f-gomod-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join("go.mod"),
+            "// a comment\nmodule github.com/x/y // trailing\n\ngo 1.21\nrequire modulefoo v1\n",
+        )
+        .expect("go.mod");
+        assert_eq!(go_module_path(&root).as_deref(), Some("github.com/x/y"));
+        std::fs::write(root.join("go.mod"), "module \"github.com/quoted\"\n").expect("go.mod");
+        assert_eq!(go_module_path(&root).as_deref(), Some("github.com/quoted"));
+        std::fs::remove_file(root.join("go.mod")).expect("remove");
+        assert_eq!(go_module_path(&root), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn coordinate(

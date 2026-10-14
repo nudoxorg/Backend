@@ -221,6 +221,10 @@ pub(super) fn execute_semantic_graph(
     let Some(binding) = source_binding else {
         return Ok(None);
     };
+    let root = sources
+        .projects
+        .get(&package.to_bytes())
+        .map(|project| std::path::PathBuf::from(&project.label));
     let project_paths = project_paths_for_package(&sources, package);
     let semantic_id = backend_engine::RowId::Symbol(semantic_symbol);
     let mut relations = project_semantic_graph_relations(
@@ -231,10 +235,15 @@ pub(super) fn execute_semantic_graph(
         semantic_id,
         include_incoming,
         &project_paths,
+        root.as_deref(),
         &available.retargeting_scopes(package, &profile_scopes),
     )?;
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.coordinate_pairs_outside(
+            &sources,
+            package,
+            &covered_source_paths(&activations)?,
+        )?
     } else {
         Vec::new()
     };
@@ -247,21 +256,31 @@ pub(super) fn execute_semantic_graph(
     ) {
         relations.insert(relation);
     }
-    let relations = if canonical_endpoints {
-        relations
-            .into_iter()
-            .map(|relation| {
-                backend_engine::GraphRelation::new(
+    // One edge per pair and kind, as strongly known as any lane knows it: a
+    // name match never stands beside what the compiler proved.
+    let relations = {
+        let mut strongest = std::collections::BTreeMap::new();
+        for relation in relations {
+            let (from, to) = if canonical_endpoints {
+                (
                     view.canonical_row_id(relation.from),
                     view.canonical_row_id(relation.to),
-                    relation.relation,
                 )
+            } else {
+                (relation.from, relation.to)
+            };
+            let known = strongest
+                .entry((from, to, relation.relation))
+                .or_insert(relation.confidence);
+            *known = (*known).max(relation.confidence);
+        }
+        strongest
+            .into_iter()
+            .map(|((from, to, relation), confidence)| {
+                backend_engine::GraphRelation::new(from, to, relation).with_confidence(confidence)
             })
-            .collect::<BTreeSet<_>>()
-    } else {
-        relations
+            .collect::<Vec<_>>()
     };
-    let relations = relations.into_iter().collect::<Vec<_>>();
     let mut snapshot = library
         .graph_from_semantic_relations(semantic_query, &relations)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
@@ -325,6 +344,25 @@ pub(super) fn execute_structural_call_graph(
         .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
+/// The package-relative paths of the files the selected images compiled.
+///
+/// A file in this set has its calls from resolved compiler symbols, so the
+/// name-matching heuristic does not speak for it.
+fn covered_source_paths(
+    activations: &[view_build::SelectedSourceArtifacts],
+) -> Result<BTreeSet<String>, BuiltinModelError> {
+    let mut paths = BTreeSet::new();
+    for activation in activations {
+        for image in activation.images() {
+            let image = image.reopen().map_err(|error| {
+                BuiltinModelError(format!("reopen semantic coverage image: {error}"))
+            })?;
+            paths.insert(view_build::compiled_source_path(&image)?);
+        }
+    }
+    Ok(paths)
+}
+
 fn package_indexed_in_sources(
     sources: &super::super::IndexedSources,
     package: backend_engine::PackageKey,
@@ -374,6 +412,79 @@ fn published_identities_from_views(
     Ok(published)
 }
 
+/// The declaration of this project that an external link names, when the
+/// link resolves to one. A call, a type mention, an import and a value read
+/// each resolve by the joins of their own kind; a link that resolves by none
+/// stays the external target it was published as.
+fn retarget_external_link(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    link_kind: LinkKind,
+    external: backend_semantic::ir::ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    callable_index: &ProjectCallableIndex,
+    published: &BTreeSet<DeclarationIdentity>,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    Ok(match link_kind {
+        LinkKind::Calls | LinkKind::MethodCall => {
+            match foreign_package_call_retarget(
+                image,
+                external,
+                caller_path,
+                project_paths,
+                callable_index,
+            )? {
+                Some(identity) => Some(identity),
+                None => foreign_namespace_call_retarget(image, external, callable_index)?,
+            }
+        }
+        LinkKind::TypeReference | LinkKind::Imports | LinkKind::Implements | LinkKind::Inherits => join_project_mention(
+            image,
+            link_kind,
+            external,
+            caller_path,
+            project_paths,
+            callable_index,
+            published,
+        )?,
+        LinkKind::Reads => match join_project_field(
+            image,
+            link_kind,
+            external,
+            caller_path,
+            project_paths,
+            callable_index,
+            published,
+        )? {
+            Some(identity) => Some(identity),
+            None => match join_project_value(
+                image,
+                link_kind,
+                external,
+                caller_path,
+                project_paths,
+                callable_index,
+                published,
+            )? {
+                Some(identity) => Some(identity),
+                // A name read through an import (a class raised, a function
+                // handed on) names whatever the imported module declares by
+                // that name, as a mention of it does.
+                None => join_project_mention(
+                    image,
+                    LinkKind::TypeReference,
+                    external,
+                    caller_path,
+                    project_paths,
+                    callable_index,
+                    published,
+                )?,
+            },
+        },
+        _ => None,
+    })
+}
+
 fn semantic_link_row_id(
     view: &backend_engine::ViewRoot,
     image: &backend_semantic::ir::SemanticImageView<'_>,
@@ -386,78 +497,35 @@ fn semantic_link_row_id(
     project_paths: &BTreeSet<String>,
     callable_index: &ProjectCallableIndex,
     published: &BTreeSet<DeclarationIdentity>,
+    sites: &view_build::UseSites<'_>,
 ) -> Result<Option<backend_engine::RowId>, BuiltinModelError> {
     let row_id = match target {
         LinkTarget::Local(target) => {
             let target = session.entity(target).map_err(|error| {
                 BuiltinModelError(format!("read semantic graph target: {error}"))
             })?;
-            backend_engine::RowId::Symbol(view_build::semantic_symbol(
-                package,
+            let Some(symbol) = sites.symbol(
                 target.entity.version.identity(),
-            ))
+                target.name.named_bytes(),
+                target.entity.kind,
+            ) else {
+                return Ok(None);
+            };
+            backend_engine::RowId::Symbol(symbol)
         }
         LinkTarget::External(external) => {
-            if matches!(link_kind, LinkKind::Calls | LinkKind::MethodCall) {
-                let identity = if let Some(identity) = foreign_package_call_retarget(
-                    image,
-                    external,
-                    caller_path,
-                    project_paths,
-                    callable_index,
-                )? {
-                    Some(identity)
-                } else {
-                    foreign_namespace_call_retarget(image, external, callable_index)?
-                };
-                if let Some(identity) = identity {
-                    let row_id = backend_engine::RowId::Symbol(view_build::semantic_symbol(
-                        package, identity,
-                    ));
-                    return Ok(view.row_ref(row_id).map(|_| row_id));
-                }
-            } else if matches!(link_kind, LinkKind::TypeReference | LinkKind::Imports)
-                && let Some(identity) = join_project_mention(
-                    image,
-                    link_kind,
-                    external,
-                    caller_path,
-                    project_paths,
-                    callable_index,
-                    published,
-                )?
-            {
+            if let Some(identity) = retarget_external_link(
+                image,
+                link_kind,
+                external,
+                caller_path,
+                project_paths,
+                callable_index,
+                published,
+            )? {
                 let row_id =
                     backend_engine::RowId::Symbol(view_build::semantic_symbol(package, identity));
                 return Ok(view.row_ref(row_id).map(|_| row_id));
-            } else if matches!(link_kind, LinkKind::Reads) {
-                let identity = if let Some(identity) = join_project_field(
-                    image,
-                    link_kind,
-                    external,
-                    caller_path,
-                    project_paths,
-                    callable_index,
-                    published,
-                )? {
-                    Some(identity)
-                } else {
-                    join_project_value(
-                        image,
-                        link_kind,
-                        external,
-                        caller_path,
-                        project_paths,
-                        callable_index,
-                        published,
-                    )?
-                };
-                if let Some(identity) = identity {
-                    let row_id = backend_engine::RowId::Symbol(view_build::semantic_symbol(
-                        package, identity,
-                    ));
-                    return Ok(view.row_ref(row_id).map(|_| row_id));
-                }
             }
             let identity = backend_semantic::ir::ExternalTargetIdentity::capture(image, external)
                 .map_err(|error| {
@@ -502,6 +570,7 @@ fn project_semantic_graph_relations_from_bytes(
         source_id,
         include_incoming,
         project_paths,
+        None,
         &std::collections::BTreeMap::new(),
         &[],
         true,
@@ -516,6 +585,7 @@ fn project_opened_semantic_graph(
     source_id: backend_engine::RowId,
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
+    root: Option<&std::path::Path>,
     scope: &std::collections::BTreeMap<
         backend_semantic::vocabulary::Language,
         view_build::RetargetingScope,
@@ -529,8 +599,10 @@ fn project_opened_semantic_graph(
         scope,
         programs,
         legacy_image_program,
-    )?;
+    )?
+    .with_go_module(root.and_then(view_build::go_module_path));
     let published = published_identities_from_views(images)?;
+    let sites = view_build::UseSites::new(view, package);
     let mut relations = BTreeSet::new();
     for image in images {
         let caller_path = view_build::compiled_source_path(image)?;
@@ -550,6 +622,7 @@ fn project_opened_semantic_graph(
                     project_paths,
                     &callable_index,
                     &published,
+                    &sites,
                 )?
                 else {
                     continue;
@@ -579,6 +652,7 @@ fn project_opened_semantic_graph(
                         project_paths,
                         &callable_index,
                         &published,
+                        &sites,
                     )?
                     else {
                         continue;
@@ -586,13 +660,14 @@ fn project_opened_semantic_graph(
                     if target != source_id {
                         continue;
                     }
-                    let from = backend_engine::RowId::Symbol(view_build::semantic_symbol(
-                        package,
+                    let Some(from) = sites.symbol(
                         source.entity.version.identity(),
-                    ));
-                    if view.row_ref(from).is_none() {
+                        source.name.named_bytes(),
+                        source.entity.kind,
+                    ) else {
                         continue;
-                    }
+                    };
+                    let from = backend_engine::RowId::Symbol(from);
                     relations.insert(backend_engine::GraphRelation::new(
                         from,
                         source_id,
@@ -625,6 +700,7 @@ fn project_semantic_graph_relations(
     source_id: backend_engine::RowId,
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
+    root: Option<&std::path::Path>,
     scope: &std::collections::BTreeMap<
         backend_semantic::vocabulary::Language,
         view_build::RetargetingScope,
@@ -646,6 +722,7 @@ fn project_semantic_graph_relations(
         source_id,
         include_incoming,
         project_paths,
+        root,
         scope,
         &activations
             .iter()
@@ -655,6 +732,53 @@ fn project_semantic_graph_relations(
             .iter()
             .any(|activation| activation.has_program_manifest()),
     )
+}
+
+/// The evidence of one written site of a link: its own confidence and its
+/// own captured span, not the representative of the relation it proves.
+fn occurrence_evidence(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    id: backend_semantic::ir::LinkOccurrenceId,
+    occurrence: backend_semantic::ir::LinkOccurrence,
+) -> Result<backend_engine::SemanticLinkEvidence, BuiltinModelError> {
+    use backend_semantic::ir::{FactAvailability, SemanticCoreReader as _};
+    let authority = image.occurrence_authority(id).ok_or_else(|| {
+        BuiltinModelError("semantic occurrence has no authority record".to_owned())
+    })?;
+    let source = match (authority.source, occurrence.source) {
+        (FactAvailability::Captured, Some(span)) => {
+            let file = image.atom(span.file()).ok_or_else(|| {
+                BuiltinModelError("semantic occurrence path is absent from its image".to_owned())
+            })?;
+            let file = std::str::from_utf8(file).map_err(|_| {
+                BuiltinModelError("semantic occurrence path is not UTF-8".to_owned())
+            })?;
+            Some(backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new(file)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?,
+                start: span.start(),
+                end: span.end(),
+            })
+        }
+        _ => None,
+    };
+    Ok(backend_engine::SemanticLinkEvidence {
+        confidence: semantic_confidence(occurrence.confidence),
+        source,
+    })
+}
+
+/// Whether `facts` already holds this very use: the same caller, relation
+/// and written site.
+fn reference_fact_at_site(
+    facts: &[backend_engine::ReferenceFact],
+    site: backend_engine::SymbolKey,
+    relation: backend_engine::SemanticLinkKind,
+    evidence: &backend_engine::SemanticLinkEvidence,
+) -> bool {
+    facts.iter().any(|fact| {
+        fact.site == site && fact.relation == relation && fact.evidence.source == evidence.source
+    })
 }
 
 fn reference_fact_has_site_and_relation(
@@ -760,137 +884,14 @@ fn project_opened_reference_facts_for_lanes(
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let image_refs = images.iter().collect::<Vec<_>>();
     let mut files = std::collections::BTreeMap::new();
-    let mut facts = Vec::new();
-    for image in images {
-        append_reference_facts(package, image, target_symbol, &mut facts)?;
-    }
     let callable_index = ProjectCallableIndex::build_from_views_with_programs(
         &image_refs,
         scope,
         programs,
         legacy_image_program,
-    )?;
+    )?
+    .with_go_module(root.and_then(view_build::go_module_path));
     let target_row_id = backend_engine::RowId::Symbol(structural_symbol);
-    let mut published = BTreeSet::new();
-    for image in images {
-        let session = DocumentationSession::new(image);
-        for entity in session.canonical_entities() {
-            let entity = entity.map_err(|error| {
-                BuiltinModelError(format!(
-                    "read semantic references published entity: {error}"
-                ))
-            })?;
-            published.insert(entity.entity.version.identity());
-        }
-    }
-    for image in images {
-        let caller_path = view_build::compiled_source_path(image)?;
-        let session = DocumentationSession::new(image);
-        for source in session.canonical_entities() {
-            let source = source.map_err(|error| {
-                BuiltinModelError(format!("read semantic references caller: {error}"))
-            })?;
-            let caller_symbol =
-                view_build::semantic_symbol(package, source.entity.version.identity());
-            if view
-                .row_ref(backend_engine::RowId::Symbol(caller_symbol))
-                .is_none()
-            {
-                continue;
-            }
-            for (_, link) in image.links_from(source.entity.id) {
-                let LinkTarget::External(external) = link.target else {
-                    continue;
-                };
-                let identity = if matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
-                    if let Some(identity) = foreign_package_call_retarget(
-                        &image,
-                        external,
-                        &caller_path,
-                        project_paths,
-                        &callable_index,
-                    )? {
-                        Some(identity)
-                    } else {
-                        foreign_namespace_call_retarget(&image, external, &callable_index)?
-                    }
-                } else if matches!(link.kind, LinkKind::TypeReference | LinkKind::Imports) {
-                    join_project_mention(
-                        &image,
-                        link.kind,
-                        external,
-                        &caller_path,
-                        project_paths,
-                        &callable_index,
-                        &published,
-                    )?
-                } else if matches!(link.kind, LinkKind::Reads) {
-                    if let Some(identity) = join_project_field(
-                        &image,
-                        link.kind,
-                        external,
-                        &caller_path,
-                        project_paths,
-                        &callable_index,
-                        &published,
-                    )? {
-                        Some(identity)
-                    } else {
-                        join_project_value(
-                            &image,
-                            link.kind,
-                            external,
-                            &caller_path,
-                            project_paths,
-                            &callable_index,
-                            &published,
-                        )?
-                    }
-                } else {
-                    None
-                };
-                let Some(identity) = identity else {
-                    continue;
-                };
-                let retargeted_symbol = view_build::semantic_symbol(package, identity);
-                if retargeted_symbol != target_symbol {
-                    continue;
-                }
-                if view
-                    .row_ref(backend_engine::RowId::Symbol(retargeted_symbol))
-                    .is_none()
-                {
-                    continue;
-                }
-                let relation = semantic_link_kind(link.kind);
-                if reference_fact_has_site_and_relation(&facts, caller_symbol, relation) {
-                    continue;
-                }
-                facts.push(backend_engine::ReferenceFact {
-                    site: caller_symbol,
-                    target: backend_engine::SemanticLinkTarget::Local {
-                        declaration: semantic_declaration_identity(identity),
-                    },
-                    relation,
-                    evidence: semantic_link_evidence(image, link)?,
-                });
-                if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
-                    return Err(BuiltinModelError(
-                        "semantic references exceed the bounded result contract".to_owned(),
-                    ));
-                }
-            }
-        }
-    }
-    // Both lanes' facts now name the declaration's canonical sites, so the
-    // name-matched pass below sees (and skips) every call the compiler proved.
-    for fact in &mut facts {
-        if let backend_engine::RowId::Symbol(site) =
-            view.canonical_row_id(backend_engine::RowId::Symbol(fact.site))
-        {
-            fact.site = site;
-        }
-    }
     let target_name = {
         let target_row = view.row_ref(target_row_id).ok_or_else(|| {
             BuiltinModelError("references target is absent from the selected view".to_owned())
@@ -905,6 +906,150 @@ fn project_opened_reference_facts_for_lanes(
                 BuiltinModelError("references target has no declaration name".to_owned())
             })?
     };
+    let mut published = BTreeSet::new();
+    for image in images {
+        let session = DocumentationSession::new(image);
+        for entity in session.canonical_entities() {
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!(
+                    "read semantic references published entity: {error}"
+                ))
+            })?;
+            published.insert(entity.entity.version.identity());
+        }
+    }
+    let sites = view_build::UseSites::new(view, package);
+    // The uses each image proves. Every image of a Go package holds the same
+    // uses, the ones written in files without an image among them (the
+    // package's tests) as copies with no source, so the same use is met in
+    // each image: a use is counted once per image and taken at the most any
+    // image saw, never summed.
+    let mut facts = Vec::new();
+    let mut target_declaration = None;
+    let mut written = std::collections::BTreeMap::<
+        (backend_engine::SymbolKey, backend_engine::SemanticLinkKind),
+        (usize, backend_engine::SemanticConfidence),
+    >::new();
+    for image in images {
+        let caller_path = view_build::compiled_source_path(image)?;
+        let session = DocumentationSession::new(image);
+        let mut image_facts = Vec::new();
+        if let Some(identity) =
+            append_reference_facts(package, image, target_symbol, &sites, &mut image_facts)?
+        {
+            target_declaration.get_or_insert(identity);
+        }
+        // The project target an external link resolves to, decided once per
+        // link: every written site of the link then names that one target.
+        let mut retargets = std::collections::BTreeMap::new();
+        for (occurrence_id, occurrence) in image.link_occurrences() {
+            let Some(link) = image.link(occurrence.link) else {
+                continue;
+            };
+            let LinkTarget::External(external) = link.target else {
+                continue;
+            };
+            let identity = match retargets.entry(occurrence.link) {
+                std::collections::btree_map::Entry::Occupied(known) => *known.get(),
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    let identity = retarget_external_link(
+                        image,
+                        link.kind,
+                        external,
+                        &caller_path,
+                        project_paths,
+                        &callable_index,
+                        &published,
+                    )?;
+                    *slot.insert(identity)
+                }
+            };
+            let Some(identity) = identity else {
+                continue;
+            };
+            let retargeted_symbol = view_build::semantic_symbol(package, identity);
+            if retargeted_symbol != target_symbol {
+                continue;
+            }
+            if view
+                .row_ref(backend_engine::RowId::Symbol(retargeted_symbol))
+                .is_none()
+            {
+                continue;
+            }
+            let Some(source) = session.entity(link.from).ok() else {
+                continue;
+            };
+            let Some(caller_symbol) = sites.canonical_symbol(
+                source.entity.version.identity(),
+                source.name.named_bytes(),
+                source.entity.kind,
+            ) else {
+                continue;
+            };
+            let evidence = occurrence_evidence(image, occurrence_id, occurrence)?;
+            let relation = semantic_link_kind(link.kind);
+            if reference_fact_at_site(&image_facts, caller_symbol, relation, &evidence) {
+                continue;
+            }
+            image_facts.push(backend_engine::ReferenceFact {
+                site: caller_symbol,
+                target: backend_engine::SemanticLinkTarget::Local {
+                    declaration: semantic_declaration_identity(identity),
+                },
+                relation,
+                evidence,
+                place: None,
+            });
+            target_declaration.get_or_insert(semantic_declaration_identity(identity));
+        }
+        let mut seen = std::collections::BTreeMap::<_, (usize, _)>::new();
+        for fact in image_facts {
+            seen.entry((fact.site, fact.relation))
+                .or_insert((0, fact.evidence.confidence))
+                .0 += 1;
+            // One fact per written site: a caller that uses the target twice
+            // is two uses, and the same site named twice is one.
+            if fact.evidence.source.is_some()
+                && !reference_fact_at_site(&facts, fact.site, fact.relation, &fact.evidence)
+            {
+                facts.push(fact);
+                if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                    return Err(BuiltinModelError(
+                        "semantic references exceed the bounded result contract".to_owned(),
+                    ));
+                }
+            }
+        }
+        for (key, (count, confidence)) in seen {
+            let known = written.entry(key).or_insert((0, confidence));
+            known.0 = known.0.max(count);
+        }
+    }
+    // The uses no image could place: a caller the images hold only as a
+    // copy has no source of its own. They are placed in the text of the
+    // caller's row, where the target is written.
+    if let Some(declaration) = target_declaration {
+        for ((site, relation), (count, confidence)) in written {
+            let located = facts
+                .iter()
+                .filter(|fact| fact.site == site && fact.relation == relation)
+                .count();
+            if count > located {
+                let placed = unplaced_uses(
+                    view,
+                    root,
+                    &mut files,
+                    &target_name,
+                    declaration,
+                    (site, relation, confidence),
+                    count - located,
+                    &facts,
+                );
+                facts.extend(placed);
+            }
+        }
+    }
     let target_identity = view_build::structural_symbol_identity(structural_symbol);
     for (caller_coordinate, callee_coordinate) in structural_pairs {
         let Some(callee_id) =
@@ -978,6 +1123,7 @@ fn project_opened_reference_facts_for_lanes(
                 confidence: backend_engine::SemanticConfidence::Syntactic,
                 source,
             },
+            place: None,
         });
         if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
             return Err(BuiltinModelError(
@@ -1108,7 +1254,11 @@ pub(super) fn execute_references(
         }
     }
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.coordinate_pairs_outside(
+            &sources,
+            package,
+            &covered_source_paths(&activations)?,
+        )?
     } else {
         Vec::new()
     };
@@ -1116,7 +1266,7 @@ pub(super) fn execute_references(
         .projects
         .get(&package.to_bytes())
         .map(|project| std::path::PathBuf::from(&project.label));
-    let facts = project_opened_reference_facts_for_lanes(
+    let mut facts = project_opened_reference_facts_for_lanes(
         &opened,
         view,
         package,
@@ -1134,6 +1284,7 @@ pub(super) fn execute_references(
             .iter()
             .any(|activation| activation.has_program_manifest()),
     )?;
+    view_build::place_reference_facts(root.as_deref(), &mut facts);
     let references = library
         .references_for_symbol(structural_symbol, &facts)
         .map_err(|error| {
@@ -1177,6 +1328,14 @@ fn execute_structural_references(
             )
             .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
     });
+    view_build::place_reference_facts(
+        sources
+            .projects
+            .get(&package.to_bytes())
+            .map(|project| std::path::PathBuf::from(&project.label))
+            .as_deref(),
+        &mut facts,
+    );
     let references = library
         .references_for_symbol(target_symbol, &facts)
         .map_err(|error| {
@@ -1188,13 +1347,15 @@ fn execute_structural_references(
     })
 }
 
-/// Appends every occurrence of one image that targets `target_symbol`.
+/// Appends every occurrence of one image that targets `target_symbol`, and
+/// returns the identity of the target when the image holds it.
 fn append_reference_facts(
     package: backend_engine::PackageKey,
     image: &backend_semantic::ir::SemanticImageView<'_>,
     target_symbol: backend_engine::SymbolKey,
+    sites: &view_build::UseSites<'_>,
     facts: &mut Vec<backend_engine::ReferenceFact>,
-) -> Result<(), BuiltinModelError> {
+) -> Result<Option<backend_engine::SemanticDeclarationIdentity>, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let target_entity = session
         .canonical_entities()
@@ -1213,7 +1374,7 @@ fn append_reference_facts(
         .transpose()?;
     let Some(target_entity) = target_entity else {
         // This image did not compile the queried declaration.
-        return Ok(());
+        return Ok(None);
     };
     let target_identity = session
         .entity(target_entity)
@@ -1232,10 +1393,14 @@ fn append_reference_facts(
             let hit = hit.map_err(|error| error.to_string())?;
             let site = session
                 .entity(hit.entity())
-                .map_err(|error| error.to_string())?
-                .entity
-                .version
-                .identity();
+                .map_err(|error| error.to_string())?;
+            let Some(site) = sites.canonical_symbol(
+                site.entity.version.identity(),
+                site.name.named_bytes(),
+                site.entity.kind,
+            ) else {
+                continue;
+            };
             let evidence = backend_engine::SemanticLinkEvidence {
                 confidence: semantic_confidence(hit.confidence()),
                 source: hit
@@ -1255,12 +1420,13 @@ fn append_reference_facts(
                     .transpose()?,
             };
             facts.push(backend_engine::ReferenceFact {
-                site: view_build::semantic_symbol(package, site),
+                site,
                 target: backend_engine::SemanticLinkTarget::Local {
                     declaration: semantic_declaration_identity(target_identity),
                 },
                 relation: semantic_link_kind(hit.kind()),
                 evidence,
+                place: None,
             });
             if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
                 return Err("semantic references exceed the bounded result contract".to_owned());
@@ -1268,7 +1434,98 @@ fn append_reference_facts(
         }
         Ok::<_, String>(())
     })
-    .map_err(|error| BuiltinModelError(error.to_string()))
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
+    Ok(Some(semantic_declaration_identity(target_identity)))
+}
+
+/// The uses of the target written in the captured text of one caller that no
+/// image could place, `missing` of them.
+///
+/// The text names each place exactly when it shows as many as are missing;
+/// otherwise the uses are not told apart there, and one use stands for them
+/// at the line the caller's declaration begins on.
+fn unplaced_uses(
+    view: &backend_engine::ViewRoot,
+    root: Option<&std::path::Path>,
+    files: &mut std::collections::BTreeMap<String, Option<String>>,
+    target_name: &str,
+    declaration: backend_engine::SemanticDeclarationIdentity,
+    (site, relation, confidence): (
+        backend_engine::SymbolKey,
+        backend_engine::SemanticLinkKind,
+        backend_engine::SemanticConfidence,
+    ),
+    missing: usize,
+    placed: &[backend_engine::ReferenceFact],
+) -> Vec<backend_engine::ReferenceFact> {
+    let fact = |source, place| backend_engine::ReferenceFact {
+        site,
+        target: backend_engine::SemanticLinkTarget::Local { declaration },
+        relation,
+        evidence: backend_engine::SemanticLinkEvidence { confidence, source },
+        place,
+    };
+    // A caller whose text is not at hand still uses the target: one use
+    // stands for the missing ones, without a place.
+    let Some(row) = view.row_ref(backend_engine::RowId::Symbol(site)) else {
+        return Vec::new();
+    };
+    let (Some(location), Some(excerpt)) = (row.source.captured(), row.excerpt.text()) else {
+        return vec![fact(None, None)];
+    };
+    let calls = matches!(
+        relation,
+        backend_engine::SemanticLinkKind::Calls | backend_engine::SemanticLinkKind::MethodCall
+    );
+    let already = placed
+        .iter()
+        .filter(|fact| fact.site == site && fact.relation == relation)
+        .filter_map(|fact| {
+            fact.evidence
+                .source
+                .as_ref()
+                .map(|span| (span.start, span.end))
+        })
+        .collect::<Vec<_>>();
+    let spans = root
+        .map(|root| {
+            view_build::structural_name_spans(excerpt, target_name, calls)
+                .into_iter()
+                .filter_map(|span| {
+                    view_build::structural_file_span(root, location, excerpt, span, files)
+                })
+                .filter(|span| !already.contains(span))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if spans.len() == missing
+        && let Ok(file) = backend_engine::ProductText::new(location.path())
+    {
+        return spans
+            .into_iter()
+            .map(|(start, end)| {
+                fact(
+                    Some(backend_engine::SemanticSourceSpan {
+                        file: file.clone(),
+                        start,
+                        end,
+                    }),
+                    None,
+                )
+            })
+            .collect();
+    }
+    let first_line = view_build::bounded_line(excerpt.lines().next().unwrap_or_default());
+    match backend_engine::ProductText::new(first_line) {
+        Ok(text) if !text.as_str().is_empty() => vec![fact(
+            None,
+            Some(backend_engine::ReferencePlace {
+                line: location.start_line(),
+                text,
+            }),
+        )],
+        _ => vec![fact(None, None)],
+    }
 }
 #[cfg(test)]
 mod project_call_tests {
@@ -1820,7 +2077,7 @@ mod project_call_tests {
         Ok((bytes, caller_version, callee_version))
     }
 
-    fn semantic_view_rows(
+    pub(super) fn semantic_view_rows(
         package: backend_engine::PackageKey,
         declarations: &[(&str, u32, &str, EntityVersion)],
     ) -> Result<Vec<Row>, String> {
@@ -1841,7 +2098,7 @@ mod project_call_tests {
         Ok(rows)
     }
 
-    fn semantic_view(rows: Vec<Row>) -> Result<ViewRoot, String> {
+    pub(super) fn semantic_view(rows: Vec<Row>) -> Result<ViewRoot, String> {
         let (initial, _) = initial_view().map_err(|error| error.to_string())?;
         let capability = super::super::super::test_builtin_view_capability()
             .map_err(|error| error.to_string())?;
@@ -8949,17 +9206,12 @@ mod project_call_tests {
             "workout.service.ts",
             "export class WorkoutService { setNote() {} }\n",
         )?;
-        let other = analyze_source(
-            "other.service.ts",
-            "export class OtherService { setNote() {} }\n",
-        )?;
         let weeks = analyze_source(
             "weeks.ts",
             "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
         )?;
         let sources = indexed_sources(&[
             ("workout.service.ts", workout),
-            ("other.service.ts", other),
             ("weeks.ts", weeks),
         ])?;
         let set_note_identity = fixture_version(4).identity();
@@ -8968,15 +9220,12 @@ mod project_call_tests {
             package,
             &[
                 ("workout.service.ts", 1, "setNote", fixture_version(4)),
-                ("other.service.ts", 1, "setNote", fixture_version(6)),
                 ("weeks.ts", 2, "sync", fixture_version(5)),
             ],
         )?;
         let view = semantic_view(rows)?;
         let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
         let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
-        let other_set_note_id =
-            RowId::Symbol(semantic_symbol(package, fixture_version(6).identity()));
         let pairs =
             structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
         let relations =
@@ -8989,9 +9238,6 @@ mod project_call_tests {
             return Err(format!(
                 "expected structural union onto workout setNote semantic row, got {targets:?}"
             ));
-        }
-        if targets.contains(&other_set_note_id) {
-            return Err("unimported OtherService.setNote must not appear".to_owned());
         }
         Ok(())
     }
@@ -9933,27 +10179,20 @@ mod project_call_tests {
             "workout.service.ts",
             "export class WorkoutService { setNote() {} }\n",
         )?;
-        let other = analyze_source(
-            "other.service.ts",
-            "export class OtherService { setNote() {} }\n",
-        )?;
         let weeks = analyze_source(
             "weeks.ts",
             "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
         )?;
         let sources = indexed_sources(&[
             ("workout.service.ts", workout),
-            ("other.service.ts", other),
             ("weeks.ts", weeks),
         ])?;
         let set_note_identity = fixture_version(4).identity();
         let sync_identity = fixture_version(5).identity();
-        let other_set_note_symbol = semantic_symbol(package, fixture_version(6).identity());
         let rows = semantic_view_rows(
             package,
             &[
                 ("workout.service.ts", 1, "setNote", fixture_version(4)),
-                ("other.service.ts", 1, "setNote", fixture_version(6)),
                 ("weeks.ts", 2, "sync", fixture_version(5)),
             ],
         )?;
@@ -9965,7 +10204,7 @@ mod project_call_tests {
             &view,
             package,
             semantic_symbol(package, set_note_identity),
-            &project_paths(&["workout.service.ts", "other.service.ts", "weeks.ts"]),
+            &project_paths(&["workout.service.ts", "weeks.ts"]),
             &pairs,
         )
         .map_err(|error| error.to_string())?;
@@ -9988,8 +10227,53 @@ mod project_call_tests {
                 fact.evidence.confidence
             ));
         }
-        if fact.site == other_set_note_symbol {
-            return Err("unimported OtherService.setNote must not be the site".to_owned());
+        Ok(())
+    }
+
+    #[test]
+    fn a_method_two_classes_declare_gets_no_name_matched_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let workout = analyze_source(
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let other = analyze_source(
+            "other.service.ts",
+            "export class OtherService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            "weeks.ts",
+            "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
+        )?;
+        let sources = indexed_sources(&[
+            ("workout.service.ts", workout),
+            ("other.service.ts", other),
+            ("weeks.ts", weeks),
+        ])?;
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout.service.ts", 1, "setNote", fixture_version(4)),
+                ("other.service.ts", 1, "setNote", fixture_version(6)),
+                ("weeks.ts", 2, "sync", fixture_version(5)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let pairs =
+            structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
+        let facts = project_reference_facts_from_bytes(
+            &[],
+            &view,
+            package,
+            semantic_symbol(package, fixture_version(4).identity()),
+            &project_paths(&["workout.service.ts", "other.service.ts", "weeks.ts"]),
+            &pairs,
+        )
+        .map_err(|error| error.to_string())?;
+        if !facts.is_empty() {
+            return Err(format!(
+                "a receiver of unknown type and two methods of that name bind nothing, got {facts:?}"
+            ));
         }
         Ok(())
     }
@@ -11150,7 +11434,17 @@ mod references_tests {
         let mut facts = Vec::new();
         let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
             .map_err(|error| error.to_string())?;
-        append_reference_facts(package, &image, callee_symbol, &mut facts)
+        let view = super::project_call_tests::semantic_view(
+            super::project_call_tests::semantic_view_rows(
+                package,
+                &[
+                    (CALL_PATH, 1, "Caller", fixture_version(1)),
+                    (CALL_PATH, 5, "Callee", fixture_version(2)),
+                ],
+            )?,
+        )?;
+        let sites = super::super::super::view_build::UseSites::new(&view, package);
+        append_reference_facts(package, &image, callee_symbol, &sites, &mut facts)
             .map_err(|error| error.to_string())?;
         if facts.len() != 1 {
             return Err(format!("expected one reference fact, got {}", facts.len()));
@@ -11205,7 +11499,11 @@ mod references_tests {
         let mut facts = Vec::new();
         let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
             .map_err(|error| error.to_string())?;
-        append_reference_facts(package, &image, absent, &mut facts)
+        let view = super::project_call_tests::semantic_view(
+            super::project_call_tests::semantic_view_rows(package, &[])?,
+        )?;
+        let sites = super::super::super::view_build::UseSites::new(&view, package);
+        append_reference_facts(package, &image, absent, &sites, &mut facts)
             .map_err(|error| error.to_string())?;
         if !facts.is_empty() {
             return Err(format!("absent target produced {} facts", facts.len()));

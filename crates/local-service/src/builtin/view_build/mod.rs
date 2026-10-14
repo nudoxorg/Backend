@@ -28,6 +28,7 @@ mod search_ranking_native;
 mod semantic;
 mod source_availability;
 mod structural;
+mod use_sites;
 
 /// Human-readable spelling; anonymous anchors remain identity evidence.
 pub(super) fn semantic_display_name(
@@ -46,7 +47,7 @@ pub(super) fn semantic_display_name(
 pub(in crate::builtin) use call_join::RetargetingScope;
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
+    go_module_path,     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 #[cfg(test)]
 pub(crate) use call_join::{foreign_display_name, join_project_call};
@@ -61,14 +62,16 @@ pub(crate) use identity::semantic_coordinate;
 pub(super) use identity::{external_semantic_symbol, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
 pub(crate) use semantic::compiled_source_path;
+pub(crate) use use_sites::UseSites;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(in crate::builtin) use source_availability::{
     CurrentNativeProgram, SelectedSourceArtifacts, SourceAvailability,
 };
 pub(crate) use structural::{
     StructuralCallResidence, structural_call_graph_relations_mapped,
-    structural_call_graph_relations_resident, structural_call_span, structural_file_span,
-    structural_reference_facts_resident, structural_symbol_identity,
+    bounded_line, place_reference_facts, structural_call_graph_relations_resident, structural_call_span,
+    structural_file_span, structural_name_spans, structural_reference_facts_resident,
+    structural_symbol_identity,
     view_row_for_structural_coordinate,
 };
 #[cfg(test)]
@@ -1978,6 +1981,57 @@ pub fn execute() {}
         Ok((view, rows))
     }
 
+    #[test]
+    fn a_declaration_an_image_holds_only_as_a_copy_is_named_by_its_structural_row()
+    -> Result<(), String> {
+        use backend_semantic::ir::{
+            DeclarationFamilyId, DeclarationIdentity, ItemKind, VariantFingerprint,
+        };
+        let first = analyze_source(
+            backend_engine::SourceLanguage::Rust,
+            "src/a.rs",
+            "pub fn helper() {}\npub fn run() {}\n",
+        )?;
+        let second = analyze_source(
+            backend_engine::SourceLanguage::Rust,
+            "src/b.rs",
+            "pub fn run() {}\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("src/a.rs", backend_engine::SourceLanguage::Rust, first),
+            ("src/b.rs", backend_engine::SourceLanguage::Rust, second),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let RowId::Symbol(helper) = row_for_coordinate(&rows, "fixture::src/a.rs:1::helper")?
+        else {
+            return Err("helper is not a declaration row".to_owned());
+        };
+        let sites = super::UseSites::new(&view, package);
+        // An identity no row of the view carries: the declaration is a copy.
+        let copy = DeclarationIdentity {
+            family: DeclarationFamilyId::from_raw([7; 16]),
+            variant: VariantFingerprint::from_raw([8; 16]),
+        };
+        assert_eq!(
+            sites.symbol(copy, Some(b"helper"), ItemKind::Function),
+            Some(helper),
+            "the only declaration of that name and kind"
+        );
+        assert_eq!(
+            sites.symbol(copy, Some(b"run"), ItemKind::Function),
+            None,
+            "two files declare `run`: the copy could be either"
+        );
+        assert_eq!(sites.symbol(copy, Some(b"missing"), ItemKind::Function), None);
+        assert_eq!(
+            sites.symbol(copy, Some(b"helper"), ItemKind::Record),
+            None,
+            "a function is not a type"
+        );
+        assert_eq!(sites.symbol(copy, None, ItemKind::Function), None);
+        Ok(())
+    }
+
     fn row_for_coordinate(rows: &[Row], coordinate: &str) -> Result<RowId, String> {
         rows.iter()
             .find(|row| row.label == coordinate)
@@ -2145,7 +2199,8 @@ pub fn execute() {}
     }
 
     #[test]
-    fn cross_file_call_typescript_imported_class_method() -> Result<(), String> {
+    fn cross_file_call_typescript_method_of_a_name_two_classes_declare_binds_nothing()
+    -> Result<(), String> {
         let workout = analyze_source(
             backend_engine::SourceLanguage::TypeScript,
             "workout.service.ts",
@@ -2180,14 +2235,15 @@ pub fn execute() {}
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
-        assert_single_calls_target(
+        // Two classes of the package declare `setNote`, and the receiver's
+        // type is not written where it is called: a name is not evidence.
+        assert_no_calls_target(
             &view,
             &sources,
             package,
             sync,
             "fixture::workout.service.ts:1::setNote",
             &rows,
-            false,
         )?;
         assert_no_calls_target(
             &view,

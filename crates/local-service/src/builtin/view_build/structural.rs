@@ -842,9 +842,35 @@ pub(super) fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
     false
 }
 
+/// How a call's receiver was written. The name-match heuristic has no types,
+/// so the written shape is all it can reason from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CallReceiver {
+    /// `name(...)`: no receiver at all.
+    Bare,
+    /// `a.name(...)`, `a.b.name(...)` or `A::name(...)`: a plain path of
+    /// identifiers written directly before the separator.
+    Path {
+        /// First identifier of the path.
+        root: String,
+        /// The identifier directly before the separator: the receiver itself,
+        /// the type of `a::Type::name()`.
+        last: String,
+        /// Number of identifiers in the path.
+        depth: usize,
+    },
+    /// The receiver is an expression, not a name: `f(x).name()`,
+    /// `xs[0].name()`, `"text".name()`, `1.name()`.
+    Expression {
+        /// A string, character or number literal: always a builtin type.
+        literal: bool,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CallSite {
     name: String,
-    qualifier: Option<String>,
+    receiver: CallReceiver,
 }
 
 enum ImportBindingKind {
@@ -883,31 +909,73 @@ fn parse_import_binding(declaration: &backend_compile::SourceDeclaration) -> Opt
     }
 }
 
-fn identifier_immediately_before_end(prefix: &str) -> Option<String> {
-    let mut end = prefix.len();
-    while end > 0 && !structural_ident_byte(prefix.as_bytes()[end - 1]) {
-        end -= 1;
-    }
-    if end == 0 {
-        return None;
-    }
+/// The identifier that ends exactly at `end` in `text`, as `(start, name)`.
+fn identifier_ending_at(text: &str, end: usize) -> Option<(usize, &str)> {
     let mut start = end;
-    while start > 0 && structural_ident_byte(prefix.as_bytes()[start - 1]) {
+    while start > 0 && structural_ident_byte(text.as_bytes()[start - 1]) {
         start -= 1;
     }
-    let qualifier = &prefix[start..end];
-    (!qualifier.is_empty()).then(|| qualifier.to_owned())
+    (start < end).then(|| (start, &text[start..end]))
 }
 
-fn structural_call_qualifier(excerpt: &str, name_at: usize) -> Option<String> {
+/// How the call whose name starts at `name_at` was written to its receiver:
+/// the whole receiver is read, never just the last word near it, so a call
+/// on the result of another call (`foo(x).bar()`) is an expression receiver
+/// and never takes `x` for a qualifier.
+fn structural_call_receiver(excerpt: &str, name_at: usize) -> CallReceiver {
     let before = excerpt[..name_at].trim_end();
-    if before.ends_with("::") {
-        return identifier_immediately_before_end(before[..before.len() - 2].trim_end());
+    let mut rest = if let Some(rest) = before.strip_suffix("::") {
+        rest
+    } else if let Some(rest) = before.strip_suffix('.') {
+        // `a?.b()` and `a!.b()` still read `a`.
+        rest.trim_end().trim_end_matches(['?', '!'])
+    } else {
+        return CallReceiver::Bare;
+    };
+    rest = rest.trim_end();
+    let Some(last) = rest.bytes().last() else {
+        return CallReceiver::Expression { literal: false };
+    };
+    if matches!(last, b'"' | b'\'' | b'`') {
+        return CallReceiver::Expression { literal: true };
     }
-    if before.ends_with('.') {
-        return identifier_immediately_before_end(before[..before.len() - 1].trim_end());
+    if !structural_ident_byte(last) {
+        return CallReceiver::Expression { literal: false };
     }
-    None
+    let mut depth = 0;
+    let mut root: &str;
+    let mut last = "";
+    let mut end = rest.len();
+    loop {
+        let Some((start, segment)) = identifier_ending_at(rest, end) else {
+            return CallReceiver::Expression { literal: false };
+        };
+        if depth == 0 {
+            last = segment;
+        }
+        depth += 1;
+        root = segment;
+        let head = rest[..start].trim_end();
+        if let Some(head) = head.strip_suffix("::").or_else(|| head.strip_suffix('.')) {
+            let head = head.trim_end();
+            if head.bytes().last().is_some_and(structural_ident_byte) {
+                end = head.len();
+                rest = head;
+                continue;
+            }
+            // `f(x).field.name()`: the path hangs off an expression.
+            return CallReceiver::Expression { literal: false };
+        }
+        break;
+    }
+    if root.bytes().next().is_some_and(|byte| byte.is_ascii_digit()) {
+        return CallReceiver::Expression { literal: true };
+    }
+    CallReceiver::Path {
+        root: root.to_owned(),
+        last: last.to_owned(),
+        depth,
+    }
 }
 
 fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
@@ -971,7 +1039,7 @@ fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
                         let absolute_at = scan_from + name_at;
                         sites.push(CallSite {
                             name: name.to_owned(),
-                            qualifier: structural_call_qualifier(excerpt, absolute_at),
+                            receiver: structural_call_receiver(excerpt, absolute_at),
                         });
                         index = after_name;
                         continue;
@@ -1105,6 +1173,36 @@ fn is_dotted_module_specifier(specifier: &str) -> bool {
         && specifier.split('.').all(|segment| !segment.is_empty())
 }
 
+/// A bare name that can be the name of a Python package: `inflect`, never
+/// `a.b`, `a/b`, `a::b` or a path.
+fn is_plain_identifier(specifier: &str) -> bool {
+    specifier
+        .bytes()
+        .next()
+        .is_some_and(|first| first == b'_' || first.is_ascii_alphabetic())
+        && specifier
+            .bytes()
+            .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+/// The `__init__.py` of the package a bare name imports: `import inflect`
+/// and `from inflect import x` name `inflect/__init__.py`.
+fn push_package_init_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_plain_identifier(specifier) {
+        return;
+    }
+    let init = format!("{specifier}/__init__.py");
+    for path in project_paths {
+        if path == &init || path.ends_with(&format!("/{init}")) {
+            resolved.insert(path.clone());
+        }
+    }
+}
+
 fn push_dotted_module_paths(
     specifier: &str,
     project_paths: &BTreeSet<String>,
@@ -1214,6 +1312,7 @@ pub(crate) fn resolve_specifier_paths(
         }
     }
     push_dotted_module_paths(specifier, project_paths, &mut resolved);
+    push_package_init_paths(specifier, project_paths, &mut resolved);
     push_go_import_paths(specifier, project_paths, &mut resolved);
     push_rust_module_paths(specifier, project_paths, &mut resolved);
     push_c_family_paths(specifier, project_paths, &mut resolved);
@@ -1418,11 +1517,14 @@ pub(crate) fn structural_call_graph_relations_mapped(
         let Some(callee_id) = resolve(callee_coordinate) else {
             continue;
         };
-        relations.insert(backend_engine::GraphRelation::new(
-            caller_id,
-            callee_id,
-            backend_library::SemanticLinkKind::Calls,
-        ));
+        relations.insert(
+            backend_engine::GraphRelation::new(
+                caller_id,
+                callee_id,
+                backend_library::SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+        );
     }
     relations
         .into_iter()
@@ -1495,11 +1597,14 @@ pub(crate) fn structural_call_graph_relations_resident(
         if caller_id != source_id && (!include_incoming || callee_id != source_id) {
             continue;
         }
-        relations.insert(backend_engine::GraphRelation::new(
-            caller_id,
-            callee_id,
-            backend_library::SemanticLinkKind::Calls,
-        ));
+        relations.insert(
+            backend_engine::GraphRelation::new(
+                caller_id,
+                callee_id,
+                backend_library::SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+        );
     }
     let relations = relations.into_iter().collect::<Vec<_>>();
     if relations.is_empty() {
@@ -1623,6 +1728,7 @@ pub(crate) fn structural_reference_facts_resident(
                 confidence: backend_library::SemanticConfidence::Syntactic,
                 source,
             },
+            place: None,
         });
         if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
             return Err(BuiltinModelError(
@@ -1651,11 +1757,23 @@ pub(crate) fn structural_symbol_identity(
 /// comment, a doc comment, a string or a character literal never counts, and
 /// the name must stand on its own (`as_str(` is not found in `has_str(`).
 pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize, usize)> {
-    if callee.is_empty() {
-        return None;
+    structural_name_spans(excerpt, callee, true).into_iter().next()
+}
+
+/// Every place `name` is written as code in a declaration's captured text, as
+/// byte offsets in `excerpt`: with `calls_only`, those followed by `(`. The
+/// same text rules as [`structural_call_span`] apply to each.
+pub(crate) fn structural_name_spans(
+    excerpt: &str,
+    name: &str,
+    calls_only: bool,
+) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    if name.is_empty() {
+        return spans;
     }
     let bytes = excerpt.as_bytes();
-    let needle = callee.as_bytes();
+    let needle = name.as_bytes();
     let identifier = |byte: u8| byte == b'_' || byte.is_ascii_alphanumeric() || byte >= 0x80;
     let mut index = structural_body_start(excerpt).unwrap_or(0);
     while index < bytes.len() {
@@ -1700,15 +1818,107 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
                 };
             }
             _ if bytes[index..].starts_with(needle)
-                && bytes.get(index + needle.len()) == Some(&b'(')
-                && (index == 0 || !identifier(bytes[index - 1])) =>
+                && (index == 0 || !identifier(bytes[index - 1]))
+                && bytes
+                    .get(index + needle.len())
+                    .is_none_or(|next| !identifier(*next))
+                && (!calls_only || bytes.get(index + needle.len()) == Some(&b'(')) =>
             {
-                return Some((index, index + needle.len()));
+                spans.push((index, index + needle.len()));
+                index += needle.len();
             }
             _ => index += 1,
         }
     }
-    None
+    spans
+}
+
+/// The longest text of one use's line a reference carries.
+const MAX_PLACE_CHARS: usize = 160;
+/// The largest source file read to place uses.
+const MAX_PLACE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One line of code as a reference shows it: trimmed, and cut when it is long.
+pub(crate) fn bounded_line(line: &str) -> String {
+    let mut text = String::new();
+    for (count, character) in line.trim().chars().enumerate() {
+        if count == MAX_PLACE_CHARS {
+            text.push('…');
+            break;
+        }
+        text.push(character);
+    }
+    text
+}
+
+/// One source file split into lines, for placing byte spans in it.
+struct PlacedFile {
+    text: String,
+    line_starts: Vec<usize>,
+}
+
+impl PlacedFile {
+    fn read(path: &Path) -> Option<Self> {
+        if std::fs::metadata(path).ok()?.len() > MAX_PLACE_FILE_BYTES {
+            return None;
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut line_starts = vec![0];
+        line_starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+        Some(Self { text, line_starts })
+    }
+
+    /// The one-based line holding byte `at` and that line's trimmed text.
+    fn place(&self, at: usize) -> Option<(u32, String)> {
+        if at > self.text.len() || !self.text.is_char_boundary(at) {
+            return None;
+        }
+        let index = self.line_starts.partition_point(|start| *start <= at) - 1;
+        let start = self.line_starts[index];
+        let end = self
+            .line_starts
+            .get(index + 1)
+            .map_or(self.text.len(), |next| next - 1);
+        let text = bounded_line(&self.text[start..end]);
+        if text.is_empty() {
+            return None;
+        }
+        Some((u32::try_from(index + 1).ok()?, text))
+    }
+}
+
+/// Gives every use whose site is captured the line it is written on and that
+/// line's text, read from the source under `root`. A file that is gone,
+/// unreadable or too large leaves its uses with the byte span alone, never a
+/// guessed line.
+pub(crate) fn place_reference_facts(
+    root: Option<&Path>,
+    facts: &mut [backend_engine::ReferenceFact],
+) {
+    let Some(root) = root else {
+        return;
+    };
+    let mut files = BTreeMap::<String, Option<PlacedFile>>::new();
+    for fact in facts {
+        let Some(span) = fact.evidence.source.as_ref() else {
+            continue;
+        };
+        let file = files
+            .entry(span.file.as_str().to_owned())
+            .or_insert_with(|| PlacedFile::read(&root.join(span.file.as_str())));
+        let Some(file) = file.as_ref() else {
+            continue;
+        };
+        let Ok(start) = usize::try_from(span.start) else {
+            continue;
+        };
+        let Some((line, text)) = file.place(start) else {
+            continue;
+        };
+        if let Ok(text) = backend_engine::ProductText::new(text) {
+            fact.place = Some(backend_engine::ReferencePlace { line, text });
+        }
+    }
 }
 
 /// The file bytes of `span`, a span in the captured text of a declaration
@@ -1755,7 +1965,7 @@ pub(crate) fn structural_file_span(
 
 #[cfg(test)]
 mod call_span_tests {
-    use super::{structural_call_span, structural_file_span};
+    use super::{MAX_PLACE_CHARS, place_reference_facts, structural_call_span, structural_file_span};
     use std::collections::BTreeMap;
 
     #[test]
@@ -1804,6 +2014,70 @@ mod call_span_tests {
             None,
             "a file that no longer holds the indexed text places nothing"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn fact_at(
+        path: &str,
+        start: u32,
+        end: u32,
+    ) -> backend_engine::ReferenceFact {
+        backend_engine::ReferenceFact {
+            site: backend_engine::symbol_key("pkg::caller"),
+            target: backend_engine::SemanticLinkTarget::Local {
+                declaration: backend_engine::SemanticDeclarationIdentity {
+                    family: [1; 16],
+                    variant: [2; 16],
+                },
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_engine::SemanticLinkEvidence {
+                confidence: backend_library::SemanticConfidence::Compiler,
+                source: Some(backend_engine::SemanticSourceSpan {
+                    file: backend_engine::ProductText::new(path).expect("path"),
+                    start,
+                    end,
+                }),
+            },
+            place: None,
+        }
+    }
+
+    #[test]
+    fn a_use_carries_the_line_it_is_written_on_and_that_lines_code() {
+        let root = std::env::temp_dir().join(format!("f-place-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let file = "import os\n\ndef run():\n    # not here: enclose(x)\n    value = enclose(\n        \"a\",\n    )\n    return value\n";
+        std::fs::write(root.join("a.py"), file).expect("file");
+        let at = file.rfind("enclose").expect("call");
+        let mut facts = vec![
+            fact_at("a.py", at as u32, (at + 7) as u32),
+            fact_at("missing.py", 0, 3),
+            fact_at("a.py", 9_999, 10_000),
+        ];
+        place_reference_facts(Some(&root), &mut facts);
+        let place = facts[0].place.as_ref().expect("placed");
+        assert_eq!(place.line, 5);
+        assert_eq!(place.text.as_str(), "value = enclose(");
+        assert!(facts[1].place.is_none(), "a missing file places nothing");
+        assert!(facts[2].place.is_none(), "a span outside the file places nothing");
+        let mut without_root = vec![fact_at("a.py", at as u32, (at + 7) as u32)];
+        place_reference_facts(None, &mut without_root);
+        assert!(without_root[0].place.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_text_of_a_long_line_is_bounded() {
+        let root = std::env::temp_dir().join(format!("f-place-long-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let line = format!("x = call({})", "a".repeat(400));
+        std::fs::write(root.join("b.py"), format!("{line}\n")).expect("file");
+        let mut facts = vec![fact_at("b.py", 4, 8)];
+        place_reference_facts(Some(&root), &mut facts);
+        let text = facts[0].place.as_ref().expect("placed").text.as_str();
+        assert_eq!(text.chars().count(), MAX_PLACE_CHARS + 1);
+        assert!(text.ends_with('…'));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
