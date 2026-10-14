@@ -115,6 +115,9 @@ in
         mkdir -p .config/ci
         cp ${../ci/t1_artifacts.py} .config/ci/t1_artifacts.py
         cp ${../ci/source_identity.py} .config/ci/source_identity.py
+        cp ${../ci/cpu_placement.py} .config/ci/cpu_placement.py
+        cp ${../ci/test_cpu_placement.py} .config/ci/test_cpu_placement.py
+        python3 .config/ci/test_cpu_placement.py
         cp ${../ci/perf_context.py} .config/ci/perf_context.py
         cp ${../ci/test_perf_context.py} .config/ci/test_perf_context.py
         python3 .config/ci/test_perf_context.py
@@ -146,6 +149,20 @@ in
   nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
+
+  # These files are compile-time byte authorities in local-service. Check the
+  # actual filtered product source without compiling the product first.
+  packaged-source-contract =
+    if tools.guiRuntime == null then
+      pkgs.writeText "packaged-source-contract-config-only" "No product workspace in configuration-only snapshot."
+    else
+      pkgs.runCommand "nudox-packaged-source-contract" { nativeBuildInputs = [ pkgs.diffutils ]; } ''
+        for script in cargo-shared-cache.sh cargo-rustc-cache.sh; do
+          cmp "${tools.guiRuntime.src}/.config/scripts/$script" \
+            "${workspaceRoot}/.config/scripts/$script"
+        done
+        touch "$out"
+      '';
 
   # Exercises the Cargo lease protocol with fake Cargo/git/sccache processes;
   # it is deliberately independent from the workspace build graph.

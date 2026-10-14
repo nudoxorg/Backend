@@ -193,3 +193,19 @@ not establish the clock rate throughout an operation.
 For a retained payload, inspect the same verified inventory without importing or
 launching it:
 `python3 .config/ci/t1_artifacts.py inventory ARTIFACT_DIR --source-sha FULL_SHA`.
+
+Integration performance runs select the highest static CPU-capacity group within
+Linux's existing allowed CPU set, before starting case threads or product children.
+They prefer complete kernel `cpu_capacity` metadata, then complete advertised
+`cpuinfo_max_freq` metadata. Sampled clock speeds and machine names are not inputs.
+Homogeneous or incomplete topology preserves the existing grant; platforms without
+an affinity API keep their normal scheduling. Placement failures are errors, and the
+parent's original affinity is restored after the run. `SURFACE-CPU-PLACEMENT` records
+the metric, allowed/selected CPUs and reason. Baselines and tolerances do not change.
+
+This controls a measured source of variability on hybrid workers: a fixed P/E/E/P
+same-artifact experiment indexed in39.34/63.57/63.57/39.40s, with owner CPU
+19.82/32.95/33.15/19.89s. The experiment used one logical CPU per condition; ordinary
+integration uses every allowed CPU in its selected capacity group. It does not
+prove the cause of earlier unrestricted failures or eliminate I/O contention.
+T3/platform execution continues to exercise its declared worker scheduling.

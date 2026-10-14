@@ -21,6 +21,7 @@ def fast-flake-checks []: nothing -> list<string> {
         "telemetry-config"
         "surface-smoke-contract"
         "nu-check-failure-contract"
+        "packaged-source-contract"
     ]
 }
 
