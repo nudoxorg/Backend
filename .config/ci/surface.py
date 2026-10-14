@@ -51,6 +51,13 @@ def log(message: str) -> None:
     print(f"surface: {message}", flush=True)
 
 
+def emit_performance(name: str, performance: dict) -> None:
+    # Successful Concourse containers can expire after the next no-op poll.
+    # Keep exact metrics in the retained event log as well as the report file.
+    print("SURFACE-PERFORMANCE " + json.dumps(
+        {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
+
+
 def stable(value):
     """Drops run-dependent fields so snapshots compare behaviour only."""
     if isinstance(value, dict):
@@ -907,6 +914,7 @@ def main() -> int:
 
             try:
                 report[case["name"]] = run_cases(args.bin_dir.resolve())
+                emit_performance(case["name"], report[case["name"]])
                 log(f"case {case['name']} passed ({time.monotonic() - started:.1f}s)")
             except Exception as error:
                 log(f"case {case['name']} failed: {error}")
@@ -919,6 +927,7 @@ def main() -> int:
             failed.append(case["name"])
             continue
         report[case["name"]] = record["performance"]
+        emit_performance(case["name"], record["performance"])
         snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
         if args.update:
             snapshot_path.parent.mkdir(parents=True, exist_ok=True)
