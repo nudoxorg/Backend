@@ -39,7 +39,11 @@ impl TypeScriptProgramAuthorityLane {
     /// Retain at most the current admitted forest. Exact root equality is
     /// deliberately conservative; no filesystem canonicalization or ambient
     /// access can widen reuse to another package.
-    pub(super) fn prepare(&mut self, root: &Path, keys: &[TypeScriptProgramKey]) -> Result<(), ()> {
+    pub(super) fn prepare(
+        &mut self,
+        root: &Path,
+        keys: &[TypeScriptProgramKey],
+    ) -> Result<(), TypeScriptProgramLaneError> {
         let retained = keys.iter().collect::<BTreeSet<_>>();
         if retained.len() != keys.len() {
             // Two real programs cannot borrow the same mutable authority.
@@ -154,7 +158,10 @@ mod tests {
         lane.authority(None)
             .update(sources(), recipe(), &[])
             .unwrap();
-        assert!(lane.prepare(Path::new("/a"), &[None, None]).is_err());
+        assert_eq!(
+            lane.prepare(Path::new("/a"), &[None, None]),
+            Err(TypeScriptProgramLaneError::DuplicateProgramIdentity)
+        );
         assert!(lane.project(&None).is_none());
     }
 }
