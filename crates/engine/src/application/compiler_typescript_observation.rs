@@ -10,7 +10,7 @@ use backend_frontend_typescript::{
 };
 use std::cell::RefCell;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 // Program admission bounds members at 16,384. Boundary-only observation has
@@ -32,8 +32,63 @@ thread_local! {
     static ACTIVE_BOUNDARIES: RefCell<Vec<ActiveBoundary>> = const { RefCell::new(Vec::new()) };
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ObservedTypeScriptProgram {
+    #[default]
+    NoProgram,
+    Program(usize),
+}
+
+impl ObservedTypeScriptProgram {
+    fn from_encoded(value: usize) -> Self {
+        if value == usize::MAX {
+            Self::NoProgram
+        } else {
+            Self::Program(value)
+        }
+    }
+
+    fn encoded(self) -> usize {
+        match self {
+            Self::NoProgram => usize::MAX,
+            Self::Program(index) => index,
+        }
+    }
+
+    fn index(self) -> Option<usize> {
+        match self {
+            Self::NoProgram => None,
+            Self::Program(index) => Some(index),
+        }
+    }
+}
+
+/// Borrowed observation frame for one serial forest operation. The field is
+/// private; it cannot provide compiler authority or alter admission counts.
+pub(super) struct TypeScriptProgramObservation<'budget, 'cancel> {
+    frame: ProgramObservationFrame<'budget, 'cancel>,
+}
+
+struct ProgramObservationFrame<'budget, 'cancel> {
+    budget: &'budget ObservedTypeScriptBudget<'cancel>,
+    previous: ObservedTypeScriptProgram,
+    // The coordinator that selects the program also restores its context.
+    // This marker owns no allocation or mutable semantic state.
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for TypeScriptProgramObservation<'_, '_> {
+    fn drop(&mut self) {
+        self.frame
+            .budget
+            .current_program
+            .store(self.frame.previous.encoded(), Ordering::Release);
+    }
+}
+
 #[derive(Clone, Default)]
 struct ObservedStopContext {
+    program: ObservedTypeScriptProgram,
     phase: Option<backend_frontend_typescript::TszProjectExecutionPhase>,
     file: Option<(usize, String)>,
 }
@@ -45,7 +100,7 @@ pub(super) struct ObservedTypeScriptBudget<'cancel> {
     observed_events: AtomicU64,
     stop_observed: AtomicBool,
     stop_context: OnceLock<ObservedStopContext>,
-    current_program: AtomicU64,
+    current_program: AtomicUsize,
     admitted_sources: AtomicU64,
     admitted_libraries: AtomicU64,
     admitted_module_requests: AtomicU64,
@@ -67,7 +122,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             observed_events: AtomicU64::new(0),
             stop_observed: AtomicBool::new(false),
             stop_context: OnceLock::new(),
-            current_program: AtomicU64::new(u64::MAX),
+            current_program: AtomicUsize::new(usize::MAX),
             admitted_sources: AtomicU64::new(0),
             admitted_libraries: AtomicU64::new(0),
             admitted_module_requests: AtomicU64::new(0),
@@ -77,20 +132,33 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
         }
     }
 
-    pub(super) fn admit_program(
-        &self,
-        index: usize,
-        sources: usize,
-        libraries: usize,
-        requests: usize,
-    ) {
-        self.current_program.store(index as u64, Ordering::Release);
+    pub(super) fn admit_program(&self, sources: usize, libraries: usize, requests: usize) {
         self.admitted_sources
             .fetch_add(sources as u64, Ordering::Relaxed);
         self.admitted_libraries
             .fetch_add(libraries as u64, Ordering::Relaxed);
         self.admitted_module_requests
             .fetch_add(requests as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn observe_program(
+        &self,
+        index: usize,
+    ) -> TypeScriptProgramObservation<'_, 'cancel> {
+        let previous = ObservedTypeScriptProgram::from_encoded(
+            self.current_program.swap(index, Ordering::AcqRel),
+        );
+        TypeScriptProgramObservation {
+            frame: ProgramObservationFrame {
+                budget: self,
+                previous,
+                _not_send: std::marker::PhantomData,
+            },
+        }
+    }
+
+    fn observed_program(&self) -> ObservedTypeScriptProgram {
+        ObservedTypeScriptProgram::from_encoded(self.current_program.load(Ordering::Acquire))
     }
 
     pub(super) fn reused_program(&self, sources: usize) {
@@ -103,6 +171,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
         ACTIVE_BOUNDARIES.with(|active| {
             let active = active.borrow();
             ObservedStopContext {
+                program: self.observed_program(),
                 phase: active
                     .iter()
                     .rev()
@@ -188,7 +257,6 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                 let remaining = self.budget.remaining_work_units();
                 let context = self.active_context();
                 let _ = self.stop_context.set(context.clone());
-                let program = self.current_program.load(Ordering::Acquire);
                 let thread = std::thread::current();
                 // Sample completions before starts. Each completed boundary
                 // publishes its earlier start, so the counters cannot present
@@ -202,7 +270,7 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                     project_observed_attempted_work_units = work_units,
                     project_charged_work_units = self.initial_work.saturating_sub(remaining),
                     project_remaining_work_units = remaining,
-                    observed_program_index = (program != u64::MAX).then_some(program),
+                    observed_program_index = context.program.index(),
                     observed_active_phase = ?context.phase,
                     observed_active_file_index = context.file.as_ref().map(|(index, _)| *index),
                     observed_active_file = context.file.as_ref().map(|(_, path)| path.as_str()),
@@ -329,6 +397,10 @@ mod tests {
                 budget.checkpoint(0),
                 Err(TszProjectExecutionStop::WorkBudgetExhausted)
             );
+            assert_eq!(
+                budget.stop_context.get().unwrap().program,
+                ObservedTypeScriptProgram::NoProgram
+            );
         });
         let records = records.lock().unwrap();
         assert_eq!(
@@ -337,6 +409,10 @@ mod tests {
             "the release-level refusal is retained exactly once"
         );
         let record = &records[0];
+        assert!(
+            !record.contains_key("observed_program_index"),
+            "an unselected stop cannot invent a program"
+        );
         for (name, expected) in [
             ("project_initial_work_units", 7),
             ("project_observed_attempted_work_units", 5),
@@ -405,7 +481,8 @@ mod tests {
                 &cancelled,
                 7,
             );
-            budget.admit_program(3, 4, 2, 8);
+            budget.admit_program(4, 2, 8);
+            let _program_observation = budget.observe_program(3);
             let first = TszProjectExecutionFile {
                 index: 0,
                 path: "src/completed.ts",
@@ -509,7 +586,8 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let budget =
             ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, 0);
-        budget.admit_program(0, 1, 0, 0);
+        budget.admit_program(1, 0, 0);
+        let _program_observation = budget.observe_program(0);
         budget.reused_program(1);
         budget.observe(TszProjectExecutionEvent {
             phase: TszProjectExecutionPhase::FileQuery,
@@ -530,6 +608,125 @@ mod tests {
         assert_eq!(budget.started_source_checks.load(Ordering::Relaxed), 0);
         assert_eq!(budget.completed_source_checks.load(Ordering::Relaxed), 0);
         assert_eq!(budget.reused_source_checks.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn nonlast_checked_program_query_stop_preserves_program_file_and_admission_counts() {
+        use backend_frontend_typescript::{
+            TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProjectAuthority,
+            TszProjectCheckerExecution, TszProjectOptions, TszProjectQuerySessionError,
+            TszProjectSemanticOptions,
+        };
+        let records = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(StopSubscriber(Arc::clone(&records)), || {
+            let cancelled = AtomicBool::new(false);
+            let budget = ObservedTypeScriptBudget::new(
+                Instant::now() + Duration::from_secs(30),
+                &cancelled,
+                1_000_000,
+            );
+            let mut programs = [TszProjectAuthority::new(), TszProjectAuthority::new()];
+            for (index, (program, path)) in programs
+                .iter_mut()
+                .zip(["src/first.ts", "src/last.ts"])
+                .enumerate()
+            {
+                budget.admit_program(1, 0, 0);
+                let _program_observation = budget.observe_program(index);
+                program
+                    .update_with_checker_execution(
+                        vec![TszFileInput {
+                            path: path.into(),
+                            source: "export const value: number = 1;".into(),
+                        }],
+                        TszProjectOptions {
+                            checker: TszCheckerOptions {
+                                no_lib: true,
+                                ..TszCheckerOptions::default()
+                            },
+                            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                            module_resolutions: Vec::new(),
+                            file_formats: Vec::new(),
+                            environment: TszEnvironmentFingerprint::from_sha256(if index == 0 {
+                                [0x41; 32]
+                            } else {
+                                [0x42; 32]
+                            }),
+                        },
+                        &[],
+                        TszProjectCheckerExecution {
+                            checkpoint: &budget,
+                            workers: std::num::NonZeroUsize::MIN,
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(
+                    budget.observed_program(),
+                    ObservedTypeScriptProgram::Program(index)
+                );
+            }
+            assert_eq!(
+                budget.observed_program(),
+                ObservedTypeScriptProgram::NoProgram
+            );
+            assert_eq!(budget.admitted_sources.load(Ordering::Relaxed), 2);
+            assert_eq!(budget.started_source_checks.load(Ordering::Relaxed), 2);
+            assert_eq!(budget.completed_source_checks.load(Ordering::Relaxed), 2);
+            {
+                // Both native programs completed checking. This is an actual
+                // checked-image query on the earlier node, not a synthetic
+                // import witness or a repeated program admission.
+                let _program_observation = budget.observe_program(0);
+                let project = programs[0].project().unwrap();
+                let session = project.checked_query_session(&budget).unwrap();
+                let file_index = session.file_index("src/first.ts").unwrap();
+                let callback_entered = AtomicBool::new(false);
+                cancelled.store(true, Ordering::Release);
+                let stopped = session.with_file_checker_and_types(file_index, |_, _, _, _| {
+                    callback_entered.store(true, Ordering::Release);
+                });
+                assert_eq!(
+                    stopped,
+                    Err(TszProjectQuerySessionError::ExecutionStopped(
+                        TszProjectExecutionStop::Cancelled
+                    ))
+                );
+                assert!(!callback_entered.load(Ordering::Acquire));
+                let context = budget.stop_context.get().unwrap();
+                assert_eq!(context.program, ObservedTypeScriptProgram::Program(0));
+                assert_eq!(context.phase, Some(TszProjectExecutionPhase::FileQuery));
+                assert_eq!(
+                    context
+                        .file
+                        .as_ref()
+                        .map(|(index, path)| (*index, path.as_str())),
+                    Some((file_index, "src/first.ts"))
+                );
+            }
+            assert_eq!(
+                budget.observed_program(),
+                ObservedTypeScriptProgram::NoProgram
+            );
+            assert_eq!(budget.admitted_sources.load(Ordering::Relaxed), 2);
+            assert_eq!(budget.admitted_libraries.load(Ordering::Relaxed), 0);
+            assert_eq!(budget.admitted_module_requests.load(Ordering::Relaxed), 0);
+            assert_eq!(budget.completed_source_checks.load(Ordering::Relaxed), 2);
+        });
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.get("observed_program_index"), Some(&0));
+        assert_eq!(record.get("admitted_source_count"), Some(&2));
+        assert_eq!(record.get("started_source_check_count"), Some(&2));
+        assert_eq!(record.get("completed_source_check_count"), Some(&2));
+        assert_eq!(
+            record.text.get("observed_active_file").map(String::as_str),
+            Some("src/first.ts")
+        );
+        assert_eq!(
+            record.text.get("observed_active_phase").map(String::as_str),
+            Some("Some(FileQuery)")
+        );
     }
 
     #[test]

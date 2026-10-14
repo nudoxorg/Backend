@@ -2340,7 +2340,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
                 let program_sources = native.sources.len();
-                budget.admit_program(program_index, program_sources, native.libraries.len(), native.options.module_resolutions.len());
+                budget.admit_program(program_sources, native.libraries.len(), native.options.module_resolutions.len());
+                let _program_observation = budget.observe_program(program_index);
                 tracing::info!(target: "compiler.typescript_project",
                     phase = "admitted_program", program_environment = ?native.options.environment,
                     sources = native.sources.len(), libraries = native.libraries.len(),
@@ -2407,17 +2408,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             };
             let mut leaves = Vec::with_capacity(tsz_projects.len());
             for (index, project) in tsz_projects.iter().enumerate() {
-                leaves.push(project.map(|project| capture_native_program_sources(
-                    project,
-                    tsz_package_membership.iter().filter_map(|(package, membership)| {
-                        match membership {
-                            crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path } if *program == index => Some((package.as_ref(), program_path.as_ref())),
-                            _ => None,
-                        }
-                    }),
-                    toolchain.identity,
-                    |units| backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units).map_err(&stopped),
-                )).transpose()?);
+                leaves.push(project.map(|project| {
+                    let _program_observation = budget.observe_program(index);
+                    capture_native_program_sources(
+                        project,
+                        tsz_package_membership.iter().filter_map(|(package, membership)| {
+                            match membership {
+                                crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path } if *program == index => Some((package.as_ref(), program_path.as_ref())),
+                                _ => None,
+                            }
+                        }),
+                        toolchain.identity,
+                        |units| backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units).map_err(&stopped),
+                    )
+                }).transpose()?);
             }
             native_program_sources = Some(if configured_forest {
                 let nodes = tsz_node_metadata
@@ -2454,9 +2458,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .into()
             });
         }
-        let tsz_sessions = tsz_projects.iter().map(|project| {
+        let tsz_sessions = tsz_projects.iter().enumerate().map(|(index, project)| {
             project.map(|project| {
                 let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript forest checker budget" })?;
+                let _program_observation = budget.observe_program(index);
                 project.checked_query_session(budget).map_err(|cause| {
                     let toolchain = self.toolchain_for_package(first_application_request, typescript_toolchain)
                         .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
@@ -3119,6 +3124,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         terminal: Box::new(terminal),
                     })?,
                 )
+            } else {
+                None
+            };
+            let _typescript_program_observation = if let Some(
+                crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, .. }
+            ) = tsz_package_membership.get(source.relative_path()) {
+                let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript selected source observation budget" })?;
+                Some(budget.observe_program(*program))
             } else {
                 None
             };
