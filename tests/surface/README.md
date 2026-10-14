@@ -202,3 +202,16 @@ no owner launch, workspace state or endpoint directory. Add help must advertise
 wait, its timeout operand and terminal-receipt semantics. Together with #233's
 real index-alias/zero-deadline/resumption proof this covers the CLI-facing portion
 of CLI-02.01; MCP argument rejection and the targeted Rust boundary test remain.
+
+### MCP rejects CLI-only wait options (W1.3, CLI-02.01)
+
+After native indexing completes, the shipped MCP process receives three invalid
+`backend.index` calls: `wait`, `wait_timeout`, and `wait-timeout`, each supplied
+separately alongside the valid project path. Each must return an error tool
+result with a structured usage/malformed fault naming that exact argument and
+explaining that it is unknown. Transport errors, missing replies and successful
+indexing responses fail the case. A valid progress call in each same session
+must still return the original complete operation identity and native receipt.
+These checks add per-session timings without changing the reviewed golden or
+performance limits. They do not prove absence of all filesystem writes or replace
+the retained targeted failure, disconnect and journal laws.
