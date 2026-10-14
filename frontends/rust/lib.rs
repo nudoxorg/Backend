@@ -31,7 +31,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Rust,
-        b"tree-sitter-rust-0.24.2/tags-v3",
+        b"tree-sitter-rust-0.24.2/tags-v4-macro-items",
         vec![GrammarVariant::new(
             &["rs"],
             tree_sitter_rust::LANGUAGE.into(),

@@ -463,6 +463,7 @@ impl<'a> CheckerContext<'a> {
             program_module_exports: None,
             program_cross_file_node_symbols: None,
             program_alias_partners: None,
+            shared_program_facts: None,
             resolved_module_paths: None,
             resolved_module_request_paths: None,
             project_module_resolution_outcomes: None,
@@ -864,6 +865,7 @@ impl<'a> CheckerContext<'a> {
         // so SymbolId(N) means the same entity regardless of which arena/binder
         // the child checker operates on. Sharing avoids redundant re-resolution
         // of lib types (Array, Promise, etc.) in each child context.
+        ctx.shared_program_facts = parent.shared_program_facts.clone();
         ctx.symbol_types = parent.symbol_types.clone();
         ctx.symbol_instance_types = parent.symbol_instance_types.clone();
         ctx.enum_namespace_types = parent.enum_namespace_types.clone();

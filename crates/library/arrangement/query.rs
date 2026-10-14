@@ -14,7 +14,7 @@ use std::collections::BinaryHeap;
 struct NameRanked {
     id: RowId,
     normalized_label: String,
-    placement: (bool, bool, bool, bool, u8),
+    placement: (bool, bool, bool, bool, bool, u8),
 }
 
 impl NameRanked {
@@ -34,10 +34,12 @@ impl NameRanked {
                         .is_some_and(|prefix| prefix.ends_with("::"))
             });
         // Among exact names a declaration comes before an import that only
-        // brings it in, library code before examples, tests and benchmarks,
-        // and a declaration with a captured site before one without, then by
-        // how much its kind is the thing the name names.
+        // brings it in, library code before examples, tests and benchmarks, a
+        // runtime declaration before the type stub (.pyi) that declares it, and
+        // a declaration with a captured site before one without, then by how
+        // much its kind is the thing the name names.
         let path = row.source.file_path();
+        let runtime = path.is_none_or(|path| !path.ends_with(".pyi"));
         Some(Self {
             id: row.id,
             normalized_label,
@@ -45,13 +47,14 @@ impl NameRanked {
                 exact,
                 row.kind != Some(crate::DeclarationKind::Import),
                 path.is_some_and(|path| !super::is_support_source_path(path)),
+                runtime,
                 row.source.captured().is_some(),
                 row.kind.map_or(1, super::declaration_name_priority),
             ),
         })
     }
 
-    fn ordering_key(&self) -> (Reverse<(bool, bool, bool, bool, u8)>, &str, RowId) {
+    fn ordering_key(&self) -> (Reverse<(bool, bool, bool, bool, bool, u8)>, &str, RowId) {
         (Reverse(self.placement), &self.normalized_label, self.id)
     }
 }
@@ -577,6 +580,28 @@ mod ordering_laws {
                 assert_eq!(left.cmp(right), at.cmp(&other_at));
             }
         }
+    }
+
+    #[test]
+    fn a_runtime_declaration_ranks_before_the_type_stub_that_declares_it() {
+        let stub = fixture(
+            "pkg::semantic::01::Environment",
+            DeclarationKind::Class,
+            false,
+        )
+        .with_source(SourceLocation::new("pkg/_attrs.pyi", 6).expect("stub site"));
+        let runtime = fixture(
+            "pkg::semantic::ff::Environment",
+            DeclarationKind::Class,
+            false,
+        )
+        .with_source(SourceLocation::new("pkg/_attrs.py", 20).expect("runtime site"));
+        let mut ranked = [&stub, &runtime]
+            .map(|row| NameRanked::new(row, Some("environment"), None).expect("name candidate"));
+        // The stub's coordinate sorts first; only the stub tier moves it.
+        assert!(stub.label < runtime.label);
+        ranked.sort();
+        assert_eq!(ranked[0].normalized_label, runtime.label.to_lowercase());
     }
 
     #[test]

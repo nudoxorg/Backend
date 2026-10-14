@@ -44,7 +44,10 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator}
 pub(crate) use crate::containment::{DefinitionIndex, container_of};
 use crate::facts::DeclarationFacts;
 use crate::syntax_facts::declaration_facts;
+#[cfg(test)]
 pub(crate) use crate::syntax_kind::declaration_kind;
+pub(crate) use crate::syntax_kind::declaration_kind_at;
+use crate::syntax_macros::{Dialect, MacroItems, macro_items};
 
 const MAX_DECLARATIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4_096;
@@ -732,13 +735,21 @@ impl SyntaxFrontend {
         if tree.root_node().has_error() {
             return Err(SyntaxError::MalformedSource(self.language));
         }
+        // Items an item-position macro declares live in re-parses of its
+        // argument; they are captured with the file's own tree so one
+        // containment decision covers both.
+        let nested = macro_items(self.language, &variant.language, &mut parser, &tree, source)?;
         let mut cursor = QueryCursor::new();
-        let captured = captured_definitions(variant, &tree, &mut cursor, source, text);
+        let trees = SourceTrees {
+            main: &tree,
+            nested: &nested,
+        };
+        let captured = captured_in_trees(variant, &trees, &mut cursor, source, text);
         Ok(SourceAnalysis {
             language: self.language,
             content: typed_of::<InputContentSchema>(source),
             producer: self.producer,
-            declarations: self.declarations_of(path, tree.root_node(), &captured, text)?,
+            declarations: self.declarations_of(path, &trees, &captured, text)?,
         })
     }
 
@@ -762,11 +773,12 @@ impl SyntaxFrontend {
     fn declarations_of(
         &self,
         path: &Path,
-        root: Node<'_>,
+        trees: &SourceTrees<'_>,
         captured: &[CapturedDefinition<'_>],
         text: &str,
     ) -> Result<Arc<[SourceDeclaration]>, SyntaxError> {
-        let resolved = resolved_definitions(self.language, captured, text);
+        let root = trees.main.root_node();
+        let resolved = resolved_definitions(self.language, trees, captured, text);
         let mut declarations = Vec::with_capacity(resolved.len().saturating_add(1));
         declarations.push(module_declaration(path, self.language)?);
         let mut excerpt_bytes = 0usize;
@@ -835,6 +847,46 @@ struct CapturedDefinition<'a> {
     name: String,
     tag: &'a str,
     line: NonZeroU32,
+    /// The nested parse the definition was found in; `None` for the file's tree.
+    nest: Option<usize>,
+}
+
+/// The parse trees one file's definitions are captured from: the file's own
+/// tree and one tree per re-parsed item-position macro argument.
+struct SourceTrees<'a> {
+    main: &'a tree_sitter::Tree,
+    nested: &'a MacroItems,
+}
+
+impl<'a> SourceTrees<'a> {
+    fn tree(&self, nest: Option<usize>) -> Option<&'a tree_sitter::Tree> {
+        match nest {
+            None => Some(self.main),
+            Some(index) => self.nested.nested.get(index).map(|nested| &nested.tree),
+        }
+    }
+
+    /// Returns the invocation node a nested tree's items stand in for.
+    fn anchor_of(&self, nest: usize) -> Option<(Node<'a>, Option<usize>)> {
+        let nested = self.nested.nested.get(nest)?;
+        Some((
+            self.invocation(nested.anchor, nested.parent)?,
+            nested.parent,
+        ))
+    }
+
+    fn invocation(&self, range: (usize, usize), nest: Option<usize>) -> Option<Node<'a>> {
+        let mut node = self
+            .tree(nest)?
+            .root_node()
+            .descendant_for_byte_range(range.0, range.1)?;
+        loop {
+            if node.kind() == "macro_invocation" && (node.start_byte(), node.end_byte()) == range {
+                return Some(node);
+            }
+            node = node.parent()?;
+        }
+    }
 }
 
 /// Selects every definition a grammar's tags query matches, once each.
@@ -845,6 +897,7 @@ struct CapturedDefinition<'a> {
 fn captured_definitions<'a>(
     variant: &'a GrammarVariant,
     tree: &'a tree_sitter::Tree,
+    nest: Option<usize>,
     cursor: &mut QueryCursor,
     source: &[u8],
     text: &str,
@@ -880,6 +933,47 @@ fn captured_definitions<'a>(
             name: bounded(name),
             tag,
             line,
+            nest,
+        });
+    }
+    captured
+}
+
+/// Captures every definition of the file's tree and of each re-parsed macro
+/// argument, then adds one `macro` definition for each invocation that
+/// declares items no parse could recover.
+fn captured_in_trees<'a>(
+    variant: &'a GrammarVariant,
+    trees: &SourceTrees<'a>,
+    cursor: &mut QueryCursor,
+    source: &[u8],
+    text: &str,
+) -> Vec<CapturedDefinition<'a>> {
+    let mut captured = captured_definitions(variant, trees.main, None, cursor, source, text);
+    for (index, nested) in trees.nested.nested.iter().enumerate() {
+        captured.extend(captured_definitions(
+            variant,
+            &nested.tree,
+            Some(index),
+            cursor,
+            source,
+            text,
+        ));
+    }
+    for opaque in &trees.nested.opaque {
+        let Some(node) = trees.invocation(opaque.range, opaque.parent) else {
+            continue;
+        };
+        let line = NonZeroU32::new(
+            u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX),
+        )
+        .unwrap_or(NonZeroU32::MIN);
+        captured.push(CapturedDefinition {
+            node,
+            name: bounded(&format!("{}!", opaque.name)),
+            tag: "macro",
+            line,
+            nest: opaque.parent,
         });
     }
     captured
@@ -907,6 +1001,7 @@ struct ResolvedDefinition<'a> {
 /// role is settled, or one declaration is published twice.
 fn resolved_definitions<'a>(
     language: SourceLanguage,
+    trees: &SourceTrees<'a>,
     captured: &[CapturedDefinition<'a>],
     text: &str,
 ) -> Vec<ResolvedDefinition<'a>> {
@@ -914,12 +1009,18 @@ fn resolved_definitions<'a>(
     for capture in captured {
         definitions.insert(capture.node, &capture.name, capture.line, capture.tag);
     }
+    let mut anchors = AnchorContainers::default();
     let mut selected: BTreeMap<DefinitionSelector, usize> = BTreeMap::new();
     let mut resolved: Vec<ResolvedDefinition<'a>> = Vec::new();
     for capture in captured {
-        let container = container_of(capture.node, &definitions, text);
+        let outer = anchors.of(trees, capture.nest, &definitions, text);
+        let container = container_of(capture.node, &definitions, text, &outer);
         let tag = settled_role(capture.tag, &container, &definitions);
-        let kind = declaration_kind(language, tag, capture.node.kind());
+        let kind = reinterpreted(
+            trees,
+            capture.nest,
+            declaration_kind_at(language, tag, capture.node, &capture.name),
+        );
         let selector: DefinitionSelector = (
             (capture.node.start_byte(), capture.node.end_byte()),
             capture.name.clone(),
@@ -956,6 +1057,57 @@ fn settled_role<'a>(tag: &'a str, container: &Container, definitions: &Definitio
         b"method" if !inside_a_type => "function",
         b"function" if inside_a_type => "method",
         _ => tag,
+    }
+}
+
+/// Where each re-parsed macro argument sits in its file, resolved once.
+#[derive(Default)]
+struct AnchorContainers {
+    resolved: BTreeMap<usize, Container>,
+}
+
+impl AnchorContainers {
+    /// Returns the container items declared at a nested parse's position
+    /// inherit: the container of the invocation that holds the argument.
+    fn of(
+        &mut self,
+        trees: &SourceTrees<'_>,
+        nest: Option<usize>,
+        definitions: &DefinitionIndex,
+        text: &str,
+    ) -> Container {
+        let Some(nest) = nest else {
+            return Container::Module;
+        };
+        if let Some(container) = self.resolved.get(&nest) {
+            return container.clone();
+        }
+        let container = match trees.anchor_of(nest) {
+            Some((invocation, parent)) => {
+                let outer = self.of(trees, parent, definitions, text);
+                container_of(invocation, definitions, text, &outer)
+            }
+            None => Container::Module,
+        };
+        self.resolved.insert(nest, container.clone());
+        container
+    }
+}
+
+/// Maps a definition found in a rewritten argument back to what it really is:
+/// a `bitflags!` struct was parsed as an enum, and its flags as variants.
+fn reinterpreted(
+    trees: &SourceTrees<'_>,
+    nest: Option<usize>,
+    kind: DeclarationKind,
+) -> DeclarationKind {
+    let bitflags = nest
+        .and_then(|index| trees.nested.nested.get(index))
+        .is_some_and(|nested| nested.dialect == Dialect::Bitflags);
+    match (bitflags, kind) {
+        (true, DeclarationKind::Enum) => DeclarationKind::Struct,
+        (true, DeclarationKind::Variant) => DeclarationKind::Constant,
+        _ => kind,
     }
 }
 

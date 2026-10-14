@@ -544,6 +544,14 @@ impl<'a> CheckerContext<'a> {
             return Some(false);
         }
         self.get_binder_for_file(importer)?;
+        // One program-wide set answers what scanning every binder would, in one probe.
+        if let Some(facts) = self
+            .shared_program_facts
+            .as_ref()
+        {
+            self.types.execution_checkpoint(1).ok()?;
+            return Some(facts.is_ambient_module_name(owner));
+        }
         for binder in self.all_binders.as_ref()?.iter() {
             self.types.execution_checkpoint(1).ok()?;
             if binder.declared_modules.contains(owner)
@@ -1201,7 +1209,30 @@ impl<'a> CheckerContext<'a> {
     ) -> Option<crate::context::ProjectModuleConsensus> {
         use crate::context::{ProjectModuleConsensus, ResolvedModuleRequestOutcome};
         // Without the compiler-owned outcome map there is no consensus to remember.
-        self.project_module_resolution_outcomes.as_ref()?;
+        let outcomes = self.project_module_resolution_outcomes.as_ref()?;
+        // The answer depends only on the immutable outcome map, so every context of one
+        // program (each file's checker and every delegation child) shares one memo.
+        let shared = self
+            .shared_program_facts
+            .as_ref()
+            .map(|facts| (facts, std::sync::Arc::as_ptr(outcomes) as usize));
+        if let Some((facts, outcomes_id)) = shared {
+            if let Some(hit) = facts.consensus_get(outcomes_id, source_file_idx, specifier) {
+                self.types.execution_checkpoint(1).ok()?;
+                return hit;
+            }
+            let computed = self
+                .project_module_consensus_for_specifier(source_file_idx, specifier)
+                .map(|outcome| match outcome {
+                    ResolvedModuleRequestOutcome::File(target) => ProjectModuleConsensus::File(*target),
+                    ResolvedModuleRequestOutcome::External { .. } => ProjectModuleConsensus::External,
+                    ResolvedModuleRequestOutcome::Unresolved => ProjectModuleConsensus::Unresolved,
+                });
+            if self.types.execution_checkpoint(0).is_ok() {
+                facts.consensus_insert(outcomes_id, source_file_idx, specifier, computed);
+            }
+            return computed;
+        }
         if let Some(hit) = self
             .project_module_consensus_memo
             .borrow()

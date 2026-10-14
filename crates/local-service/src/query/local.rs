@@ -2457,7 +2457,10 @@ fn collect_selected_documents(
                     .and_then(|parent| facts_by_id.get(parent))
                     .is_some_and(|parent_fact| {
                         parent_fact.name == presentation.name
-                            && matches!(parent_fact.kind.as_str(), "function" | "method")
+                            && matches!(
+                                parent_fact.kind.as_str(),
+                                "function" | "method" | "constructor" | "property"
+                            )
                     });
             // The coordinate itself ends in `::<name>`, so merely dropping
             // the "name" field would still leave this fact lexically

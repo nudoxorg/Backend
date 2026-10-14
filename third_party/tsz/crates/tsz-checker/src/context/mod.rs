@@ -69,6 +69,8 @@ mod module_entity;
 mod package_resolution;
 mod program_context;
 pub use program_context::{ProgramContext, SealedProgramGlobalIndexes};
+mod program_facts;
+pub use program_facts::SharedProgramFacts;
 mod request_cache;
 mod resolver;
 pub(crate) use resolver::{BoundModuleRequest, SelectedModuleRequest, SourceModuleAliasKind};
@@ -1593,6 +1595,10 @@ pub struct CheckerContext<'a> {
     /// `ctx.alias_partner_for` in preference to per-binder `alias_partners`.
     /// Driver wraps `program.alias_partners` in a single `Arc`.
     pub program_alias_partners: Option<Arc<FxHashMap<SymbolId, SymbolId>>>,
+    /// Immutable whole-program facts computed once for the sealed program and shared by
+    /// every checker context of it, including cross-file delegation children. `None` for
+    /// standalone contexts, which derive the same answers from their binders on demand.
+    pub shared_program_facts: Option<Arc<SharedProgramFacts>>,
 
     /// Resolved module paths map: (`source_file_idx`, specifier) -> `target_file_idx`.
     /// Used by `get_type_of_symbol` to resolve imports to their target file and symbol.

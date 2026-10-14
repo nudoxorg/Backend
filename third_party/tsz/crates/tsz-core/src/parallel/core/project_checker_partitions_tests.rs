@@ -211,6 +211,143 @@ fn partitions_preserve_cross_file_identity_options_libraries_and_diagnostics() {
     }
 }
 
+
+#[test]
+fn sealed_for_queries_answers_what_the_checked_image_answers_without_checking_files() {
+    let observe = |checked: bool| {
+        let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+        program.set_project_module_resolutions(&resolutions).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled);
+        let execution = ProjectCheckerExecution {
+            checkpoint: &budget,
+            workers: NonZeroUsize::new(2).unwrap(),
+        };
+        let prepared = PreparedProjectCheckerImage::new_with_checker_execution(
+            program, options, &libs, semantic, execution,
+        )
+        .unwrap();
+        let before = budget.remaining_work_units();
+        let image = if checked {
+            prepared.check_with_partitions(execution).unwrap().0
+        } else {
+            prepared.seal_for_queries(execution).unwrap()
+        };
+        let spent = before - budget.remaining_work_units();
+        assert!(image.is_usable());
+        let session = image.query_session(&budget).unwrap();
+        let mut shown = Vec::new();
+        for index in 0..image.files.len() {
+            let name = image.files[index].file_name.clone();
+            let facts = session
+                .with_file_checker(index, |checker, binder, _| {
+                    ["a", "b", "good", "values"]
+                        .into_iter()
+                        .filter_map(|local| {
+                            let symbol = binder.file_locals.get(local)?;
+                            let ty = checker.get_type_of_symbol(symbol);
+                            Some(format!("{local}: {}", checker.format_type(ty)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap();
+            shown.push((name, facts));
+        }
+        (spent, shown)
+    };
+    let (checked_spent, checked) = observe(true);
+    let (sealed_spent, sealed) = observe(false);
+    assert_eq!(sealed, checked, "lazy queries answer exactly what the checked image answers");
+    assert!(
+        sealed.iter().any(|(_, facts)| !facts.is_empty()),
+        "the fixture must expose real typed facts"
+    );
+    assert!(
+        sealed_spent < checked_spent,
+        "sealing for queries runs no file check: {sealed_spent} must be less than {checked_spent}"
+    );
+}
+
+
+#[test]
+fn project_file_checkers_share_program_wide_caches() {
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let execution = ProjectCheckerExecution {
+        checkpoint: &budget,
+        workers: NonZeroUsize::new(2).unwrap(),
+    };
+    let image = PreparedProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic, execution,
+    )
+    .unwrap()
+    .seal_for_queries(execution)
+    .unwrap();
+    let session = image.query_session(&budget).unwrap();
+    let mut shared = Vec::new();
+    for index in 0..image.files.len() {
+        let (facts, type_params, results) = session
+            .with_file_checker(index, |checker, _, _| {
+                (
+                    checker.ctx.shared_program_facts.clone(),
+                    checker.ctx.cross_file_type_params_cache.clone(),
+                    checker.ctx.share_owner_symbol_type_results,
+                )
+            })
+            .unwrap();
+        // Interactive sessions keep per-run results local; project checking mirrors them
+        // into the program's definition store, so a class imported by every file is
+        // resolved once for the program, not once per file and per delegation child.
+        assert!(results, "file {index} must share resolved symbol types");
+        shared.push((facts.expect("program facts"), type_params.expect("type-param memo")));
+    }
+    assert!(shared.len() > 1);
+    for (facts, type_params) in &shared[1..] {
+        assert!(Arc::ptr_eq(facts, &shared[0].0), "one set of program facts for every file");
+        assert!(Arc::ptr_eq(type_params, &shared[0].1), "one type-parameter memo for every file");
+    }
+}
+
+#[test]
+fn sealing_for_queries_refuses_a_foreign_budget_and_a_stopped_budget() {
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let admitted = execution_budget(&cancelled);
+    fn execution(checkpoint: &dyn tsz_common::ExecutionCheckpoint) -> ProjectCheckerExecution<'_> {
+        ProjectCheckerExecution {
+            checkpoint,
+            workers: NonZeroUsize::new(2).unwrap(),
+        }
+    }
+    let prepared = PreparedProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic, execution(&admitted),
+    )
+    .unwrap();
+    let foreign = execution_budget(&cancelled);
+    assert!(matches!(
+        prepared.seal_for_queries(execution(&foreign)),
+        Err(ProjectPartitionCheckError::CheckerSession(
+            ProjectCheckerSessionError::ExecutionCheckpointMismatch
+        ))
+    ));
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let prepared = PreparedProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic, execution(&admitted),
+    )
+    .unwrap();
+    cancelled.store(true, Ordering::Release);
+    assert!(matches!(
+        prepared.seal_for_queries(execution(&admitted)),
+        Err(ProjectPartitionCheckError::Program(
+            ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::Cancelled)
+        ))
+    ));
+}
+
 #[test]
 fn partitions_keep_exact_unresolved_requests_and_typed_bad_targets() {
     let program = compile_files_with_libs(

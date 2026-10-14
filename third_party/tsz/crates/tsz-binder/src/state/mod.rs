@@ -696,7 +696,18 @@ pub struct BinderState {
 
     /// Classification for modules with `export =`:
     /// true when the module resolves to a non-module entity.
+    ///
+    /// A binder rebuilt from a merged program does not populate this: its
+    /// `module_exports` is the whole program's, so classifying every module in every
+    /// file's binder is quadratic in the program size. Read it through
+    /// [`BinderState::module_export_equals_non_module_for`], which classifies one module
+    /// on demand for such a binder.
     pub module_export_equals_non_module: FxHashMap<String, bool>,
+
+    /// Whether `module_export_equals_non_module` is classified per module on demand
+    /// instead of being populated up front. See that field.
+    #[serde(skip)]
+    pub(crate) module_export_equals_non_module_on_demand: bool,
 
     /// Flag indicating lib symbols have been merged into this binder's symbol arena.
     /// When true, `get_symbol()` should prefer local symbols over `lib_binders` lookups,

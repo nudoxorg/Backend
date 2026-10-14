@@ -128,6 +128,29 @@ opt-level = 2
 [profile.dev.package.backend-engine]
 opt-level = 2
 
+# The native TypeScript checker is the one third-party workload whose cost is set by program
+# size and is bounded by a wall-clock deadline: an unoptimized TSZ checks a real Angular or
+# React application an order of magnitude slower than the optimized binary the product ships,
+# so a debug build reports deadline refusals that a release build never meets. Only these
+# crates are raised, to the lowest level that inlines the checker's tiny accessors, so
+# GUI lanes, which never rebuild them, keep their build times.
+[profile.dev.package.tsz-common]
+opt-level = 1
+[profile.dev.package.tsz-scanner]
+opt-level = 1
+[profile.dev.package.tsz-parser]
+opt-level = 1
+[profile.dev.package.tsz-binder]
+opt-level = 1
+[profile.dev.package.tsz-solver]
+opt-level = 1
+[profile.dev.package.tsz-lowering]
+opt-level = 1
+[profile.dev.package.tsz-checker]
+opt-level = 1
+[profile.dev.package.tsz-core]
+opt-level = 1
+
 # backend-desktop's --lib test binary stopped linking on 2026-09-28:
 # `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
 # out of a gpui_ce_macos objc class-registration ctor, once __TEXT,__text
