@@ -348,20 +348,47 @@ impl Ask {
     /// The field lives in Titlebar, whose propagated action owns the exact
     /// painted visit. Capture draft identity before deferring outside either
     /// region's borrow; notification subscribers cannot recover that origin.
-    pub(crate) fn submit_editor_enter(&mut self, visit: u64, secondary: bool, shift: bool,
-        window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit_editor_enter(
+        &mut self,
+        visit: u64,
+        secondary: bool,
+        shift: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.editor_visit_current(visit, cx)
-            || !self.input.read(cx).focus_handle(cx).is_focused(window) { return; }
+            || !self.input.read(cx).focus_handle(cx).is_focused(window)
+        {
+            return;
+        }
         let revision = self.revision.get();
         let text = self.input.read(cx).value().to_string();
+        let authority = ReadAuthorityLease::capture(self.links.store.read(cx));
         let ask = cx.weak_entity();
         window.defer(cx, move |window, cx| {
             let _ = ask.update(cx, |ask, cx| {
-                if ask.revision.get() != revision || !ask.editor_visit_current(visit, cx)
+                if ask.revision.get() != revision
+                    || !ask.editor_visit_current(visit, cx)
                     || ask.input.read(cx).value().to_string() != text
-                    || !ask.input.read(cx).focus_handle(cx).is_focused(window) { return; }
-                if secondary && !shift { ask.choose_all(cx); }
-                else { ask.choose(window, cx); }
+                    || !ask.input.read(cx).focus_handle(cx).is_focused(window)
+                {
+                    return;
+                }
+                let admitted = {
+                    let store = ask.links.store.read(cx);
+                    authority
+                        .as_ref()
+                        .map_or_else(|| !store.owner_serving(), |lease| lease.admits(store))
+                };
+                if !admitted {
+                    ask.complete_submission(stale_submission(), cx);
+                    return;
+                }
+                if secondary && !shift {
+                    ask.choose_all(cx);
+                } else {
+                    ask.choose(window, cx);
+                }
             });
         });
     }
@@ -376,7 +403,9 @@ impl Ask {
 
     /// Moves the selection and shows the row's place in the reader.
     pub(crate) fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.current_editor(cx) { return; }
+        if !self.current_editor(cx) {
+            return;
+        }
         let choices = self.choices(cx);
         let focused = self.row_focus.iter().find(|(_, _, handle)| handle.is_focused(window))
             .map(|(route, occurrence, _)| (route.clone(), *occurrence));
@@ -2016,6 +2045,83 @@ mod tests {
             assert!(matches!(super::follow_all(&links, &input, &query, &all_route, revision, &current_revision, Some(&current), cx),
                 super::SubmissionOutcome::Navigate(ref actual) if actual == &all_route));
         });
+    }
+
+    #[gpui::test]
+    fn queued_native_enter_cannot_borrow_a_same_root_replacement_owner(cx: &mut TestAppContext) {
+        let (mut rig, gate, root) = owner_ask(cx);
+        let original = rig.route();
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input.clone());
+        let query = ask.read_with(&rig.cx, |ask, _| {
+            ask.draft.query().cloned().expect("served query")
+        });
+        let destination = ask.read_with(&rig.cx, |ask, cx| {
+            ask.choices(cx)[0]
+                .route
+                .clone()
+                .expect("actual native destination")
+        });
+        assert_ne!(destination, original);
+        rig.cx.update(|window, cx| {
+            assert!(input.read(cx).focus_handle(cx).is_focused(window));
+            let revision = ask.read(cx).revision.get();
+            let visit = rig.graph.root.read(cx).graph_view_generation();
+            let key = gpui::Keystroke::parse("enter").expect("native Enter");
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: key.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            assert_eq!(
+                rig.graph.store.read(cx).snapshot().route(),
+                &original,
+                "Enter effects remain queued"
+            );
+            gate.publish(crate::runtime::owner::OwnerState::Starting);
+            gate.publish(crate::runtime::owner::OwnerState::Ready {
+                key: root,
+                mode: crate::model::ServiceMode::Attached,
+            });
+            assert_eq!(rig.graph.root.read(cx).graph_view_generation(), visit);
+            assert_eq!(ask.read(cx).revision.get(), revision);
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }),
+                cx,
+            );
+        });
+        rig.cx.run_until_parked();
+        assert_eq!(
+            rig.route(),
+            original,
+            "the deferred Enter cannot adopt a new attachment with unchanged visit and query"
+        );
+        assert_eq!(
+            input.read_with(&rig.cx, |input, _| input.value().to_string()),
+            "RelationLabel"
+        );
+        assert!(
+            ask.read_with(&rig.cx, |ask, _| ask.refusal.is_some()),
+            "retired native input explains its local refusal"
+        );
+        crate::runtime::wait::until("replacement owner renews the current native query", || {
+            rig.cx.run_until_parked();
+            ask.read_with(&rig.cx, |ask, cx| {
+                super::SearchReadLease::capture(&ask.links, &query, cx).is_some()
+            }) && rig
+                .graph
+                .store
+                .read_with(&rig.cx, |store, _| store.pool_activity().is_idle())
+        });
+        rig.keys("enter");
+        assert_eq!(
+            rig.route(),
+            destination,
+            "fresh native input may use the replacement owner"
+        );
     }
 
     #[gpui::test]
