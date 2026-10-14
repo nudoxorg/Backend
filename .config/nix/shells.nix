@@ -322,6 +322,7 @@ let
         pkgs.coreutils
         pkgs.jdk25
       ];
+      NUDOX_SURFACE_GO_XXHASH = toString (import ./surface-corpus.nix { inherit pkgs; }).go-xxhash;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
       COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
       NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";

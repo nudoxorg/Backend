@@ -74,6 +74,54 @@
       "live_contracts": {
         "bounded_search_query": "language"
       }
+    },
+    {
+      "name": "go-xxhash",
+      "project_env": "NUDOX_SURFACE_GO_XXHASH",
+      "upstream": "golang:github.com/cespare/xxhash/v2@v2.3.0",
+      "languages": [
+        "go"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Sum64String": "xxhash_unsafe.go",
+        "Digest": "xxhash.go"
+      },
+      "cli": [
+        [
+          "search",
+          "Sum64String"
+        ],
+        [
+          "search",
+          "Digest"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Sum64String"
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Digest",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

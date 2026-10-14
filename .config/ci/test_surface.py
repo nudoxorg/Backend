@@ -201,5 +201,149 @@ class CursorRefusalAdmissionTests(unittest.TestCase):
                 surface.require_malformed_cursor_refusal(cli, wrong)
 
 
+class AuthoredCorpusAdmissionTests(unittest.TestCase):
+    def test_plausible_results_from_the_wrong_source_are_not_a_reference(self):
+        expected = {"Sum64String": "xxhash_unsafe.go"}
+        row = {"identity": {"name": "Sum64String", "path": "xxhash_unsafe.go"}, "language": "go", "state": "ready"}
+        surface.require_authored_symbols({"records": [row]}, expected, "go")
+        for wrong in ({"records": []}, {"records": [dict(row, file="xxhash_unsafe.go", identity={"name": "Sum64String", "path": "benchmark_test.go"})]},
+                      {"records": [dict(row, state="stale")]}, {"records": [dict(row, language="rust")]}, {"records": [dict(row, identity={"name": "unrelated"})]}):
+            with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
+                surface.require_authored_symbols(wrong, expected, "go")
+
+
+class SnapshotContinuationTests(unittest.TestCase):
+    def page(self, token="pc4-one", coordinate="first"):
+        size = 100 + len(token)
+        return {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": coordinate}}],
+                "more": True, "nextCursor": token,
+                "budget": {"bytes": size, "bytesPerToken": 4, "estimatedTokens": (size + 3) // 4}}
+
+    def test_only_consumed_tokens_are_normalized_and_payload_budget_survives(self):
+        first, other = self.page(), self.page("pc4-a-longer-proof")
+        with self.assertRaises(RuntimeError):
+            surface.normalize_continuations(first, set())
+        actual = surface.normalize_continuations(first, {first["nextCursor"]})
+        self.assertEqual(actual, surface.normalize_continuations(other, {other["nextCursor"]}))
+        self.assertEqual(actual["budget"], {"bytesExcludingCursor": 100, "bytesPerToken": 4, "estimatedTokensExcludingCursor": 25})
+        changed = self.page(coordinate="different-declaration")
+        self.assertNotEqual(actual, surface.normalize_continuations(changed, {changed["nextCursor"]}))
+        invalid = self.page()
+        invalid["budget"]["estimatedTokens"] += 1
+        with self.assertRaises(RuntimeError):
+            surface.normalize_continuations(invalid, {invalid["nextCursor"]})
+        unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
+        self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
+
+    def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
+        import copy
+        import json
+
+        def fixture(token):
+            reply = {"structuredContent": self.page(token), "_meta": {"backend/wireBudget": {
+                "bytes": 0, "estimatedTokens": 0, "bytesPerToken": 4,
+                "limitBytes": 49152, "limitTokens": 12000, "scope": "complete_jsonrpc_line"}}}
+            budget = reply["_meta"]["backend/wireBudget"]
+            for _ in range(10):
+                size = len(json.dumps({"jsonrpc": "2.0", "id": 2, "result": reply}, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+                if budget["bytes"] == size:
+                    break
+                budget.update(bytes=size, estimatedTokens=(size + 3) // 4)
+            surface.require_mcp_wire_budget(reply, size)
+            return {"mcp": {"calls": [{"call": {"tool": "backend.search", "arguments": {}}, "reply": reply}]}}, size
+
+        first, size = fixture("mcp2-first-proof")
+        other, _ = fixture("mcp2-a-different-longer-proof")
+        one = surface.normalize_surface_answers(first, {"mcp2-first-proof"})
+        two = surface.normalize_surface_answers(other, {"mcp2-a-different-longer-proof"})
+        self.assertEqual(one, two)
+        bad = copy.deepcopy(first["mcp"]["calls"][0]["reply"])
+        bad["_meta"]["backend/wireBudget"]["bytes"] += 1
+        with self.assertRaises(RuntimeError):
+            surface.require_mcp_wire_budget(bad, size)
+        self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
+
+    def test_search_continuation_refuses_fault_repetition_and_scope_drift(self):
+        first = self.page()
+        following = {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": "second"}}], "more": False}
+        surface.require_continuation_reply(first, following, "root")
+        for wrong in ({"answer": "fault"}, dict(following, records=[]), dict(following, records=first["records"]),
+                      dict(following, query="other"), dict(following, nextCursor=first["nextCursor"]),
+                      dict(following, more=True)):
+            with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
+                surface.require_continuation_reply(first, wrong, "root")
+
+    def test_outline_resume_uses_the_returned_page_limit(self):
+        call = {"tool": "backend.outline", "arguments": {}}
+        first = {"nextCursor": "mcp2-proof", "page": {"limit": 50},
+                 "package": {"project": "/project"}, "detail": "summary"}
+        self.assertEqual(surface.mcp_continuation_call(call, first),
+                         {"tool": "backend.outline", "arguments": {"path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}})
+        with self.assertRaises(RuntimeError):
+            surface.mcp_continuation_call(call, dict(first, page={}))
+
+    def test_outline_continuation_keeps_the_published_basis(self):
+        import copy
+        first = {"answer": "outline", "roots": [{"key": "first"}], "declarations": 1, "nextCursor": "mcp2-one",
+                 "page": {"source_root": "root", "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
+        following = {"answer": "outline", "roots": [{"key": "second"}], "declarations": 1,
+                     "page": dict(first["page"], more=False)}
+        surface.require_continuation_reply(first, following, "root")
+        for field in ("source_root", "branch", "log", "schema", "sequence", "limit"):
+            wrong = copy.deepcopy(following)
+            wrong["page"][field] = "changed"
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                surface.require_continuation_reply(first, wrong, "root")
+        with self.assertRaises(RuntimeError):
+            surface.require_continuation_reply(first, dict(following, roots=first["roots"]), "root")
+
+
+class InteractiveMcpTests(unittest.TestCase):
+    def test_dynamic_continuation_uses_the_issuing_process_and_returned_operands(self):
+        import os
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "backend-mcp"
+            executable.write_text("#!" + sys.executable + "\n" + '''
+import json, sys
+issued = False
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'backend.outline'}]}
+    else:
+        args = request['params']['arguments']
+        if 'cursor' not in args:
+            issued = True
+            result = {'structuredContent': {'nextCursor': 'mcp2-issued', 'page': {'limit': 50}, 'package': {'project': '/project'}, 'detail': 'summary'}}
+        else:
+            assert issued and args == {'cursor': 'mcp2-issued', 'limit': 50, 'path': '/project', 'detail': 'summary'}
+            result = {'resumed': True}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+''')
+            executable.chmod(0o700)
+            owner = SimpleNamespace(bin_dir=root, endpoint=root / "unused.sock", env=dict(os.environ))
+            observed = []
+
+            def consume(call, reply, exchange):
+                observed.append(exchange(surface.mcp_continuation_call(call, reply["structuredContent"])))
+
+            answer, _ = surface.run_mcp_interactive(owner, root,
+                [{"tool": "backend.outline", "arguments": {}}], 3, consume)
+            self.assertEqual(observed, [{"resumed": True}])
+            self.assertEqual(answer["exit"], 0)
+            self.assertEqual(len(answer["calls"]), 1)
+            self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["nextCursor"], "mcp2-issued")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -212,6 +212,93 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
     return {"tools": tools, "calls": answers, "exit": result.returncode}, seconds
 
 
+def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout: float, on_reply) -> tuple[dict, float]:
+    """Keep session-bound outline authority while dynamically consuming its token."""
+    import selectors
+    import tempfile
+
+    started = time.monotonic()
+    deadline = started + timeout
+    answers = []
+    pending = b""
+    continuation_id = 10000
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [owner.bin_dir / "backend-mcp", "--endpoint", str(owner.endpoint), "--project", str(project)],
+            env=owner.env, cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+        )
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        try:
+            def send(request):
+                process.stdin.write((json.dumps(request) + "\n").encode())
+                process.stdin.flush()
+
+            def receive(identifier, per_call):
+                nonlocal pending
+                until = min(deadline, time.monotonic() + per_call)
+                while True:
+                    if time.monotonic() >= until:
+                        raise RuntimeError("interactive MCP: response deadline exceeded")
+                    if b"\n" not in pending:
+                        if not selector.select(max(0.0, until - time.monotonic())):
+                            raise RuntimeError("interactive MCP: response deadline exceeded")
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            raise RuntimeError("interactive MCP: closed before its response")
+                        pending += chunk
+                        if len(pending) > 1048576:
+                            raise RuntimeError("interactive MCP: oversized response")
+                        continue
+                    line, pending = pending.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    message = json.loads(line)
+                    if "id" not in message:
+                        continue
+                    if message["id"] != identifier:
+                        raise RuntimeError("interactive MCP: unexpected response identity")
+                    reply = message.get("result", message.get("error"))
+                    if isinstance(reply, dict) and "backend/wireBudget" in reply.get("_meta", {}):
+                        require_mcp_wire_budget(reply, len(line) + 1)
+                    return reply
+
+            send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "nudox-t2-surface", "version": "1"}}})
+            receive(0, timeout)
+            send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            tools = sorted(tool["name"] for tool in receive(1, timeout).get("tools", []))
+
+            def exchange(call, identifier, per_call):
+                send({"jsonrpc": "2.0", "id": identifier, "method": "tools/call",
+                      "params": {"name": call["tool"], "arguments": call.get("arguments", {})}})
+                return receive(identifier, per_call)
+
+            def continue_call(call):
+                nonlocal continuation_id
+                continuation_id += 1
+                return exchange(call, continuation_id, 10)
+
+            for identifier, call in enumerate(calls, start=2):
+                reply = exchange(call, identifier, timeout)
+                answers.append({"call": call, "reply": reply})
+                on_reply(call, reply, continue_call)
+            process.stdin.close()
+            process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            return {"tools": tools, "calls": answers, "exit": process.returncode}, time.monotonic() - started
+        finally:
+            selector.close()
+            # Match subprocess.run(timeout=...) cleanup for this owned client.
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+
+
 def require_cli_success(name: str, answer: dict) -> None:
     if answer["exit"] != 0 or not isinstance(answer["json"], dict) or answer["json"].get("answer") == "fault":
         raise RuntimeError(f"{name} failed: {answer}")
@@ -530,18 +617,167 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     return times
 
 
+def require_continuation_reply(first: dict, following: dict, published_root: str) -> None:
+    """Prove an offered token works through a fresh public client before normalizing it."""
+    token = first.get("nextCursor")
+    if not isinstance(token, str) or not token or following.get("answer") != first.get("answer"):
+        raise RuntimeError("snapshot continuation: missing token or changed answer kind")
+    if following.get("nextCursor") == token:
+        raise RuntimeError("snapshot continuation: repeated cursor")
+    if first["answer"] == "records":
+        if first.get("more") is not True:
+            raise RuntimeError("snapshot continuation: token on an exhausted search")
+        for field in ("query", "coverage", "readiness", "detail", "semantic_search"):
+            if following.get(field) != first.get(field):
+                raise RuntimeError(f"snapshot continuation: changed {field}")
+        before, after = first.get("records"), following.get("records")
+        if not isinstance(before, list) or not before or not isinstance(after, list) or not after:
+            raise RuntimeError("snapshot continuation: empty records page")
+        old = [row.get("identity", {}).get("coordinate") for row in before]
+        new = [row.get("identity", {}).get("coordinate") for row in after]
+        if any(not isinstance(key, str) or not key for key in old + new) or set(old) & set(new):
+            raise RuntimeError("snapshot continuation: missing identities or repeated rows")
+        more = following.get("more")
+    elif first["answer"] == "outline":
+        page, next_page = first.get("page", {}), following.get("page", {})
+        if following.get("package") != first.get("package"):
+            raise RuntimeError("snapshot continuation: changed outline package")
+        if page.get("more") is not True:
+            raise RuntimeError("snapshot continuation: token on an exhausted outline")
+        if page.get("source_root") != published_root or next_page.get("source_root") != published_root:
+            raise RuntimeError("snapshot continuation: changed published source root")
+        for field in ("branch", "log", "schema", "sequence", "limit"):
+            if field not in page or next_page.get(field) != page[field]:
+                raise RuntimeError(f"snapshot continuation: changed outline {field}")
+        if not following.get("roots") or following["roots"] == first.get("roots") or following.get("declarations", 0) <= 0:
+            raise RuntimeError("snapshot continuation: empty or repeated outline page")
+        more = next_page.get("more")
+    else:
+        raise RuntimeError("snapshot continuation: unsupported answer")
+    next_token = following.get("nextCursor")
+    if not isinstance(more, bool) or (more and (not isinstance(next_token, str) or not next_token)) or (not more and next_token is not None):
+        raise RuntimeError("snapshot continuation: dishonest continuation flag")
+
+
+def mcp_continuation_call(call: dict, first: dict) -> dict:
+    arguments = dict(call.get("arguments", {}), cursor=first["nextCursor"])
+    if call["tool"] == "backend.outline":
+        # MCP can reduce the first page to fit its response budget. Its
+        # continuation is bound to that effective limit, not the omitted or
+        # original request limit. Copy the public continuation operands.
+        limit = first.get("page", {}).get("limit")
+        path = first.get("package", {}).get("project")
+        detail = first.get("detail")
+        if type(limit) is not int or limit <= 0 or not isinstance(path, str) or not path or detail not in ("summary", "full"):
+            raise RuntimeError("snapshot continuation: missing effective outline operands")
+        arguments.update(path=path, limit=limit, detail=detail)
+    return {"tool": call["tool"], "arguments": arguments}
+
+
+def normalize_continuations(value, proven_tokens: set[str]):
+    """Compare public content, not opaque proof bytes, only after real token consumption."""
+    if isinstance(value, list):
+        return [normalize_continuations(item, proven_tokens) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: normalize_continuations(item, proven_tokens) for key, item in value.items()}
+    token = value.get("nextCursor")
+    if token is not None:
+        if not isinstance(token, str) or token not in proven_tokens:
+            raise RuntimeError("snapshot continuation: unconsumed token cannot be normalized")
+        prefix = token.split("-", 1)[0]
+        if not re.fullmatch(r"(?:pc|mcp)[0-9]+", prefix):
+            raise RuntimeError("snapshot continuation: unknown token family")
+        budget = value.get("budget", {})
+        size, width, estimated = (budget.get(key) for key in ("bytes", "bytesPerToken", "estimatedTokens"))
+        if any(type(number) is not int for number in (size, width, estimated)) or width <= 0 or size < len(token.encode()) or estimated != (size + width - 1) // width:
+            raise RuntimeError("snapshot continuation: invalid encoded-byte budget")
+        payload_size = size - len(token.encode())
+        result["budget"] = dict(result["budget"])
+        result["budget"].pop("bytes")
+        result["budget"].pop("estimatedTokens")
+        result["budget"].update(bytesExcludingCursor=payload_size,
+                                estimatedTokensExcludingCursor=(payload_size + width - 1) // width)
+        result["nextCursor"] = prefix + "-<live-validated>"
+    return result
+
+
+def require_mcp_wire_budget(reply: dict, frame_size: int) -> None:
+    budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+    size, width, estimated, max_bytes, max_tokens = (budget.get(key) for key in
+        ("bytes", "bytesPerToken", "estimatedTokens", "limitBytes", "limitTokens"))
+    if any(type(number) is not int for number in (size, width, estimated, max_bytes, max_tokens)) or width <= 0 or max_bytes <= 0 or max_tokens <= 0:
+        raise RuntimeError("snapshot continuation: missing MCP wire accounting")
+    if budget.get("scope") != "complete_jsonrpc_line" or size != frame_size or estimated != (size + width - 1) // width or size > max_bytes:
+        raise RuntimeError("snapshot continuation: dishonest MCP wire accounting")
+
+
+def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
+    normalized = normalize_continuations(answers, proven_tokens)
+    # The MCP whole-line counter includes the opaque token as well as the
+    # inner answer budget. Validate it against the actual compact JSON-RPC
+    # envelope, then compare the normalized envelope without its own counters.
+    raw_calls = answers.get("mcp", {}).get("calls", [])
+    for identifier, (raw, projected) in enumerate(zip(raw_calls, normalized.get("mcp", {}).get("calls", [])), start=2):
+        reply = raw["reply"]
+        if reply.get("structuredContent", {}).get("nextCursor") is None:
+            continue
+        budget = reply.get("_meta", {}).get("backend/wireBudget", {})
+        # The interactive driver already validated the raw line length.
+        # Recheck its arithmetic/limits before projecting the opaque proof.
+        require_mcp_wire_budget(reply, budget.get("bytes"))
+        width = budget["bytesPerToken"]
+
+        def frame_bytes(body):
+            envelope = {"jsonrpc": "2.0", "id": identifier, "result": body}
+            return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+
+        projected_budget = projected["reply"]["_meta"]["backend/wireBudget"]
+        projected_budget.pop("bytes")
+        projected_budget.pop("estimatedTokens")
+        payload_size = frame_bytes(projected["reply"])
+        projected_budget.update(normalizedFrameBytesExcludingCounters=payload_size,
+                                normalizedEstimatedTokensExcludingCounters=(payload_size + width - 1) // width)
+    return normalized
+
+
+def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
+    for name, filename in expected.items():
+        if not any(row.get("identity", {}).get("name") == name
+                   and row.get("identity", {}).get("path") == filename and row.get("language") == language
+                   and row.get("state") == "ready"
+                   for row in answer.get("records", [])):
+            observed = [{"name": row.get("identity", {}).get("name"), "path": row.get("identity", {}).get("path"),
+                         "language": row.get("language")} for row in answer.get("records", [])[:20]]
+            raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
         shutil.rmtree(case_root)
     case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
-    shutil.copytree(ROOT / case["project"], project)
+    if "project_env" in case:
+        source = os.environ.get(case["project_env"])
+        if not source or not Path(source).is_absolute():
+            raise RuntimeError(f"real corpus: missing absolute pinned project authority {case['project_env']}")
+        shutil.copytree(source, project)
+    else:
+        shutil.copytree(ROOT / case["project"], project)
     timeout = case.get("timeout_seconds", 300)
     owner = Owner(bin_dir, case_root)
     record = {"answers": {}, "performance": {"seconds": {}}}
+    proven_tokens = set()
     try:
-        answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
+        if case.get("index_mode", "resumable") == "resumable":
+            answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
+        elif case["index_mode"] == "wait":
+            answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
+            require_completed_index(answer, len(case["languages"]))
+            index_times = {"cli add": round(seconds, 2)}
+        else:
+            raise RuntimeError(f"unknown index mode: {case['index_mode']}")
         published_root = require_completed_index(answer, len(case["languages"]))
         log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
@@ -555,10 +791,31 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             require_cli_success(key, answer)
             if args[0] == "search" and not answer["json"].get("records"):
                 raise RuntimeError(f"{key}: expected fixture symbol, got no records")
+            if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
+                require_authored_symbols(answer["json"], {args[-1]: case["authored_symbols"][args[-1]]}, case["languages"][0])
+            if answer["json"].get("nextCursor") is not None:
+                token = answer["json"]["nextCursor"]
+                following, _ = run_cli(owner, project, args + ["--cursor", token], 10)
+                require_cli_success(key + " continuation", following)
+                require_continuation_reply(answer["json"], following["json"], published_root)
+                proven_tokens.add(token)
+                log(f"{key}: offered continuation consumed by a fresh CLI client")
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            answer, seconds = run_mcp(owner, project, case["mcp"], timeout)
+            def prove_session_outline(call, reply, exchange):
+                first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
+                token = first.get("nextCursor")
+                if call["tool"] != "backend.outline" or token is None:
+                    return
+                following = exchange(mcp_continuation_call(call, first))
+                if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
+                    raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
+                require_continuation_reply(first, following["structuredContent"], published_root)
+                proven_tokens.add(token)
+                log("backend.outline: offered continuation consumed in its issuing MCP session")
+
+            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout, prove_session_outline)
             if answer["exit"] != 0 or not answer["tools"]:
                 raise RuntimeError(f"MCP session failed: {answer}")
             for result in answer["calls"]:
@@ -567,6 +824,22 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     raise RuntimeError(f"MCP call failed: {result}")
                 if result["call"]["tool"] == "backend.search" and not reply.get("structuredContent", {}).get("records"):
                     raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
+                text = result["call"].get("arguments", {}).get("query")
+                if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
+                    require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
+                first = reply.get("structuredContent", {})
+                if first.get("nextCursor") is not None and first["nextCursor"] not in proven_tokens:
+                    token = first["nextCursor"]
+                    call = result["call"]
+                    continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)
+                    if continued["exit"] != 0 or len(continued["calls"]) != 1:
+                        raise RuntimeError("snapshot continuation: MCP session failed")
+                    following = continued["calls"][0]["reply"]
+                    if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
+                        raise RuntimeError(f"snapshot continuation: MCP refused offered token: {following}")
+                    require_continuation_reply(first, following["structuredContent"], published_root)
+                    proven_tokens.add(token)
+                    log(f"{call['tool']}: offered continuation consumed by a fresh MCP session")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         if case.get("live_contracts"):
@@ -576,7 +849,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         record["performance"].update(owner.usage())
     finally:
         owner.stop()
-    record["answers"] = stable(record["answers"])
+    record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
     return record
 
 
@@ -605,7 +878,7 @@ def main() -> int:
     parser.add_argument(
         "--print-missing",
         action="store_true",
-        help="print the would-be snapshot of a case that has none, for review in CI logs",
+        help="print missing or changed candidate snapshots for review in CI logs",
     )
     args = parser.parse_args()
     # Fixed paths require exclusive ownership; another local run must never
@@ -672,6 +945,10 @@ def main() -> int:
             failed.append(case["name"])
             for problem in problems:
                 log(f"case {case['name']}: {problem}")
+            if args.print_missing and reviewed["answers"] != record["answers"]:
+                print(f"SURFACE-SNAPSHOT-BEGIN {case['name']}")
+                print(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False))
+                print(f"SURFACE-SNAPSHOT-END {case['name']}")
         else:
             log(f"case {case['name']} matches ({time.monotonic() - started:.1f}s, "
                 f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")

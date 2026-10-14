@@ -1060,7 +1060,9 @@ impl<'a> StructuralSites<'a> {
 /// same name and declaration family in the same file bytes.
 ///
 /// Same-keyed declarations are paired by source order: the k-th semantic
-/// entity by span start with the k-th structural declaration by line. A key
+/// entity by span start with the k-th structural declaration by line. When
+/// primary-source entities cover the structural group exactly, source-less
+/// sibling or build-excluded declarations do not participate in that pairing. A key
 /// whose two extractions disagree on the count, or whose semantic spans are
 /// not all captured, is ambiguous and keeps no site rather than a guess.
 /// Implementation blocks and parameters are not counted: they have no
@@ -1120,6 +1122,13 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         let Some(candidates) = structural.get(&(name, family)) else {
             continue;
         };
+        // Package images also carry sibling-file and build-excluded facts.
+        // Only primary-source spans identify declarations in these exact
+        // bytes. If they account for the entire structural group, source-less
+        // namesakes must neither steal its site nor make it ambiguous.
+        if entities.iter().filter(|(start, _)| start.is_some()).count() == candidates.len() {
+            entities.retain(|(start, _)| start.is_some());
+        }
         // The only entity of its name and family in the file needs no order to
         // find its twin. Two or more are paired by span order, which needs
         // every span.

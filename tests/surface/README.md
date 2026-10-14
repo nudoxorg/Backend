@@ -215,3 +215,97 @@ must still return the original complete operation identity and native receipt.
 These checks add per-session timings without changing the reviewed golden or
 performance limits. They do not prove absence of all filesystem writes or replace
 the retained targeted failure, disconnect and journal laws.
+
+### First pinned whole upstream project (W2.3)
+
+`go-xxhash` indexes the complete `github.com/cespare/xxhash/v2` v2.3.0 module,
+including its original Go module and source layout. The surface shell exposes
+`NUDOX_SURFACE_GO_XXHASH` from a fixed-output Nix fetch using the existing fleet
+pin in `.config/nix/corpus-pins.json`; it does not fetch the rest of the fleet,
+vendor a rewritten fixture, run upstream package scripts, or choose a moving tag.
+The archive hash is `sha256-FFomzcfEnbVmAXuAfEmJ7n993rVpQj6cuZ+ZX6w2IdM=`.
+
+The case waits for complete native publication, then snapshots real CLI/MCP
+search, outline and package answers. Before admitting a new snapshot, each surface
+must find upstream-authored `Sum64String` in `xxhash_unsafe.go` and `Digest` in
+`xxhash.go`, with Go language identity and ready state. Unrelated/nonempty results cannot satisfy
+those witnesses. Missing pinned project authority fails rather than skipping.
+The existing resumable seven-language case remains unchanged; this smaller real
+project uses a direct blocking wait because a zero-deadline call could legitimately
+finish such a small project before the first observation.
+
+Run only this case with:
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --case go-xxhash
+```
+
+This case caught active `Sum64String` losing its source location beside its
+build-excluded namesake. Source pairing now prefers the compiler's primary-source
+entities when they cover the entire structural group; ambiguous incomplete groups
+still keep no guessed location. The authored source witnesses remain unchanged.
+
+The first golden requires explicit source/result review and a second exact-head
+comparison. This is the first real-project slice, not the planned full per-language
+representative corpus.
+
+Initial source/result review (Concourse 480531 / pr-t1/597, `cf1aad6ef`):
+`Sum64String` is a ready Go function at `xxhash_unsafe.go:38`, and `Digest` a
+ready Go struct at `xxhash.go:29`, on both CLI and MCP. Search records agree;
+continuation tokens keep their distinct surface formats. Default outline pages
+are explicitly truncated (CLI 200 declarations, MCP 100); this snapshot does
+not claim exhaustive outline traversal or removal of source-less package-context
+rows. Initial indexing took 189.73s, owner CPU 187.26s and owner peak RSS
+379,308KiB. This is a first baseline, not a calibrated fleet-wide performance
+claim; representative-corpus scale and indexing efficiency remain open.
+
+The first comparison (pr-t1/599, `06daafdca`) kept the exact native view root
+and declaration answers, but opaque continuation proof bytes varied between
+fresh owners. Snapshot admission now consumes every offered first-page token
+through the appropriate public client before replacing its spelling with
+`<live-validated>`. It rejects refused tokens, repeated/empty pages, search scope
+changes, outline basis changes and dishonest continuation flags. This is a
+one-hop continuation proof, alongside the existing synthetic exhaustive search
+traversal; it does not claim exhaustive real-project outline traversal.
+
+For token-bearing answers only, the normalizer validates the reported byte/token
+arithmetic, then records `bytesExcludingCursor` and
+`estimatedTokensExcludingCursor`. It subtracts exactly the opaque token's UTF-8
+length; payload size, token ratio and all semantic/basis/budget fields elsewhere
+remain compared. Raw encoded token length is intentionally not a stable golden
+contract. Refusal and normalization controls run in `test_surface.py`.
+
+MCP outline can shrink its first page to fit the response budget. Continuation
+copies the returned `page.limit`, package project path and detail, as instructed
+by the public response; reusing an omitted/original limit correctly gets refused.
+The admission controls cover that client behavior too.
+
+Search continuations are consumed by fresh CLI/MCP clients. Outline continuation
+certificates are retained by the issuing MCP session, so the interactive JSON-RPC
+driver keeps that session open, reads the real first response, then sends the
+returned token and effective operands on the same process. It does not claim
+cross-session portability for outline. A stateful subprocess control verifies
+that exchange independently of the native binary; real T2 verifies the product.
+
+The MCP `Digest` request explicitly uses limit 3, so its complete readable preview
+fits comfortably alongside the portable proof. CLI keeps its larger default
+page. The full preview text remains snapshotted; the harness does not discard
+it to hide adaptive clipping noise. Native pr-t1/606 proved all three offered
+continuations, but its default-limit preview varied by one row as proof lengths
+changed, motivating this bounded request.
+
+The interactive driver validates MCP whole-line byte accounting against the
+actual received JSON-RPC line, plus reported estimate arithmetic and byte limits.
+For token-bearing replies, snapshots compare canonical normalized frame bytes
+and estimates with their own counters omitted; all limits/policy fields remain.
+The `estimatedTokens` field is a bytes-per-token estimate, distinct from the
+product's cl100k token-policy admission. Changed-candidate logging uses the
+existing `--print-missing` flag for review and still fails the comparison.
+
+Revised review (pr-t1/609, `6b05a3c81`): all CLI answers and the other MCP
+payloads match the initial reviewed result. MCP Digest is exactly the CLI's
+first three records, with all three coordinates in its complete readable
+preview. All three offered continuations passed their live checks and wire
+accounting passed. Indexing was 189.84s, owner CPU 187.16s and owner peak RSS
+381,068KiB. The independent comparison against this reviewed candidate is the
+merge gate; no tolerance was changed.
