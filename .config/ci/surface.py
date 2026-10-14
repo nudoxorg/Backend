@@ -326,6 +326,19 @@ def walk_search_pages(reference: dict, fetch_page, limit: int = 1) -> tuple[int,
     raise RuntimeError("continuation: did not exhaust the reference")
 
 
+def require_malformed_cursor_refusal(cli: dict, mcp: dict) -> None:
+    fault = cli.get("json")
+    if (cli.get("exit") == 0 or not isinstance(fault, dict)
+        or fault.get("answer") != "fault" or fault.get("slug") != "protocol"
+        or fault.get("cause") != "unproven"
+        or str(fault.get("operand", "")).lstrip("-") != "cursor"
+        or "continuation token" not in str(fault.get("detail", "")).lower()):
+        raise RuntimeError(f"malformed CLI cursor: expected a typed cursor refusal, got {cli}")
+    if (not isinstance(mcp, dict) or mcp.get("code") != -32602
+        or "cursor" not in str(mcp.get("message", "")).lower()):
+        raise RuntimeError(f"malformed MCP cursor: expected invalid-params cursor refusal, got {mcp}")
+
+
 def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:
     times = {}
 
@@ -386,6 +399,16 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
         count, _ = walk_search_pages(reference, fetch_page)
         times[f"{name} search continuation"] = round(time.monotonic() - started, 3)
         print(f"surface-contract: {name} search exhausted {count} pages in rank order, no lost/duplicate rows", flush=True)
+
+    refused_cli, seconds = run_cli(owner, project, ["--limit", "1", "search", text, "--cursor", "pc1-not-hex"], 10)
+    times["malformed CLI cursor"] = round(seconds, 3)
+    refused_mcp, seconds = run_mcp(owner, project, [{"tool": "backend.search", "arguments": {"query": text, "limit": 1, "cursor": "mcp1-invalid"}}], 10)
+    times["malformed MCP cursor"] = round(seconds, 3)
+    if refused_mcp["exit"] != 0 or len(refused_mcp["calls"]) != 1:
+        raise RuntimeError("malformed MCP cursor: session failed instead of refusing invalid parameters")
+    require_malformed_cursor_refusal(refused_cli, refused_mcp["calls"][0]["reply"])
+    require_live_health(query("health after cursor refusals", ["--passive", "health"]), full, full, published_root)
+    print("surface-contract: malformed CLI/MCP cursors refused; owner remains ready at published revision", flush=True)
     return times
 
 

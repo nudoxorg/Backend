@@ -156,8 +156,13 @@ rows and false completeness fail. The last page must stop offering a cursor.
 Traversal has a 30-second deadline and a reference-sized page cap; individual
 client calls are bounded to 10 seconds. Cursor values are never snapshotted.
 Mutation checks exercise loss, repetition, query/coverage drift and false
-exhaustion. Cross-query, changed-limit, expired/stale and tampered-token refusal
-remain separate work.
+exhaustion. Malformed CLI and MCP cursor strings must receive typed protocol
+and invalid-params refusals respectively; successful responses, endpoint failures
+and unrelated errors cannot satisfy the guard. A fresh passive health read then
+confirms the owner remains ready at the same published revision. These malformed
+strings do not prove tamper rejection for an otherwise valid signed token.
+Cross-query, changed-limit, expired/stale and signed-token tamper refusal remain
+separate work.
 
 The checks run after existing CLI/MCP snapshots and add operation wall times to
 the report. Volatile health statistics are not snapshotted; exact identities are
