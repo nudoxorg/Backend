@@ -180,6 +180,68 @@ impl CheckerContext<'_> {
         self.lookup_wildcard_module_exports(module_key, map)
     }
 
+    /// Whether [`Self::module_exports_for_module`] answers identically for every binder.
+    ///
+    /// Under the sealed program context, the export tables and the declared-module
+    /// index are program-wide; the binder argument only selects a per-binder
+    /// fallback that is never reached. A caller that retries one lookup against
+    /// every binder in the program then repeats the same answer once per file,
+    /// and under a project resolution map each repeat is charged its whole probe
+    /// domain, which makes one named import cost work proportional to the
+    /// program's file count. Such callers must stop after the first binder.
+    pub(crate) fn module_exports_lookup_ignores_binder(&self) -> bool {
+        // Only a lookup answered entirely by program-wide tables ignores its binder:
+        // the shared export table and the shared declared-module index. Without the
+        // latter, `declared_modules_contains` falls back to each binder's own set.
+        self.program_module_exports.is_some() && self.global_declared_modules.is_some()
+    }
+
+    /// The binders a per-binder retry of [`Self::module_exports_for_module`] has to
+    /// visit: every binder when the answer can differ between them, otherwise just
+    /// the first, because the rest would repeat its answer. Callers that retry the
+    /// lookup against all binders must iterate this instead of `binders.iter()`.
+    pub(crate) fn binders_for_module_export_retry<'b, B>(
+        &self,
+        binders: &'b [B],
+    ) -> impl Iterator<Item = (usize, &'b B)> {
+        let visit = if self.module_exports_lookup_ignores_binder() {
+            1
+        } else {
+            usize::MAX
+        };
+        binders.iter().enumerate().take(visit)
+    }
+
+    /// Every binder paired with the export table it sees for `module_key`.
+    ///
+    /// Same visits and results as calling [`Self::module_exports_for_module`]
+    /// once per binder, but when the lookup ignores its binder it is computed
+    /// once and shared, instead of being repeated (and charged) once per file.
+    /// Callers whose loop body needs the binder itself, such as for its symbol
+    /// arena, keep visiting every binder.
+    pub(crate) fn module_exports_for_each_binder<'b>(
+        &'b self,
+        binders: &'b [Arc<tsz_binder::BinderState>],
+        module_key: &'b str,
+    ) -> impl Iterator<Item = (&'b Arc<tsz_binder::BinderState>, &'b tsz_binder::SymbolTable)> + 'b {
+        let shared = if self.module_exports_lookup_ignores_binder() {
+            Some(
+                binders
+                    .first()
+                    .and_then(|first| self.module_exports_for_module(first, module_key)),
+            )
+        } else {
+            None
+        };
+        binders.iter().filter_map(move |binder| {
+            let exports = match shared {
+                Some(shared) => shared,
+                None => self.module_exports_for_module(binder, module_key),
+            };
+            exports.map(|exports| (binder, exports))
+        })
+    }
+
     /// Only the ambient surface admitted for this exact External request.
     /// Program file keys and competing request kinds cannot lend exports.
     pub(crate) fn ambient_exports_for_selected_request<'b>(

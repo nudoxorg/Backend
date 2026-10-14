@@ -15,7 +15,7 @@ pub mod id;
 /// Shared cooperative cancellation/deadline/work budget for one project run.
 pub mod execution_budget;
 pub use execution_budget::{
-    ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint, ProjectExecutionBudget,
+    ExecutionCheckpoint, ExecutionWorkMeter, FileWorkSlice, LatchedExecutionCheckpoint, ProjectExecutionBudget,
     ProjectExecutionIdentity, ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,
     ProjectExecutionStop, ProjectExecutionTransition,
 };

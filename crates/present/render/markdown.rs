@@ -28,7 +28,7 @@ use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
 use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
-use crate::shelf::{Readiness, Shelf};
+use crate::shelf::Shelf;
 use crate::status::Status;
 use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, bounded_text};
 
@@ -686,15 +686,8 @@ pub fn shelf(shelf: &Shelf) -> String {
             entry.identity().name(),
             entry.readiness().name()
         );
-        if let Readiness::Indexing { rows } = entry.readiness() {
-            let _ = write!(head, " · {} row(s)", rows.get());
-        }
-        match entry.declarations() {
-            Some(count) if count.get() > 0 => {
-                let _ = write!(head, " · {} declaration(s)", count.get());
-            }
-            Some(_) => {}
-            None => head.push_str(" · declaration count unavailable"),
+        for tag in entry.count_tags() {
+            let _ = write!(head, " · {tag}");
         }
         for language in entry.languages() {
             let _ = write!(
@@ -710,11 +703,19 @@ pub fn shelf(shelf: &Shelf) -> String {
             lines.push(fault(reason));
         }
     }
-    lines.push(format!(
+    let mut footer = format!(
         "{} project(s) · revision {}",
         shelf.entries().len(),
         shelf.revision()
-    ));
+    );
+    let statement = shelf.lane_statement();
+    if let Some((words, _)) = &statement {
+        let _ = write!(footer, " · {words}");
+    }
+    lines.push(footer);
+    if let Some((_, line)) = statement {
+        lines.push(coverage(line));
+    }
     lines.finish()
 }
 

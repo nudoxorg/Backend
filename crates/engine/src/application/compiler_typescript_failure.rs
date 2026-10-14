@@ -589,6 +589,11 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszProjectQuerySessionError::ExecutionStopped(reason) => {
                 stop_failure(*reason, StopSite::Session)
             }
+            // A file query that spent its own allowance with no restart left: the
+            // allowance is work budget, so the closed cause is the same one.
+            TszProjectQuerySessionError::FileWorkExhausted { .. } => {
+                F::NativeSessionWorkBudgetExhausted
+            }
         },
         TszAuthorityError::ProjectCheck(error) => match error {
             TszProjectProgramCheckError::ModuleResolution(error) => {
@@ -599,6 +604,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             }
         },
         TszAuthorityError::ExecutionStopped(reason) => stop_failure(*reason, StopSite::Update),
+        TszAuthorityError::FileWorkExhausted(_) => F::NativeProjectCheckWorkBudgetExhausted,
     }
 }
 

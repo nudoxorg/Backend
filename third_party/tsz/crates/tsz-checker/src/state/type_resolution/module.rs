@@ -415,10 +415,13 @@ impl<'a> CheckerState<'a> {
                     break;
                 }
             }
+            // Retrying every candidate against every other binder only matters
+            // when the answer depends on the binder; under the program context it
+            // is the identical lookup repeated once per file.
             if found.is_none()
                 && let Some(all_binders) = &self.ctx.all_binders
             {
-                for binder in all_binders.iter() {
+                for (_, binder) in self.ctx.binders_for_module_export_retry(all_binders) {
                     for candidate in module_specifier_candidates(module_name) {
                         if let Some(exports) =
                             self.ctx.module_exports_for_module(binder, &candidate)

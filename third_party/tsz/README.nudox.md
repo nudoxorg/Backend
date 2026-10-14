@@ -16,3 +16,13 @@ when the merged `DefinitionStore` is built.
 The backend root `Cargo.toml` patches this exact Git source to these paths. Do
 not update the upstream revision or omit a workspace crate without reviewing
 the lockfile, license, regression tests, and option plumbing together.
+
+Per-file work isolation: `tsz-common` adds `FileWorkSlice`, a file-local allowance
+carved out of the shared program checkpoint, and `ProjectExecutionBudget` now drains
+its allowance to exactly zero on exhaustion. `tsz-core` adds
+`PreparedProjectCheckerImage::with_file_work` / `ProjectCheckerSession::with_file_work_allowance`:
+each file check or file query runs under its own slice, a file that spends it is
+reported (never published), and the partially written image is discarded and rebuilt
+without it by the caller. The checker's module-export lookups no longer repeat one
+program-wide answer once per binder, and the request consensus for a source/specifier
+pair is memoized; both made one named import cost work proportional to the file count.

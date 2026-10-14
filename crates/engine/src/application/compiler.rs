@@ -34,8 +34,8 @@ use backend_frontend_rust::legacy::{
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{
-    TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
-    TszProjectCheckerExecution, TszProjectOptions, TszSourceError,
+    TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszFileWorkPolicy, TszProject,
+    TszProjectAuthority, TszProjectCheckerExecution, TszProjectOptions, TszSourceError,
 };
 // Each admitted compiler lane owns its private checker pool. Two compiler
 // lanes currently admit at most four file-check workers per owner; parse,
@@ -70,7 +70,7 @@ use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error as _,
     fmt::Write as _,
     io,
@@ -387,6 +387,10 @@ pub enum PackageSourceCoverageGapCause {
     RustSourceOutsideActiveCargoTarget,
     /// Exact captured source is outside the selected TypeScript Compiler API program.
     TypeScriptSourceExcludedFromConfiguredProgram,
+    /// Checking or lowering this source spent its work allowance (or the program's
+    /// remaining allowance), so it has no semantic artifact. Every other source of
+    /// the package keeps the facts it would have had.
+    TypeScriptSourceWorkBudgetExhausted,
     /// Exact Python source was captured but its grammar rejected semantic lowering.
     PythonSourceSyntaxUnavailable,
     /// Exact Python source was captured but its declared codec was unavailable.
@@ -469,6 +473,45 @@ impl PackageSourceCoverageGap {
     #[must_use]
     pub const fn cause(&self) -> PackageSourceCoverageGapCause {
         self.cause
+    }
+}
+
+/// Rebuild rounds one native TypeScript program may spend discarding files that
+/// exhaust their own work allowance. Each round skips at least one more file, so
+/// this only bounds the repeated planning cost; the program-wide allowance and
+/// the deadline bound the checking cost.
+const MAX_TYPESCRIPT_FILE_WORK_ROUNDS: u8 = 8;
+
+/// Whole-package restarts allowed when a source's own lowering spends its
+/// allowance. The restarted attempt skips that source from its first step.
+const MAX_TYPESCRIPT_WORK_RESTARTS: u8 = 2;
+
+/// Exact native TypeScript program files that spent their work allowance in an
+/// earlier attempt of the same package compilation.
+///
+/// Keyed by program index in the configured forest and by the exact program path,
+/// both of which are stable across attempts of one package request.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TypeScriptWorkGaps {
+    programs: BTreeMap<usize, BTreeSet<String>>,
+    /// The first attempt's deadline. A restarted attempt inherits it: restarting
+    /// must never extend the time the package request was allowed to take.
+    deadline: Option<Instant>,
+}
+
+impl TypeScriptWorkGaps {
+    fn contains(&self, program: usize, path: &str) -> bool {
+        self.programs
+            .get(&program)
+            .is_some_and(|paths| paths.contains(path))
+    }
+
+    fn insert(&mut self, program: usize, path: impl Into<String>) {
+        self.programs.entry(program).or_default().insert(path.into());
+    }
+
+    fn program_paths(&self, program: usize) -> BTreeSet<String> {
+        self.programs.get(&program).cloned().unwrap_or_default()
     }
 }
 
@@ -1905,6 +1948,12 @@ pub enum PackageSemanticError {
     /// Canonical package lineage could not be constructed.
     #[error("package lineage is malformed")]
     Lineage,
+    /// Internal restart request: a TypeScript source spent its own work
+    /// allowance, so the attempt must be rerun from fresh native state without
+    /// it. [`LocalCompilerExecution::stage_package_sources`] consumes this value;
+    /// it never reaches a caller of the public staging entry point.
+    #[error("TypeScript source work allowance spent; package compilation restarts without it")]
+    TypeScriptWorkRestart,
     /// A Go package's authority filesystem inputs could not be admitted.
     #[error(transparent)]
     GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
@@ -2528,6 +2577,60 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     pub(crate) fn stage_package_sources(
         &self,
         package: PackageSourceSet<'_>,
+        execution_identity: Option<LocalCompilerExecutionIdentity>,
+        plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
+        embedding_runtime: Option<&EmbeddingExecutable>,
+        embedding_cache_session: Option<&EmbeddingCacheSession>,
+        embedding_requirement: EmbeddingRequirement,
+        scratch: &mut LocalCompilerScratch,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(PackageCompilePhase),
+    ) -> Result<StagedPackageCompilation, PackageSemanticError> {
+        // A TypeScript source whose own lowering spends its work allowance can have
+        // written partial state into the program-wide tables that every later
+        // source reads. The attempt is then discarded whole and rerun from fresh
+        // native state with that source skipped, so every published fact comes from
+        // a state that no interrupted query touched. The final attempt degrades to
+        // a coverage gap for the interrupted source and everything after it instead.
+        let mut work_gaps = TypeScriptWorkGaps::default();
+        let mut restarts_left = MAX_TYPESCRIPT_WORK_RESTARTS;
+        loop {
+            // Where this attempt's native program stopped, kept outside the attempt so
+            // the refusal can name the file and phase even after early returns.
+            let stop_site = std::sync::Arc::new(std::sync::OnceLock::new());
+            match self.stage_package_sources_attempt(
+                package.clone(),
+                execution_identity,
+                plane_execution_seed,
+                embedding_runtime,
+                embedding_cache_session,
+                embedding_requirement,
+                scratch,
+                cancelled,
+                progress,
+                &mut work_gaps,
+                restarts_left > 0,
+                &stop_site,
+            ) {
+                Err(PackageSemanticError::TypeScriptWorkRestart) if restarts_left > 0 => {
+                    restarts_left -= 1;
+                    tracing::warn!(target: "compiler.typescript_project", restarts_left,
+                        "TypeScript source spent its own work allowance; restarting the package compilation without it");
+                }
+                Err(PackageSemanticError::Compile { path, terminal }) => {
+                    return Err(PackageSemanticError::Compile {
+                        path,
+                        terminal: Box::new(with_typescript_stop_site(*terminal, stop_site.get())),
+                    });
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn stage_package_sources_attempt(
+        &self,
+        package: PackageSourceSet<'_>,
         mut execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
         embedding_runtime: Option<&EmbeddingExecutable>,
@@ -2536,6 +2639,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         scratch: &mut LocalCompilerScratch,
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
+        typescript_work_gaps: &mut TypeScriptWorkGaps,
+        may_restart: bool,
+        stop_site: &std::sync::Arc<std::sync::OnceLock<super::compiler_typescript_observation::ObservedStopSite>>,
     ) -> Result<StagedPackageCompilation, PackageSemanticError> {
         let compilation_attempt_id =
             CompilationAttemptId::mint().ok_or(PackageSemanticError::Capacity {
@@ -2564,7 +2670,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 path: first_source.relative_path.into(),
                 terminal: Box::new(terminal),
             })?;
-        let control =
+        let mut control =
             self.compile_control(cancelled)
                 .map_err(|timeout| PackageSemanticError::Compile {
                     path: first_source.relative_path.into(),
@@ -2575,6 +2681,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         timeout: *timeout,
                     }),
                 })?;
+        control.deadline = *typescript_work_gaps.deadline.get_or_insert(control.deadline);
         let use_report_program = self.package_authority.typescript.is_some_and(|checker| {
             checker.portable_invocation_mode() == TypeScriptInvocationModeV1::ReportProgram
         });
@@ -2658,6 +2765,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
         let mut tsz_node_metadata = Vec::new();
+        let mut tsz_file_work_units = Vec::new();
         let mut forest_root = 0;
         let mut configured_forest = false;
         if let Some(project) = typescript_project.as_ref() {
@@ -2698,10 +2806,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 control.deadline,
                 cancelled,
                 forest.work_units,
-            ));
+            ).with_stop_sink(std::sync::Arc::clone(stop_site)));
             let budget = tsz_budget.as_ref().expect("shared forest budget");
             let mut witnesses = Vec::with_capacity(forest.nodes.len());
-            for node in forest.nodes {
+            for (program_index, node) in forest.nodes.into_iter().enumerate() {
                 let native = node.native;
                 tsz_node_metadata.push((
                     node.config,
@@ -2709,6 +2817,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     *native.options.environment.as_bytes(),
                 ));
                 witnesses.push(native.closure_witness);
+                tsz_file_work_units.push(native.file_work_units);
                 if native.solution {
                     tsz_authorities.push(None);
                     continue;
@@ -2719,8 +2828,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     module_requests = native.options.module_resolutions.len(),
                     "native TypeScript project inputs admitted");
                 let mut authority = TszProjectAuthority::new();
+                // Each file's semantic check runs under its own slice of the shared
+                // allowance. A file that spends its slice is skipped by a rebuilt
+                // project, and later becomes a coverage gap instead of a refusal.
+                let file_work = TszFileWorkPolicy {
+                    allowance: native.file_work_units,
+                    skipped: typescript_work_gaps.program_paths(program_index),
+                    max_retries: MAX_TYPESCRIPT_FILE_WORK_ROUNDS,
+                    // Nothing here reads checker diagnostics, only semantic facts. Checking
+                    // every declaration file of every dependency for diagnostics is the
+                    // dominant cost of a project that does not set `skipLibCheck`, and no
+                    // fact depends on it: declaration types are still resolved on demand.
+                    check_declaration_files: false,
+                };
                 authority
-                    .update_with_checker_execution(
+                    .update_with_checker_execution_and_file_work(
                         native.sources,
                         native.options,
                         &native.libraries,
@@ -2728,8 +2850,22 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             checkpoint: budget,
                             workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
                         },
+                        &file_work,
                     )
                     .map_err(|cause| {
+                        // Files still spending their own slice after every permitted
+                        // rebuild: name the first, with the slice it spent.
+                        if let backend_frontend_typescript::TszAuthorityError::FileWorkExhausted(files) = &cause
+                            && let Some(file) = files.first()
+                        {
+                            let _ = stop_site.set(super::compiler_typescript_observation::ObservedStopSite {
+                                reason: backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted,
+                                phase: Some(backend_frontend_typescript::TszProjectExecutionPhase::FileCheck),
+                                file: Some(file.path.as_str().into()),
+                                work_charged: file.allowance,
+                                work_allowance: file.allowance,
+                            });
+                        }
                         let toolchain = self
                             .toolchain_for_package(first_application_request, typescript_toolchain)
                             .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
@@ -2746,6 +2882,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             )),
                         }
                     })?;
+                if let Some(project) = authority.project().filter(|project| !project.file_work_skipped().is_empty()) {
+                    tracing::warn!(target: "compiler.typescript_project", program = program_index,
+                        skipped = ?project.file_work_skipped(),
+                        "TypeScript files spent their own work allowance and are not semantically covered");
+                }
                 tsz_authorities.push(Some(authority));
             }
             typescript_closure_witness = Some(
@@ -2818,10 +2959,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .into()
             });
         }
-        let tsz_sessions = tsz_projects.iter().map(|project| {
+        let tsz_sessions = tsz_projects.iter().enumerate().map(|(program_index, project)| {
             project.map(|project| {
                 let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript forest checker budget" })?;
-                project.checked_query_session(budget).map_err(|cause| {
+                let file_work_units = tsz_file_work_units.get(program_index).copied().ok_or(PackageSemanticError::Capacity { lane: "TypeScript program file work allowance" })?;
+                project.checked_query_session_with_file_work(budget, file_work_units).map_err(|cause| {
                     let toolchain = self.toolchain_for_package(first_application_request, typescript_toolchain)
                         .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
                     PackageSemanticError::Compile {
@@ -3391,6 +3533,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
 
+        // Set once the program can no longer lower sources soundly (the final
+        // attempt's interrupted source, or the program-wide allowance running out).
+        // Sources lowered before that point are complete; every later TypeScript
+        // source is reported as a coverage gap instead of failing the package.
+        let mut typescript_work_degraded = false;
         for source in package.compilation_sources() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(PackageSemanticError::Compile {
@@ -3417,8 +3564,30 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 degraded.skip_after_deadline(source.relative_path, source_authority, &mut coverage_gaps);
                 continue;
             }
-            if let Some(budget) = tsz_budget.as_ref() {
-                backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1)
+            if let Some(budget) = tsz_budget.as_ref().filter(|_| !typescript_work_degraded) {
+                match backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1) {
+                    // True program-wide exhaustion: keep what is already complete.
+                    Err(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
+                        if !artifacts.is_empty() =>
+                    {
+                        typescript_work_degraded = true;
+                        Ok(())
+                    }
+                    // The package deadline passed between sources: what is already
+                    // complete is sound, and every later source is an explicit gap.
+                    Err(backend_frontend_typescript::TszProjectExecutionStop::Deadline)
+                        if !artifacts.is_empty() =>
+                    {
+                        degraded.deadline_passed = true;
+                        degraded.skip_after_deadline(
+                            source.relative_path,
+                            source_authority,
+                            &mut coverage_gaps,
+                        );
+                        continue;
+                    }
+                    result => result,
+                }
                     .map_err(|cause| PackageSemanticError::Compile {
                         path: source.relative_path.into(),
                         terminal: Box::new(package_authority_terminal(
@@ -3437,6 +3606,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         )),
                     })?;
             }
+            let mut typescript_owner: Option<(usize, &str)> = None;
             if typescript_project.is_some() {
                 let membership = tsz_package_membership.get(source.relative_path()).ok_or(
                     PackageSemanticError::Capacity {
@@ -3455,6 +3625,28 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         native_python_diagnostics: Box::new([]),
                     });
                     continue;
+                }
+                if let crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path } = membership {
+                    typescript_owner = Some((*program, &**program_path));
+                    // Skipped by this attempt's own checked project, named by an earlier
+                    // attempt, or past the point where lowering stopped being sound.
+                    let work_gap = typescript_work_degraded
+                        || typescript_work_gaps.contains(*program, program_path)
+                        || tsz_projects
+                            .get(*program)
+                            .copied()
+                            .flatten()
+                            .is_some_and(|project| project.file_work_skipped().contains(&**program_path));
+                    if work_gap {
+                        coverage_gaps.push(PackageSourceCoverageGap {
+                            source: source_authority,
+                            relative_path: source.relative_path.into(),
+                            cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                            python_source_status: None,
+                            native_python_diagnostics: Box::new([]),
+                        });
+                        continue;
+                    }
                 }
             }
             if let Some(project) = python_project.as_ref() {
@@ -3604,7 +3796,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     })?;
                 authority_owner.input(&source_path)
             };
-            let compiled = match self.stage_prepared(
+            let lowered = self.stage_prepared(
                 application_request,
                 source_authority,
                 scope,
@@ -3614,7 +3806,61 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &mut scratch.diagnostic_output,
                 &mut scratch.fragment_output,
                 progress,
-            ) {
+            );
+            // A TypeScript source interrupted by its program's work allowance may have
+            // written partial state that later sources read: it is never degraded here.
+            let mut typescript_stopped = false;
+            if let Some((program, program_path)) = typescript_owner {
+                let file_exhaustion = tsz_sessions
+                    .get(program)
+                    .and_then(Option::as_ref)
+                    .and_then(|session| session.take_file_work_exhaustion());
+                let file_exhausted = file_exhaustion.is_some();
+                let program_exhausted = lowered.is_err()
+                    && tsz_budget.as_ref().is_some_and(|budget| {
+                        budget.stop_reason() == Some(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
+                    });
+                typescript_stopped = file_exhausted || program_exhausted;
+                if file_exhausted || (program_exhausted && !artifacts.is_empty()) {
+                    // The interrupted queries may have written partial state into the
+                    // program-wide tables every later source reads, and this source has
+                    // no complete facts. Rerun from fresh native state without it...
+                    if file_exhausted && may_restart {
+                        typescript_work_gaps.insert(program, program_path);
+                        for (index, project) in tsz_projects.iter().enumerate() {
+                            for path in project.map_or_else(Default::default, |project| project.file_work_skipped().clone()) {
+                                typescript_work_gaps.insert(index, path);
+                            }
+                        }
+                        return Err(PackageSemanticError::TypeScriptWorkRestart);
+                    }
+                    // ...or, with no restart left, keep the sources that are already
+                    // complete and report this one and every later one as gaps.
+                    if !artifacts.is_empty() {
+                        typescript_work_degraded = true;
+                        coverage_gaps.push(PackageSourceCoverageGap {
+                            source: source_authority,
+                            relative_path: source.relative_path.into(),
+                            cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                            python_source_status: None,
+                            native_python_diagnostics: Box::new([]),
+                        });
+                        continue;
+                    }
+                    // Nothing complete to publish and no restart left: the refusal below
+                    // names this source and the slice it spent.
+                    if let Some(exhaustion) = file_exhaustion {
+                        let _ = stop_site.set(super::compiler_typescript_observation::ObservedStopSite {
+                            reason: backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted,
+                            phase: None,
+                            file: Some(exhaustion.path.as_str().into()),
+                            work_charged: exhaustion.allowance,
+                            work_allowance: exhaustion.allowance,
+                        });
+                    }
+                }
+            }
+            let compiled = match lowered {
                 Ok(compiled) => compiled,
                 Err(terminal)
                     if matches!(
@@ -3637,6 +3883,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         native_python_diagnostics: Box::new([]),
                     });
                     continue;
+                }
+                Err(terminal) if typescript_stopped => {
+                    return Err(PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    });
                 }
                 Err(terminal) => {
                     degraded.degrade(
@@ -5062,6 +5314,77 @@ fn request_source(request: ApplicationCompilerRequest<'_>) -> Result<SourceAutho
         identity: ContentId::<SourceFactDomain>::from_canonical_bytes(request.source.as_bytes()),
         byte_len,
     })
+}
+
+/// Closed public projection of the native phase a TypeScript program stopped in.
+const fn typescript_stop_phase(
+    phase: backend_frontend_typescript::TszProjectExecutionPhase,
+) -> backend_library::interface::TypeScriptStopPhase {
+    use backend_frontend_typescript::TszProjectExecutionPhase as P;
+    use backend_library::interface::TypeScriptStopPhase as S;
+    match phase {
+        P::SourceFrontier => S::SourceFrontier,
+        P::ParseBind => S::ParseBind,
+        P::Merge => S::Merge,
+        P::FileFormats => S::FileFormats,
+        P::ModuleOutcomes => S::ModuleOutcomes,
+        P::CheckerPlan => S::CheckerPlan,
+        P::LibraryViews => S::LibraryViews,
+        P::BinderViews => S::BinderViews,
+        P::OwnershipIndex => S::OwnershipIndex,
+        P::SharedCheckerIndexes => S::SharedCheckerIndexes,
+        P::AffectedLibraries => S::AffectedLibraries,
+        P::AugmentationPrime => S::AugmentationPrime,
+        P::FileReset => S::FileReset,
+        P::FileCheck => S::FileCheck,
+        P::FilePostprocess => S::FilePostprocess,
+        P::SourcePreparation => S::SourcePreparation,
+        P::SourceStatements => S::SourceStatements,
+        P::SourcePostchecks => S::SourcePostchecks,
+        P::LibraryBaseline => S::LibraryBaseline,
+        P::LibraryCheck => S::LibraryCheck,
+        P::Aggregate => S::Aggregate,
+    }
+}
+
+/// Names the file and phase a native TypeScript program was in when it stopped.
+///
+/// Only an authority refusal that already carries a closed program-execution
+/// cause can take the site; every other terminal, and a stop that observed no
+/// boundary, is returned unchanged.
+fn with_typescript_stop_site(
+    terminal: CompilerTerminal,
+    site: Option<&super::compiler_typescript_observation::ObservedStopSite>,
+) -> CompilerTerminal {
+    let Some(site) = site else {
+        return terminal;
+    };
+    match terminal {
+        CompilerTerminal::Compile {
+            attempted,
+            cause:
+                CompilerCause::Authority {
+                    phase,
+                    class,
+                    diagnostic: Some(diagnostic),
+                },
+        } => CompilerTerminal::Compile {
+            attempted,
+            cause: CompilerCause::Authority {
+                phase,
+                class,
+                diagnostic: Some(diagnostic.with_typescript_stop_site(
+                    backend_library::interface::TypeScriptStopSite::new(
+                        site.phase.map(typescript_stop_phase),
+                        site.file.as_deref(),
+                        site.work_charged,
+                        site.work_allowance,
+                    ),
+                )),
+            },
+        },
+        other => other,
+    }
 }
 
 #[allow(
@@ -6895,3 +7218,104 @@ mod tests {
 #[cfg(test)]
 #[path = "compiler/typescript_membership_control_tests.rs"]
 mod typescript_membership_control_tests;
+
+#[cfg(test)]
+mod typescript_work_gap_tests {
+    use super::{
+        CompilerCause, CompilerTerminal, TypeScriptWorkGaps, typescript_stop_phase,
+        with_typescript_stop_site,
+    };
+    use crate::application::compiler_typescript_observation::ObservedStopSite;
+    use backend_frontend_typescript::{TszProjectExecutionPhase as P, TszProjectExecutionStop};
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerDiagnostic,
+        SourceAuthority, TypeScriptAuthorityFailureKind, TypeScriptStopPhase,
+    };
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    #[test]
+    fn work_gaps_are_keyed_by_program_and_exact_path_and_never_cross_programs() {
+        let mut gaps = TypeScriptWorkGaps::default();
+        assert!(!gaps.contains(0, "src/hot.ts"));
+        gaps.insert(1, "src/hot.ts");
+        gaps.insert(1, "src/hot.ts");
+        assert!(gaps.contains(1, "src/hot.ts"));
+        assert!(!gaps.contains(0, "src/hot.ts"), "another program's file is not this one");
+        assert!(!gaps.contains(1, "src/Hot.ts"), "paths compare exactly");
+        assert_eq!(gaps.program_paths(1).len(), 1);
+        assert!(gaps.program_paths(0).is_empty());
+    }
+
+    #[test]
+    fn every_native_phase_has_a_distinct_public_phase() {
+        let phases = [
+            P::SourceFrontier, P::ParseBind, P::Merge, P::FileFormats, P::ModuleOutcomes,
+            P::CheckerPlan, P::LibraryViews, P::BinderViews, P::OwnershipIndex,
+            P::SharedCheckerIndexes, P::AffectedLibraries, P::AugmentationPrime, P::FileReset,
+            P::FileCheck, P::FilePostprocess, P::SourcePreparation, P::SourceStatements,
+            P::SourcePostchecks, P::LibraryBaseline, P::LibraryCheck, P::Aggregate,
+        ];
+        let tags = phases
+            .into_iter()
+            .map(|phase| typescript_stop_phase(phase).tag())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(tags.len(), phases.len());
+        assert_eq!(typescript_stop_phase(P::FileCheck), TypeScriptStopPhase::FileCheck);
+    }
+
+    #[test]
+    fn the_observed_stop_site_rides_the_authority_refusal_and_nothing_else() {
+        let terminal = |kind| CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"x"),
+                    byte_len: 1,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"site"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"native", 6, false)
+                    .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
+            },
+        };
+        let site = ObservedStopSite {
+            reason: TszProjectExecutionStop::WorkBudgetExhausted,
+            phase: Some(P::SourceStatements),
+            file: Some("src/app/index.tsx".into()),
+            work_charged: 9,
+            work_allowance: 9,
+        };
+        let CompilerTerminal::Compile {
+            cause: CompilerCause::Authority { diagnostic: Some(named), .. },
+            ..
+        } = with_typescript_stop_site(
+            terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted),
+            Some(&site),
+        ) else {
+            panic!("authority refusal keeps its shape");
+        };
+        let facts = named.typescript_stop_site.as_ref().expect("site attached");
+        assert_eq!(facts.phase, Some(TypeScriptStopPhase::SourceStatements));
+        assert_eq!(facts.file.as_deref(), Some("src/app/index.tsx"));
+        assert_eq!((facts.work_charged, facts.work_allowance), (9, 9));
+        // A stop that observed nothing, or a failure that is not a program stop, gains no site.
+        for unchanged in [
+            with_typescript_stop_site(
+                terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted),
+                None,
+            ),
+            with_typescript_stop_site(terminal(TypeScriptAuthorityFailureKind::CheckerExit), Some(&site)),
+        ] {
+            let CompilerTerminal::Compile {
+                cause: CompilerCause::Authority { diagnostic: Some(plain), .. },
+                ..
+            } = unchanged
+            else {
+                panic!("authority refusal keeps its shape");
+            };
+            assert!(plain.typescript_stop_site.is_none());
+        }
+    }
+}
