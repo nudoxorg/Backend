@@ -2355,7 +2355,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             first_application_request,
                             first_authority,
                             toolchain,
-                            PackageAuthorityError::TypeScriptProjectHost(cause),
+                            PackageAuthorityError::TypeScriptProjectHost(
+                                super::compiler_typescript_failure::describe_host_error(
+                                    cause,
+                                    &[package.package_root],
+                                ),
+                            ),
                         );
                         return Err(PackageSemanticError::Compile {
                             path: first_source.relative_path.into(),
@@ -2383,7 +2388,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         first_application_request,
                         first_authority,
                         toolchain,
-                        PackageAuthorityError::TypeScriptProjectHost(source),
+                        PackageAuthorityError::TypeScriptProjectHost(
+                            super::compiler_typescript_failure::describe_host_error(
+                                source,
+                                &[package.package_root, project.inputs().workspace_root],
+                            ),
+                        ),
                     );
                     return Err(PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
@@ -2431,7 +2441,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         first_application_request,
                         first_authority,
                         toolchain,
-                        PackageAuthorityError::TypeScriptProjectHost(cause),
+                        PackageAuthorityError::TypeScriptProjectHost(
+                            super::compiler_typescript_failure::describe_host_error(
+                                cause,
+                                &[package.package_root, inputs.workspace_root],
+                            ),
+                        ),
                     )),
                 }
             })?;
@@ -4790,6 +4805,7 @@ fn package_authority_terminal(
             let (phase, class) = package_authority_projection(&cause);
             let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
             let typescript_admission = super::compiler_typescript_failure::admission_detail(&cause);
+            let typescript_cause = super::compiler_typescript_failure::failure_cause(&cause);
             let go_failure = match &cause {
                 PackageAuthorityError::GoOracle(
                     backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable {
@@ -4842,7 +4858,10 @@ fn package_authority_terminal(
                         let diagnostic = diagnostic.with_typescript_failure(failure);
                         match typescript_admission {
                             Some(detail) => diagnostic.with_typescript_admission(detail),
-                            None => diagnostic,
+                            None => match typescript_cause {
+                                Some(cause) => diagnostic.with_typescript_cause(cause),
+                                None => diagnostic,
+                            },
                         }
                     }
                     None => match go_failure {
@@ -5492,6 +5511,69 @@ mod tests {
     }
 
     #[test]
+    fn described_typescript_host_cause_reaches_the_public_failure_detail_and_roundtrips() {
+        use backend_semantic::vocabulary::TypeScriptSource;
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            stage: Stage::LowerIr,
+            source: "export const value = 1;",
+        };
+        let source = request_source(request).expect("exact original source");
+        let target = backend_version::ContentId::from_canonical_bytes(b"described target");
+        let unavailable = ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        };
+        let root = Path::new("/private/home/user/app");
+        let error = super::super::compiler_typescript_failure::describe_host_error(
+            crate::application::TypeScriptProjectHostError::ConfigInvalid {
+                config: root.join("tsconfig.app.json").into_boxed_path(),
+                message: "expected value at line 3 column 5".into(),
+            },
+            &[root],
+        );
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            unavailable,
+            PackageAuthorityError::TypeScriptProjectHost(error),
+        );
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "src/main.tsx",
+            &terminal,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(failure.kind_tag(), "typescript_host_config_invalid");
+        assert_eq!(
+            failure.detail(),
+            "TypeScript project configuration could not be decoded: \
+             tsconfig.app.json is malformed: expected value at line 3 column 5"
+        );
+        let encoded = failure.encode_bounded_json().unwrap();
+        let text = String::from_utf8_lossy(&encoded);
+        assert!(text.contains("\"typescript_cause\""));
+        assert!(!text.contains("/private/home"), "{text}");
+        let reopened =
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        assert_eq!(reopened, failure);
+        assert_eq!(reopened.detail(), failure.detail());
+
+        // Text that disagrees with the retained cause is refused on decode.
+        let mut forged: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let slot = forged
+            .pointer_mut("/cause/fault/diagnostic/typescript_cause")
+            .expect("cause fact is serialized next to the closed kind");
+        *slot = serde_json::json!("some other cause");
+        assert!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(
+                &serde_json::to_vec(&forged).unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn project_typescript_fault_retains_its_admitted_recipe_without_global_tsc() {
         use crate::application::{
             LocalCompilerConfig, LocalCompilerControl, LocalCompilerTimeout, LocalPackageRootSet,
@@ -5574,7 +5656,8 @@ mod tests {
         assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
         assert_eq!(
             failure.detail(),
-            "TypeScript admitted compiler API rejected its program input"
+            backend_library::interface::TypeScriptAuthorityFailureKind::HostCompilerApiBridge.detail(),
+            "an undescribed bridge error keeps the closed sentence and no native text"
         );
         assert!(
             !serde_json::to_string(&failure)
