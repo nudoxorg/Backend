@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 from pathlib import Path
@@ -913,6 +914,52 @@ def execute_case(case: dict, bin_dir: Path) -> tuple[dict | None, float, str | N
         CURRENT_CASE.reset(token)
 
 
+def bounded_text(value: str, limit: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit - 60].decode("utf-8", errors="ignore") + "\n… full detail retained in CI logs"
+
+
+def evidence_artifact(bin_dir: Path, source_sha: str) -> str:
+    """Admit the actual artifact bytes and checkout before attaching source identity."""
+    from t1_artifacts import TARGET, digest, verify
+    if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
+        raise ValueError("CI evidence requires a full lower-case source SHA")
+    head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, timeout=10).strip()
+    if head != source_sha:
+        raise ValueError("CI evidence source differs from the harness checkout")
+    dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"], text=True, timeout=10)
+    if dirty.strip():
+        raise ValueError("CI evidence requires a clean tracked harness checkout")
+    directory = bin_dir.absolute()
+    if directory.name != "bin":
+        raise ValueError("CI evidence requires the verified artifact's bin directory")
+    verify(directory.parent, source_sha, TARGET)
+    return digest(directory.parent / "manifest.json")
+
+
+def write_ci_evidence(path: Path, source_sha: str, artifact_digest: str,
+                      cases: dict, filtered: bool) -> None:
+    report = {"schema": 1, "source_sha": source_sha,
+              "artifact_manifest_sha256": artifact_digest,
+              "selection": ("Explicit case filter; see the case list." if filtered else
+                            "All catalog cases; no product-path narrowing."),
+              "cases": cases}
+    # A reader must never observe a partially written source-bound document.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".ci-evidence-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(report, stream, indent=2, sort_keys=True, ensure_ascii=False)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     cases = json.loads((SURFACE / "cases.json").read_text())["cases"]
     if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", case["name"]) for case in cases):
@@ -926,14 +973,20 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         cases = [case for case in cases if case["name"] in args.case]
     failed = []
     report = {}
+    evidence = {}
     with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
         results = list(executor.map(lambda case: execute_case(case, args.bin_dir.resolve()), cases))
     for case, (record, elapsed, error) in zip(cases, results):
+        entry = {"state": "failed", "seconds": {}}
+        evidence[case["name"]] = entry
         if error is not None:
+            entry["detail"] = bounded_text(error, 4096)
             log(f"case {case['name']} could not run: {error}")
             failed.append(case["name"])
             continue
+        entry.update(record["performance"])
         if case.get("kind") == "cli-contract":
+            entry["state"] = "passed"
             report[case["name"]] = record["performance"]
             emit_performance(case["name"], record["performance"])
             log(f"case {case['name']} passed ({elapsed:.1f}s)")
@@ -947,30 +1000,40 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
             continue
         if not snapshot_path.exists():
+            entry["detail"] = "No reviewed snapshot; explicit review/update required."
             log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
             if args.print_missing:
                 print_candidate(case["name"], record)
             failed.append(case["name"])
             continue
         reviewed = json.loads(snapshot_path.read_text())
+        baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
+        indexed = record["performance"].get("seconds", {}).get("cli add")
+        if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
+            entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
         problems = []
         if reviewed["answers"] != record["answers"]:
             old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
             new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
             diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
+            entry["snapshot_diff"] = bounded_text(diff, 8192)
             problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
         problems += regressions(reviewed.get("performance", {}), record["performance"])
         if problems:
+            entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
             failed.append(case["name"])
             for problem in problems:
                 log(f"case {case['name']}: {problem}")
             if args.print_missing and reviewed["answers"] != record["answers"]:
                 print_candidate(case["name"], record)
         else:
+            entry["state"] = "passed"
             log(f"case {case['name']} matches ({elapsed:.1f}s, "
                 f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    if args.ci_report:
+        write_ci_evidence(args.ci_report, args.source_sha, args.artifact_digest, evidence, bool(args.case))
     if failed:
         log(f"failed: {', '.join(failed)}")
         return 1
@@ -985,12 +1048,25 @@ def main() -> int:
                         help="concurrent isolated cases, 1–4 (default: 1)")
     parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
     parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
+    parser.add_argument("--ci-report", type=Path, help="write versioned exact-artifact case verdicts/diffs/performance")
+    parser.add_argument("--source-sha", help="CI report: required exact artifact and checkout source SHA")
     parser.add_argument(
         "--print-missing",
         action="store_true",
         help="print missing or changed candidate snapshots for review in CI logs",
     )
     args = parser.parse_args()
+    if args.ci_report:
+        if not args.source_sha or args.update:
+            parser.error("--ci-report requires --source-sha and ordinary comparison (no --update)")
+        if args.report and args.report.absolute() == args.ci_report.absolute():
+            parser.error("--report and --ci-report require different output files")
+        try:
+            args.artifact_digest = evidence_artifact(args.bin_dir, args.source_sha)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            parser.error(f"CI evidence artifact admission failed: {error}")
+    elif args.source_sha:
+        parser.error("--source-sha applies only to --ci-report")
     # Fixed paths require exclusive ownership; another local run must never
     # remove an active case workspace. Concourse tasks have separate /tmp.
     SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)

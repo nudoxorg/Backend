@@ -408,5 +408,88 @@ class ParallelCaseTests(unittest.TestCase):
         self.assertIn("unique scratch", error)
 
 
+class CIEvidenceTests(unittest.TestCase):
+    def exercise(self, damage=False, head=None, dirty=False):
+        import contextlib
+        import hashlib
+        import io
+        import json
+        import sys
+        import tempfile
+        from unittest.mock import patch
+        import t1_artifacts
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            (artifact / "bin").mkdir(parents=True)
+            payloads = [*("bin/" + name for name in t1_artifacts.BINARIES), "smoke.py", "runtime.nar"]
+            for name in payloads:
+                (artifact / name).write_bytes(b"fixture")
+            sha = "a" * 40
+            store = "/nix/store/" + "b" * 32 + "-runtime"
+            manifest = {"schema": 1, "source_sha": sha, "target": t1_artifacts.TARGET,
+                        "toolchain": "fixture", "runtime_roots": [store],
+                        "python": store + "/bin/python3", "runtime_env": {"PATH": store + "/bin"},
+                        "files": [{"path": name, "bytes": 7, "sha256": hashlib.sha256(b"fixture").hexdigest()}
+                                  for name in payloads]}
+            (artifact / "manifest.json").write_text(json.dumps(manifest))
+            if damage:
+                (artifact / "bin/backend-cli").write_bytes(b"tampered")
+            corpus = root / "surface"
+            (corpus / "snapshots").mkdir(parents=True)
+            (corpus / "cases.json").write_text(json.dumps({"cases": [{"name": name} for name in ["alpha", "beta", "gamma"]]}))
+            for name in ["alpha", "beta", "gamma"]:
+                (corpus / "snapshots" / (name + ".json")).write_text(json.dumps({
+                    "answers": {"value": name}, "performance": {"seconds": {"cli add": 10}}}))
+            evidence, legacy = root / "evidence.json", root / "legacy.json"
+            ran = []
+
+            def run(case, binaries):
+                ran.append(case["name"])
+                if case["name"] == "gamma":
+                    raise RuntimeError("native setup refused")
+                return {"answers": {"value": "changed" if case["name"] == "beta" else case["name"]},
+                        "performance": {"seconds": {"cli add": 11}, "cpu_seconds": 1.2, "peak_rss_kib": 1024}}
+
+            args = ["surface.py", "--bin-dir", str(artifact / "bin"), "--ci-report", str(evidence),
+                    "--source-sha", sha, "--report", str(legacy)]
+            with patch.object(surface, "SURFACE", corpus), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface.subprocess, "check_output", side_effect=[head or sha, " M dirty.py" if dirty else ""]), patch.object(sys, "argv", args), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    code = surface.main()
+                except SystemExit as error:
+                    code = error.code
+            return code, ran, (json.loads(evidence.read_text()) if evidence.exists() else None), (json.loads(legacy.read_text()) if legacy.exists() else None)
+
+    def test_source_bound_report_preserves_failed_and_successful_peers(self):
+        code, ran, report, legacy = self.exercise()
+        self.assertEqual(code, 1)
+        self.assertEqual(ran, ["alpha", "beta", "gamma"])
+        self.assertEqual(report["schema"], 1)
+        self.assertEqual(report["source_sha"], "a" * 40)
+        self.assertRegex(report["artifact_manifest_sha256"], r"^[a-f0-9]{64}$")
+        self.assertEqual(report["cases"]["alpha"]["state"], "passed")
+        self.assertEqual(report["cases"]["alpha"]["index_delta_percent"], 10)
+        self.assertEqual(report["cases"]["beta"]["state"], "failed")
+        self.assertIn("this change", report["cases"]["beta"]["snapshot_diff"])
+        self.assertIn("native setup refused", report["cases"]["gamma"]["detail"])
+        self.assertEqual(set(legacy), {"alpha", "beta"})
+        self.assertEqual(legacy["alpha"]["seconds"], {"cli add": 11})
+
+    def test_changed_artifact_or_checkout_cannot_emit_source_bound_evidence(self):
+        for options in ({"damage": True}, {"head": "c" * 40}, {"dirty": True}):
+            with self.subTest(options=options):
+                code, ran, report, legacy = self.exercise(**options)
+                self.assertEqual(code, 2)
+                self.assertEqual(ran, [])
+                self.assertIsNone(report)
+                self.assertIsNone(legacy)
+
+    def test_large_unicode_diff_is_bounded_by_bytes_and_stays_readable(self):
+        value = surface.bounded_text("α" * 10000, 8192)
+        self.assertLessEqual(len(value.encode("utf-8")), 8192)
+        self.assertIn("full detail retained", value)
+
+
 if __name__ == "__main__":
     unittest.main()

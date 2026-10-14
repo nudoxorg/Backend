@@ -29,13 +29,19 @@ def plan(args: argparse.Namespace) -> list[str]:
             command.append("--update")
         if args.report:
             command += ["--report", str(args.report.resolve())]
+        if args.ci_report:
+            if not args.source_sha or args.update:
+                raise ValueError("--ci-report requires --source-sha and ordinary comparison (no --update)")
+            command += ["--ci-report", str(args.ci_report.resolve()), "--source-sha", args.source_sha]
+        elif args.source_sha:
+            raise ValueError("--source-sha applies only to --ci-report")
         command.append("--print-missing")
         shell = "surface"
     else:
         command = ["nu", "--no-config-file", str(CI / "t3.nu")]
         shell = "smoke"
-    if args.tier != "integration" and (args.bin_dir or args.case or args.update or args.report or args.jobs is not None):
-        raise ValueError("--bin-dir, --case, --update, --report and --jobs apply only to integration")
+    if args.tier != "integration" and (args.bin_dir or args.case or args.update or args.report or args.jobs is not None or args.ci_report or args.source_sha):
+        raise ValueError("--bin-dir, --case, --update, --report, --ci-report, --source-sha and --jobs apply only to integration")
     return command if args.in_shell else ["nix", "develop", "path:.#" + shell, "--command", *command]
 
 
@@ -50,13 +56,15 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 1)")
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--ci-report", type=Path, help="exact-artifact case evidence; requires --source-sha")
+    parser.add_argument("--source-sha", help="full source identity for --ci-report")
     parser.add_argument("--in-shell", action="store_true", help="CI: already inside the tier's declared Nix shell")
     parser.add_argument("--plan", action="store_true", help="print the command as JSON without building or running")
     args = parser.parse_args()
     if args.tier == "select":
         if not args.base:
             parser.error("select requires --base")
-        if args.bin_dir or args.case or args.update or args.report or args.jobs is not None or args.in_shell or args.plan:
+        if args.bin_dir or args.case or args.update or args.report or args.jobs is not None or args.in_shell or args.plan or args.ci_report or args.source_sha:
             parser.error("select only accepts --base, --head and --worktree")
         from selection import preview
         print(json.dumps(preview(ROOT, args.base, args.head, args.worktree), indent=2))
@@ -64,6 +72,8 @@ def main() -> int:
     if args.base or args.head != "HEAD" or args.worktree:
         parser.error("--base, --head and --worktree apply only to select")
     if args.tier == "list":
+        if args.bin_dir or args.case or args.update or args.report or args.ci_report or args.source_sha or args.jobs is not None or args.in_shell or args.plan:
+            parser.error("list does not execute or accept integration options")
         cases = json.loads((ROOT / "tests/surface/cases.json").read_text())["cases"]
         print(json.dumps({"smoke": ["cli", "mcp", "gui"],
                           "integration": [case["name"] for case in cases],

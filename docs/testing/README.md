@@ -111,6 +111,27 @@ Use `--report /path/report.json` for machine-readable performance evidence.
 as JSON without entering Nix, running binaries or rewriting snapshots. CI can
 use `--in-shell` after entering the corresponding declared Nix shell.
 
+## Source-bound CI summary evidence
+
+```sh
+python3 .config/ci/test.py integration --bin-dir /path/to/artifact/bin \
+  --ci-report /path/case-evidence.json --source-sha FULL_COMMIT_SHA
+```
+
+This optional report verifies the artifact inventory, payload hashes, Linux target
+and source SHA, and requires a clean tracked harness checkout at that commit before any
+case runs. It records the manifest digest, selection scope, every selected case's
+verdict, actual operation timings/CPU/memory, index delta from the reviewed
+baseline and bounded readable snapshot differences/failure details. Setup errors
+remain failed cases without invented measurements. Failed peers do not disappear
+from the report. Publication is atomic, including when the tier fails.
+
+The existing `--report` remains a performance map for compatibility. `--ci-report`
+requires ordinary comparison and cannot be combined with `--update`. These files
+are evidence inputs for the Internal PR summary tool; producing a file neither
+posts a comment nor changes a required status. The CI adapter must retain the
+report and source identity together. Full differences/metrics remain in CI logs.
+
 ## Review an intentional snapshot change
 
 ```sh

@@ -73,6 +73,7 @@ in
         cp ${../ci/test_t1_artifacts.py} test_t1_artifacts.py
         python3 test_t1_artifacts.py
         mkdir -p .config/ci
+        cp ${../ci/t1_artifacts.py} .config/ci/t1_artifacts.py
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
