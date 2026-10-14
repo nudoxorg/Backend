@@ -82,7 +82,10 @@ in
         python3 .config/ci/test_cli_contract.py
         cp ${../ci/test.py} .config/ci/test.py
         cp ${../ci/test_tiers.py} .config/ci/test_tiers.py
+        cp ${../ci/selection.py} .config/ci/selection.py
         python3 .config/ci/test_tiers.py
+        cp ${../ci/test_selection.py} .config/ci/test_selection.py
+        python3 .config/ci/test_selection.py
         cp ${../ci/test_layout.py} test_layout.py
         cp ${../ci/test_test_layout.py} test_test_layout.py
         python3 test_test_layout.py

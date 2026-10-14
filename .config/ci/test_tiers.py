@@ -35,6 +35,24 @@ class TierCommandTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(RUNNER), *arguments], env=dict(os.environ, PATH=""), capture_output=True)
             self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_selection_preview_falls_back_without_launching_build_tools(self):
+        result = subprocess.run([sys.executable, str(RUNNER), "select", "--base", "missing-ref"],
+                                env=dict(os.environ, PATH=""), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        selected = json.loads(result.stdout)
+        self.assertEqual(selected["tier"], "T1+T2")
+        self.assertFalse(selected["diff_complete"])
+        self.assertFalse(selected["executed"])
+        self.assertTrue(selected["integration_cases"])
+
+    def test_selection_options_cannot_be_ignored_by_other_tiers(self):
+        for arguments in (["select"], ["smoke", "--base", "HEAD"],
+                          ["integration", "--bin-dir", "/unused", "--worktree"],
+                          ["select", "--base", "HEAD", "--update"]):
+            result = subprocess.run([sys.executable, str(RUNNER), *arguments],
+                                    env=dict(os.environ, PATH=""), capture_output=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_plan_does_not_launch_tools_or_update_snapshots(self):
         result = subprocess.run([sys.executable, str(RUNNER), "integration", "--bin-dir", "/unused/bins", "--case", "polyglot", "--update", "--plan"], env=dict(os.environ, PATH=""), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
