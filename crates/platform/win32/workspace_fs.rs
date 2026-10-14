@@ -538,14 +538,8 @@ impl WorkspaceRoot {
         // reopening an untrusted name. A successful renameable stage swaps to
         // a separate operation handle without DELETE rights below.
         access |= FILE_DELETE_CHILD | DELETE;
-        let handle = create_relative(
-            self.handle(),
-            name,
-            access,
-            FILE_DIRECTORY_FILE,
-            sharing,
-        )
-        .map_err(WorkspaceDirectoryCreateFailure::NotCreated)?;
+        let handle = create_relative(self.handle(), name, access, FILE_DIRECTORY_FILE, sharing)
+            .map_err(WorkspaceDirectoryCreateFailure::NotCreated)?;
         let directory = Self(Arc::new(DirectoryNode {
             handle,
             _parent: Some(Arc::clone(&self.0)),
@@ -582,15 +576,13 @@ impl WorkspaceRoot {
         if let Err(source) = ensure_private_handle(operational.handle.as_raw_handle()) {
             return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
         }
-        let same_object = match same_directory_object(
-            operational.handle.as_raw_handle(),
-            directory.handle(),
-        ) {
-            Ok(same_object) => same_object,
-            Err(source) => {
-                return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
-            }
-        };
+        let same_object =
+            match same_directory_object(operational.handle.as_raw_handle(), directory.handle()) {
+                Ok(same_object) => same_object,
+                Err(source) => {
+                    return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
+                }
+            };
         if !same_object {
             return Err(WorkspaceDirectoryCreateFailure::Created {
                 directory,
@@ -618,14 +610,16 @@ impl WorkspaceRoot {
             ._parent
             .as_ref()
             .ok_or_else(|| invalid_data("created child has no pinned parent"))?;
-        if !Arc::ptr_eq(&parent, expected_parent)
-            || expected.0.name.as_deref() != Some(name)
-        {
-            return Err(invalid_data("created child receipt belongs to another parent or name"));
+        if !Arc::ptr_eq(&parent, expected_parent) || expected.0.name.as_deref() != Some(name) {
+            return Err(invalid_data(
+                "created child receipt belongs to another parent or name",
+            ));
         }
         let current = open_directory_child_for_created_delete(&parent, leaf)?;
         if !same_directory_object(current.handle.as_raw_handle(), expected.handle())? {
-            return Err(invalid_data("created directory name now refers to another object"));
+            return Err(invalid_data(
+                "created directory name now refers to another object",
+            ));
         }
         let mut visited = 0_usize;
         remove_tree_contents(&current, &mut visited, maximum_entries)?;
@@ -978,6 +972,40 @@ impl WorkspaceRoot {
     ) -> io::Result<Vec<DirEntry>> {
         let directory = self.open_dir_checked(path)?;
         directory.read_open_directory_limited(maximum, WorkspacePurpose::PrivateState)
+    }
+
+    /// Matches only the selected no-reparse child directory to its enumerated
+    /// long name. Other directory entries supply names/IDs only and remain
+    /// unopened, so an unrelated reparse point cannot redirect this lookup.
+    pub(crate) fn actual_source_child_directory(
+        &self,
+        name: &str,
+        maximum: usize,
+    ) -> io::Result<String> {
+        let selected = self.open_dir_source_checked(&[name])?;
+        let selected_id = FileId128::of_handle(selected.handle())?;
+        let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
+        let mut matched = None;
+        for entry in enumerate_names(parent.handle(), maximum)? {
+            if entry.id != selected_id {
+                continue;
+            }
+            let actual = parent.open_dir_source_checked(&[&entry.name])?;
+            if !actual.same_object_as(&selected)? {
+                return Err(invalid_data(
+                    "selected directory changed during identity lookup",
+                ));
+            }
+            if entry.name == name {
+                return Ok(entry.name);
+            }
+            if matched.replace(entry.name).is_some() {
+                return Err(invalid_data(
+                    "selected directory identity has ambiguous names",
+                ));
+            }
+        }
+        matched.ok_or_else(|| invalid_data("selected directory disappeared during identity lookup"))
     }
 
     /// Lists a source directory without imposing workspace-private ACLs.
@@ -2775,8 +2803,7 @@ mod tests {
                     io::ErrorKind::PermissionDenied,
                     "injected setup refusal after FILE_CREATE",
                 ))
-            },
-        );
+            });
         let Err(WorkspaceDirectoryCreateFailure::Created { directory, source }) = result else {
             panic!("post-create refusal lost the exact created handle");
         };
