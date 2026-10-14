@@ -7,6 +7,7 @@ use backend_library::{
     Command, CommandDto, IndexOperationKey, IndexOperationObservation, IndexOperationState,
     IndexOperationStatus, ProductText,
 };
+use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
