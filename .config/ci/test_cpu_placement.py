@@ -26,6 +26,17 @@ class PlacementTests(unittest.TestCase):
             self.assertEqual(record['reason'], 'heterogeneous')
             self.assertNotIn(0, record['allowed'])
 
+    def test_flat_kernel_capacity_still_consults_advertised_frequency(self):
+        # Actual worker reports 1024 for both core groups despite 4.8/3.5GHz maxima.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for cpu, frequency in [(0, 4800000), (12, 3500000)]:
+                self.write(root, cpu, 1024, 'cpu_capacity')
+                self.write(root, cpu, frequency)
+            record = cpu_placement.highest_capacity({0, 12}, root)
+            self.assertEqual(record['metric'], 'cpufreq/cpuinfo_max_freq')
+            self.assertEqual(record['selected'], [0])
+
     def test_kernel_capacity_takes_precedence_over_frequency(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

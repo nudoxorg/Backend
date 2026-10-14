@@ -11,6 +11,7 @@ def highest_capacity(allowed: set[int], root: Path = Path('/sys/devices/system/c
     if not allowed or len(allowed) > 4096:
         record['reason'] = 'empty-or-oversized-cpu-grant'
         return record
+    homogeneous = None
     for metric in ('cpu_capacity', 'cpufreq/cpuinfo_max_freq'):
         values = {}
         for cpu in sorted(allowed):
@@ -24,10 +25,16 @@ def highest_capacity(allowed: set[int], root: Path = Path('/sys/devices/system/c
                 break
         if len(values) == len(allowed):
             maximum = max(values.values())
-            record.update(metric=metric, capacities={str(cpu): value for cpu, value in values.items()},
+            candidate = dict(record)
+            candidate.update(metric=metric, capacities={str(cpu): value for cpu, value in values.items()},
                           selected=[cpu for cpu, value in values.items() if value == maximum],
                           reason='homogeneous' if len(set(values.values())) == 1 else 'heterogeneous')
-            return record
+            if candidate['reason'] == 'heterogeneous':
+                return candidate
+            if homogeneous is None:
+                homogeneous = candidate
+    if homogeneous is not None:
+        return homogeneous
     record['reason'] = 'complete-static-capacity-unavailable'
     return record
 
