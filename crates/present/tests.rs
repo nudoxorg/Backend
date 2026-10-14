@@ -2283,3 +2283,278 @@ fn legacy_unpaged_record_preview_retains_counts_beyond_native_page_credit() {
     )));
     assert!(short.len() <= 1000);
 }
+
+fn semantic_twin_row(name: &str, line: u32) -> backend_library::Row {
+    let coordinate = format!("{PROJECT}::semantic::{}::{name}", "0d".repeat(32));
+    backend_library::Row::in_package(
+        RowId::Symbol(symbol_key(&coordinate)),
+        basis(),
+        package_key(PROJECT),
+        coordinate,
+    )
+    .with_kind(DeclarationKind::Function)
+    .with_signature("pub fn ferris() -> Beacon")
+    .with_source(SourceLocation::new("src/lib.rs", line).expect("one-based location"))
+}
+
+fn placeholder_row(display: &str) -> backend_library::Row {
+    let label = format!("{PROJECT}::external::symbol:{}::{display}", "3a".repeat(32));
+    backend_library::Row::new(RowId::Symbol(symbol_key(&label)), basis(), label)
+        .with_document(Box::<[Fragment]>::default())
+}
+
+fn import_row(line: u32) -> backend_library::Row {
+    let coordinate = format!("{PROJECT}::semantic::{}::ferris", "1e".repeat(32));
+    backend_library::Row::in_package(
+        RowId::Symbol(symbol_key(&coordinate)),
+        basis(),
+        package_key(PROJECT),
+        coordinate,
+    )
+    .with_kind(DeclarationKind::Import)
+    .with_signature("value\n@/lib/scheduler\nferris")
+    .with_source(SourceLocation::new("src/page.rs", line).expect("one-based location"))
+}
+
+#[test]
+fn a_result_page_lists_each_declaration_once_under_its_structural_coordinate() {
+    // Both publication lanes list `ferris`; so does an import that only
+    // brings the name in; two placeholders name something elsewhere.
+    let rows = [
+        declaration_row(),
+        semantic_twin_row("ferris", 2),
+        import_row(1),
+        placeholder_row("get"),
+        placeholder_row("length"),
+    ];
+    let list = record_list_from_rows("ferris", &rows, &[Coverage::Complete], false);
+    let coordinates = list
+        .records()
+        .iter()
+        .map(|record| record.identity().coordinate().as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(coordinates.len(), 2, "{coordinates:?}");
+    assert_eq!(coordinates[0], DECLARATION, "the declaration ranks first");
+    assert!(
+        coordinates[1].contains("::semantic::"),
+        "the import is the second record: {coordinates:?}"
+    );
+    assert_eq!(list.records()[1].kind(), Some(DeclarationKind::Import));
+    let externals = list.collapsed_externals().expect("placeholders collapsed");
+    assert_eq!(externals.count(), 2);
+    assert_eq!(externals.names(), ["get", "length"]);
+    assert_eq!(externals.render(), "+ 2 external members: get, length");
+    let dto = RecordListDto::new(&list);
+    assert_eq!(dto.externals.as_ref().map(|dto| dto.count), Some(2));
+    let rendered = text::records(&list, None, Theme::plain());
+    assert!(
+        rendered.contains("+ 2 external members: get, length"),
+        "{rendered}"
+    );
+    assert_eq!(
+        rendered.matches(DECLARATION).count(),
+        1,
+        "the declaration is listed once:\n{rendered}"
+    );
+}
+
+#[test]
+fn a_page_of_only_placeholders_is_a_summary_not_an_empty_page() {
+    let rows = [placeholder_row("get")];
+    let list = record_list_from_rows("get", &rows, &[Coverage::Complete], false);
+    assert!(list.records().is_empty());
+    assert!(!list.is_empty());
+    assert_eq!(
+        list.collapsed_externals().map(CollapsedExternals::count),
+        Some(1)
+    );
+}
+
+#[test]
+fn twins_are_kept_apart_when_the_pairing_is_not_one_to_one() {
+    // Two compiler-backed rows at one site, or an import against a
+    // declaration, are not evidence of one declaration.
+    let twin = semantic_twin_row("ferris", 2);
+    let mut second = semantic_twin_row("ferris", 2);
+    second.label = format!("{PROJECT}::semantic::{}::ferris", "0e".repeat(32));
+    second.id = RowId::Symbol(symbol_key(&second.label));
+    let list = record_list_from_rows(
+        "ferris",
+        &[declaration_row(), twin.clone(), second],
+        &[Coverage::Complete],
+        false,
+    );
+    assert_eq!(list.records().len(), 3);
+    let imported = twin.with_kind(DeclarationKind::Import);
+    let list = record_list_from_rows(
+        "ferris",
+        &[declaration_row(), imported],
+        &[Coverage::Complete],
+        false,
+    );
+    assert_eq!(list.records().len(), 2);
+}
+
+#[test]
+fn import_signatures_read_as_one_line_and_unannotated_signatures_vanish() {
+    use crate::signature::display_text;
+    let import = Some(DeclarationKind::Import);
+    assert_eq!(
+        display_text(import, "value\n@/lib/scheduler\ngenerateSchedule").as_deref(),
+        Some("import { generateSchedule } from \"@/lib/scheduler\"")
+    );
+    assert_eq!(
+        display_text(import, "type\n./model\nUser").as_deref(),
+        Some("import type { User } from \"./model\"")
+    );
+    assert_eq!(
+        display_text(import, "namespace\nnode:fs\nfs").as_deref(),
+        Some("import * as fs from \"node:fs\"")
+    );
+    assert_eq!(
+        display_text(import, "use std::fmt;\nuse std::io;").as_deref(),
+        Some("use std::fmt; use std::io;")
+    );
+    assert_eq!(
+        display_text(import, "from a import b").as_deref(),
+        Some("from a import b")
+    );
+    // Other declarations keep their signature text exactly.
+    let function = Some(DeclarationKind::Function);
+    assert_eq!(
+        display_text(function, "fn a(\n    x: u32,\n)").as_deref(),
+        Some("fn a(\n    x: u32,\n)")
+    );
+    assert_eq!(display_text(function, "unknown(unannotated)"), None);
+    assert_eq!(display_text(function, "  "), None);
+    assert_eq!(display_text(None, ""), None);
+}
+
+#[test]
+fn a_callable_with_only_its_canonical_encoding_reads_as_its_parameter_names() {
+    use crate::signature::display_text;
+    let function = Some(DeclarationKind::Function);
+    // `appname`, `appauthor`, `version`, `roaming` are spelled in hex by the
+    // producer; an anonymous parameter has no label.
+    let encoded = concat!(
+        "function(parameters=[element(kind=required,label=x\"6170706E616D65\",type=unknown(oracle-gap)),",
+        "element(kind=required,label=x\"617070617574686F72\",type=function(parameters=[element(kind=required,label=x\"6E6F\",type=builtin(u64))],results=[],abi=none)),",
+        "element(kind=required,label=none,type=unknown(oracle-gap)),",
+        "element(kind=required,label=x\"726F616D696E67\",type=unknown(oracle-gap))],",
+        "results=[element(kind=required,label=none,type=unknown(oracle-gap))],abi=none,variadic=none,unsafe=false)"
+    );
+    assert_eq!(
+        display_text(function, encoded).as_deref(),
+        Some("function(appname, appauthor, _, roaming)")
+    );
+    let method = "function(parameters=[element(kind=required,label=x\"73656C66\",type=unknown(oracle-gap))],results=[element(kind=required,label=none,type=unknown(oracle-gap))],abi=none,variadic=none,unsafe=false)";
+    assert_eq!(
+        display_text(function, method).as_deref(),
+        Some("function(self)")
+    );
+    assert_eq!(
+        display_text(function, "function(parameters=[],results=[],abi=none)").as_deref(),
+        Some("function()")
+    );
+    // Anything that does not parse is kept exactly.
+    for kept in [
+        "function(parameters=[element(kind=required,label=x\"7\",type=u8)],results=[])",
+        "function(parameters=[element(kind=required,label=x\"6162\",type=u8)",
+        "def user_data_dir(appname=None):",
+    ] {
+        assert_eq!(display_text(function, kept).as_deref(), Some(kept));
+    }
+}
+
+#[test]
+fn an_ambiguous_name_is_refused_with_one_exact_retry_per_candidate_on_every_surface() {
+    let first = "/abs/polyglot::src/a.rs:2::ferris";
+    let second = "/abs/polyglot::src/b.rs:9::ferris";
+    let candidates = [(first, "src/a.rs:2"), (second, "src/b.rs:9")]
+        .into_iter()
+        .map(|(coordinate, location)| {
+            Candidate::new(
+                Coordinate::new(coordinate),
+                Some(DeclarationKind::Function),
+                location,
+                "show",
+            )
+        })
+        .collect::<Vec<_>>();
+    let fault = Fault::ambiguous("ferris", 2, true, candidates);
+    assert_eq!(fault.slug().as_str(), "ambiguous");
+    assert_eq!(fault.cause().slug().as_str(), "ambiguous");
+
+    let human = text::fault(&fault, Theme::plain());
+    assert!(human.starts_with("✗ ambiguous ferris\n"), "{human}");
+    assert!(human.contains("2 declarations match; pass the exact coordinate of one"));
+    for (coordinate, location) in [(first, "src/a.rs:2"), (second, "src/b.rs:9")] {
+        assert!(
+            human.contains(&format!("{location} → nudox show {coordinate}")),
+            "{human}"
+        );
+    }
+
+    let markdown = markdown::fault(&fault);
+    for coordinate in [first, second] {
+        assert!(
+            markdown.contains(&format!(
+                "{{\"name\":\"backend.document\",\"arguments\":{{\"coordinate\":\"{coordinate}\"}}}}"
+            )),
+            "{markdown}"
+        );
+    }
+
+    let dto = FaultDto::new(&fault);
+    assert_eq!(dto.candidates.len(), 2);
+    assert_eq!(dto.candidates[0].coordinate, first);
+    assert_eq!(
+        dto.candidates[1].shell.as_deref(),
+        Some(format!("nudox show {second}").as_str())
+    );
+    assert_eq!(
+        dto.candidates[1]
+            .call
+            .as_ref()
+            .and_then(|call| call["name"].as_str()),
+        Some("backend.document")
+    );
+    // Faults without candidates add no empty facet to the payload.
+    let plain = serde_json::to_value(FaultDto::new(&Fault::usage("x", "y"))).expect("fault json");
+    assert!(plain.get("candidates").is_none(), "{plain}");
+
+    let not_found = Fault::unresolved("fer", Vec::new());
+    assert_eq!(not_found.slug().as_str(), "not-found");
+    assert!(matches!(
+        not_found.affordance(),
+        Affordance::UseCommand { name: "search", .. }
+    ));
+    assert!(not_found.candidates().is_empty());
+}
+
+#[test]
+fn an_import_reads_the_way_its_language_writes_one() {
+    use crate::signature::display_text_in;
+    let import = Some(DeclarationKind::Import);
+    let value = "value\ncrate\nAlphabet";
+    assert_eq!(
+        display_text_in(import, Language::Rust, value).as_deref(),
+        Some("use crate::Alphabet;")
+    );
+    assert_eq!(
+        display_text_in(import, Language::Python, "value\nplatform\nsystem").as_deref(),
+        Some("from platform import system")
+    );
+    assert_eq!(
+        display_text_in(import, Language::Python, "namespace\nos.path\npath").as_deref(),
+        Some("import os.path as path")
+    );
+    assert_eq!(
+        display_text_in(import, Language::TypeScript, "value\n@/lib/x\nf").as_deref(),
+        Some("import { f } from \"@/lib/x\"")
+    );
+    assert_eq!(
+        display_text_in(import, Language::Go, value).as_deref(),
+        Some("import Alphabet from crate")
+    );
+}

@@ -183,6 +183,9 @@ pub fn encode_answer(
                     more: list.has_more(),
                     empty_reason: list.empty_reason(),
                     semantic_search: list.coverage().semantic_search_status(),
+                    externals: list
+                        .collapsed_externals()
+                        .map(crate::dto::ExternalsDto::new),
                 },
                 budget,
             ),
@@ -637,6 +640,8 @@ struct SummaryRecordsDto<'a> {
     empty_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_search: Option<backend_library::SemanticSearchStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    externals: Option<crate::dto::ExternalsDto>,
 }
 
 #[derive(Serialize)]

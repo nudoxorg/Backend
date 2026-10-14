@@ -16,13 +16,15 @@
 use crate::coverage::CoverageLine;
 use crate::fault::Fault;
 use crate::glyph::{RelationDirection, RelationLabel, relation_label};
-use crate::identity::{Identity, IdentityKey, KeyTag, LineNumber, PackagePath, ProjectRef};
+use crate::identity::{
+    Identity, IdentityKey, IdentityShape, KeyTag, LineNumber, PackagePath, ProjectRef,
+};
 use crate::language::Language;
 use crate::outline::{OutlineEntry, OutlineTree, row_resolver};
 use crate::page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceSite, Truncation,
 };
-use crate::record::{Record, RecordList};
+use crate::record::{CollapsedExternals, Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
@@ -80,13 +82,14 @@ pub fn page_from_document_with_graph_relations(
     let kind = own.and_then(|row| row.kind);
     let signature = document
         .signature
-        .as_ref()
-        .map(|text| Signature::tokenize(text, language));
+        .as_deref()
+        .and_then(|text| crate::signature::display_text_in(kind, language, text))
+        .map(|text| Signature::tokenize(&text, language));
     let page = Page::new(identity, kind, source)
         .with_language(language)
         .with_prose(Prose::from_fragments(&document.fragments))
         .with_members(member_groups(members, centre))
-        .with_relations(relation_groups(relations, centre, graph_relations))
+        .with_relations(relation_groups(relations, centre, graph_relations, members))
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -186,8 +189,9 @@ fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
                 identity,
                 row.kind,
                 row.signature
-                    .as_ref()
-                    .map(|text| Signature::tokenize(text, language)),
+                    .as_deref()
+                    .and_then(|text| crate::signature::display_text_in(row.kind, language, text))
+                    .map(|text| Signature::tokenize(&text, language)),
             );
             match summary_of(row) {
                 Some(text) => member.with_summary(text),
@@ -202,9 +206,21 @@ fn relation_groups(
     rows: &[Row],
     centre: SymbolKey,
     graph_relations: &[GraphRelation],
+    members: &[Row],
 ) -> Box<[RelationGroup]> {
+    // A member is already listed with its signature under its own heading;
+    // listing it again as a related row would spend a second record on it.
+    let listed_as_member = members
+        .iter()
+        .filter(|row| row.parent == Some(centre))
+        .map(|row| row.id)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut groups = BTreeMap::<RelationLabel, Vec<Relation>>::new();
-    for row in rows.iter().filter(|row| row.id != RowId::Symbol(centre)) {
+    for row in rows.iter().filter(|row| {
+        row.id != RowId::Symbol(centre)
+            && !listed_as_member.contains(&row.id)
+            && !backend_library::is_inert_external_placeholder(row)
+    }) {
         let typed = graph_relations.iter().filter_map(|edge| {
             let (direction, matches) = match (edge.from, edge.to) {
                 (RowId::Symbol(from), RowId::Symbol(_to))
@@ -270,7 +286,19 @@ pub fn record_list_from_rows(
     more: bool,
 ) -> RecordList {
     let line = CoverageLine::new(coverage, u64::try_from(rows.len()).ok());
-    let mut records = rows
+    // An external placeholder without facts names something elsewhere and
+    // nothing else; a page lists it as one summary line, never as a record.
+    // The exception is the row the query itself names (a graph centred on one
+    // of them): it is what was asked for, so it stays a record.
+    let (placeholders, declared): (Vec<&Row>, Vec<&Row>) = rows
+        .iter()
+        .partition(|row| backend_library::is_inert_external_placeholder(row) && row.label != query);
+    let externals = CollapsedExternals::from_names(
+        placeholders
+            .iter()
+            .filter_map(|row| backend_library::external_placeholder_display(&row.label)),
+    );
+    let mut records = declared
         .iter()
         .map(|row| {
             let record = Record::from_row(row);
@@ -280,12 +308,88 @@ pub fn record_list_from_rows(
             }
         })
         .collect::<Vec<_>>();
+    // One record per declaration: when both publication lanes list the same
+    // declaration, the structural record is the address and the compiler-backed
+    // record only contributes the facts the structural one lacks.
+    merge_lane_twins(&mut records);
     // View rows are ordered by canonical identity for hashing and paging.
     // Scored search rows carry the owner's absolute rank independently of
     // that storage order. Restore it only in the readable projection; a
     // stable sort leaves unscored rows and equal scores in their input order.
-    records.sort_by_key(|record| std::cmp::Reverse(record.score().map(crate::record::Score::get)));
-    RecordList::new(query, line, records).with_more(more)
+    // An import that only brings a name in never outranks the declarations
+    // sharing its rank.
+    records.sort_by_key(|record| {
+        (
+            std::cmp::Reverse(record.score().map(crate::record::Score::get)),
+            record.kind() == Some(backend_library::DeclarationKind::Import),
+        )
+    });
+    RecordList::new(query, line, records)
+        .with_more(more)
+        .with_collapsed_externals(externals)
+}
+
+/// The declaration a record names: its project, file, line and name, which
+/// both publication lanes agree on for one declaration.
+fn site_of(record: &Record) -> Option<(String, String, u32, String)> {
+    let identity = record.identity();
+    if !matches!(
+        identity.shape(),
+        IdentityShape::Declaration | IdentityShape::Semantic
+    ) {
+        return None;
+    }
+    Some((
+        identity.project()?.root().to_owned(),
+        identity.path()?.as_str().to_owned(),
+        identity.line()?.get(),
+        identity.name().to_owned(),
+    ))
+}
+
+/// Collapses each structural/compiler-backed pair of records for one
+/// declaration into the structural record.
+///
+/// The pairing is deliberately as strict as the owner's: the same site
+/// (project, file, line, name), exactly one record per lane, and an import
+/// only with an import. Anything ambiguous stays listed.
+fn merge_lane_twins(records: &mut Vec<Record>) {
+    let mut sites = BTreeMap::<(String, String, u32, String), (Vec<usize>, Vec<usize>)>::new();
+    for (at, record) in records.iter().enumerate() {
+        let Some(site) = site_of(record) else {
+            continue;
+        };
+        let lanes = sites.entry(site).or_default();
+        if record.identity().shape() == IdentityShape::Semantic {
+            lanes.1.push(at);
+        } else {
+            lanes.0.push(at);
+        }
+    }
+    let mut absorbed = Vec::new();
+    for (structural, semantic) in sites.values() {
+        let ([structural], [semantic]) = (structural.as_slice(), semantic.as_slice()) else {
+            continue;
+        };
+        let imports =
+            |at: usize| records[at].kind() == Some(backend_library::DeclarationKind::Import);
+        if imports(*structural) != imports(*semantic) {
+            continue;
+        }
+        absorbed.push((*structural, *semantic));
+    }
+    let mut redundant = vec![false; records.len()];
+    for (structural, semantic) in absorbed {
+        let other = records[semantic].clone();
+        records[structural].absorb(&other);
+        redundant[semantic] = true;
+    }
+    let mut at = 0;
+    records.retain(|_| {
+        let keep = !redundant[at];
+        at += 1;
+        keep
+    });
 }
 
 fn summary_of(row: &Row) -> Option<String> {
@@ -457,7 +561,7 @@ pub fn outline_tree(package_label: &str, outline: &Outline, rows: &[Row]) -> Out
         .collect::<Vec<_>>();
     OutlineTree::new(
         Identity::parse_with_key(package_label, IdentityKey::Package(outline.package)),
-        roots,
+        crate::outline::merge_lane_twins(roots),
         outline.extent,
     )
 }

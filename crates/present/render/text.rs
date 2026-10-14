@@ -151,6 +151,22 @@ pub fn fault(fault: &Fault, theme: Theme) -> String {
             theme.paint(Style::Name, &affordance)
         );
     }
+    for candidate in fault.candidates() {
+        let kind = candidate.kind().map_or_else(
+            || "·".to_owned(),
+            |kind| format!("{} {}", KindGlyph::new(kind), kind.name()),
+        );
+        let _ = write!(
+            out,
+            "\n  {} {}",
+            theme.paint(Style::Dim, &format!("{kind} {}", candidate.location())),
+            candidate.shell().map_or_else(String::new, |shell| format!(
+                "{} {}",
+                theme.paint(Style::Dim, "→"),
+                theme.paint(Style::Name, &shell)
+            )),
+        );
+    }
     out
 }
 
@@ -194,6 +210,9 @@ fn records_with_cursor(
     }
     for record in list.records() {
         push_record(&mut lines, record, within, theme);
+    }
+    if let Some(externals) = list.collapsed_externals() {
+        lines.push(theme.paint(Style::Dim, &externals.render()));
     }
     lines.finish()
 }

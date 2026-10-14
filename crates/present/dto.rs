@@ -309,6 +309,42 @@ pub struct FaultDto {
     /// Saved key with unconfirmed delivery; no terminal mutation outcome is claimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unconfirmed_index_delivery: Option<backend_library::IndexOperationKey>,
+    /// The declarations a refused name or address could have meant, each with
+    /// the exact command that selects it. Omitted unless there are some.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateDto>,
+}
+
+/// One declaration a refused name or address could have meant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CandidateDto {
+    /// The exact coordinate that selects the declaration.
+    pub coordinate: String,
+    /// The declaration kind, when the row carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The readable `path:line` location.
+    pub location: String,
+    /// The retry as a shell command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// The retry as an MCP tool call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Value>,
+}
+
+impl CandidateDto {
+    /// Projects one candidate.
+    #[must_use]
+    pub fn new(candidate: &crate::fault::Candidate) -> Self {
+        Self {
+            coordinate: candidate.coordinate().as_str().to_owned(),
+            kind: candidate.kind().map(|kind| kind.name().to_owned()),
+            location: candidate.location().to_owned(),
+            shell: candidate.shell(),
+            call: candidate.tool_call(),
+        }
+    }
 }
 
 /// A query waiting on the single asynchronous corpus preparation worker.
@@ -348,6 +384,7 @@ impl FaultDto {
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
             unconfirmed_index_delivery: fault.unconfirmed_index_delivery(),
+            candidates: fault.candidates().iter().map(CandidateDto::new).collect(),
             compiler_failure: fault.compiler_failure().cloned(),
             partial_publication: fault.partial_publication_receipt().cloned(),
             query_preparation: fault.query_preparation().map(|(basis, state)| {
@@ -625,6 +662,34 @@ pub struct RecordListDto {
     /// Per-query outcome of the optional semantic ranking lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_search: Option<backend_library::SemanticSearchStatus>,
+    /// External placeholders without declaration facts, summarized instead of
+    /// listed. Omitted when the page had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub externals: Option<ExternalsDto>,
+}
+
+/// External placeholders a result page collapsed into one summary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExternalsDto {
+    /// How many placeholder rows were collapsed.
+    pub count: usize,
+    /// The distinct names, in page order, up to a bound.
+    pub names: Vec<String>,
+    /// Whether more distinct names were collapsed than are listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more_names: bool,
+}
+
+impl ExternalsDto {
+    /// Projects one collapsed-placeholder summary.
+    #[must_use]
+    pub fn new(externals: &crate::record::CollapsedExternals) -> Self {
+        Self {
+            count: externals.count(),
+            names: externals.names().to_vec(),
+            more_names: externals.has_more_names(),
+        }
+    }
 }
 
 impl RecordListDto {
@@ -639,6 +704,7 @@ impl RecordListDto {
             more: list.has_more(),
             empty_reason: list.empty_reason().map(str::to_owned),
             semantic_search: list.coverage().semantic_search_status(),
+            externals: list.collapsed_externals().map(ExternalsDto::new),
         }
     }
 }

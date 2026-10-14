@@ -1042,6 +1042,14 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Read(records) => {
             ProductView::rows("read", records.iter().map(declaration_row).collect())
         }
+        // An empty list is an answer about the declaration, not a missing row:
+        // the target resolved, and nothing recorded a use of it.
+        SurfaceReply::References { target, references } if references.is_empty() => {
+            ProductView::stated(
+                format!("references to {}", target.as_str()),
+                "no uses recorded for this declaration at this revision; with partial coverage that does not prove there are none",
+            )
+        }
         SurfaceReply::References { target, references } => ProductView::rows(
             format!("references to {}", target.as_str()).as_str(),
             references.iter().map(reference_row).collect(),

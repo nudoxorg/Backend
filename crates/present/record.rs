@@ -97,8 +97,9 @@ impl Record {
         let language = identity.language();
         let signature = row
             .signature
-            .as_ref()
-            .map(|text| Signature::tokenize(text, language));
+            .as_deref()
+            .and_then(|text| crate::signature::display_text_in(row.kind, language, text))
+            .map(|text| Signature::tokenize(&text, language));
         Self {
             identity,
             kind: row.kind,
@@ -117,6 +118,20 @@ impl Record {
         let trimmed = summary.trim();
         self.summary = (!trimmed.is_empty()).then(|| trimmed.to_owned());
         self
+    }
+
+    /// Folds the compiler-backed record of the same declaration into this
+    /// structural one: this record keeps its address and only gains the kind,
+    /// signature, summary and better rank the other carries.
+    pub(crate) fn absorb(&mut self, semantic: &Self) {
+        self.kind = self.kind.or(semantic.kind);
+        if self.signature.is_none() {
+            self.signature.clone_from(&semantic.signature);
+        }
+        if self.summary.is_none() {
+            self.summary.clone_from(&semantic.summary);
+        }
+        self.score = self.score.max(semantic.score);
     }
 
     /// Returns the record identity.
@@ -173,6 +188,8 @@ pub struct RecordList {
     /// Why this page has no records, when the caller proved a reason other
     /// than a missed declaration. Search leaves this empty.
     empty_reason: Option<String>,
+    /// External placeholders without facts, summarized rather than listed.
+    externals: Option<CollapsedExternals>,
 }
 
 impl RecordList {
@@ -190,7 +207,22 @@ impl RecordList {
             more: false,
             continuation: None,
             empty_reason: None,
+            externals: None,
         }
+    }
+
+    /// Records that external placeholders without facts were collapsed into a
+    /// summary instead of being listed as records.
+    #[must_use]
+    pub fn with_collapsed_externals(mut self, externals: Option<CollapsedExternals>) -> Self {
+        self.externals = externals;
+        self
+    }
+
+    /// The summary of external placeholders this page did not list, if any.
+    #[must_use]
+    pub const fn collapsed_externals(&self) -> Option<&CollapsedExternals> {
+        self.externals.as_ref()
     }
 
     /// Names why an empty page is empty. A graph or related probe with no
@@ -273,15 +305,100 @@ impl RecordList {
         self.continuation
     }
 
-    /// Returns whether this page carried no record.
+    /// Returns whether this page carried nothing to show: no record and no
+    /// collapsed placeholder summary.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.records.is_empty() && self.externals.is_none()
     }
 
     /// The proven empty-page reason, when the caller set one.
     #[must_use]
     pub fn empty_reason(&self) -> Option<&str> {
         self.empty_reason.as_deref()
+    }
+}
+
+/// Placeholder names a result list collapsed instead of spending a record on
+/// each: external targets that carry no declaration facts (no kind, owner,
+/// signature, or location), such as the `get` or `length` a function calls.
+///
+/// Only the row count and a bounded, distinct preview of the names are kept;
+/// the placeholders themselves carry nothing else a reader could use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollapsedExternals {
+    count: usize,
+    names: Vec<String>,
+    more_names: bool,
+}
+
+impl CollapsedExternals {
+    /// Most distinct names the summary lists before it ends with an ellipsis.
+    pub const PREVIEW_NAMES: usize = 8;
+    /// Longest name, in characters, the summary spells out.
+    const NAME_CHARS: usize = 40;
+
+    /// Summarizes the display names of the collapsed placeholder rows, or
+    /// `None` when there were none.
+    #[must_use]
+    pub fn from_names<'name>(names: impl IntoIterator<Item = &'name str>) -> Option<Self> {
+        let mut count = 0_usize;
+        let mut distinct: Vec<String> = Vec::new();
+        let mut more_names = false;
+        for name in names {
+            count = count.saturating_add(1);
+            let name = if name.chars().count() > Self::NAME_CHARS {
+                let mut clipped = name.chars().take(Self::NAME_CHARS).collect::<String>();
+                clipped.push('…');
+                clipped
+            } else {
+                name.to_owned()
+            };
+            if distinct.contains(&name) {
+                continue;
+            }
+            if distinct.len() < Self::PREVIEW_NAMES {
+                distinct.push(name);
+            } else {
+                more_names = true;
+            }
+        }
+        (count > 0).then_some(Self {
+            count,
+            names: distinct,
+            more_names,
+        })
+    }
+
+    /// How many placeholder rows were collapsed.
+    #[must_use]
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The distinct names listed, in the order the page carried them.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Whether more distinct names were collapsed than are listed.
+    #[must_use]
+    pub const fn has_more_names(&self) -> bool {
+        self.more_names
+    }
+
+    /// The one summary line every surface prints in place of the records.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut line = format!(
+            "+ {} external members: {}",
+            self.count,
+            self.names.join(", ")
+        );
+        if self.more_names {
+            line.push_str(", …");
+        }
+        line
     }
 }

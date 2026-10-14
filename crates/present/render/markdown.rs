@@ -111,6 +111,17 @@ pub fn summary_with_cursor(
     let coverage_line = coverage(list.coverage());
     let total = list.records().len();
     let mut footer = summary_continuation(list, cursor, target);
+    // Placeholders without facts are one summary line ahead of any
+    // continuation instruction, so the preview parser keeps both intact.
+    let externals = list
+        .collapsed_externals()
+        .map(crate::record::CollapsedExternals::render);
+    let with_externals = |continuation: Option<String>| match (&externals, continuation) {
+        (Some(line), Some(next)) => Some(format!("{line}\n{next}")),
+        (Some(line), None) => Some(line.clone()),
+        (None, next) => next,
+    };
+    footer = with_externals(footer);
     // Reserve the longest possible count line before adding records. Both
     // shown and omitted are at most `total`, so the final line cannot grow
     // beyond this reservation.
@@ -123,13 +134,13 @@ pub fn summary_with_cursor(
     if footer.as_ref().is_some_and(|line| {
         line.len().saturating_add(1) > MAX_PREVIEW_TEXT_BYTES.saturating_sub(heading_bytes)
     }) {
-        footer = if list.has_more() && list.continuation().is_some() {
+        footer = with_externals(if list.has_more() && list.continuation().is_some() {
             Some("… more rows; use `structuredContent.nextCursor` to continue".to_owned())
         } else if list.has_more() {
             Some("… more rows at this revision; raise `limit` to see them".to_owned())
         } else {
             None
-        };
+        });
     }
     let fixed_bytes = heading_bytes.saturating_add(
         footer
@@ -258,12 +269,20 @@ impl<'a> RecordPreviewText<'a> {
         if shown != rows.len() || shown.checked_add(omitted)? != total {
             return None;
         }
-        // The renderer emits either no footer or exactly one continuation line.
+        // The renderer emits either no footer, or an optional placeholder
+        // summary line followed by an optional continuation line.
         if !footer.is_empty() {
-            let line = footer.strip_suffix('\n')?;
-            if line.contains('\n')
-                || !(line.starts_with("Continue `") || line.starts_with("… more rows"))
+            let lines = footer.strip_suffix('\n')?;
+            let mut lines = lines.split('\n').peekable();
+            if lines.peek().is_some_and(|line| line.starts_with("+ ")) {
+                lines.next();
+            }
+            if let Some(line) = lines.next()
+                && !(line.starts_with("Continue `") || line.starts_with("… more rows"))
             {
+                return None;
+            }
+            if lines.next().is_some() {
                 return None;
             }
         }
@@ -445,6 +464,15 @@ pub fn fault(fault: &Fault) -> String {
             "\n→ Run in a shell:\n\n    {}",
             shell.replace('\n', "\n    ")
         );
+    }
+    for candidate in fault.candidates() {
+        let kind = candidate
+            .kind()
+            .map_or("declaration", backend_library::DeclarationKind::name);
+        let _ = write!(out, "\n- {kind} {}", candidate.location());
+        if let Some(call) = candidate.tool_call() {
+            let _ = write!(out, " → `{}`", tool_call_text(&call));
+        }
     }
     out
 }
@@ -647,6 +675,9 @@ fn records_with_cursor(
     }
     for record in list.records() {
         push_record(&mut lines, record, within);
+    }
+    if let Some(externals) = list.collapsed_externals() {
+        lines.push(externals.render());
     }
     lines.finish()
 }

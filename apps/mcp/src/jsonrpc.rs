@@ -1041,7 +1041,15 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<Value, RpcError> {
         no_extra(arguments, &["coordinate", "limit", "cursor", "detail"])?;
-        let coordinate = string(arguments, "coordinate")?.to_owned();
+        // The same operand resolution `backend.document` and `backend.references`
+        // share: a name or either spelling of a declaration both lanes
+        // published reaches the one canonical coordinate before paging.
+        let coordinate = backend_present::resolve_declaration(
+            &mut self.product,
+            string(arguments, "coordinate")?,
+            "graph",
+        )
+        .map_err(|fault| RpcError::from_fault(&fault))?;
         let reply = self
             .product
             .graph_page(coordinate.clone(), limit(arguments)?, continuation)
@@ -2437,6 +2445,7 @@ impl RpcError {
                 FaultSlug::NotFound
                 | FaultSlug::WrongBasis
                 | FaultSlug::InvalidQuery
+                | FaultSlug::Ambiguous
                 | FaultSlug::QueryPreparation
                 | FaultSlug::CompilerRefused
                 | FaultSlug::PartiallyPublished

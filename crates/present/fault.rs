@@ -37,6 +37,9 @@ pub enum FaultSlug {
     WrongBasis,
     /// The query failed bounded semantic validation.
     InvalidQuery,
+    /// A name or partial address matches several declarations; the fault
+    /// lists them with the exact command that selects each.
+    Ambiguous,
     /// The requested corpus is preparing or retiring asynchronously.
     QueryPreparation,
     /// A closed compiler failure refused one package source member.
@@ -81,6 +84,7 @@ impl FaultSlug {
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
+            Self::Ambiguous => "ambiguous",
             Self::QueryPreparation => "query-preparation",
             Self::CompilerRefused => "compiler-refused",
             Self::PartiallyPublished => "partially-published",
@@ -194,6 +198,8 @@ pub enum CauseSlug {
     Moved,
     /// The request did not satisfy the command grammar.
     Malformed,
+    /// The supplied text names more than one declaration.
+    Ambiguous,
     /// The deployment never configured the capability the request needs.
     Unconfigured,
     /// The work is still in progress.
@@ -222,6 +228,7 @@ impl CauseSlug {
             Self::Absent => "absent",
             Self::Moved => "moved",
             Self::Malformed => "malformed",
+            Self::Ambiguous => "ambiguous",
             Self::Unconfigured => "unconfigured",
             Self::Indexing => "indexing",
             Self::Preparing => "preparing",
@@ -530,6 +537,10 @@ const fn execution_intent_name(intent: backend_library::CompileExecutionIntent) 
 }
 
 fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
+    if name == "read" {
+        // `backend.read` takes every coordinate as one list.
+        return serde_json::json!({ "coordinate": args });
+    }
     let field = match name {
         "search" | "index-search" | "resolve" => "query",
         "outline" | "packages" | "add" | "remove" => "path",
@@ -541,6 +552,75 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
         |value| serde_json::json!({ field: value }),
     )
 }
+
+/// One declaration a refused name or address could have meant, with the exact
+/// command that selects it. Candidates are bounded and never abbreviated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Candidate {
+    coordinate: Coordinate,
+    kind: Option<backend_library::DeclarationKind>,
+    location: String,
+    command: &'static str,
+}
+
+impl Candidate {
+    /// Names one declaration and the command that retries with its coordinate.
+    #[must_use]
+    pub fn new(
+        coordinate: Coordinate,
+        kind: Option<backend_library::DeclarationKind>,
+        location: impl Into<String>,
+        command: &'static str,
+    ) -> Self {
+        Self {
+            coordinate,
+            kind,
+            location: location.into(),
+            command,
+        }
+    }
+
+    /// The exact coordinate that selects this declaration.
+    #[must_use]
+    pub const fn coordinate(&self) -> &Coordinate {
+        &self.coordinate
+    }
+
+    /// The declaration kind, when the row carried one.
+    #[must_use]
+    pub const fn kind(&self) -> Option<backend_library::DeclarationKind> {
+        self.kind
+    }
+
+    /// The readable `path:line` location, or the declaration's name when the
+    /// row captured none.
+    #[must_use]
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+
+    fn retry(&self) -> Affordance {
+        Affordance::UseCommand {
+            name: self.command,
+            args: Box::new([self.coordinate.as_str().to_owned()]),
+        }
+    }
+
+    /// The retry as the exact shell command a CLI reader runs.
+    #[must_use]
+    pub fn shell(&self) -> Option<String> {
+        self.retry().shell()
+    }
+
+    /// The retry as the exact MCP tool call an agent makes.
+    #[must_use]
+    pub fn tool_call(&self) -> Option<serde_json::Value> {
+        self.retry().tool_call()
+    }
+}
+
+/// How many candidates a refusal lists before it counts the rest.
+pub const MAX_FAULT_CANDIDATES: usize = 8;
 
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -555,6 +635,8 @@ pub struct Fault {
     startup_recovery: Option<backend_client::StartupRecovery>,
     /// A saved mutation was attempted but its admitted receipt is not known.
     unconfirmed_index_delivery: Option<backend_library::IndexOperationKey>,
+    /// The declarations a refused name or address could have meant.
+    candidates: Vec<Candidate>,
 }
 
 impl Fault {
@@ -576,7 +658,78 @@ impl Fault {
             query_preparation: None,
             startup_recovery: None,
             unconfirmed_index_delivery: None,
+            candidates: Vec::new(),
         }
+    }
+
+    /// Returns the declarations the refused text could have meant, each with
+    /// the exact command that selects it. Empty for every other failure.
+    #[must_use]
+    pub fn candidates(&self) -> &[Candidate] {
+        &self.candidates
+    }
+
+    /// Attaches the declarations a refused name or address could have meant.
+    #[must_use]
+    pub fn with_candidates(mut self, candidates: impl Into<Vec<Candidate>>) -> Self {
+        self.candidates = candidates.into();
+        self
+    }
+
+    /// Refuses a name or partial address that several declarations match.
+    ///
+    /// `total` counts every match, so a bounded list can say how many it left
+    /// out; each listed candidate carries its own exact retry command.
+    #[must_use]
+    pub fn ambiguous(
+        text: &str,
+        total: usize,
+        exhaustive: bool,
+        candidates: Vec<Candidate>,
+    ) -> Self {
+        let rest = total.saturating_sub(candidates.len());
+        let at_least = if exhaustive { "" } else { "at least " };
+        let more = if rest > 0 || !exhaustive {
+            "; not all are listed, so qualify the name with its file to narrow it"
+        } else {
+            ""
+        };
+        Self::new(
+            FaultSlug::Ambiguous,
+            Operand::Text(text.to_owned()),
+            Cause::new(
+                CauseSlug::Ambiguous,
+                format!(
+                    "{at_least}{total} declarations match; pass the exact coordinate of one{more}"
+                ),
+            ),
+            Affordance::None,
+        )
+        .with_candidates(candidates)
+    }
+
+    /// Refuses a name or partial address that no declaration matches, offering
+    /// the nearest declarations (possibly none) instead of a bare absence.
+    #[must_use]
+    pub fn unresolved(text: &str, nearest: Vec<Candidate>) -> Self {
+        let (sentence, affordance) = if nearest.is_empty() {
+            (
+                "no declaration has this name or address at this revision",
+                Affordance::search(text),
+            )
+        } else {
+            (
+                "no declaration has this name or address at this revision; the nearest are",
+                Affordance::None,
+            )
+        };
+        Self::new(
+            FaultSlug::NotFound,
+            Operand::Text(text.to_owned()),
+            Cause::new(CauseSlug::Absent, sentence),
+            affordance,
+        )
+        .with_candidates(nearest)
     }
 
     /// Returns the closed failure class.
