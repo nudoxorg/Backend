@@ -635,7 +635,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS_PER_PROCESS)
     parser.add_argument(
         "--allow-local-over-cap-for-remote", action="store_true",
-        help="Permit remote admission despite local occupancy; all other fleet, host, job, freshness and memory limits still apply.",
+        help=(
+            "For remote destinations, bypass only the local host admission-slot cap; "
+            "fleet and destination-host caps, active-Cargo job limits, sample freshness, "
+            "and the selected remote memory policy still apply."
+        ),
     )
     parser.add_argument("--max-age-seconds", type=int, default=MAX_SAMPLE_AGE_SECONDS)
     parser.add_argument(
