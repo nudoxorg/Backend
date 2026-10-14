@@ -1099,7 +1099,9 @@ fn native_graph_history_reports_oversized_query_without_restricting_live_editor(
     use gpui_component::WindowExt as _;
     let mut rig = continuity_rig(cx, Route::World);
     rig.native_press("/");
-    let query = "x".repeat(64 * 1024 + 1);
+    // Fewer than 64 Ki characters, but more than 64 KiB. History budgets
+    // UTF-8 allocation size rather than counting editable characters.
+    let query = "λ".repeat(32 * 1024 + 1);
     rig.cx.simulate_input(&query);
     let input = rig.cx.update(|window, cx| window.focused_input(cx)
         .and_then(|input| input.as_input().cloned()).expect("actual unrestricted local editor"));
@@ -1110,6 +1112,46 @@ fn native_graph_history_reports_oversized_query_without_restricting_live_editor(
     assert_eq!(rig.route(), Route::World);
     let notice = "The previous graph query exceeded the history limit and was cleared.";
     assert!(super::tests::native_bounds(&mut rig, "Label", notice, false).is_some(), "bounded history must explain omitted query values in actual painted native text");
+}
+
+#[gpui::test]
+fn graph_to_graph_navigation_retires_open_native_find_before_editor_replacement(cx: &mut TestAppContext) {
+    use gpui::{Focusable as _, KeyDownEvent, KeyUpEvent, Keystroke};
+    use gpui_component::WindowExt as _;
+    let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("retained graph");
+    rig.native_press("/");
+    rig.cx.simulate_input("no_such_fixture_declaration");
+    rig.native_press("shift-left");
+    rig.settle();
+    let origin = rig.cx.update(|window, cx| window.focused_input(cx)
+        .and_then(|input| input.as_input().cloned()).expect("departing native Find engine"));
+    let historical = graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx));
+    let key = Keystroke::parse("enter").expect("held native Enter");
+    rig.cx.simulate_event(KeyDownEvent { keystroke: key.clone(), is_held: false, prefer_character_input: false });
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.find_open()), "unmatched native Enter leaves the departing Find mode open");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)));
+
+    // The selected Graph header is a Label, so it cannot create a new graph
+    // visit. Dispatch the ordinary production route boundary while the real
+    // native editor is still focused; no artificial Blur may hide retirement.
+    let destination = view_route("RelationDirection", View::Graph);
+    rig.go(Intent::Navigate(destination.clone()));
+    assert_eq!(rig.route(), destination);
+    assert!(!graph.read_with(&rig.cx, |graph, _| graph.find_open()), "fresh entry retires Find before a replacement field can inherit its mode");
+    assert_eq!(graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx)), Default::default(), "the new visit owns an empty query and caret");
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.work_status()), facet::graph::GraphWorkStatus::Idle, "neither search nor deferred acceptance crosses the visit");
+    assert!(!rig.cx.update(|window, cx| origin.focus_handle(cx).is_focused(window)), "the departed field cannot retain native ownership");
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "the destination's replacement field cannot acquire typing focus");
+    rig.cx.simulate_event(KeyUpEvent { keystroke: key });
+    rig.settle();
+    assert_eq!(rig.route(), destination, "old native release cannot accept or open a destination row");
+    assert_eq!(origin.read_with(&rig.cx, |input, _| input.value().to_string()), "no_such_fixture_declaration", "retired engine stays inert");
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx)), historical);
+    assert!(!graph.read_with(&rig.cx, |graph, _| graph.find_open()), "Back restores passive values with Find closed");
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "Back cannot revive the old native typing permission");
 }
 
 #[gpui::test]

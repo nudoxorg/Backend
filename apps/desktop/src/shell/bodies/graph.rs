@@ -804,7 +804,13 @@ impl Map {
             return;
         };
         if changed_entry {
-            graph.update(cx, |graph, cx| graph.restore_editing_snapshot(Default::default(), window, cx));
+            graph.update(cx, |graph, cx| {
+                // A fresh Graph→Graph route can arrive while Find still owns
+                // native input. Retire its pending acceptance/search/gesture
+                // scope before the destination installs a separate editor.
+                graph.suspend(window, cx);
+                graph.restore_editing_snapshot(Default::default(), window, cx);
+            });
         }
         if changed_entry && matches!(route, Route::Symbol(_)) {
             // A different declaration must not briefly publish the preceding

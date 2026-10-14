@@ -804,13 +804,14 @@ impl GraphView {
     #[must_use]
     pub fn local_editing_snapshot(&self, cx: &App) -> LocalEditingSnapshot {
         let input = self.find.read(cx);
-        let query = input.value();
-        if query.len() > MAX_HISTORICAL_QUERY_BYTES {
+        // Rope length is borrowed metadata. Oversized history must not first
+        // materialize the unrestricted live query merely to discard it.
+        if input.text().len_bytes() > MAX_HISTORICAL_QUERY_BYTES {
             return LocalEditingSnapshot { oversized: true, ..Default::default() };
         }
         let selection = input.selected_range();
         LocalEditingSnapshot {
-            query,
+            query: input.value(),
             reversed: !selection.is_empty() && input.cursor() == selection.start,
             selection,
             oversized: false,
