@@ -104,3 +104,22 @@ class Container(dict[str, "Literal['{']"]):
     );
     Ok(())
 }
+
+#[test]
+fn a_docstring_reads_without_the_indentation_of_its_body() -> Result<(), SyntaxError> {
+    let frontend = backend_frontend_python::syntax_frontend()?;
+    let analysis = frontend.analyze(
+        Path::new("module.py"),
+        b"def f():\n    \"\"\"Summary line.\n\n    Details here,\n      indented more.\n    \"\"\"\n    return 1\n\n# plain comment\ndef g():\n    return 2\n\n#: documented attribute comment\ndef h():\n    return 3\n",
+    )?;
+    assert_eq!(
+        declaration(&analysis, "f").documentation(),
+        "Summary line.\n\nDetails here,\n  indented more."
+    );
+    assert_eq!(declaration(&analysis, "g").documentation(), "");
+    assert_eq!(
+        declaration(&analysis, "h").documentation(),
+        "documented attribute comment"
+    );
+    Ok(())
+}

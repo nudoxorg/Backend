@@ -1306,12 +1306,127 @@ fn declaration_signature(language: SourceLanguage, node: Node<'_>, source: &str)
         return bounded(source_text.get(..end).unwrap_or(source_text).trim());
     }
 
-    let text = source_text.trim();
-    let end = text
-        .find('{')
-        .or_else(|| text.find('\n'))
-        .unwrap_or(text.len());
-    bounded(text[..end].trim())
+    // The grammar's own `body` field is the exact start of the body: a `{`
+    // inside the header (a Go `interface{}`, a TypeScript object type, a Rust
+    // const expression) is a type, not the body, and no text search can tell
+    // the two apart without parsing. Only a declaration the grammar gives no
+    // body field to (a Go `type`, a TypeScript arrow-function binding) falls
+    // back to a bracket-aware scan.
+    let end = body_field_start(root, source)
+        .map(|start| start.saturating_sub(root.start_byte()))
+        .filter(|end| *end > 0 && *end <= source_text.len() && source_text.is_char_boundary(*end))
+        .unwrap_or_else(|| scan_header_end(source_text));
+    bounded(source_text.get(..end).unwrap_or(source_text).trim())
+}
+
+/// Returns the byte offset where the grammar says a declaration's braced
+/// body begins.
+///
+/// A wrapper that only carries the declaration (a TypeScript `export`, a
+/// decorated definition, a `const` binding of an arrow function) is looked
+/// through. A body that does not open with
+/// `{` is part of the header: a Rust tuple struct's field list, a C#
+/// expression body.
+fn body_field_start(node: Node<'_>, source: &str) -> Option<usize> {
+    let mut current = node;
+    for _ in 0..5 {
+        if let Some(body) = current.child_by_field_name("body") {
+            let opens = source.as_bytes().get(body.start_byte()) == Some(&b'{');
+            return opens.then_some(body.start_byte());
+        }
+        current = ["declaration", "definition", "value"]
+            .into_iter()
+            .find_map(|field| current.child_by_field_name(field))
+            .or_else(|| {
+                matches!(
+                    current.kind(),
+                    "lexical_declaration" | "variable_declaration"
+                )
+                .then(|| current.named_child(0))
+                .flatten()
+            })?;
+    }
+    None
+}
+
+/// Finds where a written header ends when the grammar names no body: at the
+/// first `{` outside every bracket pair that is not an empty `{}` type
+/// literal, at the first line break outside every bracket pair, or at the end
+/// of the text.
+///
+/// Comments, string literals, and character literals are skipped; a Rust
+/// lifetime `'a` is not a character literal.
+fn scan_header_end(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut depth = 0_usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = index.saturating_add(2);
+                continue;
+            }
+            quote @ (b'"' | b'`') => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != quote {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'\'' => {
+                if let Some(width) = char_literal_width(&bytes[index..]) {
+                    index += width - 1;
+                }
+            }
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            b'{' if depth == 0 => {
+                let after = bytes[index + 1..]
+                    .iter()
+                    .position(|byte| !byte.is_ascii_whitespace())
+                    .map(|offset| index + 1 + offset);
+                match after {
+                    Some(close) if bytes[close] == b'}' => index = close,
+                    _ => return index,
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'\n' if depth == 0 => return index,
+            _ => {}
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+/// The width of the character literal that opens `bytes` (`'x'`, `'\n'`), or
+/// `None` when the quote opens a lifetime or a label instead.
+fn char_literal_width(bytes: &[u8]) -> Option<usize> {
+    // `'\n'`, `'\''`, `'\u{1F600}'`: the escape runs to the closing quote.
+    if bytes.get(1) == Some(&b'\\') {
+        let close = bytes.iter().skip(3).position(|byte| *byte == b'\'')? + 3;
+        return Some(close + 1);
+    }
+    // `'x'`, `'é'`: exactly one character between the quotes.
+    let rest = bytes.get(1..)?;
+    let character_width = match rest.first()? {
+        byte if byte.is_ascii() => 1,
+        byte if byte >> 5 == 0b110 => 2,
+        byte if byte >> 4 == 0b1110 => 3,
+        _ => 4,
+    };
+    (rest.get(character_width) == Some(&b'\'')).then_some(character_width + 2)
 }
 
 fn signature_body_start(mut node: Node<'_>, root: Node<'_>) -> Option<usize> {
@@ -1332,16 +1447,16 @@ fn documented(
     node: Node<'_>,
     source: &str,
 ) -> (String, DeclarationFacts) {
-    let documentation = declaration_documentation(node, source);
+    let documentation = declaration_documentation(language, node, source);
     let facts = declaration_facts(language, node, source, &documentation);
     (documentation, facts)
 }
 
-fn declaration_documentation(mut node: Node<'_>, source: &str) -> String {
+fn declaration_documentation(language: SourceLanguage, mut node: Node<'_>, source: &str) -> String {
     for _ in 0..3 {
-        let comments = preceding_comments(node, source);
+        let comments = preceding_comments(language, node, source);
         if !comments.is_empty() {
-            return bounded(&xml_documentation_text(&comments.join("\n")));
+            return bounded(xml_documentation_text(&comments.join("\n")).trim());
         }
         if let Some(docstring) = enclosed_docstring(node, source) {
             return bounded(&docstring);
@@ -1357,32 +1472,118 @@ fn declaration_documentation(mut node: Node<'_>, source: &str) -> String {
     String::new()
 }
 
-/// Collects the contiguous comment run written immediately above a node.
+/// Collects the documentation written immediately above a node.
+///
+/// What counts as documentation is the language's own convention, not "any
+/// comment": Rust `///` and `/** */` (and `#[doc = "…"]`), `JSDoc` and
+/// `Javadoc` `/** */`, C# `///`, a Python `#:` comment. Go and the C family
+/// document a declaration with the plain comment block directly above it, so
+/// there any comment qualifies, but only when no blank line separates it from
+/// the declaration. A commented-out line above a Rust item (`// mod support;`)
+/// is not its documentation. A comment that trails the previous declaration's
+/// line belongs to that declaration.
 ///
 /// An attribute, annotation, or decorator sits between a declaration and its
 /// documentation, so the scan steps over one instead of concluding the
 /// declaration is undocumented.
-fn preceding_comments(node: Node<'_>, source: &str) -> Vec<String> {
+fn preceding_comments(language: SourceLanguage, node: Node<'_>, source: &str) -> Vec<String> {
     let mut comments = Vec::new();
     let mut previous = node.prev_named_sibling();
+    // The first row of whatever sits directly below the candidate.
+    let mut below = node.start_position().row;
     while let Some(candidate) = previous {
         previous = candidate.prev_named_sibling();
         if decorates_a_declaration(candidate.kind()) {
+            if language == SourceLanguage::Rust
+                && let Some(line) = rust_doc_attribute(node_text(candidate, source))
+            {
+                comments.push(line);
+            }
+            below = candidate.start_position().row;
             continue;
         }
         if !is_comment(candidate.kind()) {
             break;
         }
         let text = node_text(candidate, source);
-        // An inner doc comment (`//!`, `/*!`) documents the enclosing module,
-        // and so does everything written above it.
-        if text.starts_with("//!") || text.starts_with("/*!") {
+        // An inner doc comment (`//!`, `/*!`) documents the enclosing Rust
+        // module, and so does everything written above it.
+        if language == SourceLanguage::Rust && (text.starts_with("//!") || text.starts_with("/*!"))
+        {
             break;
         }
-        comments.push(clean_comment(text));
+        // A comment that ends the previous declaration's own line is a
+        // trailing remark about that declaration.
+        if candidate
+            .prev_named_sibling()
+            .is_some_and(|before| before.end_position().row == candidate.start_position().row)
+        {
+            break;
+        }
+        let end_row = if candidate.end_position().column == 0 {
+            candidate.end_position().row.saturating_sub(1)
+        } else {
+            candidate.end_position().row
+        };
+        if requires_adjacent_documentation(language) && below > end_row.saturating_add(1) {
+            break;
+        }
+        below = candidate.start_position().row;
+        if is_documentation_comment(language, text) {
+            comments.push(clean_comment(text));
+        }
     }
     comments.reverse();
     comments
+}
+
+/// Whether a blank line between a comment and its declaration detaches it.
+const fn requires_adjacent_documentation(language: SourceLanguage) -> bool {
+    matches!(
+        language,
+        SourceLanguage::Go | SourceLanguage::Clang | SourceLanguage::Python
+    )
+}
+
+/// Whether one comment is documentation under its language's convention.
+fn is_documentation_comment(language: SourceLanguage, text: &str) -> bool {
+    let line_doc = text.starts_with("///") && !text.starts_with("////");
+    let block_doc = text.starts_with("/**") && !text.starts_with("/***") && text != "/**/";
+    match language {
+        SourceLanguage::Rust | SourceLanguage::CSharp => line_doc || block_doc,
+        SourceLanguage::TypeScript | SourceLanguage::Java => block_doc,
+        SourceLanguage::Python => text.starts_with("#:"),
+        SourceLanguage::Go | SourceLanguage::Clang => true,
+    }
+}
+
+/// Reads the text of a `#[doc = "…"]` attribute, the documentation an author
+/// writes when `///` cannot express it. Any other attribute is not one.
+fn rust_doc_attribute(attribute: &str) -> Option<String> {
+    let inner = attribute
+        .trim()
+        .strip_prefix("#[")?
+        .strip_suffix(']')?
+        .trim()
+        .strip_prefix("doc")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    let literal = inner.strip_prefix('"')?.strip_suffix('"')?;
+    let mut text = String::with_capacity(literal.len());
+    let mut characters = literal.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            text.push(character);
+            continue;
+        }
+        match characters.next()? {
+            'n' => text.push('\n'),
+            't' => text.push('\t'),
+            other => text.push(other),
+        }
+    }
+    Some(text.trim().to_owned())
 }
 
 /// Returns a Python definition's docstring, when its body opens with one.
@@ -1407,7 +1608,35 @@ fn enclosed_docstring(node: Node<'_>, source: &str) -> Option<String> {
         .trim_start_matches(['r', 'b', 'u', 'f', 'R', 'B', 'U', 'F'])
         .trim_matches(['"', '\''])
         .trim();
-    (!text.is_empty()).then(|| text.to_owned())
+    (!text.is_empty()).then(|| dedent_docstring(text))
+}
+
+/// Reads a docstring the way Python does (`inspect.cleandoc`): the first line
+/// as written, and the indentation every continuation line shares removed, so
+/// a docstring written inside a function body does not render indented.
+fn dedent_docstring(text: &str) -> String {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("");
+    let rest = lines.collect::<Vec<_>>();
+    let indent = rest
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut output = String::with_capacity(text.len());
+    output.push_str(first.trim_end());
+    for line in rest {
+        output.push('\n');
+        if !line.trim().is_empty() {
+            output.push_str(
+                line.get(indent..)
+                    .unwrap_or_else(|| line.trim_start())
+                    .trim_end(),
+            );
+        }
+    }
+    output.trim_end().to_owned()
 }
 
 /// Returns whether a node is a comment some grammar attaches prose to.
@@ -1473,7 +1702,8 @@ fn clean_comment(comment: &str) -> String {
             let line = line.trim();
             let line = line.strip_suffix("*/").unwrap_or(line);
             let body = if hashed {
-                line.trim_start_matches('#')
+                line.strip_prefix("#:")
+                    .unwrap_or_else(|| line.trim_start_matches('#'))
             } else {
                 MARKERS
                     .iter()
@@ -2074,4 +2304,65 @@ fn bounded(value: &str) -> String {
         end -= 1;
     }
     value[..end].to_owned()
+}
+
+#[cfg(test)]
+mod header_scan_tests {
+    use super::{char_literal_width, scan_header_end};
+
+    fn header(text: &str) -> &str {
+        &text[..scan_header_end(text)]
+    }
+
+    #[test]
+    fn a_brace_inside_a_bracket_pair_or_an_empty_literal_is_not_the_body() {
+        assert_eq!(
+            header("func f(v interface{}) interface{} {\n\tbody\n}"),
+            "func f(v interface{}) interface{} "
+        );
+        assert_eq!(
+            header("const f = (x: { a: number }) => {\n  return x;\n}"),
+            "const f = (x: { a: number }) => "
+        );
+        assert_eq!(header("Marker struct{}"), "Marker struct{}");
+        assert_eq!(
+            header("type Decoder struct {\n\tx int\n}"),
+            "type Decoder struct "
+        );
+    }
+
+    #[test]
+    fn a_header_ends_at_the_first_line_break_outside_every_bracket() {
+        assert_eq!(
+            header("pub struct W(\n    u32,\n);\nfn next() {}"),
+            "pub struct W(\n    u32,\n);"
+        );
+        assert_eq!(
+            header("const A: u32 = 1;\nconst B: u32 = 2;"),
+            "const A: u32 = 1;"
+        );
+        assert_eq!(header("int x"), "int x");
+    }
+
+    #[test]
+    fn comments_strings_and_lifetimes_do_not_confuse_the_scan() {
+        assert_eq!(
+            header("fn f<'a>(x: &'a str) /* { */ -> &'a str {\n x }"),
+            "fn f<'a>(x: &'a str) /* { */ -> &'a str "
+        );
+        assert_eq!(
+            header("const S: &str = \"{\"; // {\nnext"),
+            "const S: &str = \"{\"; // {"
+        );
+        assert_eq!(header("const C: char = '{'; {"), "const C: char = '{'; ");
+    }
+
+    #[test]
+    fn only_a_closed_single_character_is_a_character_literal() {
+        assert_eq!(char_literal_width(b"'a' rest"), Some(3));
+        assert_eq!(char_literal_width(b"'\\n' rest"), Some(4));
+        assert_eq!(char_literal_width("'é' rest".as_bytes()), Some(4));
+        assert_eq!(char_literal_width(b"'a str"), None);
+        assert_eq!(char_literal_width(b"'static"), None);
+    }
 }
