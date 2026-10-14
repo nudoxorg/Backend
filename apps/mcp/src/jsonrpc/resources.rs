@@ -235,8 +235,8 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
         json!({ "resourceTemplates": [
         {
             "uriTemplate":"backend://tools/catalog/{name}{?offset,limit,version}",
-            "name":"mcp-tool-schema", "title":"Exact MCP route schema and help",
-            "description":"Read the exact closed-name URI from backend://tools/catalog. Assemble UTF-8 text in order using result._meta[backend/nextUri] and backend/catalogRange, then parse the complete JSON tool schema. Ranges may use text/plain for JSON fragments; application/json marks an unsplit complete card. The version binds every range to one exact descriptor; unknown names or stale versions are refused without owner work."
+            "name":"mcp-route-card", "title":"Exact MCP route cards and help",
+            "description":"Read the exact closed-name URI from backend://tools/catalog. Assemble UTF-8 text in order using result._meta[backend/nextUri] and backend/catalogRange, then parse the complete JSON route card. Registered named handlers retain their argument and result schemas; direct-only backend.surface contains expert protocol guidance instead of schemas. Ranges may use text/plain for JSON fragments; application/json marks an unsplit complete card. The version binds every range to one exact descriptor; unknown names or stale versions are refused without owner work."
         },
         {
             "uriTemplate": "backend://document/{coordinate}",
