@@ -30,6 +30,10 @@ FAULTS = [
     ("unpaged-health-limit", ["health", "--limit", "5"], "human", 64, None, ["--limit", "does not take a page bound"]),
     ("passive-search", ["--passive", "search", "symbols"], "human", 64, None, ["--passive"]),
     ("invalid-execution-intent", ["add", ".", "--execution-intent", "remote"], "json", 64, "execution-intent", ["choose interactive or background"]),
+    ("wait-timeout-without-wait", ["add", ".", "--wait-timeout", "30"], "json", 64, "--wait-timeout", ["--wait-timeout requires --wait"]),
+    ("wait-timeout-above-bound", ["add", ".", "--wait", "--wait-timeout", "901"], "json", 64, "--wait-timeout", ["integer from 0 to 900 seconds"]),
+    ("wait-timeout-negative", ["add", ".", "--wait", "--wait-timeout", "-1"], "json", 64, "--wait-timeout", ["integer from 0 to 900 seconds"]),
+    ("wait-on-search", ["search", "ferris", "--wait"], "json", 64, "--wait", ["search takes only", "--limit"]),
 ]
 CASES = ["help", "add-help", *(case[0] for case in FAULTS), "passive-absent-health", "passive-absent-status"]
 
@@ -86,7 +90,8 @@ def run_one(bin_dir: Path, name: str) -> float:
             require(result.returncode == 0 and not result.stderr, "help did not exit cleanly")
             fragments = (["--format human|markdown|json", "--passive", "nudox add .",
                           'nudox search "error handling"', "claude mcp add", "surface <JSON>"]
-                         if name == "help" else ["current directory", "--execution-intent", "bounded remote calibration"])
+                         if name == "help" else ["current directory", "--execution-intent", "bounded remote calibration",
+                                                     "--wait", "--wait-timeout SECONDS", "terminal receipt"])
             for fragment in fragments:
                 require(fragment in result.stdout, f"help omits {fragment!r}")
         elif name.startswith("passive-absent-"):
