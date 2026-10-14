@@ -116,6 +116,10 @@ pub(super) fn materialize_workspace_snapshot(
     snapshot_parent: &Path,
     max_input_bytes: u64,
 ) -> Result<MaterializedWorkspace, ClusterWorkerError> {
+    preflight_python_environment_records(
+        input.manifest.profile(),
+        input.workspace_tree.pages().map(|page| page.record()),
+    )?;
     #[cfg(unix)]
     {
         materialize_unix(input, snapshot_parent, max_input_bytes)
@@ -130,6 +134,102 @@ pub(super) fn materialize_workspace_snapshot(
         Err(operation(
             "descriptor-relative workspace snapshots are unsupported on this platform",
         ))
+    }
+}
+
+fn preflight_python_environment_records<'a>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    records: impl IntoIterator<Item = &'a CompilerInputTreeRecordV2>,
+) -> Result<(), ClusterWorkerError> {
+    use backend_frontend_python::legacy::checker::{
+        PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES,
+    };
+    let python = matches!(
+        profile,
+        backend_semantic::vocabulary::LanguageProfile::Python(_)
+    );
+    let mut seen = false;
+    for record in records {
+        match record {
+            CompilerInputTreeRecordV2::File {
+                path, role, length, ..
+            } => {
+                let reserved = path.as_ref() == PYTHON_ENVIRONMENT_INPUT_PATH;
+                if *role == CompilerWorkspaceFileRoleV2::PythonEnvironment {
+                    if !reserved || !python || seen {
+                        return Err(ClusterWorkerError::InvalidInputClosure);
+                    }
+                    if *length > PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 {
+                        return Err(ClusterWorkerError::InputBounds);
+                    }
+                    seen = true;
+                } else if reserved {
+                    return Err(ClusterWorkerError::InvalidInputClosure);
+                }
+            }
+            CompilerInputTreeRecordV2::Directory { path }
+                if path.as_ref() == PYTHON_ENVIRONMENT_INPUT_PATH =>
+            {
+                return Err(ClusterWorkerError::InvalidInputClosure);
+            }
+            _ => {}
+        }
+    }
+    if python != seen {
+        return Err(ClusterWorkerError::InvalidInputClosure);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod python_environment_preflight_tests {
+    use super::*;
+    use backend_frontend_python::legacy::checker::{
+        PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, RustEdition};
+
+    #[test]
+    fn typed_role_path_profile_and_caps_are_refused_before_any_store_or_filesystem_io() {
+        let python = LanguageProfile::Python(PythonVersion::Python314);
+        let other = LanguageProfile::Rust(RustEdition::Rust2024);
+        let file = |path: &str, role, length| CompilerInputTreeRecordV2::File {
+            path: path.into(),
+            role,
+            object_id: [0x41; 32],
+            length,
+        };
+        let valid = file(
+            PYTHON_ENVIRONMENT_INPUT_PATH,
+            CompilerWorkspaceFileRoleV2::PythonEnvironment,
+            64,
+        );
+        assert!(preflight_python_environment_records(python, [&valid]).is_ok());
+        assert!(preflight_python_environment_records(other, [&valid]).is_err());
+        assert!(preflight_python_environment_records(python, std::iter::empty()).is_err());
+        assert!(preflight_python_environment_records(python, [&valid, &valid]).is_err());
+        for bad in [
+            file(
+                "other.capture",
+                CompilerWorkspaceFileRoleV2::PythonEnvironment,
+                64,
+            ),
+            file(
+                PYTHON_ENVIRONMENT_INPUT_PATH,
+                CompilerWorkspaceFileRoleV2::Source,
+                64,
+            ),
+            file(
+                PYTHON_ENVIRONMENT_INPUT_PATH,
+                CompilerWorkspaceFileRoleV2::PythonEnvironment,
+                PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 + 1,
+            ),
+            CompilerInputTreeRecordV2::Directory {
+                path: PYTHON_ENVIRONMENT_INPUT_PATH.into(),
+            },
+        ] {
+            assert!(preflight_python_environment_records(python, [&bad]).is_err());
+        }
     }
 }
 
