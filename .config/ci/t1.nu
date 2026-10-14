@@ -92,15 +92,8 @@ def main []: nothing -> nothing {
             run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--bin-dir" $bin_dir "--output" ($artifact_root | path join $sha)
         }
     } else { true }
-    # T2 surface prototype (W2.3): real product operations against the
-    # binaries just built, snapshotted. Advisory: its verdict is reported but
-    # never fails T1. CI_T2_EXTERNAL=1 delegates it to the parallel artifact
-    # consumer; local invocations retain this advisory check (see tests/surface/cases.json and .config/ci/surface.py).
-    if $built and ($env.CI_T2_EXTERNAL? | default "0") != "1" and ("tests/surface/cases.json" | path exists) {
-        ci-step "t2" "surface cases (advisory)" {||
-            run-bounded 15min "nix" "develop" ".#surface" "--command" "python3" ($env.FILE_PWD | path join "surface.py") "--bin-dir" $bin_dir "--print-missing"
-        } | ignore
-    }
+    # T2 is a separate verdict. Run `test.py integration --bin-dir ...`
+    # locally, or let the artifact consumer run it in CI.
     if ($cache | is-not-empty) {
         print $"CI-CACHE t1: (^du -sh $target_dir | str trim)"
     }

@@ -77,6 +77,9 @@ in
         cp ${../ci/cli_contract.py} .config/ci/cli_contract.py
         cp ${../ci/test_cli_contract.py} .config/ci/test_cli_contract.py
         python3 .config/ci/test_cli_contract.py
+        cp ${../ci/test.py} .config/ci/test.py
+        cp ${../ci/test_tiers.py} .config/ci/test_tiers.py
+        python3 .config/ci/test_tiers.py
         cp ${../ci/test_layout.py} test_layout.py
         cp ${../ci/test_test_layout.py} test_test_layout.py
         python3 test_test_layout.py
