@@ -222,11 +222,11 @@ pub(super) fn execute_semantic_graph(
         &available.retargeting_scopes(package, &profile_scopes),
     )?;
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.endpoint_pairs(&sources, package)?
     } else {
         Vec::new()
     };
-    for relation in view_build::structural_call_graph_relations_mapped(
+    for relation in view_build::structural_call_endpoint_relations_mapped(
         view,
         &pairs,
         package,
@@ -641,6 +641,7 @@ fn reference_fact_has_site_and_relation(
         .any(|fact| fact.site == site && fact.relation == relation)
 }
 
+#[cfg(test)]
 fn project_reference_facts_from_bytes(
     images: &[&[u8]],
     view: &backend_engine::ViewRoot,
@@ -657,13 +658,26 @@ fn project_reference_facts_from_bytes(
             })?,
         );
     }
+    let endpoints = structural_pairs
+        .iter()
+        .map(|(caller, callee)| {
+            (
+                view_build::StructuralCallEndpoint::LegacyCoordinate(caller.clone()),
+                view_build::StructuralCallEndpoint::LegacyCoordinate(callee.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let borrowed_pairs = endpoints
+        .iter()
+        .map(|(caller, callee)| (caller, callee))
+        .collect::<Vec<_>>();
     project_opened_reference_facts(
         &opened,
         view,
         package,
         target_symbol,
         project_paths,
-        structural_pairs,
+        &borrowed_pairs,
         None,
         &std::collections::BTreeMap::new(),
         &[],
@@ -677,7 +691,10 @@ fn project_opened_reference_facts(
     package: backend_engine::PackageKey,
     target_symbol: backend_engine::SymbolKey,
     project_paths: &BTreeSet<String>,
-    structural_pairs: &[(String, String)],
+    structural_pairs: &[(
+        &view_build::StructuralCallEndpoint,
+        &view_build::StructuralCallEndpoint,
+    )],
     // The package's source root, where a name-matched call's file is read
     // to place it; `None` places none.
     root: Option<&std::path::Path>,
@@ -827,18 +844,15 @@ fn project_opened_reference_facts(
             })?
     };
     let target_identity = view_build::structural_symbol_identity(target_symbol);
-    for (caller_coordinate, callee_coordinate) in structural_pairs {
-        let Some(callee_id) =
-            view_build::view_row_for_structural_coordinate(view, package, callee_coordinate)
-        else {
+    let structural_rows = view_build::StructuralCallRows::new(view, package);
+    for &(caller_endpoint, callee_endpoint) in structural_pairs {
+        let Some(callee_id) = structural_rows.mapped(callee_endpoint) else {
             continue;
         };
         if callee_id != target_row_id {
             continue;
         }
-        let Some(caller_id) =
-            view_build::view_row_for_structural_coordinate(view, package, caller_coordinate)
-        else {
+        let Some(caller_id) = structural_rows.mapped(caller_endpoint) else {
             continue;
         };
         let caller_row = view.row_ref(caller_id).ok_or_else(|| {
@@ -1013,7 +1027,7 @@ pub(super) fn execute_references(
         }
     }
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.endpoint_pairs(&sources, package)?
     } else {
         Vec::new()
     };
@@ -8689,6 +8703,69 @@ mod project_call_tests {
         ) {
             return Err("c header retarget target is not declared_in_header".to_owned());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn typed_structural_reference_endpoints_keep_shadowed_worker_sites_distinct()
+    -> Result<(), String> {
+        let path = "workers.ts";
+        let text = "const left = () => { function worker() { leftTarget(); } function leftTarget() {} }, right = () => { function worker() { rightTarget(); } function rightTarget() {} };";
+        let sources = indexed_sources(&[(path, analyze_source(path, text)?)])?;
+        let package = package_key("fixture");
+        let (view, rows) = super::view_build::structural_view_for_test(&sources)?;
+        let mut residence = super::view_build::StructuralCallResidence::default();
+        let pairs = residence
+            .endpoint_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mut sites = BTreeSet::new();
+        for (owner_name, target_name) in [("left", "leftTarget"), ("right", "rightTarget")] {
+            let owner = rows
+                .iter()
+                .find(|row| row.label == format!("fixture::{path}:1::{owner_name}"))
+                .ok_or("owner")?
+                .id;
+            let caller = rows
+                .iter()
+                .find(|row| {
+                    row.label == "fixture::workers.ts:1::worker"
+                        && row.parent.map(RowId::Symbol) == Some(owner)
+                })
+                .ok_or("exact caller")?
+                .id;
+            let RowId::Symbol(target) = rows
+                .iter()
+                .find(|row| row.label == format!("fixture::{path}:1::{target_name}"))
+                .ok_or("target")?
+                .id
+            else {
+                return Err("target symbol".to_owned());
+            };
+            let facts = super::project_opened_reference_facts(
+                &[],
+                &view,
+                package,
+                target,
+                &project_paths(&[path]),
+                &pairs,
+                None,
+                &BTreeMap::new(),
+                &[],
+                true,
+            )
+            .map_err(|error| error.to_string())?;
+            let RowId::Symbol(caller) = caller else {
+                return Err("caller symbol".to_owned());
+            };
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0].site, caller);
+            assert!(sites.insert(caller));
+        }
+        assert_eq!(
+            sites.len(),
+            2,
+            "the production opened-image reference path preserves both exact call sites"
+        );
         Ok(())
     }
 

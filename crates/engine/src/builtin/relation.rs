@@ -59,7 +59,9 @@ const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
 
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 14;
+const SOURCE_RECORD_VERSION: u8 = 15;
+/// Exact file-local binding identities and lexical targets.
+const SOURCE_RECORD_FORMAT_BINDINGS: &[u8; 4] = b"PSRF";
 
 /// Minimum file keys in every non-final membership page. The shared
 /// content-defined cut policy also cuts on encoded-byte anchors; 256 remains
@@ -92,7 +94,9 @@ const PROJECT_MEMBERSHIP_CUT_POLICY: CutPolicy = CutPolicy::new(
 /// states which `SourceFactDomain` content identity its exact bytes hash to",
 /// `PSRC` carries Cargo alias observations on an inline project frontier,
 /// `PSRD` carries paged project membership or one project-bound membership
-/// page, and `PSRE` adds exact page-prefix offsets.
+/// page, `PSRE` adds exact page-prefix offsets, and `PSRF` adds exact binding
+/// byte anchors and lexical targets on file rows. Other record kinds keep
+/// their existing minimal tags.
 ///
 /// Decoding stays liberal - it admits a `PSR9` record that states no
 /// containment and normalizes it to `PSR8` on the way out - because refusing
@@ -124,7 +128,14 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
             source_identity,
             ..
         } => {
-            if states_facts(declarations) {
+            if declarations.iter().any(|declaration| {
+                matches!(
+                    declaration.binding_identity(),
+                    backend_compile::SourceBindingIdentity::Exact(_)
+                ) || matches!(declaration.container(), Container::Binding { .. })
+            }) {
+                SOURCE_RECORD_FORMAT_BINDINGS
+            } else if states_facts(declarations) {
                 SOURCE_RECORD_FORMAT_FACTS
             } else if source_identity.is_some() {
                 SOURCE_RECORD_FORMAT_IDENTIFIED
@@ -165,6 +176,7 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'C' => 12,
         b'D' => 13,
         b'E' => 14,
+        b'F' => 15,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -1090,6 +1102,9 @@ impl ProductSourceRecord {
         if declarations.len() > Self::MAX_FILE_DECLARATIONS {
             return Err("source file declaration set is oversized".to_owned());
         }
+        for declaration in declarations.iter() {
+            declaration.admit_binding_parentage()?;
+        }
         let record = Self::File {
             project,
             path,
@@ -1566,6 +1581,7 @@ fn shed_prose(declarations: &[SourceDeclaration]) -> Result<Arc<[SourceDeclarati
                 reduced
                     .with_source_excerpt(SourceExcerpt::NotHydrated)
                     .with_container(declaration.container().clone())
+                    .with_binding_identity(declaration.binding_identity())
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -1688,7 +1704,8 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         return;
     };
     let format = source_record_format(value);
-    let factual = format == SOURCE_RECORD_FORMAT_FACTS;
+    let bindings = format == SOURCE_RECORD_FORMAT_BINDINGS;
+    let factual = format == SOURCE_RECORD_FORMAT_FACTS || bindings;
     let identified = !factual && source_identity.is_some();
     debug_assert_eq!(
         identified,
@@ -1737,6 +1754,9 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         if factual {
             push_facts(output, declaration.facts());
         }
+        if bindings {
+            push_binding_identity(output, declaration.binding_identity());
+        }
     }
 }
 
@@ -1772,10 +1792,38 @@ fn push_optional_text(output: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-/// Encodes one declaration's extracted containment.
+/// Encodes one minimal captured-name anchor.
+pub(super) fn push_binding(output: &mut Vec<u8>, binding: backend_compile::SourceBinding) {
+    let (start, end) = binding.name();
+    for offset in [start, end] {
+        output.extend_from_slice(&offset.to_be_bytes());
+    }
+}
+
+pub(super) fn push_binding_identity(
+    output: &mut Vec<u8>,
+    identity: backend_compile::SourceBindingIdentity,
+) {
+    match identity {
+        backend_compile::SourceBindingIdentity::Legacy => output.push(0),
+        backend_compile::SourceBindingIdentity::Exact(capture) => {
+            output.push(1);
+            let (start, end) = capture.owner();
+            output.extend_from_slice(&start.to_be_bytes());
+            output.extend_from_slice(&end.to_be_bytes());
+            push_binding(output, capture.binding());
+        }
+    }
+}
+
+/// Encodes legacy metadata or an exact lexical binding target.
 fn push_container(output: &mut Vec<u8>, container: &Container) {
     match container {
         Container::Module => output.push(0),
+        Container::Binding { binding } => {
+            output.push(3);
+            push_binding(output, *binding);
+        }
         Container::Enclosing { name, line } => {
             output.push(1);
             push_text(output, name);
@@ -2108,7 +2156,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                 }
             }
         }
-        2 if version < 12 => decode_file_record(&mut reader, version)?,
+        2 if version < 12 || version == 15 => decode_file_record(&mut reader, version)?,
         3 if version >= 13 => {
             let project = reader.array()?;
             let count = reader.count(MAX_PROJECT_MEMBERSHIP_PAGE_FILES)?;
@@ -2208,7 +2256,7 @@ fn decode_declaration(
         SourceExcerpt::NotCaptured
     };
     let decoded_container = if contained {
-        decode_container(reader)?
+        decode_container(reader, version >= 15)?
     } else {
         Container::Module
     };
@@ -2216,6 +2264,15 @@ fn decode_declaration(
         decode_facts(reader)?
     } else {
         DeclarationFacts::UNOBSERVED
+    };
+    let identity = if version >= 15 {
+        match reader.byte()? {
+            0 => backend_compile::SourceBindingIdentity::Legacy,
+            1 => backend_compile::SourceBindingIdentity::Exact(decode_binding_capture(reader)?),
+            _ => return Err(()),
+        }
+    } else {
+        backend_compile::SourceBindingIdentity::Legacy
     };
     Ok(SourceDeclaration::with_location(
         SourceLocation::new(declaration_path, line).map_err(|_| ())?,
@@ -2227,6 +2284,7 @@ fn decode_declaration(
     .map_err(|_| ())?
     .with_source_excerpt(source_excerpt)
     .with_container(decoded_container)
+    .with_binding_identity(identity)
     .with_facts(facts))
 }
 
@@ -2261,10 +2319,29 @@ fn decode_optional_text(reader: &mut SourceReader<'_>) -> Result<Option<String>,
         _ => Err(()),
     }
 }
-/// Decodes one declaration's containment, rejecting an unknown discriminant.
-fn decode_container(reader: &mut SourceReader<'_>) -> Result<Container, ()> {
+/// Decodes checked capture extent evidence independently of parent identity.
+fn decode_binding_capture(
+    reader: &mut SourceReader<'_>,
+) -> Result<backend_compile::SourceBindingCapture, ()> {
+    backend_compile::SourceBindingCapture::new(
+        reader.u32()?,
+        reader.u32()?,
+        reader.u32()?,
+        reader.u32()?,
+    )
+    .ok_or(())
+}
+
+fn decode_binding(reader: &mut SourceReader<'_>) -> Result<backend_compile::SourceBinding, ()> {
+    backend_compile::SourceBinding::new(reader.u32()?, reader.u32()?).ok_or(())
+}
+
+fn decode_container(reader: &mut SourceReader<'_>, exact: bool) -> Result<Container, ()> {
     match reader.byte()? {
         0 => Ok(Container::Module),
+        3 if exact => Ok(Container::Binding {
+            binding: decode_binding(reader)?,
+        }),
         1 => {
             let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
             let line = NonZeroU32::new(reader.u32()?).ok_or(())?;
@@ -3451,6 +3528,7 @@ mod tests {
             (b'C', 12_u8),
             (b'D', 13_u8),
             (b'E', 14_u8),
+            (b'F', 15_u8),
         ] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
@@ -3459,7 +3537,7 @@ mod tests {
             );
         }
 
-        for tag in [b'0', b'1', b':', b';', b'<', b'F', b'?', 0xff] {
+        for tag in [b'0', b'1', b':', b';', b'<', b'G', b'?', 0xff] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 None,

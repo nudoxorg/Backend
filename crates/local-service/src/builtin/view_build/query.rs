@@ -519,15 +519,23 @@ pub(super) fn append_structural_query_facts(
             } else {
                 declaration.documentation().to_owned()
             };
-            let parent = prepared
-                .parent
-                .as_deref()
-                .map(|coordinate| structural_plan.parent_id(*file_key, coordinate))
-                .transpose()?
-                .map(|parent| match parent {
-                    StructuralParent::Symbol(id) => id.stable_key(),
-                    StructuralParent::Package(package) => RowId::Package(package).stable_key(),
-                });
+            let parent = if let Some(binding) = prepared.parent_binding {
+                Some(
+                    structural_plan
+                        .binding_parent_id(*file_key, binding)?
+                        .stable_key(),
+                )
+            } else {
+                prepared
+                    .parent
+                    .as_deref()
+                    .map(|coordinate| structural_plan.parent_id(*file_key, coordinate))
+                    .transpose()?
+                    .map(|parent| match parent {
+                        StructuralParent::Symbol(id) => id.stable_key(),
+                        StructuralParent::Package(package) => RowId::Package(package).stable_key(),
+                    })
+            };
             facts.push(backend_extension_trustfall::SemanticQueryFact::new(
                 backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
                     backend_extension_trustfall::StructuralFallbackEvidence::new(
