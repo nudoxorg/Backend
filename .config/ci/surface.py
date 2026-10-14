@@ -286,6 +286,30 @@ def require_mcp_index_receipt(reply: dict, project: Path, expected: dict, profil
                                project, expected, profile_count)
 
 
+def run_mcp_wait_refusals(owner: Owner, project: Path, terminal: dict, profile_count: int) -> dict:
+    # Each invalid call runs through the shipped MCP process, never a private parser.
+    times = {}
+    for field, value in (("wait", True), ("wait_timeout", 30), ("wait-timeout", 30)):
+        session, seconds = run_mcp(owner, project,
+            [{"tool": "backend.index", "arguments": {"path": str(project), field: value}},
+             {"tool": "backend.index_progress", "arguments": {"operation_key": terminal["operation_key"]}}], 10)
+        if session["exit"] != 0 or len(session["calls"]) != 2:
+            raise RuntimeError(f"MCP {field} refusal: session failed")
+        reply = session["calls"][0]["reply"]
+        fault = reply.get("structuredContent") if isinstance(reply, dict) else None
+        if (not isinstance(reply, dict) or reply.get("isError") is not True
+            or not isinstance(fault, dict) or fault.get("answer") != "fault"
+            or fault.get("slug") != "usage" or fault.get("cause") != "malformed"
+            or fault.get("operand") != field
+            or f"takes no argument called `{field}`" not in str(fault.get("detail", ""))):
+            raise RuntimeError(f"MCP {field}: expected exact unknown-argument usage fault, got {reply}")
+        # A valid call in the same session must still observe the original receipt.
+        require_mcp_index_receipt(session["calls"][1]["reply"], project, terminal, profile_count)
+        times[f"MCP refused CLI-only {field}"] = round(seconds, 3)
+    log("MCP: three CLI-only wait spellings refused; same-session progress preserves complete receipt")
+    return times
+
+
 def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout: float) -> tuple[dict, dict]:
     started = time.monotonic()
     # Exercise the installed alias and a caller deadline without terminating the owner.
@@ -323,6 +347,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     log("completed MCP operation lookup: checking typed terminal receipt")
     require_mcp_index_receipt(reply, project, terminal, profile_count)
     times["completed MCP operation lookup"] = round(seconds, 3)
+    times.update(run_mcp_wait_refusals(owner, project, terminal, profile_count))
     log("background index: zero-wait caller left; fresh alias/add clients retained one key; explicit keyed replay; CLI/MCP terminal receipts agree")
     return completed, times
 
