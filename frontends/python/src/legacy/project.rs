@@ -604,6 +604,17 @@ impl CapturedProjectLayout {
         self.environment.as_ref()?.compiled_candidate(path)
     }
 
+    pub(super) fn admitted_dependency_source(
+        &self,
+        path: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<bool, CheckerError> {
+        match &self.environment {
+            Some(environment) => environment.admitted_source_member(path, control),
+            None => Ok(false),
+        }
+    }
+
     pub(super) fn dependency_search_paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.environment
             .iter()

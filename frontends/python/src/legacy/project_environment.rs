@@ -51,6 +51,18 @@ pub(super) fn compiled_resource_suffixes() -> impl Iterator<Item = &'static str>
         .chain(["so", "dll"])
 }
 
+/// Importing a prefix can select either a module or a package initializer.
+/// Both probes share the admitted resource suffix authority and exact metadata
+/// lookup; this iterator grants no original filesystem read.
+pub(super) fn compiled_import_probe_paths(prefix: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    compiled_resource_suffixes().flat_map(move |suffix| {
+        [
+            prefix.with_extension(suffix),
+            prefix.join("__init__").with_extension(suffix),
+        ]
+    })
+}
+
 fn dependency_file_kind(path: &Path, windows: bool) -> Option<DependencyFileKind> {
     let extension = path.extension().and_then(|value| value.to_str());
     let suffix_matches = |candidate: &str| {
@@ -299,6 +311,8 @@ pub(super) struct MaterializedPythonEnvironment {
     pub(super) roots: Vec<(PythonDependencyRootKind, PathBuf, PathBuf)>,
     pub(super) identity: [u8; 32],
     files: Vec<(PathBuf, String, [u8; 32], u64)>,
+    source_identities:
+        std::collections::HashMap<backend_platform::file_identity::FileIdentity, usize>,
     compiled: std::collections::BTreeMap<PathBuf, PathBuf>,
 }
 
@@ -400,6 +414,49 @@ impl MaterializedPythonEnvironment {
     pub(super) fn compiled_candidate(&self, private_path: &Path) -> Option<&PathBuf> {
         self.compiled
             .get(&compiled_candidate_key(private_path, cfg!(windows)))
+    }
+
+    /// Proves that a native filesystem selection opens one exact admitted
+    /// source object beneath its held mirror, including platform case aliases.
+    /// Names or suffixes alone cannot establish installed stub authority.
+    pub(super) fn admitted_source_member(
+        &self,
+        private_path: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<bool, CheckerError> {
+        checkpoint(control)?;
+        let Some((mirror, relative)) = self.roots.iter().find_map(|(_, _, mirror)| {
+            private_path
+                .strip_prefix(mirror)
+                .ok()
+                .map(|relative| (mirror, relative))
+        }) else {
+            return Ok(false);
+        };
+        let Some(file) = open_materialized_source_file(mirror, relative, control)? else {
+            return Ok(false);
+        };
+        let identity =
+            backend_platform::file_identity::FileIdentity::of_file(&file).map_err(io_error)?;
+        let Some(index) = self.source_identities.get(&identity) else {
+            return Ok(false);
+        };
+        let (admitted_root, admitted_relative, _, _) = &self.files[*index];
+        if admitted_root != mirror {
+            return Ok(false);
+        }
+        // The stored member name must still reach this held object. This permits
+        // genuine filesystem case aliases, but not renamed/hard-linked foreign
+        // names after the admitted source was removed or replaced.
+        let Some(admitted) =
+            open_materialized_source_file(mirror, Path::new(admitted_relative), control)?
+        else {
+            return Ok(false);
+        };
+        let admitted_identity =
+            backend_platform::file_identity::FileIdentity::of_file(&admitted).map_err(io_error)?;
+        checkpoint(control)?;
+        Ok(admitted_identity == identity)
     }
 
     pub(super) fn validate_current(
@@ -1087,6 +1144,7 @@ impl PythonEnvironmentCapture {
     ) -> Result<MaterializedPythonEnvironment, CheckerError> {
         let mut roots = Vec::new();
         let mut files = Vec::new();
+        let mut source_identities = std::collections::HashMap::new();
         let mut compiled = std::collections::BTreeMap::new();
         for (index, root) in self.environment.roots.iter().enumerate() {
             checkpoint(control)?;
@@ -1145,6 +1203,14 @@ impl PythonEnvironmentCapture {
                     .open(mirror.join(&member.path))
                     .map_err(io_error)?;
                 file.write_all(bytes).map_err(io_error)?;
+                let identity = backend_platform::file_identity::FileIdentity::of_file(&file)
+                    .map_err(io_error)?;
+                if source_identities.insert(identity, files.len()).is_some() {
+                    return Err(project_error(
+                        "",
+                        "materialized source objects have conflicting identities",
+                    ));
+                }
                 files.push((
                     mirror.clone(),
                     member.path.clone(),
@@ -1159,9 +1225,46 @@ impl PythonEnvironmentCapture {
             roots,
             identity: self.identity,
             files,
+            source_identities,
             compiled,
         })
     }
+}
+
+fn open_materialized_source_file(
+    root: &Path,
+    relative: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<Option<std::fs::File>, CheckerError> {
+    let relative = normal_relative(&canonical_path_spelling(relative)?)?;
+    let mut directory =
+        backend_platform::DirectoryCapability::open_read_only_source(root).map_err(io_error)?;
+    let mut parts = relative.components().peekable();
+    while let Some(part) = parts.next() {
+        checkpoint(control)?;
+        let Component::Normal(name) = part else {
+            return Ok(None);
+        };
+        let name = name
+            .to_str()
+            .ok_or_else(|| project_error("", "native dependency selection is not Unicode"))?;
+        if parts.peek().is_some() {
+            directory = match directory.open_dir(name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(error)),
+            };
+        } else {
+            let file = match directory.open_file_read(name) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(error)),
+            };
+            checkpoint(control)?;
+            return Ok(Some(file));
+        }
+    }
+    Ok(None)
 }
 
 fn actual_project_directory(
@@ -2884,6 +2987,122 @@ mod tests {
     }
 
     #[test]
+    fn tagged_package_initializer_probes_retain_the_exact_captured_origin()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        let suffix = environment.interpreter.as_ref().unwrap().extension_suffixes[0].clone();
+        std::fs::create_dir(root.path.join("pkg")).map_err(io_error)?;
+        std::fs::write(
+            root.path.join("pkg/__init__.py"),
+            "from .submodule import answer\n",
+        )
+        .map_err(io_error)?;
+        std::fs::write(root.path.join("pkg/submodule.py"), "answer: int = 42\n")
+            .map_err(io_error)?;
+        let tagged = format!("pkg/__init__{suffix}");
+        std::fs::write(root.path.join(&tagged), b"captured initializer witness")
+            .map_err(io_error)?;
+        let captured = capture_root(
+            &root.path,
+            PythonDependencyRootKind::SitePackages,
+            control(&cancelled),
+        )?;
+        environment.roots[0] = Root {
+            original: environment.roots[0].original.clone(),
+            ..captured
+        };
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let wire = admitted.encode(control(&cancelled))?;
+        let received =
+            PythonEnvironmentCapture::decode(&wire, admitted.identity(), control(&cancelled))?;
+        let parent = fixture()?;
+        let materialized = received.materialize(&parent.path, control(&cancelled))?;
+        let private = &materialized.roots[0].2;
+        let candidates = compiled_import_probe_paths(&private.join("pkg"))
+            .filter_map(|candidate| materialized.compiled_candidate(&candidate))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            candidates,
+            std::collections::BTreeSet::from([&materialized.roots[0].1.join(&tagged)])
+        );
+        assert!(
+            compiled_import_probe_paths(&private.join("pkg/submodule"))
+                .all(|candidate| materialized.compiled_candidate(&candidate).is_none())
+        );
+        assert_eq!(
+            std::fs::read(private.join("pkg/submodule.py")).map_err(io_error)?,
+            b"answer: int = 42\n"
+        );
+        assert!(!private.join(&tagged).exists());
+        let mut ambiguous = received.environment.as_ref().clone();
+        let extension = Path::new(&tagged).extension().unwrap().to_str().unwrap();
+        ambiguous.roots[0].members.push(Member {
+            path: format!("pkg/__init__.{extension}"),
+            payload: MemberPayload::Compiled {
+                length: 1,
+                digest: [8; 32],
+            },
+        });
+        ambiguous.roots[0]
+            .members
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        let ambiguous = PythonEnvironmentCapture::admit(ambiguous, control(&cancelled))?;
+        let second_parent = fixture()?;
+        assert!(
+            ambiguous
+                .materialize(&second_parent.path, control(&cancelled))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn installed_stub_membership_requires_the_admitted_source_object() -> Result<(), CheckerError> {
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        environment.roots[0].members[0].path = "pkg/nested/source.pyi".into();
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let parent = fixture()?;
+        let mirror = admitted.materialize(&parent.path, control(&cancelled))?;
+        let original = mirror.roots[0].2.join("pkg/nested/source.pyi");
+        assert!(mirror.admitted_source_member(&original, control(&cancelled))?);
+        let foreign = mirror.roots[0].2.join("pkg/nested/foreign.pyi");
+        std::fs::write(&foreign, "answer: int\n").map_err(io_error)?;
+        assert!(!mirror.admitted_source_member(&foreign, control(&cancelled))?);
+        let bytes = std::fs::read(&original).map_err(io_error)?;
+        std::fs::rename(
+            &original,
+            mirror.roots[0].2.join("pkg/nested/held-original"),
+        )
+        .map_err(io_error)?;
+        std::fs::write(&original, bytes).map_err(io_error)?;
+        assert!(!mirror.admitted_source_member(&original, control(&cancelled))?);
+        assert!(!mirror.admitted_source_member(
+            &mirror.roots[0].2.join("pkg/nested/held-original"),
+            control(&cancelled)
+        )?);
+        let outside = parent.path.join("outside.pyi");
+        std::fs::write(&outside, "outside: int\n").map_err(io_error)?;
+        assert!(!mirror.admitted_source_member(&outside, control(&cancelled))?);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, mirror.roots[0].2.join("link.pyi"))
+                .map_err(io_error)?;
+            assert!(
+                mirror
+                    .admitted_source_member(
+                        &mirror.roots[0].2.join("link.pyi"),
+                        control(&cancelled)
+                    )
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn dependency_payload_and_transitive_membership_changes_are_distinct()
     -> Result<(), CheckerError> {
         let root = fixture()?;
@@ -3431,7 +3650,11 @@ platform_tag = sysconfig.get_platform().replace('-', '_').replace('.', '_')
 abi = 'cp314t' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'cp314'
 tag = f'cp314-{abi}-{platform_tag}'
 metadata = 'first_pkg_native_shadow-1.0.0.dist-info'
-files = {f'first_pkg{suffix}': image, f'math{suffix}': image,
+files = {f'first_pkg{suffix}': image, f'math{suffix}': image, f'native_pkg/__init__{suffix}': image,
+ 'native_pkg/__init__.py': 'from .submodule import answer\n', 'native_pkg/submodule.py': 'answer: int = 42\n',
+ 'native_pkg/__init__.pyi': 'answer: int\n', f'native_mod{suffix}': image,
+ 'native_mod.py': 'answer: int = 42\n', 'native_mod.pyi': 'answer: int\n',
+ 'bridge_mod.py': 'from native_mod import answer\n', 'bridge_pkg.py': 'from native_pkg import answer\n',
  f'{metadata}/METADATA': 'Metadata-Version: 2.1\nName: first-pkg-native-shadow\nVersion: 1.0.0\n',
  f'{metadata}/WHEEL': f'Wheel-Version: 1.0\nGenerator: genuine-image-shadow-control\nRoot-Is-Purelib: false\nTag: {tag}\n'}
 record = io.StringIO(); csv.writer(record).writerows([(name, '', '') for name in files] + [(f'{metadata}/RECORD', '', '')])
@@ -3527,6 +3750,224 @@ print(json.dumps({'wheel': str(wheel), 'suffix': suffix, 'image_sha256': hashlib
                 .iter()
                 .any(|inference| inference.observed == super::super::InferredType::Float)
         );
+        let module_source = b"from native_mod import answer\nvalue = answer\n";
+        std::fs::write(project.join("module_use.py"), module_source)?;
+        let module_sources = [super::super::PythonProjectBytesSource {
+            relative_path: "module_use.py",
+            source: module_source,
+        }];
+        let indirect_module_source = b"from bridge_mod import answer\nvalue = answer\n";
+        std::fs::write(
+            project.join("indirect_module_use.py"),
+            indirect_module_source,
+        )?;
+        let indirect_module_sources = [super::super::PythonProjectBytesSource {
+            relative_path: "indirect_module_use.py",
+            source: indirect_module_source,
+        }];
+        for (selected, path) in [
+            (&module_sources[..], "module_use.py"),
+            (&indirect_module_sources[..], "indirect_module_use.py"),
+        ] {
+            let allowed = authority.analyze_project_bytes_with_environment(
+                &project,
+                "ordinary-installed-interface",
+                selected,
+                Some(&tagged),
+                profile,
+                control(&cancelled),
+            )?;
+            assert!(matches!(
+                allowed.source_status(path),
+                Some(super::super::PythonProjectSourceStatus::Analyzed)
+            ));
+            assert!(
+                allowed
+                    .module(path)
+                    .ok_or("missing genuine interface report")?
+                    .inferences
+                    .iter()
+                    .any(|inference| inference.observed == super::super::InferredType::Integer)
+            );
+        }
+        let module_stub = site.join("native_mod.pyi");
+        let module_stub_bytes = std::fs::read(&module_stub)?;
+        std::fs::remove_file(&module_stub)?;
+        let module_executable = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
+        let refused = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-executable",
+            &module_sources,
+            Some(&module_executable),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            refused.source_status("module_use.py"),
+            Some(super::super::PythonProjectSourceStatus::UnavailableCompiledImport { .. })
+        ));
+        let refused = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-executable",
+            &indirect_module_sources,
+            Some(&module_executable),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            refused.source_status("indirect_module_use.py"),
+            Some(super::super::PythonProjectSourceStatus::UnavailableDependency { .. })
+        ));
+        std::fs::write(module_stub, module_stub_bytes)?;
+        let initializer = site.join(format!("native_pkg/__init__{suffix}"));
+        let initializer_bytes = std::fs::read(&initializer)?;
+        assert_eq!(
+            initializer_bytes,
+            std::fs::read(site.join(format!("math{suffix}")))?
+        );
+        let package_source =
+            b"import native_pkg\nfrom native_pkg.submodule import answer\nvalue = answer\n";
+        std::fs::write(project.join("package_use.py"), package_source)?;
+        let package_sources = [super::super::PythonProjectBytesSource {
+            relative_path: "package_use.py",
+            source: package_source,
+        }];
+        let package_stub = site.join("native_pkg/__init__.pyi");
+        let package_stub_bytes = std::fs::read(&package_stub)?;
+        let allowed = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-package-interface",
+            &package_sources,
+            Some(&tagged),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            allowed.source_status("package_use.py"),
+            Some(super::super::PythonProjectSourceStatus::Analyzed)
+        ));
+        assert!(
+            allowed
+                .module("package_use.py")
+                .ok_or("missing genuine package interface report")?
+                .inferences
+                .iter()
+                .any(|inference| inference.observed == super::super::InferredType::Integer)
+        );
+        let indirect_package_source = b"from bridge_pkg import answer\nvalue = answer\n";
+        std::fs::write(
+            project.join("indirect_package_use.py"),
+            indirect_package_source,
+        )?;
+        let indirect_package_sources = [super::super::PythonProjectBytesSource {
+            relative_path: "indirect_package_use.py",
+            source: indirect_package_source,
+        }];
+        let allowed = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-package-interface",
+            &indirect_package_sources,
+            Some(&tagged),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            allowed.source_status("indirect_package_use.py"),
+            Some(super::super::PythonProjectSourceStatus::Analyzed)
+        ));
+        assert!(
+            allowed
+                .module("indirect_package_use.py")
+                .ok_or("missing genuine transitive package interface report")?
+                .inferences
+                .iter()
+                .any(|inference| inference.observed == super::super::InferredType::Integer)
+        );
+        std::fs::remove_file(&package_stub)?;
+        std::fs::remove_file(&initializer)?;
+        let plain_package = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
+        let plain_report = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-package",
+            &package_sources,
+            Some(&plain_package),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            plain_report.source_status("package_use.py"),
+            Some(super::super::PythonProjectSourceStatus::Analyzed)
+        ));
+        assert!(
+            plain_report
+                .module("package_use.py")
+                .ok_or("missing genuine package report")?
+                .inferences
+                .iter()
+                .any(|inference| inference.observed == super::super::InferredType::Integer)
+        );
+        std::fs::write(&initializer, initializer_bytes)?;
+        assert!(plain_package.validate_current(control(&cancelled)).is_err());
+        let package_shadow = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
+        let package_report = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-package",
+            &package_sources,
+            Some(&package_shadow),
+            profile,
+            control(&cancelled),
+        )?;
+        let Some(super::super::PythonProjectSourceStatus::UnavailableCompiledImport {
+            imports,
+            ..
+        }) = package_report.source_status("package_use.py")
+        else {
+            panic!(
+                "both direct package and submodule imports must refuse tagged initializer recovery"
+            );
+        };
+        assert_eq!(imports.len(), 2);
+        assert!(
+            imports
+                .iter()
+                .all(|import| import.candidates.as_ref() == [initializer.clone()])
+        );
+        assert!(
+            imports
+                .iter()
+                .any(|import| import.binding.as_ref() == "native_pkg")
+        );
+        assert!(
+            imports
+                .iter()
+                .any(|import| import.binding.as_ref() == "answer")
+        );
+        let refused = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-package-executable",
+            &indirect_package_sources,
+            Some(&package_shadow),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            refused.source_status("indirect_package_use.py"),
+            Some(super::super::PythonProjectSourceStatus::UnavailableDependency { .. })
+        ));
+        std::fs::write(package_stub, package_stub_bytes)?;
+
         let output = Command::new(&uv)
             .args(["pip", "uninstall", "--python"])
             .arg(&current_python)
