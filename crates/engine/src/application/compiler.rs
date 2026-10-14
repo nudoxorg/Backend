@@ -390,6 +390,9 @@ pub enum PackageSourceCoverageGapCause {
     /// remaining allowance), so it has no semantic artifact. Every other source of
     /// the package keeps the facts it would have had.
     TypeScriptSourceWorkBudgetExhausted,
+    /// The package's compile deadline elapsed before or while this source was lowered.
+    /// Sources lowered before it are complete; this one has no semantic artifact.
+    TypeScriptSourceDeadlineReached,
     /// Exact Python source was captured but its grammar rejected semantic lowering.
     PythonSourceSyntaxUnavailable,
     /// Exact Python source was captured but its declared codec was unavailable.
@@ -455,6 +458,53 @@ const MAX_TYPESCRIPT_FILE_WORK_ROUNDS: u8 = 8;
 /// Whole-package restarts allowed when a source's own lowering spends its
 /// allowance. The restarted attempt skips that source from its first step.
 const MAX_TYPESCRIPT_WORK_RESTARTS: u8 = 2;
+
+/// Why a native TypeScript program can no longer lower sources soundly part-way
+/// through one package compilation. Sources lowered before the stop are complete;
+/// the stopped source and every later one are reported as coverage gaps instead
+/// of failing the package and discarding that completed work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypeScriptDegradation {
+    /// The program's work allowance ran out, or a source spent its own slice with
+    /// no restart left.
+    WorkBudget,
+    /// The package's wall-clock deadline elapsed.
+    Deadline,
+}
+
+impl TypeScriptDegradation {
+    /// The coverage-gap cause recorded for each source this degradation leaves unlowered.
+    const fn gap_cause(self) -> PackageSourceCoverageGapCause {
+        match self {
+            Self::WorkBudget => PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+            Self::Deadline => PackageSourceCoverageGapCause::TypeScriptSourceDeadlineReached,
+        }
+    }
+
+    /// Classifies a program-wide stop observed while lowering.
+    ///
+    /// `stop` is the program's latched stop, if any, and `deadline_elapsed` whether
+    /// the package deadline has passed (a deadline can be observed by another
+    /// phase before the program's own budget polls it). With no source complete
+    /// there is nothing to keep, and a cancellation is never degraded: both stay
+    /// failures.
+    fn from_stop(
+        stop: Option<backend_frontend_typescript::TszProjectExecutionStop>,
+        deadline_elapsed: bool,
+        any_source_complete: bool,
+    ) -> Option<Self> {
+        use backend_frontend_typescript::TszProjectExecutionStop as Stop;
+        if !any_source_complete {
+            return None;
+        }
+        match stop {
+            Some(Stop::WorkBudgetExhausted) => Some(Self::WorkBudget),
+            Some(Stop::Deadline) => Some(Self::Deadline),
+            Some(Stop::Cancelled) => None,
+            None => deadline_elapsed.then_some(Self::Deadline),
+        }
+    }
+}
 
 /// Exact native TypeScript program files that spent their work allowance in an
 /// earlier attempt of the same package compilation.
@@ -2599,6 +2649,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     // dominant cost of a project that does not set `skipLibCheck`, and no
                     // fact depends on it: declaration types are still resolved on demand.
                     check_declaration_files: false,
+                    // Nothing here reads checker diagnostics, only semantic facts, and each
+                    // file is answered by its own lazy query under its own slice: the
+                    // whole-program check would be pure cost.
+                    eager_file_checks: false,
                 };
                 authority
                     .update_with_checker_execution_and_file_work(
@@ -3242,7 +3296,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // attempt's interrupted source, or the program-wide allowance running out).
         // Sources lowered before that point are complete; every later TypeScript
         // source is reported as a coverage gap instead of failing the package.
-        let mut typescript_work_degraded = false;
+        let mut typescript_degraded: Option<TypeScriptDegradation> = None;
         for source in package.compilation_sources() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(PackageSemanticError::Compile {
@@ -3265,13 +3319,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     path: source.relative_path.into(),
                     terminal: Box::new(terminal),
                 })?;
-            if let Some(budget) = tsz_budget.as_ref().filter(|_| !typescript_work_degraded) {
+            if let Some(budget) = tsz_budget.as_ref().filter(|_| typescript_degraded.is_none()) {
                 match backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1) {
-                    // True program-wide exhaustion: keep what is already complete.
-                    Err(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
-                        if !artifacts.is_empty() =>
+                    // True program-wide exhaustion, or the package deadline: keep what is
+                    // already complete.
+                    Err(stop)
+                        if TypeScriptDegradation::from_stop(Some(stop), false, !artifacts.is_empty()).is_some() =>
                     {
-                        typescript_work_degraded = true;
+                        typescript_degraded = TypeScriptDegradation::from_stop(Some(stop), false, true);
                         Ok(())
                     }
                     result => result,
@@ -3318,7 +3373,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     typescript_owner = Some((*program, &**program_path));
                     // Skipped by this attempt's own checked project, named by an earlier
                     // attempt, or past the point where lowering stopped being sound.
-                    let work_gap = typescript_work_degraded
+                    let work_gap = typescript_degraded.is_some()
                         || typescript_work_gaps.contains(*program, program_path)
                         || tsz_projects
                             .get(*program)
@@ -3329,7 +3384,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         coverage_gaps.push(PackageSourceCoverageGap {
                             source: source_authority,
                             relative_path: source.relative_path.into(),
-                            cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                            cause: typescript_degraded.map_or(
+                                PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                                TypeScriptDegradation::gap_cause,
+                            ),
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
                         });
@@ -3477,11 +3535,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .and_then(Option::as_ref)
                     .and_then(|session| session.take_file_work_exhaustion());
                 let file_exhausted = file_exhaustion.is_some();
-                let program_exhausted = lowered.is_err()
-                    && tsz_budget.as_ref().is_some_and(|budget| {
-                        budget.stop_reason() == Some(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
-                    });
-                if file_exhausted || (program_exhausted && !artifacts.is_empty()) {
+                // A program-wide stop (work allowance or the package deadline) with sources
+                // already complete keeps them; the stopped source and every later one become gaps.
+                let program_degradation = if lowered.is_err() {
+                    TypeScriptDegradation::from_stop(
+                        tsz_budget.as_ref().and_then(|budget| budget.stop_reason()),
+                        Instant::now() >= control.deadline,
+                        !artifacts.is_empty(),
+                    )
+                } else {
+                    None
+                };
+                if file_exhausted || program_degradation.is_some() {
                     // The interrupted queries may have written partial state into the
                     // program-wide tables every later source reads, and this source has
                     // no complete facts. Rerun from fresh native state without it...
@@ -3497,11 +3562,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     // ...or, with no restart left, keep the sources that are already
                     // complete and report this one and every later one as gaps.
                     if !artifacts.is_empty() {
-                        typescript_work_degraded = true;
+                        let degradation = program_degradation.unwrap_or(TypeScriptDegradation::WorkBudget);
+                        typescript_degraded = Some(degradation);
                         coverage_gaps.push(PackageSourceCoverageGap {
                             source: source_authority,
                             relative_path: source.relative_path.into(),
-                            cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                            cause: degradation.gap_cause(),
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
                         });
@@ -6093,6 +6159,37 @@ mod tests {
                 Err(PackageSemanticError::MissingPublication)
             ),
             "original checkpoint refusal is retained"
+        );
+    }
+
+    #[test]
+    fn typescript_degradation_keeps_completed_sources_on_deadline_and_work_stops_only() {
+        use backend_frontend_typescript::TszProjectExecutionStop as Stop;
+        use super::TypeScriptDegradation as D;
+        // A latched program stop with sources already complete degrades, by kind.
+        assert_eq!(D::from_stop(Some(Stop::WorkBudgetExhausted), false, true), Some(D::WorkBudget));
+        assert_eq!(D::from_stop(Some(Stop::Deadline), false, true), Some(D::Deadline));
+        // The deadline can be observed by another phase before the program's own budget
+        // polls it; the elapsed clock alone is enough.
+        assert_eq!(D::from_stop(None, true, true), Some(D::Deadline));
+        // Nothing is complete: there is nothing to keep, so the stop stays a failure.
+        for stop in [None, Some(Stop::WorkBudgetExhausted), Some(Stop::Deadline)] {
+            assert_eq!(D::from_stop(stop, true, false), None);
+        }
+        // A caller's cancellation is never turned into a partial publication, even
+        // when the deadline has also elapsed.
+        assert_eq!(D::from_stop(Some(Stop::Cancelled), false, true), None);
+        assert_eq!(D::from_stop(Some(Stop::Cancelled), true, true), None);
+        // No stop and a live deadline: lowering is simply a failure of its own.
+        assert_eq!(D::from_stop(None, false, true), None);
+        // Each kind has its own explicit gap cause.
+        assert_eq!(
+            D::WorkBudget.gap_cause(),
+            super::PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted
+        );
+        assert_eq!(
+            D::Deadline.gap_cause(),
+            super::PackageSourceCoverageGapCause::TypeScriptSourceDeadlineReached
         );
     }
 
