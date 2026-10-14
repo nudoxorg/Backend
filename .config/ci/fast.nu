@@ -24,6 +24,7 @@ def fast-flake-checks []: nothing -> list<string> {
 }
 
 def main []: nothing -> nothing {
+
     # Check wall-clock expiry on every invocation, outside cached Nix checks.
     ^python3 ($env.FILE_PWD | path join "quarantine.py")
     if $env.LAST_EXIT_CODE != 0 {

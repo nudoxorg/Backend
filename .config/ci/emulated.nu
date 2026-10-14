@@ -46,13 +46,19 @@ def lanes []: nothing -> record {
             # `unclassified` where only a real Windows run can say whether
             # Wine or the code is wrong (those are handed to the Windows
             # owner). Delete an entry as soon as it is settled.
-            excluded: (open ($env.FILE_PWD | path join "emulated-windows-exclusions.toml") | get exclude)
+            excluded: (
+                open ($env.FILE_PWD | path join "emulated-windows-exclusions.toml")
+                | get exclude
+            )
         }
         arm64: {
             target: "aarch64-unknown-linux-gnu"
             # As for Windows: `qemu-limit` where user-mode emulation cannot do
             # what an aarch64 machine does, `unclassified` otherwise.
-            excluded: (open ($env.FILE_PWD | path join "emulated-arm64-exclusions.toml") | get exclude)
+            excluded: (
+                open ($env.FILE_PWD | path join "emulated-arm64-exclusions.toml")
+                | get exclude
+            )
         }
     }
 }
