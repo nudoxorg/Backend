@@ -1494,8 +1494,15 @@ fn directory_entries(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut entries = root
-        .read_dir_source_checked_limited(&parts, MAX_FILES)
-        .map_err(io_error)?
+        .read_dir_source_checked_limited_controlled(&parts, MAX_FILES, &mut || {
+            checkpoint(control).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Python environment enumeration stopped",
+                )
+            })
+        })
+        .map_err(|error| checkpoint(control).err().unwrap_or_else(|| io_error(error)))?
         .into_iter()
         .map(|entry| (entry.name.into(), entry.kind == EntryKind::Directory))
         .collect::<Vec<_>>();
@@ -2262,6 +2269,39 @@ mod tests {
             matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted)
         );
         assert_eq!(checkpoints, 2);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_dependency_enumeration_stops_within_native_directory_records()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        for index in 0..32 {
+            std::fs::write(
+                root.path.join(format!("member-{index}.py")),
+                "actual = 42\n",
+            )
+            .map_err(io_error)?;
+        }
+        let held =
+            backend_platform::win32::workspace_fs::WorkspaceRoot::open_read_only_source(&root.path)
+                .map_err(io_error)?;
+        let mut checkpoints = 0usize;
+        let result = held.read_dir_source_checked_limited_controlled(&[], MAX_FILES, &mut || {
+            checkpoints += 1;
+            if checkpoints == 8 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "deterministic record cancellation",
+                ));
+            }
+            Ok(())
+        });
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted)
+        );
+        assert_eq!(checkpoints, 8);
         Ok(())
     }
 
