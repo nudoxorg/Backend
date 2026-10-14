@@ -62,6 +62,9 @@ impl NativeCompilerEnvironment {
 }
 
 const READ_CHUNK_BYTES: usize = 4096;
+/// Reading a toolchain image in page-sized pieces costs one system call per 4 KiB of a file that
+/// can be hundreds of megabytes.
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
 pub(crate) const MAX_INVOCATION_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_TYPESCRIPT_MODULE_FILES: usize = 256;
@@ -144,7 +147,7 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
     let before_modified = before.modified().ok();
     let mut hasher = blake3::Hasher::new();
     let mut total = 0_u64;
-    let mut buffer = [0_u8; READ_CHUNK_BYTES];
+    let mut buffer = [0_u8; HASH_CHUNK_BYTES];
     loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
@@ -190,6 +193,25 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
 /// Symlinks and special files are refused so the package tree cannot redirect module loads outside
 /// this selected root.
 pub(crate) fn typescript_module_closure_digest(module_root: &Path) -> io::Result<[u8; 32]> {
+    let mut entries = typescript_module_entries(module_root, None)?;
+    entries.retain(|entry| entry.kind == b'f');
+    entries.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    typescript_module_files_digest(entries.iter().map(|entry| {
+        (
+            entry.relative_path.as_path(),
+            entry.length,
+            entry.digest.unwrap_or([0; 32]),
+        )
+    }))
+}
+
+/// Selects and bounds the package entries of one canonical module root. With an observer the
+/// files are fingerprinted instead of read, and every structural refusal still applies.
+fn typescript_module_entries(
+    module_root: &Path,
+    mut observer: Option<&mut StateObserver>,
+) -> io::Result<Vec<TypeScriptModuleEntry>> {
     if !module_root.is_absolute() || std::fs::canonicalize(module_root)? != module_root {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -216,17 +238,9 @@ pub(crate) fn typescript_module_closure_digest(module_root: &Path) -> io::Result
         &mut entry_count,
         &mut file_count,
         &mut total_bytes,
+        &mut observer,
     )?;
-    entries.retain(|entry| entry.kind == b'f');
-    entries.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
-
-    typescript_module_files_digest(entries.iter().map(|entry| {
-        (
-            entry.relative_path.as_path(),
-            entry.length,
-            entry.digest.unwrap_or([0; 32]),
-        )
-    }))
+    Ok(entries)
 }
 
 /// Hashes ordered file-content facts for one captured TypeScript package.
@@ -296,6 +310,7 @@ fn collect_typescript_module_entries(
     entry_count: &mut usize,
     file_count: &mut usize,
     total_bytes: &mut u64,
+    observer: &mut Option<&mut StateObserver>,
 ) -> io::Result<()> {
     if depth > MAX_TYPESCRIPT_MODULE_DEPTH {
         return Err(io::Error::new(
@@ -364,6 +379,7 @@ fn collect_typescript_module_entries(
                 entry_count,
                 file_count,
                 total_bytes,
+                observer,
             )?;
         } else if metadata.is_file() {
             let relative_path = path
@@ -391,7 +407,13 @@ fn collect_typescript_module_entries(
                     "selected TypeScript package exceeds the admitted byte bound",
                 ));
             }
-            let file_digest = executable_content_digest(&path)?;
+            let file_digest = match observer.as_deref_mut() {
+                Some(observer) => {
+                    observer.observe(&relative_path, &metadata);
+                    [0; 32]
+                }
+                None => executable_content_digest(&path)?,
+            };
             entries.push(TypeScriptModuleEntry {
                 relative_path,
                 kind: b'f',
@@ -421,6 +443,186 @@ fn collect_typescript_module_entries(
         ));
     }
     Ok(())
+}
+
+/// Memoized forms of the content digests a TypeScript compiler probe records.
+///
+/// Hashing the Node image and the compiler package takes seconds, so the owner reuses a digest
+/// while a metadata-only observation of exactly the same files reproduces the fingerprint it was
+/// recorded with (every path, size, inode, device, and nanosecond modification and change time),
+/// and only when no file changed close enough to the original read for that read to have raced
+/// with an edit. Anything else is hashed again. The invocation lease that guards each compile does
+/// not use these: it always re-reads the bytes.
+fn probe_memo() -> Option<backend_platform::user_cache::DerivedFactMemo> {
+    #[cfg(all(unix, not(test)))]
+    {
+        backend_platform::user_cache::DerivedFactMemo::in_user_cache("toolchain-content-digests")
+    }
+    #[cfg(any(not(unix), test))]
+    {
+        None
+    }
+}
+
+/// Members touched this recently before a read began could have changed again without moving
+/// their timestamps, so no memo is trusted for them.
+const MEMO_RACY_WINDOW_NANOS: i128 = 2_000_000_000;
+const MEMO_RECORD_BYTES: usize = 32 + 32 + 16;
+
+/// Fingerprints the observable state of files without reading them.
+pub(crate) struct StateObserver {
+    hasher: blake3::Hasher,
+    newest_change_nanos: i128,
+}
+
+impl StateObserver {
+    fn new(domain: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(domain);
+        Self {
+            hasher,
+            newest_change_nanos: i128::MIN,
+        }
+    }
+
+    #[cfg(unix)]
+    fn observe(&mut self, name: &Path, metadata: &std::fs::Metadata) {
+        use std::os::unix::fs::MetadataExt as _;
+        let nanos = |seconds: i64, subsecond: i64| {
+            i128::from(seconds) * 1_000_000_000 + i128::from(subsecond)
+        };
+        let modified = nanos(metadata.mtime(), metadata.mtime_nsec());
+        let changed = nanos(metadata.ctime(), metadata.ctime_nsec());
+        self.newest_change_nanos = self.newest_change_nanos.max(modified).max(changed);
+        let name = name.as_os_str().as_encoded_bytes();
+        self.hasher.update(&(name.len() as u64).to_be_bytes());
+        self.hasher.update(name);
+        self.hasher.update(&metadata.len().to_be_bytes());
+        self.hasher.update(&metadata.dev().to_be_bytes());
+        self.hasher.update(&metadata.ino().to_be_bytes());
+        self.hasher.update(&modified.to_be_bytes());
+        self.hasher.update(&changed.to_be_bytes());
+    }
+
+    #[cfg(not(unix))]
+    fn observe(&mut self, _name: &Path, _metadata: &std::fs::Metadata) {
+        // Without change times and inode numbers an observation cannot vouch for contents.
+        self.newest_change_nanos = i128::MAX;
+    }
+
+    fn finish(self) -> ([u8; 32], i128) {
+        (*self.hasher.finalize().as_bytes(), self.newest_change_nanos)
+    }
+}
+
+fn unix_nanos_now() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i128::try_from(elapsed.as_nanos()).unwrap_or(i128::MAX))
+}
+
+/// Returns the digest for the current state of `key`, from the memo when its fingerprint matches
+/// and otherwise from `compute`, recording the result when the files have been quiet long enough.
+fn memoized_digest(
+    memo: Option<&backend_platform::user_cache::DerivedFactMemo>,
+    key: &[u8],
+    observe: impl FnOnce() -> io::Result<([u8; 32], i128)>,
+    compute: impl FnOnce() -> io::Result<[u8; 32]>,
+) -> io::Result<[u8; 32]> {
+    let Some(memo) = memo else {
+        return compute();
+    };
+    let read_started = unix_nanos_now();
+    // An observation that cannot be made (not canonical, not a file, over a bound) is refused by
+    // `compute` with the exact cause, exactly as without a memo.
+    let Ok((fingerprint, newest)) = observe() else {
+        return compute();
+    };
+    let quiet = |recorded_started: i128| newest < recorded_started - MEMO_RACY_WINDOW_NANOS;
+    if let Some(record) = memo.load(key)
+        && record.len() == MEMO_RECORD_BYTES
+        && record[..32] == fingerprint
+        && quiet(i128::from_be_bytes(record[64..80].try_into().unwrap_or([0; 16])))
+    {
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(&record[32..64]);
+        return Ok(digest);
+    }
+    let digest = compute()?;
+    if quiet(read_started) {
+        let mut record = Vec::with_capacity(MEMO_RECORD_BYTES);
+        record.extend_from_slice(&fingerprint);
+        record.extend_from_slice(&digest);
+        record.extend_from_slice(&read_started.to_be_bytes());
+        // Best effort: an unwritable cache only costs the next start a re-read.
+        let _ = memo.store(key, &record);
+    }
+    Ok(digest)
+}
+
+/// Observes one selected executable the way [`executable_content_digest`] admits it.
+fn observe_executable(path: &Path) -> io::Result<([u8; 32], i128)> {
+    if !path.is_absolute() || std::fs::canonicalize(path)? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is not canonical and absolute",
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_INVOCATION_EXECUTABLE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable is not an admissible regular file",
+        ));
+    }
+    let mut observer = StateObserver::new(b"backend.probe.executable-state.v1\0");
+    observer.observe(path, &metadata);
+    Ok(observer.finish())
+}
+
+/// [`executable_content_digest`], reused while the file's observable state is unchanged.
+pub(crate) fn executable_content_digest_memoized(path: &Path) -> io::Result<[u8; 32]> {
+    executable_content_digest_with(probe_memo().as_ref(), path)
+}
+
+fn executable_content_digest_with(
+    memo: Option<&backend_platform::user_cache::DerivedFactMemo>,
+    path: &Path,
+) -> io::Result<[u8; 32]> {
+    let mut key = b"executable\0".to_vec();
+    key.extend_from_slice(path.as_os_str().as_encoded_bytes());
+    memoized_digest(
+        memo,
+        &key,
+        || observe_executable(path),
+        || executable_content_digest(path),
+    )
+}
+
+/// [`typescript_module_closure_digest`], reused while every selected file is unchanged.
+pub(crate) fn typescript_module_closure_digest_memoized(
+    module_root: &Path,
+) -> io::Result<[u8; 32]> {
+    typescript_module_closure_digest_with(probe_memo().as_ref(), module_root)
+}
+
+fn typescript_module_closure_digest_with(
+    memo: Option<&backend_platform::user_cache::DerivedFactMemo>,
+    module_root: &Path,
+) -> io::Result<[u8; 32]> {
+    let mut key = b"typescript-module-closure\0".to_vec();
+    key.extend_from_slice(module_root.as_os_str().as_encoded_bytes());
+    memoized_digest(
+        memo,
+        &key,
+        || {
+            let mut observer = StateObserver::new(b"backend.probe.module-closure-state.v1\0");
+            typescript_module_entries(module_root, Some(&mut observer))?;
+            Ok(observer.finish())
+        },
+        || typescript_module_closure_digest(module_root),
+    )
 }
 
 #[cfg(windows)]
@@ -972,21 +1174,21 @@ pub(crate) fn admit_typescript_script_invocation(
             module_root: module_root.to_path_buf(),
         });
     }
-    let module_before = typescript_module_closure_digest(module_root).map_err(|source| {
+    let module_before = typescript_module_closure_digest_memoized(module_root).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::CompilerModule,
             path: module_root.join("typescript"),
             source,
         }
     })?;
-    let script_before = executable_content_digest(compiler_script).map_err(|source| {
+    let script_before = executable_content_digest_memoized(compiler_script).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::Script,
             path: compiler_script.to_path_buf(),
             source,
         }
     })?;
-    let interpreter_before = executable_content_digest(node).map_err(|source| {
+    let interpreter_before = executable_content_digest_memoized(node).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::Interpreter,
             path: node.to_path_buf(),
@@ -995,21 +1197,21 @@ pub(crate) fn admit_typescript_script_invocation(
     })?;
     let interpreter_version = probe_version(tool, node, limits)?;
     let script_version = probe_typescript_script_with_node(compiler_script, node, limits)?;
-    let script_after = executable_content_digest(compiler_script).map_err(|source| {
+    let script_after = executable_content_digest_memoized(compiler_script).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::Script,
             path: compiler_script.to_path_buf(),
             source,
         }
     })?;
-    let interpreter_after = executable_content_digest(node).map_err(|source| {
+    let interpreter_after = executable_content_digest_memoized(node).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::Interpreter,
             path: node.to_path_buf(),
             source,
         }
     })?;
-    let module_after = typescript_module_closure_digest(module_root).map_err(|source| {
+    let module_after = typescript_module_closure_digest_memoized(module_root).map_err(|source| {
         ToolchainProbeError::ExecutableWitness {
             role: ToolchainProbeFileRole::CompilerModule,
             path: module_root.join("typescript"),
@@ -1422,6 +1624,123 @@ mod tests {
             .expect_err("entry traversal is bounded even for irrelevant files");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn memo_scratch(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "toolchain-probe-memo-{label}-{}-{}",
+            std::process::id(),
+            NEXT_TYPESCRIPT_PACKAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    fn planted_record(fingerprint: [u8; 32], digest: [u8; 32], started: i128) -> Vec<u8> {
+        let mut record = fingerprint.to_vec();
+        record.extend_from_slice(&digest);
+        record.extend_from_slice(&started.to_be_bytes());
+        record
+    }
+
+    #[test]
+    fn a_memoized_executable_digest_is_reused_only_while_the_file_is_unchanged() {
+        use super::{
+            executable_content_digest, executable_content_digest_with, observe_executable,
+            unix_nanos_now,
+        };
+        let root = memo_scratch("executable");
+        let memo = backend_platform::user_cache::DerivedFactMemo::beneath(&root.join("cache"), "unit");
+        let image = root.join("node");
+        std::fs::write(&image, b"interpreter image").unwrap();
+        let real = executable_content_digest(&image).unwrap();
+
+        // A file written moments ago may still be mid-edit: it is hashed and nothing is recorded.
+        assert_eq!(executable_content_digest_with(Some(&memo), &image).unwrap(), real);
+        let mut key = b"executable\0".to_vec();
+        key.extend_from_slice(image.as_os_str().as_encoded_bytes());
+        assert!(memo.load(&key).is_none());
+
+        // A matching fingerprint recorded well after the file last changed is trusted without
+        // reading; the planted digest proves no read happened.
+        let (fingerprint, _) = observe_executable(&image).unwrap();
+        memo.store(&key, &planted_record(fingerprint, [7; 32], unix_nanos_now() + 60_000_000_000))
+            .unwrap();
+        assert_eq!(executable_content_digest_with(Some(&memo), &image).unwrap(), [7; 32]);
+
+        // Any observable change yields the real digest of the new contents, even at equal length.
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(&image, b"interpreter imagf").unwrap();
+        let changed = executable_content_digest_with(Some(&memo), &image).unwrap();
+        assert_ne!(changed, [7; 32]);
+        assert_eq!(changed, executable_content_digest(&image).unwrap());
+
+        // A record whose read began before the file's last change cannot vouch for it.
+        let (fingerprint, _) = observe_executable(&image).unwrap();
+        memo.store(&key, &planted_record(fingerprint, [7; 32], unix_nanos_now() - 60_000_000_000))
+            .unwrap();
+        assert_ne!(executable_content_digest_with(Some(&memo), &image).unwrap(), [7; 32]);
+
+        // The structural refusals of the unmemoized digest still apply.
+        assert!(executable_content_digest_with(Some(&memo), std::path::Path::new("relative")).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_memoized_module_closure_digest_follows_every_selected_file() {
+        use super::{StateObserver, typescript_module_closure_digest_with, typescript_module_entries,
+            unix_nanos_now};
+        let root = memo_scratch("closure");
+        let memo = backend_platform::user_cache::DerivedFactMemo::beneath(&root.join("cache"), "unit");
+        let package = root.join("node_modules/typescript");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::create_dir_all(package.join("lib")).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"name":"typescript"}"#).unwrap();
+        std::fs::write(package.join("bin/tsc"), "require('../lib/tsc.js');\n").unwrap();
+        std::fs::write(package.join("lib/tsc.js"), "module.exports = 1;\n").unwrap();
+        std::fs::write(package.join("README.md"), "documentation\n").unwrap();
+        let module_root = std::fs::canonicalize(root.join("node_modules")).unwrap();
+        let real = super::typescript_module_closure_digest(&module_root).unwrap();
+        let mut key = b"typescript-module-closure\0".to_vec();
+        key.extend_from_slice(module_root.as_os_str().as_encoded_bytes());
+        let fingerprint = || {
+            let mut observer = StateObserver::new(b"backend.probe.module-closure-state.v1\0");
+            typescript_module_entries(&module_root, Some(&mut observer)).unwrap();
+            observer.finish().0
+        };
+
+        assert_eq!(typescript_module_closure_digest_with(Some(&memo), &module_root).unwrap(), real);
+        assert!(memo.load(&key).is_none(), "fresh files are never memoized");
+
+        memo.store(&key, &planted_record(fingerprint(), [9; 32], unix_nanos_now() + 60_000_000_000))
+            .unwrap();
+        assert_eq!(
+            typescript_module_closure_digest_with(Some(&memo), &module_root).unwrap(),
+            [9; 32]
+        );
+
+        // A changed selected file invalidates the record.
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(package.join("lib/tsc.js"), "module.exports = 2;\n").unwrap();
+        let changed = typescript_module_closure_digest_with(Some(&memo), &module_root).unwrap();
+        assert_ne!(changed, [9; 32]);
+        assert_ne!(changed, real);
+
+        // An added selected file invalidates it too; an added documentation file does not matter.
+        memo.store(&key, &planted_record(fingerprint(), [9; 32], unix_nanos_now() + 60_000_000_000))
+            .unwrap();
+        std::fs::write(package.join("README-more.md"), "documentation\n").unwrap();
+        assert_eq!(
+            typescript_module_closure_digest_with(Some(&memo), &module_root).unwrap(),
+            [9; 32],
+            "files outside the admitted closure are not part of its fingerprint"
+        );
+        std::fs::write(package.join("lib/extra.js"), "module.exports = 3;\n").unwrap();
+        assert_ne!(
+            typescript_module_closure_digest_with(Some(&memo), &module_root).unwrap(),
+            [9; 32]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

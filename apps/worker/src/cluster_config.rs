@@ -1034,7 +1034,10 @@ fn local_compiler_capability_for_profile(
     compiler: &LocalCompilerClient,
     profile: [u8; 2],
 ) -> Result<LocalCompilerCapability, ClusterConfigError> {
-    let deadline = Instant::now().checked_add(Duration::from_secs(6)).ok_or(
+    // A profile can stay `Probing` while the owner admits its toolchain in the background (the Go
+    // oracle reads a whole installation the first time on a machine), so the wait covers that
+    // admission instead of reporting a still-probing profile as unavailable.
+    let deadline = Instant::now().checked_add(Duration::from_secs(120)).ok_or(
         ClusterConfigError::CapabilityUnavailable {
             profile,
             state: None,

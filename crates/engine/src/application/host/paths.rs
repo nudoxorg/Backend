@@ -493,22 +493,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         variable: LocalHostVariable,
         path: PathBuf,
     ) -> Result<PathBuf, LocalCompilerHostError> {
-        let metadata =
-            fs::metadata(&path).map_err(|source| LocalCompilerHostError::ConfiguredPath {
-                role,
-                variable,
-                path: path.clone().into_boxed_path(),
-                source,
-            })?;
-        if !metadata.is_dir() {
-            return Err(LocalCompilerHostError::ConfiguredPathKind {
-                role,
-                variable,
-                path: path.into_boxed_path(),
-                expected: LocalHostPathKind::Directory,
-            });
-        }
-        canonicalize_existing(role, &path)
+        validate_directory_path(role, variable, path)
     }
 
     pub(super) fn executable_candidates(
@@ -889,6 +874,30 @@ pub(super) fn canonicalize_executable_existing(
             source,
         }
     })
+}
+
+/// Admits an existing directory by exact kind and canonical path.
+pub(super) fn validate_directory_path(
+    role: LocalHostPathRole,
+    variable: LocalHostVariable,
+    path: PathBuf,
+) -> Result<PathBuf, LocalCompilerHostError> {
+    let metadata =
+        fs::metadata(&path).map_err(|source| LocalCompilerHostError::ConfiguredPath {
+            role,
+            variable,
+            path: path.clone().into_boxed_path(),
+            source,
+        })?;
+    if !metadata.is_dir() {
+        return Err(LocalCompilerHostError::ConfiguredPathKind {
+            role,
+            variable,
+            path: path.into_boxed_path(),
+            expected: LocalHostPathKind::Directory,
+        });
+    }
+    canonicalize_existing(role, &path)
 }
 
 pub(super) fn canonicalize_existing(
