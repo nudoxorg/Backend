@@ -220,9 +220,10 @@ impl<'a> SourceRowProjection<'a> {
                 "source file is outside its project's canonical frontier".to_owned(),
             ));
         }
-        let profile = super::super::ingest::source_profile(std::path::Path::new(path))
-            .map_err(BuiltinModelError)?;
-        if semantic_profile_is_complete(complete, Some(project.package), path)? {
+        let profile =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?;
+        if semantic_profile_is_complete(complete, Some(project.package), path, file.python_version)?
+        {
             // The semantic lane owns this file: its published image answered,
             // so the structural baseline is suppressed entirely. Even a stale
             // image answers (typed stale) rather than falling back silently.

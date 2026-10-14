@@ -370,11 +370,12 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
         return Err(IndexScanFailure::Cancelled);
     }
     let source_coordinate = work.source_root.to_string_lossy();
-    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable(
+    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable_with_interpreter(
         &source_coordinate,
         work.project_key,
         &work.reusable,
         &work.cancellation,
+        work.interpreter.as_ref(),
     )
     .map_err(|error| {
         if work.cancellation.load(Ordering::Acquire) {
@@ -383,36 +384,6 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
             IndexScanFailure::Refused(BuiltinModelError(error))
         }
     })?;
-    if scan
-        .compiler_sources
-        .iter()
-        .any(|source| matches!(source.profile, LanguageProfile::Python(_)))
-        || scan
-            .reused_compiler_files
-            .iter()
-            .any(|source| matches!(source.profile, LanguageProfile::Python(_)))
-    {
-        let control = PythonProjectControl {
-            cancelled: &work.cancellation,
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(15 * 60),
-        };
-        scan.python_environment = Some(
-            match match work.interpreter.as_ref() {
-                Some(admission) => {
-                    admission.capture_project(scan.revision_fence.canonical_root(), control)
-                }
-                None => {
-                    PythonEnvironmentCapture::capture(scan.revision_fence.canonical_root(), control)
-                }
-            } {
-                Ok(capture) => PythonEnvironmentInput::Captured(capture),
-                Err(_error) if work.cancellation.load(Ordering::Acquire) => {
-                    return Err(IndexScanFailure::Cancelled);
-                }
-                Err(error) => PythonEnvironmentInput::Unavailable(Arc::new(error)),
-            },
-        );
-    }
     if let Some(PythonEnvironmentInput::Captured(environment)) = &scan.python_environment {
         // Preserve source inventory and structural rows for browsing. The
         // explicitly selected installed venv is dependency input, not a project

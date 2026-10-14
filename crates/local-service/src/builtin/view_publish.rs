@@ -665,13 +665,10 @@ pub(super) fn structural_splice_keys(
         if !changed.contains(key) {
             continue;
         }
-        let path = record
-            .file_fields()
-            .ok_or_else(|| {
-                BuiltinModelError("structural file splice received a non-file record".to_owned())
-            })?
-            .path;
-        if !semantic_lane_owns_file(activated, package, path)? {
+        let file = record.file_fields().ok_or_else(|| {
+            BuiltinModelError("structural file splice received a non-file record".to_owned())
+        })?;
+        if !semantic_lane_owns_file(activated, package, file)? {
             keys.insert(*key);
         }
     }
@@ -681,10 +678,9 @@ pub(super) fn structural_splice_keys(
 fn semantic_lane_owns_file(
     activated: &super::coverage::ActivatedProfiles,
     package: PackageKey,
-    path: &str,
+    file: backend_engine::builtin::ProductFileRef<'_>,
 ) -> Result<bool, BuiltinModelError> {
-    let Some(profile) =
-        super::ingest::source_profile(std::path::Path::new(path)).map_err(BuiltinModelError)?
+    let Some(profile) = super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
     else {
         return Ok(false);
     };

@@ -324,7 +324,12 @@ impl StructuralProjectionPlan {
             let project = sources.projects.get(&file.project).ok_or_else(|| {
                 BuiltinModelError("structural source refers to a missing project".to_owned())
             })?;
-            if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
+            if semantic_profile_is_complete(
+                complete,
+                Some(project.package),
+                file.path,
+                file.python_version,
+            )? {
                 continue;
             }
             let containment = FileContainment::for_file(sources, record, &project.label)?;
@@ -599,6 +604,7 @@ pub(super) fn projected_source_capacity(
                 .get(&fields.project)
                 .map(|project| project.package),
             fields.path,
+            fields.python_version,
         )? {
             continue;
         }
@@ -640,8 +646,8 @@ pub(super) fn profile_source_paths(
         let Some(file) = record.1.file_fields() else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };
@@ -666,8 +672,8 @@ pub(super) fn profile_source_identities(
         let Some(identity) = file.source_identity else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };
