@@ -42,7 +42,7 @@ fn until(
     fixture: &mut AdapterFixture,
     mut ready: impl FnMut(&CommandAdapter, &ProductDaemon) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     loop {
         tick(fixture);
         let (adapter, daemon) = fixture.parts();
@@ -116,6 +116,7 @@ fn after_grant_state(
                 let completed = completion.as_ref().map(|done| {
                     let disposition = match &done.disposition {
                         Disposition::Ready => "Ready".to_owned(),
+                        Disposition::Unchanged => "Unchanged".to_owned(),
                         Disposition::Unselected(error) => format!("Unselected({error:?})"),
                         Disposition::Pending(error) => format!("Pending({error:?})"),
                     };
@@ -145,6 +146,12 @@ fn after_grant_state(
                     worker.observed_state()
                 )
             }
+            IndexJobWork::CaptureRetiring { worker, .. } => format!(
+                "CaptureRetiring(finished={}, observation={})",
+                worker.is_finished(),
+                worker.observed_state()
+            ),
+            IndexJobWork::Finishing { refusal, .. } => format!("Finishing(refusal={refusal})"),
             IndexJobWork::Transition => "Transition".to_owned(),
         };
         format!(
@@ -198,7 +205,7 @@ fn await_after_grant(
     operation: backend_library::IndexOperationKey,
     ticket: &backend_library::IndexJobTicket,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     loop {
         tick(fixture);
         let reason = match entered.try_recv() {
@@ -243,7 +250,7 @@ fn block_at(fixture: &mut AdapterFixture, stage: TestStage) -> (Receiver<()>, Re
                 .send(())
                 .expect("test observes actual publication stage");
             released
-                .recv_timeout(Duration::from_secs(30))
+                .recv_timeout(super::control_deadline())
                 .expect("bounded stage release");
         }),
     });
@@ -300,6 +307,8 @@ fn start(
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
         _staged_project: None,
+        terminal_token: None,
+        retire_attempts: Vec::new(),
         work: IndexJobWork::Transition,
     };
     adapter
@@ -369,7 +378,7 @@ fn published(fixture: &mut AdapterFixture, ticket: &backend_library::IndexJobTic
         .filter(|job| &job.owner_ticket == ticket)
         .and_then(|job| job.operation_key);
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(30);
+    let deadline = started + super::control_deadline();
     loop {
         tick(fixture);
         if fixture
@@ -752,7 +761,7 @@ fn index_publication_worker_refused_install_retains_the_original_unselected_capa
     else {
         panic!("actual worker")
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     let mut done = loop {
         if let Some(event) = worker.poll() {
             match event {
@@ -1222,7 +1231,7 @@ fn index_publication_worker_native_grant_unwind_preserves_selector_for_next_publ
     // Do not poll the owner until its worker has durably recorded the failed
     // original attempt. This observes the real read-only journal connection
     // while the original workspace/read head has not yet been returned.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     loop {
         let (adapter, daemon) = fixture.parts();
         assert_eq!(
@@ -1337,7 +1346,7 @@ fn failed_capture_cold_retry_control(refuse_receipt_refresh: bool) {
         (old_root, old_sequence)
     };
     drop(release.0.take());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     let original = loop {
         let (adapter, daemon) = fixture.parts();
         assert_eq!(daemon.engine().daemon().owner().head().root(), old_root);
@@ -1799,6 +1808,8 @@ fn publication_worker_removes_native_selection_after_staging() {
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
         _staged_project: None,
+        terminal_token: None,
+        retire_attempts: Vec::new(),
         work: IndexJobWork::Transition,
     };
     adapter

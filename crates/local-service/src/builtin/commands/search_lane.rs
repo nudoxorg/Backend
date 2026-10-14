@@ -156,6 +156,7 @@ impl SearchLane {
         let worker = thread::Builder::new()
             .name("locald-search-prepare".to_owned())
             .spawn(move || {
+                let _trace = crate::owner_trace::span("search_lane.prepare_worker");
                 #[cfg(test)]
                 if let Some(gate) = gate {
                     let _ = gate.entered.send(());
@@ -182,6 +183,7 @@ impl SearchLane {
                     let corpus = projection.admit_corpus(
                         snapshot.root(),
                         || {
+                            let _t = crate::owner_trace::span("search_lane.read_sources");
                             let read = || super::super::read_indexed_sources(&snapshot);
                             #[cfg(feature = "cluster-process-journey-hooks")]
                             {
@@ -193,6 +195,7 @@ impl SearchLane {
                             }
                         },
                         |sources| {
+                            let _t = crate::owner_trace::span("search_lane.semantic_corpus");
                             let admit = || {
                                 super::super::view_build::semantic_query_corpus(
                                     &snapshot,
@@ -231,6 +234,7 @@ impl SearchLane {
                         corpus,
                     };
                     let prepare = || {
+                        let _t = crate::owner_trace::span("search_lane.lexical_projection");
                         projection
                             .select_controlled(
                                 selection.workspace,

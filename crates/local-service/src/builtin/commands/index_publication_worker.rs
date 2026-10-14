@@ -1,6 +1,16 @@
-//! The final durable publication keeps the original writers on one owned
+//! Durable workspace publications keep the original writers on one owned
 //! thread. The actor grants one checked claim and later installs its coherent
 //! result; it never runs this thread's preparation, fsync or SQL projection.
+//!
+//! Two transitions use this worker. The final publication installs the
+//! compiled product. The source capture runs first: it turns a finished scan
+//! into the source rows and Pending markers, stages and commits them, installs
+//! their structural view, and prepares the compiler attempts, all here rather
+//! than on the actor, so a large package never stops the owner from serving
+//! reads.
+use super::super::index::{
+    ScanCapture, ScanContinuation, ScanPlan, prepare_scan_plan, source_capture_receipt_for_snapshot,
+};
 use super::super::index_operation::PublicationJournalWriter;
 use super::*;
 use crate::builtin::generation_residence::SemanticGenerationResidence;
@@ -38,6 +48,31 @@ pub(super) struct PublicationWork {
     requested_reference: backend_library::PackageReference,
     operation_key: Option<backend_library::IndexOperationKey>,
     cancellation: Arc<AtomicBool>,
+    /// A finished scan this work still has to turn into its transition. Present
+    /// only for a source capture, until [`Self::prepare`] consumes it.
+    scan: Option<IndexScanResult>,
+    /// Whether this is the source capture rather than the final publication.
+    capture: bool,
+    /// Whether this publishes a source transition whose job outcome is already
+    /// decided (a refusal, or the closure of a failed job's captures): it ends
+    /// once the transition is selected and projected, with no publication receipt.
+    terminal: bool,
+    /// Whether that transition only closes a failed job's Pending captures. It
+    /// is neither announced by a Prepared marker nor keyed to an operation.
+    closure: bool,
+    /// The decided outcome, reported once the transition is selected.
+    decided: Option<backend_library::IndexJobOutcome>,
+    /// What the capture continues into once its transition is selected.
+    continuation: Option<ScanContinuation>,
+    /// Pending markers the capture installs; the owner records them so a
+    /// later terminal can close them.
+    pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    /// The capture's hand-off to the owner, set when the work is complete.
+    pub(super) next: Option<CaptureNext>,
+    source_captured: bool,
+    /// Ingest counts of the root this work commits, computed here so the owner
+    /// can serve status from the new root without counting it itself.
+    pub(super) progress: Option<ProgressMemo>,
     staged: Option<PreparedBuiltinIntent>,
     candidate: Option<PreparedWorkspaceCandidate>,
     candidate_snapshot: Option<WorkspaceSnapshot>,
@@ -58,6 +93,8 @@ pub(super) struct PublicationWork {
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TestStage {
+    BeforeScan,
+    BeforeStage,
     AfterGrant,
     AfterSelection,
     AfterReceipt,
@@ -66,6 +103,15 @@ pub(super) enum TestStage {
 pub(super) struct TestHook {
     pub(super) stage: TestStage,
     pub(super) run: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+impl TestHook {
+    /// Whether the hook is aimed at the source capture rather than at a later
+    /// publication.
+    pub(super) fn targets_capture(&self) -> bool {
+        self.stage == TestStage::BeforeScan
+    }
 }
 
 pub(super) enum Head {
@@ -77,10 +123,23 @@ pub(super) enum Head {
 
 pub(super) enum Disposition {
     Ready,
+    /// A source capture found nothing to commit. No candidate was staged or
+    /// selected, so the writers return exactly as an unselected attempt's do,
+    /// but the outcome is the prepared product selection, not a failure.
+    Unchanged,
     /// A verified unchanged physical base permits ordinary failure/cancel.
     Unselected(BuiltinModelError),
     /// The same original capabilities remain available for explicit retry.
     Pending(BuiltinModelError),
+}
+
+/// What a source capture hands the owner once its work is complete.
+pub(super) enum CaptureNext {
+    /// The committed capture continues into compilation, or was refused while
+    /// admitting its compiler sources.
+    Compile(Result<DeferredIndex, BuiltinModelError>),
+    /// No profile needed compiling: this is the whole product selection.
+    Ready(PreparedProductSelection),
 }
 
 pub(super) struct Completion {
@@ -196,6 +255,16 @@ impl PublicationWork {
             requested_reference,
             operation_key,
             cancellation,
+            scan: None,
+            capture: false,
+            terminal: false,
+            closure: false,
+            decided: None,
+            continuation: None,
+            captures: BTreeMap::new(),
+            next: None,
+            source_captured: false,
+            progress: None,
             staged: None,
             candidate: None,
             candidate_snapshot: None,
@@ -214,18 +283,212 @@ impl PublicationWork {
         }
     }
 
+    /// Turns this work into a source capture: it prepares the transition from
+    /// the finished scan itself, then commits it ahead of compilation.
+    pub(super) fn set_scan(&mut self, scan: IndexScanResult) {
+        self.scan = Some(scan);
+        self.capture = true;
+    }
+
+    /// Makes this work close a failed job's Pending captures. The prepared
+    /// intent is the whole transition; `outcome` is the job's already decided
+    /// terminal result, carried unchanged to the owner.
+    pub(super) fn set_closure(&mut self, outcome: backend_library::IndexJobOutcome) {
+        self.terminal = true;
+        self.closure = true;
+        self.decided = Some(outcome);
+    }
+
+    /// Makes this work publish a refusal: every profile was refused, so the
+    /// prepared intent only records their terminal captures. It is announced
+    /// and keyed like the final publication, but its outcome is `outcome`.
+    pub(super) fn set_refusal(&mut self, outcome: backend_library::IndexJobOutcome) {
+        self.terminal = true;
+        self.decided = Some(outcome);
+    }
+
+    /// Whether this work only closes a failed job's captures.
+    pub(super) const fn is_closure(&self) -> bool {
+        self.closure
+    }
+
+    /// Whether this work publishes a transition whose job outcome was decided.
+    pub(super) const fn is_decided(&self) -> bool {
+        self.terminal
+    }
+
+    /// The decided outcome, while this work has not yet been selected.
+    pub(super) fn take_decided(&mut self) -> Option<backend_library::IndexJobOutcome> {
+        self.decided.take()
+    }
+
+    /// Whether this is the source capture rather than the final publication.
+    pub(super) const fn is_capture(&self) -> bool {
+        self.capture
+    }
+
+    /// A capture whose scan needed no transition: nothing was staged, so the
+    /// writers return untouched.
+    fn nothing_to_commit(&self) -> bool {
+        matches!(self.next, Some(CaptureNext::Ready(_)))
+    }
+
+    /// Prepares the capture transition from the scan on this worker: source
+    /// and semantic admission, candidate observations, row changes and Pending
+    /// markers. It runs against the base snapshot the head writer was
+    /// reserved at, so the grant refuses a transition whose base moved.
+    fn prepare_scan(&mut self, scan: IndexScanResult) -> Result<(), BuiltinModelError> {
+        #[cfg(test)]
+        self.run_test_hook(TestStage::BeforeScan);
+        let authority = self
+            .semantic
+            .as_mut()
+            .expect("original semantic writer")
+            .authority_mut();
+        let plan = match prepare_scan_plan(
+            &self.base,
+            scan,
+            &self.compiler,
+            authority,
+            self.operation_key,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                // A scan the owner admits but cannot use is a typed refusal,
+                // as it was when the owner prepared scans itself; only an
+                // explicit cancellation stays one.
+                if !self.cancellation.load(Ordering::Acquire) {
+                    self.outcome = Some(backend_library::IndexJobOutcome::Refused(
+                        bounded_index_detail(error.clone()),
+                    ));
+                }
+                return Err(error);
+            }
+        };
+        match plan {
+            ScanPlan::Ready(prepared) => self.next = Some(CaptureNext::Ready(prepared)),
+            ScanPlan::Capture(capture) => {
+                let ScanCapture {
+                    intent,
+                    continuation,
+                } = *capture;
+                self.captures = continuation.captures.clone();
+                self.prepared.intent = Some(intent);
+                self.prepared.revision_fence = Some(continuation.revision_fence.clone());
+                self.continuation = Some(continuation);
+            }
+        }
+        Ok(())
+    }
+
+    /// Projects the selected capture's structural view into SQL, then runs the
+    /// capture's remaining steps.
+    fn finish_published_capture(&mut self) -> Result<(), BuiltinModelError> {
+        if !self.projected {
+            #[cfg(test)]
+            self.observed.phase("project-sql");
+            let view = self.view.as_ref().expect("exact prepared view");
+            let projection = self
+                .projection
+                .as_mut()
+                .expect("original SQL writer")
+                .projection_mut();
+            project_snapshot_view_deltas(projection, &view.view, &view.outcome.deltas)?;
+            self.semantic
+                .as_mut()
+                .expect("original semantic writer")
+                .authority_mut()
+                .mark_projections_current()?;
+            self.projected = true;
+        }
+        self.finish_capture()
+    }
+
+    /// The steps after a capture is selected. The keyed operation's structural
+    /// receipt is a retryable write; compiler admission is not retried, its
+    /// refusal is the capture's hand-off to the owner.
+    fn finish_capture(&mut self) -> Result<(), BuiltinModelError> {
+        if self.next.is_some() {
+            return Ok(());
+        }
+        let snapshot = self
+            .candidate_snapshot
+            .as_ref()
+            .expect("exact candidate snapshot");
+        if !self.source_captured {
+            if let Some(key) = self.operation_key {
+                let identity = self
+                    .staged
+                    .as_ref()
+                    .expect("prepared request")
+                    .request_identity();
+                let package = self
+                    .continuation
+                    .as_ref()
+                    .expect("capture continuation")
+                    .package_reference();
+                let receipt =
+                    source_capture_receipt_for_snapshot(snapshot, package, key, Some(identity))?
+                        .ok_or_else(|| {
+                            BuiltinModelError(
+                        "source capture root does not retain its exact keyed operation marker"
+                            .to_owned(),
+                    )
+                        })?;
+                self.journal
+                    .as_mut()
+                    .expect("original receipt writer")
+                    .journal_mut()
+                    .source_captured(key, receipt)
+                    .map_err(|error| {
+                        BuiltinModelError(format!("persist source-capture receipt: {error}"))
+                    })?;
+            }
+            self.source_captured = true;
+        }
+        let continuation = self.continuation.take().expect("capture continuation");
+        let authority = self
+            .semantic
+            .as_mut()
+            .expect("original semantic writer")
+            .authority_mut();
+        self.next = Some(CaptureNext::Compile(continuation.into_deferred(
+            snapshot,
+            &self.compiler,
+            authority,
+        )));
+        Ok(())
+    }
+
     fn prepare(&mut self) -> Result<(), BuiltinModelError> {
         if self.view.is_some() {
             return Ok(());
         }
-        let original = self.prepared.intent.as_ref().ok_or_else(|| {
+        let mut lp = crate::owner_trace::laps();
+        if let Some(scan) = self.scan.take() {
+            self.prepare_scan(scan)?;
+        }
+        lp.lap("worker.prepare_scan");
+        if self.nothing_to_commit() {
+            return Ok(());
+        }
+        // A capture's intent carries every source row of the scan. It is staged
+        // by value and nothing reads it afterwards, so it is moved rather than
+        // copied twice.
+        let original = if self.capture {
+            self.prepared.intent.take()
+        } else {
+            self.prepared.intent.clone()
+        }
+        .ok_or_else(|| {
             BuiltinModelError("publication worker requires an actual source intent".to_owned())
         })?;
         let intent = match self.operation_key {
-            Some(key) => original.clone().with_operation_key(key)?,
-            None => original.clone(),
+            Some(key) => original.with_operation_key(key)?,
+            None => original,
         };
-        if !self.prepared.profile_refusals.is_empty() {
+        // A refusal publishes no generation, so there is no partial basis to bind.
+        if !self.terminal && !self.prepared.profile_refusals.is_empty() {
             let producer = self
                 .prepared
                 .selected
@@ -258,16 +521,37 @@ impl PublicationWork {
             }
         }
         #[cfg(test)]
+        self.run_test_hook(TestStage::BeforeStage);
+        #[cfg(test)]
         self.observed.phase("stage-intent");
-        let staged = prepare_builtin_intent_at_snapshot(
-            &self.base,
-            &intent,
+        // A capture stages its source rows only; the final publication also
+        // stages the raw bytes of any changed source file under the scan root.
+        let source_root = if self.capture {
+            None
+        } else {
             self.prepared
                 .revision_fence
                 .as_ref()
-                .map(|f| f.canonical_root()),
-            Arc::clone(&self.cancellation),
-        )?;
+                .map(|f| f.canonical_root())
+        };
+        let (staged, edit) = if self.capture {
+            let staged = prepare_owned_builtin_intent_at_snapshot(
+                &self.base,
+                intent,
+                source_root,
+                Arc::clone(&self.cancellation),
+            )?;
+            (staged, None)
+        } else {
+            let staged = prepare_builtin_intent_at_snapshot(
+                &self.base,
+                &intent,
+                source_root,
+                Arc::clone(&self.cancellation),
+            )?;
+            (staged, Some(intent))
+        };
+        lp.lap("worker.stage_intent");
         let Head::Writer(writer) = &mut self.head else {
             return Err(BuiltinModelError(
                 "private publication was already selected".to_owned(),
@@ -278,6 +562,7 @@ impl PublicationWork {
         let candidate = writer
             .prepare(staged.intent.clone())
             .map_err(|e| BuiltinModelError(format!("prepare index workspace: {e}")))?;
+        lp.lap("worker.prepare_workspace");
         #[cfg(test)]
         self.observed.phase("open-candidate");
         let snapshot = writer
@@ -303,10 +588,13 @@ impl PublicationWork {
             self.deployment,
             &self.workspace,
             self.prior.as_ref(),
-            Some(&intent),
+            // A capture changes the companion capture root, which always
+            // rehydrates; the planner needs no edit to know that.
+            edit.as_ref(),
             &mut self.image_rows,
             &mut self.generations,
         )?;
+        lp.lap("worker.prepare_view");
         let admission = BuiltinViewAdmission {
             workspace_root: snapshot.root(),
             source_root: view.view.basis().root,
@@ -323,11 +611,21 @@ impl PublicationWork {
             )
             .map_err(|e| BuiltinModelError(format!("prepare coherent index read head: {e}")))?;
         self.view = Some(view);
+        lp.lap("worker.prepare_read_head");
         Ok(())
     }
 
     fn attempt(&mut self, events: &Sender<Event>) -> Result<(), FinishAddError> {
+        let mut lp = crate::owner_trace::laps();
         self.prepare()?;
+        lp.lap("worker.prepare_total");
+        if self.nothing_to_commit() {
+            return Ok(());
+        }
+        let capture = self.capture;
+        // Only the final publication is announced by a durable Prepared marker;
+        // a capture or a terminal closure is recoverable from its Pending markers.
+        let announced = !capture && !self.closure;
         if !self.semantic_committed {
             let staged = self.staged.as_ref().expect("prepared request");
             let request = staged.request_identity();
@@ -362,16 +660,18 @@ impl PublicationWork {
                             ).map_err(BuiltinModelError)? {
                             return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
                         }
-                        #[cfg(test)]
-                        observed.phase("publication-barrier");
-                        prepare_publication_barrier(journal, operation_key, Some(request),
-                            base_root, base_sequence, plan).map_err(|e| match e {
-                                FinishAddError::PublicationBusy => {
-                                    busy = true;
-                                    BuiltinModelError("durable publication is temporarily busy".to_owned())
-                                }
-                                FinishAddError::Failed(e) => e,
-                            })?;
+                        if announced {
+                            #[cfg(test)]
+                            observed.phase("publication-barrier");
+                            prepare_publication_barrier(journal, operation_key, Some(request),
+                                base_root, base_sequence, plan).map_err(|e| match e {
+                                    FinishAddError::PublicationBusy => {
+                                        busy = true;
+                                        BuiltinModelError("durable publication is temporarily busy".to_owned())
+                                    }
+                                    FinishAddError::Failed(e) => e,
+                                })?;
+                        }
                     }
                     select_head(head, candidate, events, grant_accepted,
                         #[cfg(test)] test_hook, #[cfg(test)] observed)
@@ -379,6 +679,32 @@ impl PublicationWork {
             self.semantic_committed = true;
             #[cfg(test)]
             self.run_test_hook(TestStage::AfterSelection);
+        }
+        lp.lap("worker.select_head");
+        if self.progress.is_none()
+            && let Some(snapshot) = self.candidate_snapshot.as_ref()
+        {
+            // Best effort: without it the owner counts on its first status
+            // request instead.
+            self.progress = ProgressMemo::of(snapshot).ok();
+        }
+        lp.lap("worker.ingest_progress");
+        if capture {
+            // The capture's head is selected, so the owner must install it
+            // whatever happens next; a later failure is the job's to refuse,
+            // not a pending retry: nothing about it can heal by waiting.
+            self.roots = Some(
+                self.view
+                    .as_ref()
+                    .expect("prepared view")
+                    .outcome
+                    .roots
+                    .clone(),
+            );
+            if let Err(error) = self.finish_published_capture() {
+                self.next = Some(CaptureNext::Compile(Err(error)));
+            }
+            return Ok(());
         }
         let snapshot = self
             .candidate_snapshot
@@ -400,6 +726,18 @@ impl PublicationWork {
                 .authority_mut()
                 .mark_projections_current()?;
             self.projected = true;
+        }
+        if self.terminal {
+            self.outcome = self.decided.take();
+            self.roots = Some(
+                self.view
+                    .as_ref()
+                    .expect("prepared view")
+                    .outcome
+                    .roots
+                    .clone(),
+            );
+            return Ok(());
         }
         let staged = self.staged.as_ref().expect("actual request");
         #[cfg(test)]
@@ -538,6 +876,7 @@ impl PublicationWork {
             .into())
         });
         let error = match result {
+            Ok(()) if self.nothing_to_commit() => return Disposition::Unchanged,
             Ok(()) => return Disposition::Ready,
             Err(FinishAddError::PublicationBusy) => {
                 return Disposition::Pending(BuiltinModelError(
@@ -788,7 +1127,9 @@ impl PublicationWorker {
                     return;
                 };
                 loop {
+                    let trace = crate::owner_trace::span("worker.publish_step");
                     let disposition = work.step(&events);
+                    drop(trace);
                     if events
                         .send(Event::Complete(Completion { work, disposition }))
                         .is_err()

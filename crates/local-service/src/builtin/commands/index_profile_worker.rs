@@ -209,7 +209,10 @@ impl ProfileWorker {
             .name("locald-index-compile".to_owned())
             .spawn(move || {
                 let Ok(work) = receive.recv() else { return };
-                if completed.send(work.run()).is_ok() {
+                let trace = crate::owner_trace::span("worker.compile");
+                let ran = work.run();
+                drop(trace);
+                if completed.send(ran).is_ok() {
                     if let Ok(retired) = retirement.recv() {
                         drop(retired);
                     }

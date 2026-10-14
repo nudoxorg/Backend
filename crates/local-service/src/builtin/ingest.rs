@@ -1127,7 +1127,10 @@ pub(super) fn semantic_capabilities(
     baseline: &backend_engine::CapabilityInventory,
     compiler: &backend_engine::application::LocalCompilerClient,
 ) -> Result<backend_engine::CapabilityInventory, String> {
-    let frontends = FrontendSet::build()?;
+    // The process-wide set. Rebuilding every syntax frontend on each status
+    // request made a read answered on the owner loop cost CPU time proportional
+    // to the language count.
+    let frontends = frontends()?;
     let target = backend_engine::CapabilityTarget::Native {
         os: native_os(),
         architecture: native_architecture(),
