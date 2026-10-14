@@ -2,7 +2,7 @@
 
 use super::CheckerError;
 use super::project::{PythonProjectControl, checkpoint, project_error};
-use super::project_environment::{hash_image, normal_absolute};
+use super::project_environment::{controlled_directory_io, hash_image, normal_absolute};
 use backend_semantic::vocabulary::PythonVersion;
 use std::path::{Path, PathBuf};
 
@@ -117,13 +117,14 @@ impl PythonVenvInterpreterRequirement {
         }
         normal_absolute(project)?;
         normal_absolute(&home_selected)?;
-        let home_directory = home_selected.canonicalize().map_err(io_error)?;
+        let home_directory =
+            controlled_directory_io(|| home_selected.canonicalize(), || checkpoint(control))?;
         let selected = if cfg!(windows) {
             venv.join("Scripts/python.exe")
         } else {
             venv.join("bin/python")
         };
-        let image = selected.canonicalize().map_err(io_error)?;
+        let image = controlled_directory_io(|| selected.canonicalize(), || checkpoint(control))?;
         normal_absolute(&image)?;
         let digest = hash_image(&image, control)?;
         Ok(Self {
@@ -152,8 +153,14 @@ impl PythonVenvInterpreterRequirement {
     ) -> Result<bool, CheckerError> {
         self.validate_current(control)?;
         normal_absolute(candidate)?;
-        let image = candidate.canonicalize().map_err(io_error)?;
+        let Some(image) =
+            canonical_optional_with_io(|| candidate.canonicalize(), || checkpoint(control))?
+        else {
+            checkpoint(control)?;
+            return Ok(false);
+        };
         if candidate.starts_with(&self.project) || image.starts_with(&self.project) {
+            checkpoint(control)?;
             return Ok(false);
         }
         // This is a configuration witness comparison, never candidate discovery.
@@ -173,16 +180,16 @@ impl PythonVenvInterpreterRequirement {
         let mut home_matches = false;
         for name in names {
             checkpoint(control)?;
-            if self
-                .home_directory
-                .join(name)
-                .canonicalize()
-                .is_ok_and(|home_image| home_image == image)
-            {
+            let home_image = canonical_optional_with_io(
+                || self.home_directory.join(name).canonicalize(),
+                || checkpoint(control),
+            )?;
+            if home_image.as_ref() == Some(&image) {
                 home_matches = true;
                 break;
             }
         }
+        checkpoint(control)?;
         if !home_matches {
             return Ok(false);
         }
@@ -194,10 +201,16 @@ impl PythonVenvInterpreterRequirement {
     /// Prove the inspected venv image and home have not changed while selecting a host.
     pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
         checkpoint(control)?;
-        if self.selected.canonicalize().map_err(io_error)? != self.image
-            || self.home_selected.canonicalize().map_err(io_error)? != self.home_directory
-            || hash_image(&self.image, control)? != self.digest
-        {
+        let changed =
+            controlled_directory_io(|| self.selected.canonicalize(), || checkpoint(control))?
+                != self.image
+                || controlled_directory_io(
+                    || self.home_selected.canonicalize(),
+                    || checkpoint(control),
+                )? != self.home_directory
+                || hash_image(&self.image, control)? != self.digest;
+        checkpoint(control)?;
+        if changed {
             return Err(project_error(
                 "pyvenv.cfg",
                 "selected venv changed during host interpreter admission",
@@ -221,13 +234,79 @@ impl PythonVenvInterpreterRequirement {
     }
 }
 
-fn io_error(source: std::io::Error) -> CheckerError {
-    CheckerError::Workspace { source }
+// Absence is optional only after the shared post-I/O checkpoint has succeeded.
+fn canonical_optional_with_io(
+    operation: impl FnOnce() -> std::io::Result<PathBuf>,
+    check: impl FnMut() -> Result<(), CheckerError>,
+) -> Result<Option<PathBuf>, CheckerError> {
+    match controlled_directory_io(operation, check) {
+        Ok(path) => Ok(Some(path)),
+        Err(CheckerError::Workspace { source })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_candidate_io_never_turns_a_stop_into_absence() -> Result<(), CheckerError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let cancelled = AtomicBool::new(false);
+        let root = super::super::Workspace::create()?;
+        for missing in [false, true] {
+            cancelled.store(false, Ordering::Release);
+            let path = if missing {
+                root.path.join("absent-interpreter")
+            } else {
+                root.path.clone()
+            };
+            let control = PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(30),
+            };
+            let result = canonical_optional_with_io(
+                || {
+                    let result = path.canonicalize();
+                    cancelled.store(true, Ordering::Release);
+                    result
+                },
+                || checkpoint(control),
+            );
+            assert!(matches!(result, Err(CheckerError::Cancelled { .. })));
+            cancelled.store(false, Ordering::Release);
+            // Advance the actual checkpoint clock at the I/O boundary, without sleeping.
+            let mut deadline = Instant::now() + Duration::from_secs(30);
+            let expired = Instant::now();
+            let mut checks = 0;
+            let result = canonical_optional_with_io(
+                || path.canonicalize(),
+                || {
+                    checks += 1;
+                    if checks == 2 {
+                        deadline = expired;
+                    }
+                    checkpoint(PythonProjectControl {
+                        cancelled: &cancelled,
+                        deadline,
+                    })
+                },
+            );
+            assert!(matches!(result, Err(CheckerError::Deadline { .. })));
+            assert_eq!(checks, 2);
+            assert_eq!(
+                canonical_optional_with_io(|| path.canonicalize(), || Ok(()))?.is_none(),
+                missing
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn every_supported_minor_has_one_exact_profile_and_patch_is_not_a_dialect() {

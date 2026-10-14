@@ -1373,7 +1373,7 @@ fn canonical_trusted_directory(
 
 /// A directory operation's success or error cannot outrank a stop that arrived
 /// during that operation. The callback is the same real checkpoint in production.
-fn controlled_directory_io<T>(
+pub(super) fn controlled_directory_io<T>(
     operation: impl FnOnce() -> std::io::Result<T>,
     mut check: impl FnMut() -> Result<(), CheckerError>,
 ) -> Result<T, CheckerError> {
