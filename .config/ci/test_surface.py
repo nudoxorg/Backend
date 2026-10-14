@@ -201,5 +201,16 @@ class CursorRefusalAdmissionTests(unittest.TestCase):
                 surface.require_malformed_cursor_refusal(cli, wrong)
 
 
+class AuthoredCorpusAdmissionTests(unittest.TestCase):
+    def test_plausible_results_from_the_wrong_source_are_not_a_reference(self):
+        expected = {"Sum64String": "xxhash_unsafe.go"}
+        row = {"identity": {"name": "Sum64String"}, "file": "xxhash_unsafe.go", "language": "go"}
+        surface.require_authored_symbols({"records": [row]}, expected, "go")
+        for wrong in ({"records": []}, {"records": [dict(row, file="benchmark_test.go")]},
+                      {"records": [dict(row, language="rust")]}, {"records": [dict(row, identity={"name": "unrelated"})]}):
+            with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
+                surface.require_authored_symbols(wrong, expected, "go")
+
+
 if __name__ == "__main__":
     unittest.main()

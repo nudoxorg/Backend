@@ -530,18 +530,39 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     return times
 
 
+def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
+    for name, filename in expected.items():
+        if not any(row.get("identity", {}).get("name") == name
+                   and row.get("file") == filename and row.get("language") == language
+                   for row in answer.get("records", [])):
+            raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}")
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
         shutil.rmtree(case_root)
     case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
-    shutil.copytree(ROOT / case["project"], project)
+    if "project_env" in case:
+        source = os.environ.get(case["project_env"])
+        if not source or not Path(source).is_absolute():
+            raise RuntimeError(f"real corpus: missing absolute pinned project authority {case['project_env']}")
+        shutil.copytree(source, project)
+    else:
+        shutil.copytree(ROOT / case["project"], project)
     timeout = case.get("timeout_seconds", 300)
     owner = Owner(bin_dir, case_root)
     record = {"answers": {}, "performance": {"seconds": {}}}
     try:
-        answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
+        if case.get("index_mode", "resumable") == "resumable":
+            answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
+        elif case["index_mode"] == "wait":
+            answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
+            require_completed_index(answer, len(case["languages"]))
+            index_times = {"cli add": round(seconds, 2)}
+        else:
+            raise RuntimeError(f"unknown index mode: {case['index_mode']}")
         published_root = require_completed_index(answer, len(case["languages"]))
         log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
@@ -555,6 +576,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             require_cli_success(key, answer)
             if args[0] == "search" and not answer["json"].get("records"):
                 raise RuntimeError(f"{key}: expected fixture symbol, got no records")
+            if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
+                require_authored_symbols(answer["json"], {args[-1]: case["authored_symbols"][args[-1]]}, case["languages"][0])
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
@@ -567,6 +590,9 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     raise RuntimeError(f"MCP call failed: {result}")
                 if result["call"]["tool"] == "backend.search" and not reply.get("structuredContent", {}).get("records"):
                     raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
+                text = result["call"].get("arguments", {}).get("query")
+                if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
+                    require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         if case.get("live_contracts"):

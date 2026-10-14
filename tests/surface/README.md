@@ -215,3 +215,26 @@ must still return the original complete operation identity and native receipt.
 These checks add per-session timings without changing the reviewed golden or
 performance limits. They do not prove absence of all filesystem writes or replace
 the retained targeted failure, disconnect and journal laws.
+
+### First pinned whole upstream project (W2.3)
+
+`go-xxhash` indexes the complete `github.com/cespare/xxhash/v2` v2.3.0 module,
+including its original Go module and source layout. The surface shell exposes
+`NUDOX_SURFACE_GO_XXHASH` from a fixed-output Nix fetch using the existing fleet
+pin in `.config/nix/corpus-pins.json`; it does not fetch the rest of the fleet,
+vendor a rewritten fixture, run upstream package scripts, or choose a moving tag.
+The archive hash is `sha256-FFomzcfEnbVmAXuAfEmJ7n993rVpQj6cuZ+ZX6w2IdM=`.
+
+The case waits for complete native publication, then snapshots real CLI/MCP
+search, outline and package answers. Before admitting a new snapshot, each surface
+must find upstream-authored `Sum64String` in `xxhash_unsafe.go` and `Digest` in
+`xxhash.go`, with Go language identity. Unrelated/nonempty results cannot satisfy
+those witnesses. Missing pinned project authority fails rather than skipping.
+The existing resumable seven-language case remains unchanged; this smaller real
+project uses a direct blocking wait because a zero-deadline call could legitimately
+finish such a small project before the first observation.
+
+Run only this case with `python3 .config/ci/test.py integration --bin-dir DIR
+--case go-xxhash` (on one line). The first golden requires explicit source/result
+review and a second exact-head comparison. This is the first real-project slice,
+not the planned full per-language representative corpus.
