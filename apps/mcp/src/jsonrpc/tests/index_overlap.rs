@@ -7,7 +7,6 @@ use backend_library::{
     Command, CommandDto, IndexOperationKey, IndexOperationObservation, IndexOperationState,
     IndexOperationStatus, ProductText,
 };
-use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -88,11 +87,11 @@ impl CommandTransport for Owner {
                     };
                     state.terminal = Some(terminal);
                     state.cancelled.push(ticket.clone());
-                    backend_library::IndexCancelStatus::Requested
+                    IndexCancelStatus::Requested
                 } else {
-                    backend_library::IndexCancelStatus::Unknown
+                    IndexCancelStatus::Unknown
                 };
-                SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+                SurfaceReply::IndexCancellation(IndexCancelReceipt {
                     ticket,
                     status,
                 })
@@ -115,7 +114,7 @@ impl CommandTransport for Owner {
     }
 }
 
-fn receive(reader: &mut impl std::io::BufRead, id: u64) -> Value {
+fn receive(reader: &mut impl BufRead, id: u64) -> Value {
     let mut line = String::new();
     assert!(reader.read_line(&mut line).expect("bounded stdio reply") > 0);
     let wire = assert_stdio_line_accounting(&line);
@@ -124,7 +123,7 @@ fn receive(reader: &mut impl std::io::BufRead, id: u64) -> Value {
     wire["result"].clone()
 }
 
-fn call_line(writer: &mut impl std::io::Write, id: u64, params: Value) {
+fn call_line(writer: &mut impl Write, id: u64, params: Value) {
     writeln!(
         writer,
         "{}",
@@ -163,11 +162,11 @@ fn assert_stdio_shared_default_index(start_first: bool) {
     output
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("bounded fixture read");
-    let mut output = std::io::BufReader::new(output);
+    let mut output = BufReader::new(output);
     let serving = std::thread::spawn(move || {
         serve_stdio_server(
             server,
-            std::io::BufReader::new(server_input),
+            BufReader::new(server_input),
             &mut server_output,
         )
     });
@@ -398,9 +397,9 @@ fn default_mcp_start_cli_join_and_exact_ticket_cancel_retain_original_receipt_ke
         INDEX_CANCEL_TOOL,
         &json!({"ticket":foreign,"detail":"full"}),
     );
-    let expected_foreign = SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+    let expected_foreign = SurfaceReply::IndexCancellation(IndexCancelReceipt {
         ticket: foreign,
-        status: backend_library::IndexCancelStatus::Unknown,
+        status: IndexCancelStatus::Unknown,
     });
     assert_eq!(
         refused["structuredContent"]["surface"]["data"],
