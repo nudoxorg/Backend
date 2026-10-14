@@ -4270,6 +4270,8 @@ fn owned_image_keeps_pristine_diagnostics_and_reuses_exact_views_for_queries() {
     assert!(observed_types.iter().all(|ty| ty == &expected_type));
     assert!(!observed_types[0].contains("unknown"), "actual imported generic type: {:?}", observed_types);
     let after_queries = observer.entries.lock().unwrap().clone();
+    assert_eq!(after_queries.iter().filter(|&&entry| entry == ProjectExecutionPhase::FileQuery).count(), 3,
+        "real checked-image file projection exposes its execution boundary without full rechecking");
     for phase in [ProjectExecutionPhase::LibraryViews, ProjectExecutionPhase::BinderViews, ProjectExecutionPhase::SharedCheckerIndexes, ProjectExecutionPhase::AugmentationPrime] {
         assert_eq!(after_queries.iter().filter(|&&entry| entry == phase).count(),
             construction_phases.iter().filter(|&&entry| entry == phase).count(),
