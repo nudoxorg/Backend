@@ -1000,7 +1000,7 @@ pub fn execute() {}
             backend_engine::ProductSourceRelation::encode_value(record, &mut bytes);
             assert_eq!(
                 &bytes[..4],
-                b"PSRF",
+                b"PSRG",
                 "new anchors require a new persisted format"
             );
             *record = backend_engine::ProductSourceRelation::decode_value(&bytes)
