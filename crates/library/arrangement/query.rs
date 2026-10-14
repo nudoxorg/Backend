@@ -14,7 +14,7 @@ use std::collections::BinaryHeap;
 struct NameRanked {
     id: RowId,
     normalized_label: String,
-    placement: (bool, bool, u8),
+    placement: (bool, bool, bool, u8),
 }
 
 impl NameRanked {
@@ -33,18 +33,25 @@ impl NameRanked {
                         .strip_suffix(text)
                         .is_some_and(|prefix| prefix.ends_with("::"))
             });
+        // A type stub declares what the runtime module defines, so among exact
+        // names the runtime declaration comes first and the stub follows it.
+        let runtime = row
+            .source
+            .file_path()
+            .is_none_or(|path| !path.ends_with(".pyi"));
         Some(Self {
             id: row.id,
             normalized_label,
             placement: (
                 exact,
+                runtime,
                 row.source.captured().is_some(),
                 row.kind.map_or(1, super::declaration_name_priority),
             ),
         })
     }
 
-    fn ordering_key(&self) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+    fn ordering_key(&self) -> (Reverse<(bool, bool, bool, u8)>, &str, RowId) {
         (Reverse(self.placement), &self.normalized_label, self.id)
     }
 }
@@ -575,6 +582,28 @@ mod ordering_laws {
                 assert_eq!(left.cmp(right), at.cmp(&other_at));
             }
         }
+    }
+
+    #[test]
+    fn a_runtime_declaration_ranks_before_the_type_stub_that_declares_it() {
+        let stub = fixture(
+            "pkg::semantic::01::Environment",
+            DeclarationKind::Class,
+            false,
+        )
+        .with_source(SourceLocation::new("pkg/_attrs.pyi", 6).expect("stub site"));
+        let runtime = fixture(
+            "pkg::semantic::ff::Environment",
+            DeclarationKind::Class,
+            false,
+        )
+        .with_source(SourceLocation::new("pkg/_attrs.py", 20).expect("runtime site"));
+        let mut ranked = [&stub, &runtime]
+            .map(|row| NameRanked::new(row, Some("environment"), None).expect("name candidate"));
+        // The stub's coordinate sorts first; only the stub tier moves it.
+        assert!(stub.label < runtime.label);
+        ranked.sort();
+        assert_eq!(ranked[0].normalized_label, runtime.label.to_lowercase());
     }
 
     #[test]
