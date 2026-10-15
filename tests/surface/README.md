@@ -545,3 +545,22 @@ TinyIoC lacks complete-profile proof. These failures stay selected for diagnosis
 GUI490240 showed an empty Ask field after window-only keyboard focus. The
 observer now clicks the actual Ask field and checks that text input arrived
 before checking results/source, preserving the original source-content proof.
+
+
+### Java JSR305 initial Linux snapshot (W2.3/W2.4, 2026-10-15)
+
+Focused Linux build495175/30 at94cfc4d9674dec41af0f1f04f0ffab8a2f6abe0c
+completed all31-source native indexing and CLI/MCP functional checks. The task
+failed only for its missing reviewed snapshot. An independent source/result
+review confirms the qualified annotation names, exact source paths/lines,
+Java/Ready rows,126-declaration complete outline and31non-module roots. Both
+offered MCP continuations were consumed by fresh sessions. The snapshot
+honestly retains unavailable/unconfigured semantic-search coverage and lexical
+pathless name-lane records; those are not fabricated native source hits.
+
+See reviews/2026-10-15-java-jsr305.json. Initial owner measurements are
+67.25s indexing,5.87CPU seconds and276252KiB peak RSS. These are a first Linux
+sample, not calibrated bands or official T2 acceptance. A repeat exact-head
+comparison and calibration are required before merge. No existing snapshot,
+tolerance or floor was changed. Prior Linux28 had a compiler-owner refusal,
+so a single successful run does not establish stability.
