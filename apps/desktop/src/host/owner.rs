@@ -35,6 +35,7 @@ pub(crate) struct OwnerThread {
 
 impl Drop for OwnerThread {
     fn drop(&mut self) {
+        crate::runtime::trace::mark("close.owner_join", "closing gate before host join");
         self.gate.close();
         if let Some(join) = self.join.take() {
             let _ = join.join();

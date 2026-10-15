@@ -12,8 +12,9 @@ a diff for the author to explain. The same run records wall time per
 operation and the owner's peak RSS and CPU time, compared with the reviewed
 baseline in the snapshot under a tolerance band.
 
-Projects and workspaces live at fixed paths (/tmp/nudox-surface/<case>/...),
-so coordinates and content-derived identities are identical on every worker
+Projects live at fixed paths (/tmp/nudox-surface/<case>/project); private
+owner state lives on the writable source/task volume. Project coordinates
+and content-derived identities are identical on every worker
 and snapshots need no path rewriting. --update rewrites snapshots and
 baselines for review instead of comparing.
 
@@ -147,8 +148,15 @@ class Owner:
 
     def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
         self.bin_dir = bin_dir
-        self.home = case_root / "home"
-        self.workspace = case_root / "workspace"
+        # Keep public project/endpoint coordinates stable, but place durable
+        # owner writes on the task volume, not its rootfs /tmp overlay. The
+        # same file/directory durability barriers still run on this state.
+        state_parent = ROOT / ".local"
+        state_parent.mkdir(mode=0o700, exist_ok=True)
+        self.state_directory = tempfile.TemporaryDirectory(prefix="surface-owner-", dir=state_parent)
+        state = Path(self.state_directory.name)
+        self.home = state / "home"
+        self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
         if cargo_vendor is not None:
@@ -169,33 +177,43 @@ class Owner:
         authority.write_bytes(bytes([0x5A]) * 32)
         authority.chmod(0o600)
         self.log = open(case_root / "locald.log", "w")
-        self.process = subprocess.Popen(
-            [
-                bin_dir / "backend-locald",
-                "--endpoint", str(self.endpoint),
-                "--workspace", str(self.workspace),
-                "--profile", "builtin",
-                "--authority-secret-file", str(authority),
-                "--max-frame", "1048576",
-                "--timeout-ms", "180000",
-                "--registry-offline",
-                "--registry-discovery-offline",
-                "--advisory-offline",
-                "--forge-offline",
-                "--idle-timeout-ms", "5000",
-            ],
-            env=self.env,
-            cwd=case_root,
-            stdin=subprocess.DEVNULL,
-            stdout=self.log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        deadline = time.monotonic() + 30
-        while not self.endpoint.exists():
-            if self.process.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError(f"backend-locald did not open its endpoint:\n{self.tail()}")
-            time.sleep(0.05)
+        self.process = None
+        try:
+            self.process = subprocess.Popen(
+                [
+                    bin_dir / "backend-locald",
+                    "--endpoint", str(self.endpoint),
+                    "--workspace", str(self.workspace),
+                    "--profile", "builtin",
+                    "--authority-secret-file", str(authority),
+                    "--max-frame", "1048576",
+                    "--timeout-ms", "180000",
+                    "--registry-offline",
+                    "--registry-discovery-offline",
+                    "--advisory-offline",
+                    "--forge-offline",
+                    "--idle-timeout-ms", "5000",
+                ],
+                env=self.env,
+                cwd=case_root,
+                stdin=subprocess.DEVNULL,
+                stdout=self.log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + 30
+            while not self.endpoint.exists():
+                if self.process.poll() is not None or time.monotonic() > deadline:
+                    raise RuntimeError(f"backend-locald did not open its endpoint:\n{self.tail()}")
+                time.sleep(0.05)
+        except BaseException as error:
+            # A constructor failure never reaches run_case's finally block.
+            # Reap this owner before removing its state or starting a peer.
+            try:
+                self.stop()
+            except Exception as cleanup_error:
+                raise RuntimeError(f"{error}\nowner cleanup failed: {cleanup_error}") from error
+            raise
 
     def tail(self) -> str:
         self.log.flush()
@@ -212,16 +230,21 @@ class Owner:
         return {"peak_rss_kib": peak, "cpu_seconds": round(cpu, 2)}
 
     def stop(self) -> None:
-        if self.process.poll() is None:
-            try:
-                self.process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                self.process.wait()
-                raise RuntimeError("backend-locald failed to retire through its idle timeout")
-        self.log.close()
-        if self.process.returncode != 0:
-            raise RuntimeError(f"backend-locald exited {self.process.returncode}")
+        try:
+            if self.process is None:
+                return
+            if self.process.poll() is None:
+                try:
+                    self.process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                    self.process.wait()
+                    raise RuntimeError("backend-locald failed to retire through its idle timeout")
+            if self.process.returncode != 0:
+                raise RuntimeError(f"backend-locald exited {self.process.returncode}")
+        finally:
+            self.log.close()
+            self.state_directory.cleanup()
 
 
 def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
