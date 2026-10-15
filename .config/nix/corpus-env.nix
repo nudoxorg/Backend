@@ -64,6 +64,11 @@ let
     pkgs.runCommand "backend-native-compiler-shell-env"
       {
         nativeBuildInputs = tools.nativeCompilers;
+        # Match the compiler shell's development-build policy. This captured
+        # environment is installed by backend/backendVerifier after the lane's
+        # caller environment, so it must not re-enable fortify for -O0 probes.
+        # Packaged release derivations keep their own hardening policy.
+        hardeningDisable = [ "fortify" "fortify3" ];
       }
       ''
         {
