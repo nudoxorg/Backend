@@ -109,7 +109,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         relation_registry: RelationAdmissionRegistry,
     ) -> Result<Self, WorkspaceError> {
         let directory = directory.as_ref().to_owned();
+        trace_open("lease.begin");
         let lease = OwnerLease::acquire(&directory)?;
+        trace_open("lease.admitted");
         let opened =
             Self::open_with_lease(directory, model, &genesis, faults, lease, relation_registry);
         let _owned = genesis;
@@ -170,6 +172,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         ] {
             admission.admit(relative).map_err(WorkspaceError::io)?;
         }
+        trace_open("store.begin");
         let store = Arc::new(
             FileStore::open_with_registry(
                 directory.join("objects"),
@@ -178,19 +181,24 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             )
             .map_err(WorkspaceError::store)?,
         );
+        trace_open("store.opened");
         let journal_path = directory.join(JOURNAL_FILE);
         let limits = JournalLimits {
             max_frames: MAX_JOURNAL_FRAMES,
             max_bytes: MAX_JOURNAL_BYTES,
         };
+        trace_open("recovery.begin");
         let head = recover_store_head(&store, &model, genesis, lease.epoch(), &faults)?;
+        trace_open("recovery.complete");
         if store.head().map_err(WorkspaceError::store)?.is_none() {
             // An unselected genesis is still exposed through a lazy snapshot.
             // Materialize its checked closure before that snapshot can perform
             // a relation read. The immutable CAS writes are idempotent and
             // may be retried after a crash without selecting a physical HEAD.
             lease.assert_current()?;
+            trace_open("genesis_seed.begin");
             seed_unselected_genesis(&store, &head)?;
+            trace_open("genesis_seed.complete");
             lease.assert_current()?;
         }
         let catalog = if let Some(descriptor_id) = head.catalog_descriptor() {
@@ -210,7 +218,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             // selected closure just to rediscover that fact.
             CatalogState::empty(head.manifest().coverage())
         };
+        trace_open("journal.begin");
         let journal = open_diagnostic_journal(&journal_path, &directory, lease.epoch(), limits)?;
+        trace_open("journal.opened");
         let identity = lease.identity();
         Ok(Self {
             model: Arc::new(model),
@@ -492,5 +502,12 @@ mod tests {
         drop(owner);
         std::fs::remove_dir_all(&directory).expect("remove workspace");
         std::fs::remove_dir_all(external).expect("remove outside fixture");
+    }
+}
+
+// Closed, path-free startup vocabulary: diagnostics never grant readiness.
+fn trace_open(phase: &str) {
+    if std::env::var_os("NUDOX_TRACE").is_some() {
+        eprintln!("backend-engine: workspace open {phase}");
     }
 }
