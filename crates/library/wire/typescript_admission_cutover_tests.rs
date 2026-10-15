@@ -8,8 +8,8 @@ use crate::interface::{
 fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() {
     assert_eq!(
         super::DTO_VERSION,
-        30,
-        "catalog windows require a matched DTO30 cohort"
+        31,
+        "coverage and compiler causes require a matched DTO31 cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
         TypeScriptCompilerPackageRole::SelectedCompiler,
