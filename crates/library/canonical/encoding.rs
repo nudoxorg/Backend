@@ -257,6 +257,10 @@ pub(super) fn encode_metadata(value: &ViewMetadata, out: &mut Vec<u8>) {
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
             }
+            Coverage::Gapped { lane } => {
+                out.push(3);
+                out.push(lane_tag(*lane));
+            }
             Coverage::Unavailable { lane, reason } => {
                 out.push(2);
                 out.push(match lane {
@@ -321,6 +325,10 @@ fn append_coverage(out: &mut Vec<u8>, coverage: &[Coverage]) {
                 out.push(lane_tag(*lane));
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
+            }
+            Coverage::Gapped { lane } => {
+                out.push(3);
+                out.push(lane_tag(*lane));
             }
             Coverage::Unavailable { lane, reason } => {
                 out.push(2);
