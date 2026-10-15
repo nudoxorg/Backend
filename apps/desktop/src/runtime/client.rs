@@ -279,7 +279,6 @@ impl LocalEngineClient {
             label: Arc::from(context.as_str()),
             packages: packages.into(),
         });
-        let catalog = Some(self.catalog()?);
         Ok(EngineDto::Root {
             request: *request_id,
             basis: *basis,
@@ -287,7 +286,9 @@ impl LocalEngineClient {
             revision,
             delta: None,
             project,
-            catalog,
+            // Root is the bounded owner/bootstrap fact. Orbit loads the
+            // optional Explore catalog on the page-read lane.
+            catalog: None,
         })
     }
 
@@ -305,35 +306,6 @@ impl LocalEngineClient {
             basis: *basis,
             revision: revision.cursor(),
         })
-    }
-
-    fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
-        let reply = self
-            .with_session_read(|session| {
-                session.surface(SurfaceCommand::Explore {
-                    query: None,
-                    limit: 64,
-                })
-            });
-        Self::catalog_from_reply(reply)
-    }
-
-    fn catalog_from_reply(
-        reply: Result<SurfaceReply, EngineFault>,
-    ) -> Result<Arc<[PackageSummary]>, EngineFault> {
-        let SurfaceReply::Explored(records) = reply? else {
-            return Err(EngineFault::Failed(crate::core::ErrorValue::new(
-                FaultCode::Protocol,
-                "the local service returned a non-Explore reply for the catalog request",
-            )));
-        };
-        Ok(
-            records
-                .iter()
-                .filter_map(package_summary)
-                .collect::<Vec<_>>()
-                .into(),
-        )
     }
 
     fn request_surface(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -1156,24 +1128,66 @@ mod tests {
     }
 
     #[test]
-    fn catalog_explore_failure_is_preserved_as_a_typed_fault() {
-        let expected = fault(ClientError::CommandFailed(
-            backend_library::CommandFailure::NotFound,
-        ));
-        let observed = LocalEngineClient::catalog_from_reply(Err(expected.clone()))
-            .expect_err("Explore failure must not become an absent catalog");
-        assert_eq!(observed, expected);
-    }
+    fn root_admission_uses_revision_only_and_leaves_catalog_to_page_reads() {
+        use backend_client::CommandTransport;
+        use backend_library::{Command, Library};
+        use std::sync::Mutex;
 
-    #[test]
-    fn catalog_rejects_a_reply_from_the_wrong_surface_command() {
-        let observed = LocalEngineClient::catalog_from_reply(Ok(SurfaceReply::Projects(
-            Box::new([]),
-        )))
-        .expect_err("a non-Explore reply is a protocol fault");
-        assert!(matches!(
-            observed,
-            EngineFault::Failed(error) if error.code() == FaultCode::Protocol
+        struct RecordingTransport {
+            library: Library,
+            seen: Arc<Mutex<Vec<Command>>>,
+        }
+        impl CommandTransport for RecordingTransport {
+            fn request(
+                &mut self,
+                request: backend_library::CommandDto,
+            ) -> Result<backend_library::ReplyDto, ClientError> {
+                self.seen
+                    .lock()
+                    .expect("command record")
+                    .push(request.command.clone());
+                Ok(self.library.execute_dto(request))
+            }
+        }
+
+        let view = super::super::owner::publication_tests::view();
+        let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+        let library =
+            Library::from_view((*view).clone(), cursor).expect("coherent fixture library");
+        let basis = VersionedRoot::from_revision(1, cursor, 0);
+        let gate =
+            super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+        let attachment = gate.ready_epoch().expect("ready attachment");
+        assert_eq!(
+            gate.publish_view(attachment, Arc::clone(&view), cursor),
+            super::super::owner::PublicationAdmission::Admitted,
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let project = LocalProjectId::new("/fixture/root-with-lazy-catalog").expect("project");
+        let mut client = LocalEngineClient::gated("unused-recording-endpoint", project, gate);
+        client.attached_epoch = Some(attachment);
+        client.active_cancel = Some(CancellationToken::new());
+        client.session = Some(Session::from_transport(
+            "unused-recording-endpoint",
+            RecordingTransport {
+                library,
+                seen: Arc::clone(&seen),
+            },
         ));
+
+        let result = client
+            .request_root(&EngineRequest::Root {
+                project: None,
+                request: RequestId::new(0x71),
+                basis,
+                cancel: CancellationToken::new(),
+            })
+            .expect("the certified owner revision admits Root");
+        assert!(matches!(result, EngineDto::Root { catalog: None, .. }));
+        assert_eq!(
+            *seen.lock().expect("command record"),
+            [Command::Revision],
+            "Root must not wait on a catalog Explore request",
+        );
     }
 }
