@@ -2234,7 +2234,15 @@ impl RustWorkspace {
                 // which Rustdoc include attributes can be expanded. Skipping
                 // this preload does not grant source ownership: analyze_source
                 // continues to reject a detached file.
-                Err(RustAuthorityError::DetachedSource { .. }) => continue,
+                // A helper may also belong to multiple Cargo targets. There is
+                // no unique cfg context in which to expand its Rustdoc inputs.
+                // Retain the ambiguity in the ownership index: selecting that
+                // source still fails closed in analyze_source, without blocking
+                // unrelated sources with a unique owner in the same package.
+                Err(
+                    RustAuthorityError::DetachedSource { .. }
+                    | RustAuthorityError::AmbiguousSourceOwner { .. },
+                ) => continue,
                 Err(error) => return Err(error),
             };
             let semantics = Semantics::new(&self.database);

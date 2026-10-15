@@ -9,8 +9,9 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustCargoMetadataPolicy, RustFeatureControl, RustToolchain,
-    RustWorkspaceFile, RustWorkspaceSessionKey, RustWorkspaceSessionLane, SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
+    RustSourceScope, RustToolchain, RustWorkspaceFile, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 
@@ -135,8 +136,8 @@ fn pinned_anyhow_build_script_has_one_active_cargo_owner() -> Result<(), Box<dyn
     let cancelled = AtomicBool::new(false);
     let control = RustAnalysisControl {
         cancelled: &cancelled,
-        maximum_source_bytes: SourceByteLimit::from(64 * 1024 * 1024),
-        deadline: Instant::now() + Duration::from_secs(300),
+        maximum_source_bytes: SourceByteLimit::from(64 * 1024),
+        deadline: Instant::now() + Duration::from_secs(180),
     };
     let mut lane = RustWorkspaceSessionLane::default();
     // `begin` performs the same full captured-source package preload as the
@@ -150,9 +151,10 @@ fn pinned_anyhow_build_script_has_one_active_cargo_owner() -> Result<(), Box<dyn
         .expect("pinned crate source list includes build.rs");
     let outcome = lease.workspace().analyze_source(
         root.join(&build_source.0),
-        &build_source.1,
+        build_source.1.as_bytes(),
         control,
         |authority| {
+            assert_eq!(authority.source_scope, RustSourceScope::CargoTargetRoot);
             assert_eq!(authority.source, build_source.1.as_bytes());
             Ok(())
         },
@@ -161,6 +163,24 @@ fn pinned_anyhow_build_script_has_one_active_cargo_owner() -> Result<(), Box<dyn
         outcome.is_ok(),
         "exact crates.io anyhow 1.0.104 full source frontier must resolve build.rs to its Cargo target owner; got {outcome:?}"
     );
+    let shared = sources
+        .iter()
+        .find(|(path, _)| path == Path::new("tests/common/mod.rs"))
+        .expect("pinned crate includes its shared test helper");
+    assert!(matches!(
+        lease.workspace().analyze_source(
+            root.join(&shared.0),
+            shared.1.as_bytes(),
+            control,
+            |_| -> Result<(), RustAuthorityError> {
+                panic!("ambiguous shared helper must not receive semantic authority")
+            }
+        ),
+        Err(RustAuthorityError::AmbiguousSourceOwner {
+            definition_count: 2,
+            ..
+        })
+    ));
     lease.commit();
     Ok(())
 }
