@@ -371,6 +371,7 @@ pub use backend_replication::{
 };
 #[cfg(any(unix, windows))]
 pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
+pub use daemon::{PreparedReadHeadRefresh, PublishedReadHeadRefresh};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
     DaemonReply, DaemonRequest, Operation, PublishedReadHead, QueryState,

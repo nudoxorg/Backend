@@ -371,6 +371,18 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
 }
 
 impl<M: WorkspaceModel> WorkspaceWriter<M> {
+    /// Borrows the admitted base for a view-only refresh. This cannot mint
+    /// a workspace candidate or change HEAD, and refuses any prepared attempt.
+    pub(crate) fn snapshot_for_view_refresh(
+        &self,
+    ) -> Result<crate::WorkspaceSnapshot, WorkspaceError> {
+        if self.state != WriterState::Ready {
+            return Err(WorkspaceError::HeadConflict);
+        }
+        self.owner.writer()?.lease.assert_current()?;
+        Ok(self.owner.snapshot())
+    }
+
     /// Prepares and persists one candidate on the worker. Unwind is caught
     /// while borrowing this writer, so the lease remains available for return.
     /// No root is selected and the owner loop continues serving the old head.

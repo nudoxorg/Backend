@@ -116,13 +116,19 @@ fn after_grant_state(
                 let completed = completion.as_ref().map(|done| {
                     let disposition = match &done.disposition {
                         Disposition::Ready => "Ready".to_owned(),
+                        Disposition::Refreshed => "Refreshed".to_owned(),
+                        Disposition::SourcePrepared => "SourcePrepared".to_owned(),
+                        Disposition::SourceCaptured => "SourceCaptured".to_owned(),
                         Disposition::Unselected(error) => format!("Unselected({error:?})"),
                         Disposition::Pending(error) => format!("Pending({error:?})"),
                     };
                     let head = match &done.work.head {
                         Head::Writer(_) => "Writer",
+                        Head::Unprepared(_) => "Unprepared",
                         Head::Pending(_) => "Pending",
                         Head::Published(_) => "Published",
+                        Head::Refresh(_) => "Refresh",
+                        Head::Refreshed(_) => "Refreshed",
                         Head::Moving => "Moving",
                     };
                     format!(
@@ -145,6 +151,9 @@ fn after_grant_state(
                     worker.observed_state()
                 )
             }
+            IndexJobWork::PreparingSource { worker, .. } => format!("PreparingSource(finished={:?})", worker.as_ref().map(|worker| worker.is_finished())),
+            IndexJobWork::SourceRetiring { .. } => "SourceRetiring".to_owned(),
+            IndexJobWork::RetirementPending { .. } => "RetirementPending".to_owned(),
             IndexJobWork::Transition => "Transition".to_owned(),
         };
         format!(
@@ -758,6 +767,7 @@ fn index_publication_worker_refused_install_retains_the_original_unselected_capa
             match event {
                 Event::Complete(done) => break done,
                 Event::Grant { reply, .. } => drop(reply),
+                Event::RefreshApproval { reply, .. } => drop(reply),
             }
         }
         assert!(Instant::now() < deadline);

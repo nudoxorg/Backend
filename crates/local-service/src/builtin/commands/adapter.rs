@@ -12,9 +12,9 @@ use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, DeferredProfileFailure, IndexScanFailure, IndexScanResult, IndexScanWork,
-    PreparedIndex, PreparedProductSelection, capture_index_scan, commit_pending_capture_failure,
-    finish_deferred_index, finish_index_scan, index_project_intent_at,
+    CaptureFailurePlan, DeferredIndex, DeferredProfileFailure, IndexScanFailure, IndexScanResult,
+    IndexScanWork, PreparedIndex, PreparedProductSelection, SourceCompilePlan, SourceRoute,
+    capture_index_scan, commit_pending_capture_failure, index_project_intent_at,
     index_project_intent_with_cluster_and_intent, package_source_membership_page,
     remove_project_intent, run_index_scan, semantic_version_record,
 };
@@ -357,6 +357,12 @@ pub(in crate::builtin) struct CommandAdapter {
     index_owner_epoch: [u8; 16],
     #[cfg(test)]
     publication_test_hook: Option<index_publication_worker::TestHook>,
+    #[cfg(test)]
+    source_test_hook: Option<index_publication_worker::TestHook>,
+    #[cfg(test)]
+    source_worker_start_refusal: bool,
+    #[cfg(test)]
+    cleanup_worker_start_refusal: bool,
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
@@ -415,11 +421,50 @@ enum IndexJobWork {
         completion: Option<index_publication_worker::Completion>,
         blocked: Option<super::journal_readiness::RetryToken>,
     },
+    /// The original writers prepare a completed scan, its independent source
+    /// capture, or a configured cluster continuation off the control loop.
+    PreparingSource {
+        worker: Option<index_publication_worker::PublicationWorker>,
+        completion: Option<index_publication_worker::Completion>,
+        blocked: Option<super::journal_readiness::RetryToken>,
+    },
+    SourceRetiring {
+        worker: index_publication_worker::PublicationWorker,
+        continuation: PreparedIndex,
+        captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    },
+    /// An OS thread-start refusal retains every original capability and large
+    /// scan payload until a tracked retirement worker can own destruction.
+    RetirementPending {
+        work: Box<index_publication_worker::PublicationWork>,
+        retired: index_publication_worker::Retired,
+        outcome: backend_library::IndexJobOutcome,
+        retry_at: std::time::Instant,
+    },
     PublicationRetiring {
         worker: index_publication_worker::PublicationWorker,
         outcome: backend_library::IndexJobOutcome,
     },
     Transition,
+}
+
+/// The only admitted ownership-transfer purposes. Invalid combinations of
+/// scan, compilation, terminal outcome and cleanup cannot reach the worker.
+enum OwnedIndexPhase {
+    Publish {
+        prepared: PreparedProductSelection,
+        refusal: Option<backend_library::IndexJobOutcome>,
+    },
+    Source {
+        scan: IndexScanResult,
+        route: Option<SourceRoute>,
+    },
+    Cluster(SourceCompilePlan),
+    Finalize(DeferredIndex),
+    Cleanup {
+        plan: CaptureFailurePlan,
+        outcome: backend_library::IndexJobOutcome,
+    },
 }
 
 enum MutationAdmission {
@@ -791,6 +836,12 @@ impl CommandAdapter {
             index_owner_epoch,
             #[cfg(test)]
             publication_test_hook: None,
+            #[cfg(test)]
+            source_test_hook: None,
+            #[cfg(test)]
+            source_worker_start_refusal: false,
+            #[cfg(test)]
+            cleanup_worker_start_refusal: false,
             waiting: std::collections::VecDeque::new(),
             queued_writer_blocked: None,
             abandoned_replies: BTreeSet::new(),
@@ -1935,10 +1986,19 @@ impl CommandAdapter {
                 drop(completion);
             } else if matches!(
                 indexing.work,
-                IndexJobWork::PublicationWorker { .. } | IndexJobWork::PublicationRetiring { .. }
+                IndexJobWork::PublicationWorker { .. }
+                    | IndexJobWork::PublicationRetiring { .. }
+                    | IndexJobWork::PreparingSource { .. }
+                    | IndexJobWork::SourceRetiring { .. }
+                    | IndexJobWork::RetirementPending { .. }
             ) {
                 match std::mem::replace(&mut indexing.work, IndexJobWork::Transition) {
                     IndexJobWork::PublicationWorker {
+                        worker: Some(worker),
+                        completion,
+                        ..
+                    }
+                    | IndexJobWork::PreparingSource {
                         worker: Some(worker),
                         completion,
                         ..
@@ -1947,8 +2007,15 @@ impl CommandAdapter {
                         worker: None,
                         completion,
                         ..
+                    }
+                    | IndexJobWork::PreparingSource {
+                        worker: None,
+                        completion,
+                        ..
                     } => drop(completion),
-                    IndexJobWork::PublicationRetiring { worker, .. } => worker.join(),
+                    IndexJobWork::PublicationRetiring { worker, .. }
+                    | IndexJobWork::SourceRetiring { worker, .. } => worker.join(),
+                    IndexJobWork::RetirementPending { work, retired, .. } => drop((work, retired)),
                     _ => unreachable!("checked publication worker"),
                 }
             }
@@ -2468,14 +2535,95 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         prepared: PreparedProductSelection,
     ) -> Result<(), BuiltinModelError> {
-        use index_publication_worker::{
-            Completion, Disposition, PublicationWork, PublicationWorker,
+        self.start_owned_index_phase(
+            daemon,
+            indexing,
+            OwnedIndexPhase::Publish {
+                prepared,
+                refusal: None,
+            },
+        )
+    }
+
+    fn start_source_phase(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        indexing: &mut IndexJob,
+        scan: IndexScanResult,
+    ) -> Result<(), BuiltinModelError> {
+        let route = self.owner_cluster.as_ref().map(|owner| SourceRoute {
+            owner: Arc::clone(owner),
+            pending: self.pending_stored_acks.clone(),
+        });
+        self.start_owned_index_phase(daemon, indexing, OwnedIndexPhase::Source { scan, route })
+    }
+
+    fn start_index_finalization(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        indexing: &mut IndexJob,
+        job: DeferredIndex,
+    ) -> Result<(), BuiltinModelError> {
+        self.start_owned_index_phase(daemon, indexing, OwnedIndexPhase::Finalize(job))
+    }
+
+    fn owned_publication_state(
+        source: bool,
+        worker: Option<index_publication_worker::PublicationWorker>,
+        completion: Option<index_publication_worker::Completion>,
+        blocked: Option<super::journal_readiness::RetryToken>,
+    ) -> IndexJobWork {
+        if source {
+            IndexJobWork::PreparingSource {
+                worker,
+                completion,
+                blocked,
+            }
+        } else {
+            IndexJobWork::PublicationWorker {
+                worker,
+                completion,
+                blocked,
+            }
+        }
+    }
+
+    fn start_owned_index_phase(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        indexing: &mut IndexJob,
+        phase: OwnedIndexPhase,
+    ) -> Result<(), BuiltinModelError> {
+        let preparing_source = matches!(
+            &phase,
+            OwnedIndexPhase::Source { .. }
+                | OwnedIndexPhase::Cluster(_)
+                | OwnedIndexPhase::Finalize(_)
+        );
+        let cleanup_phase = matches!(&phase, OwnedIndexPhase::Cleanup { .. });
+        let empty = || PreparedProductSelection {
+            intent: None,
+            selected: Vec::new(),
+            revision_fence: None,
+            profile_refusals: Box::new([]),
+            partial_plan: None,
         };
-        let workspace = self
-            .product_state
-            .workspace_path()
-            .map_err(BuiltinModelError)?
-            .to_owned();
+        use index_publication_worker::{
+            Completion, Disposition, Preparation, PublicationWork, PublicationWorker,
+        };
+        let (prepared, preparation) = match phase {
+            OwnedIndexPhase::Publish { prepared, refusal } => {
+                (prepared, Preparation::Publication { refusal })
+            }
+            OwnedIndexPhase::Source { scan, route } => {
+                (empty(), Preparation::Source { scan, route })
+            }
+            OwnedIndexPhase::Cluster(plan) => (empty(), Preparation::Cluster(plan)),
+            OwnedIndexPhase::Finalize(job) => (empty(), Preparation::Finalize(job)),
+            OwnedIndexPhase::Cleanup { plan, outcome } => {
+                (empty(), Preparation::Cleanup { plan, outcome })
+            }
+        };
         let base = daemon.engine().daemon().owner().snapshot();
         let mut work = Box::new(PublicationWork::new(
             None,
@@ -2486,50 +2634,43 @@ impl CommandAdapter {
             Default::default(),
             base.clone(),
             daemon.engine().daemon().library().view().clone(),
+            daemon.engine().daemon().library().cursor(),
             self.compiler.clone(),
             super::super::SemanticDeployment::from_remote(&self.remote_semantic),
-            workspace,
+            PathBuf::new(),
             self.published.clone(),
             prepared,
+            preparation,
             indexing.owner_ticket.package().clone(),
             indexing.operation_key,
-            Arc::clone(&indexing.cancelled),
+            if cleanup_phase {
+                Arc::new(AtomicBool::new(false))
+            } else {
+                Arc::clone(&indexing.cancelled)
+            },
         ));
-        let reserved =
-            (|| -> Result<(), BuiltinModelError> {
-                work.projection = Some(self.sql_projection.reserve_writer().map_err(|e| {
-                    BuiltinModelError(format!("capture admitted SQL read snapshot: {e}"))
-                })?);
-                work.journal = Some(self.index_operations.detach_publication_writer().map_err(
-                    |e| BuiltinModelError(format!("reserve keyed receipt writer: {e}")),
-                )?);
-                work.semantic = Some(self.semantic_authority.detach_index_writer(base.root())?);
-                work.head = index_publication_worker::Head::Writer(
-                    daemon
-                        .engine_mut()
-                        .daemon_mut()
-                        .reserve_read_head_writer()
-                        .map_err(|e| {
-                            BuiltinModelError(format!("reserve coherent read-head writer: {e}"))
-                        })?,
-                );
-                work.image_rows = std::mem::take(&mut self.image_rows);
-                work.generations = std::mem::take(&mut self.generations);
-                work.residences_reserved = true;
-                self.semantic_authority
-                    .install_image_loader(&mut self.generations);
-                Ok(())
-            })();
+        let reserved = self.reserve_index_phase_writers(daemon, &mut work);
         #[cfg(test)]
         {
-            work.test_hook = self.publication_test_hook.take();
+            work.test_hook = if preparing_source {
+                self.source_test_hook.take()
+            } else {
+                self.publication_test_hook.take()
+            };
+            work.test_spawn_refusal = (preparing_source
+                && std::mem::take(&mut self.source_worker_start_refusal))
+                || (cleanup_phase && std::mem::take(&mut self.cleanup_worker_start_refusal));
         }
         let (worker, completion) = match reserved {
             Err(error) => (
                 None,
                 Some(Completion {
+                    disposition: if work.is_cleanup() {
+                        Disposition::Pending(error)
+                    } else {
+                        Disposition::Unselected(error)
+                    },
                     work,
-                    disposition: Disposition::Unselected(error),
                 }),
             ),
             Ok(()) => match PublicationWorker::spawn(work) {
@@ -2537,19 +2678,74 @@ impl CommandAdapter {
                 Err((work, error)) => (
                     None,
                     Some(Completion {
+                        disposition: if work.is_cleanup() {
+                            // This is the original frozen cleanup, not a new
+                            // failure. Retain its attempts/outcome and all
+                            // reserved capabilities for bounded explicit retry.
+                            Disposition::Pending(BuiltinModelError(format!(
+                                "start index cleanup worker: {error}"
+                            )))
+                        } else {
+                            Disposition::Unselected(BuiltinModelError(format!(
+                                "start index publication worker: {error}"
+                            )))
+                        },
                         work,
-                        disposition: Disposition::Unselected(BuiltinModelError(format!(
-                            "start index publication worker: {error}"
-                        ))),
                     }),
                 ),
             },
         };
-        indexing.work = IndexJobWork::PublicationWorker {
-            worker,
-            completion,
-            blocked: None,
-        };
+        indexing.work = Self::owned_publication_state(preparing_source, worker, completion, None);
+        Ok(())
+    }
+
+    fn reserve_index_phase_writers(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        work: &mut index_publication_worker::PublicationWork,
+    ) -> Result<(), BuiltinModelError> {
+        work.admit_workspace(
+            self.product_state
+                .workspace_path()
+                .map(Path::to_path_buf)
+                .map_err(BuiltinModelError),
+        )?;
+        if work.projection.is_none() {
+            work.projection = Some(self.sql_projection.reserve_writer().map_err(|e| {
+                BuiltinModelError(format!("capture admitted SQL read snapshot: {e}"))
+            })?);
+        }
+        if work.journal.is_none() {
+            work.journal = Some(
+                self.index_operations
+                    .detach_publication_writer()
+                    .map_err(|e| BuiltinModelError(format!("reserve keyed receipt writer: {e}")))?,
+            );
+        }
+        if work.semantic.is_none() {
+            work.semantic = Some(
+                self.semantic_authority
+                    .detach_index_writer(work.base_root())?,
+            );
+        }
+        if matches!(work.head, index_publication_worker::Head::Moving) {
+            work.head = index_publication_worker::Head::Unprepared(
+                daemon
+                    .engine_mut()
+                    .daemon_mut()
+                    .reserve_read_head_writer()
+                    .map_err(|e| {
+                        BuiltinModelError(format!("reserve coherent read-head writer: {e}"))
+                    })?,
+            );
+        }
+        if !work.residences_reserved {
+            work.image_rows = std::mem::take(&mut self.image_rows);
+            work.generations = std::mem::take(&mut self.generations);
+            work.residences_reserved = true;
+            self.semantic_authority
+                .install_image_loader(&mut self.generations);
+        }
         Ok(())
     }
 
@@ -2560,6 +2756,7 @@ impl CommandAdapter {
     ) -> Result<index_publication_worker::Retired, ()> {
         use index_publication_worker::{Disposition, Head, Retired};
         let work = &mut completion.work;
+        let unprepared = matches!(work.head, Head::Unprepared(_));
         let semantic = match work.semantic.take() {
             Some(writer) => match self.semantic_authority.prepare_index_writer_return(
                 daemon.engine().daemon().owner().snapshot().root(),
@@ -2599,7 +2796,35 @@ impl CommandAdapter {
             },
             None => None,
         };
-        let head = if matches!(completion.disposition, Disposition::Ready) {
+        let head = if matches!(completion.disposition, Disposition::Refreshed) {
+            let published = match std::mem::replace(&mut work.head, Head::Moving) {
+                Head::Refreshed(published) => published,
+                retained => {
+                    work.head = retained;
+                    work.projection = projection.map(|r| r.into_writer());
+                    work.journal = journal.map(|r| r.into_writer());
+                    work.semantic = semantic.map(|r| r.into_writer());
+                    return Err(());
+                }
+            };
+            match daemon
+                .engine_mut()
+                .daemon_mut()
+                .install_read_head_refresh(published)
+            {
+                Ok(retired) => Some(retired),
+                Err((published, _)) => {
+                    work.head = Head::Refreshed(published);
+                    work.projection = projection.map(|r| r.into_writer());
+                    work.journal = journal.map(|r| r.into_writer());
+                    work.semantic = semantic.map(|r| r.into_writer());
+                    return Err(());
+                }
+            }
+        } else if matches!(
+            completion.disposition,
+            Disposition::Ready | Disposition::SourceCaptured
+        ) {
             let published = match std::mem::replace(&mut work.head, Head::Moving) {
                 Head::Published(published) => published,
                 retained => {
@@ -2651,7 +2876,11 @@ impl CommandAdapter {
             match result {
                 Ok(retired) => Some(retired),
                 Err((writer, _)) => {
-                    work.head = Head::Writer(writer);
+                    work.head = if unprepared {
+                        Head::Unprepared(writer)
+                    } else {
+                        Head::Writer(writer)
+                    };
                     work.projection = projection.map(|r| r.into_writer());
                     work.journal = journal.map(|r| r.into_writer());
                     work.semantic = semantic.map(|r| r.into_writer());
@@ -2685,12 +2914,20 @@ impl CommandAdapter {
                 std::mem::take(&mut work.generations),
             ));
         }
-        if matches!(completion.disposition, Disposition::Ready) {
+        if matches!(
+            completion.disposition,
+            Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
+        ) {
             retired.roots = std::mem::replace(&mut self.published, work.roots.take());
         }
         self.semantic_authority
             .install_image_loader(&mut self.generations);
-        if self.search_preparation_eager && matches!(completion.disposition, Disposition::Ready) {
+        if self.search_preparation_eager
+            && matches!(
+                completion.disposition,
+                Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
+            )
+        {
             self.warm_queries(daemon);
         }
         Ok(retired)
@@ -2704,7 +2941,7 @@ impl CommandAdapter {
         legacy_reply: &mut Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> Option<backend_library::IndexJobOutcome> {
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Publishing);
-        if prepared.intent.is_some() && !prepared.selected.is_empty() {
+        if !prepared.selected.is_empty() || prepared.profile_refusals.is_empty() {
             return self
                 .start_index_publication(daemon, indexing, prepared)
                 .err()
@@ -2718,84 +2955,35 @@ impl CommandAdapter {
                 prepared.profile_refusals.iter().find_map(|profile| profile.compiler_failure.clone()),
             )
         });
-        if refusal_outcome.is_some() && prepared.selected.is_empty() {
-            // All profiles were refused. Commit their independent typed
-            // terminal captures without manufacturing a publication receipt.
-            // The accepted keyed operation will resolve to ordinary Failed.
-            let result = (|| -> Result<(), FinishAddError> {
-                if let Some(fence) = prepared.revision_fence.as_ref()
-                    && !super::super::ingest::compiler_revision_is_current_with_cancellation(
-                        fence,
-                        Some(indexing.cancelled.as_ref()),
-                    )
-                    .map_err(BuiltinModelError)?
-                {
-                    return Err(BuiltinModelError(
-                        "captured source changed before refusal outcomes committed".to_owned(),
-                    )
-                    .into());
-                }
-                let intent = prepared.intent.clone().ok_or_else(|| {
-                    BuiltinModelError("profile refusals lost their capture intent".to_owned())
-                })?;
-                let intent = match indexing.operation_key {
-                    Some(key) => intent.with_operation_key(key)?,
-                    None => intent,
-                };
-                let committed = prepare_builtin_intent_at(
-                    daemon,
-                    &intent,
-                    prepared
-                        .revision_fence
-                        .as_ref()
-                        .map(|fence| fence.canonical_root()),
-                    Arc::clone(&indexing.cancelled),
-                )?;
-                prepare_publication_barrier(
-                    &mut self.index_operations,
-                    indexing.operation_key,
-                    Some(committed.request_identity()),
-                    committed.base_workspace_root(),
-                    committed.base_workspace_sequence(),
-                    None,
-                )?;
-                commit_prepared_builtin_intent(daemon, indexing.request_id, committed)?;
-                self.publish_view(daemon, Some(&intent)).map_err(Into::into)
-            })();
-            return match result {
-                Ok(()) => {
-                    indexing.captures.clear();
-                    // No available generation was claimed in this branch.
-                    Some(
-                        match refusal_outcome.expect("refused outcome was checked") {
-                            backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
-                                failure,
-                                ..
-                            } => refused_index_outcome(
-                                "every language profile was refused; inspect package-profile for the retained outcomes",
-                                Some(failure),
-                            ),
-                            _ => refused_index_outcome(
-                                "every language profile was refused; inspect package-profile for the retained outcomes",
-                                None,
-                            ),
-                        },
-                    )
-                }
-                Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
-                    Some(backend_library::IndexJobOutcome::Cancelled)
-                }
-                Err(FinishAddError::PublicationBusy) => {
-                    indexing.work = IndexJobWork::Publishing {
-                        prepared,
-                        blocked_sequence: self.journal_readiness.retry_token(),
-                    };
-                    None
-                }
-                Err(FinishAddError::Failed(error)) => Some(
-                    backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
-                ),
+        if let Some(refusal) = refusal_outcome
+            .as_ref()
+            .filter(|_| prepared.selected.is_empty())
+        {
+            // Refusal capture and its view use the same original-writer
+            // handoff as useful publication. This receipt stays Failed.
+            let failure = match refusal {
+                backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+                    failure, ..
+                } => Some(failure.clone()),
+                _ => None,
             };
+            let outcome = refused_index_outcome(
+                "every language profile was refused; inspect package-profile for the retained outcomes",
+                failure,
+            );
+            return self
+                .start_owned_index_phase(
+                    daemon,
+                    indexing,
+                    OwnedIndexPhase::Publish {
+                        prepared,
+                        refusal: Some(outcome),
+                    },
+                )
+                .err()
+                .map(|error| {
+                    backend_library::IndexJobOutcome::Failed(bounded_index_detail(error))
+                });
         }
         match self.finish_add(
             daemon,
@@ -2919,6 +3107,7 @@ impl CommandAdapter {
             // compiler stage actually reaches a terminal path. Healthy polls
             // therefore do not allocate or clone the queued profile list.
             let mut terminal_attempts = None;
+            let preparing_source = matches!(&work, IndexJobWork::PreparingSource { .. });
             match work {
                 IndexJobWork::Acquiring(acquired) => match acquired.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -3001,70 +3190,16 @@ impl CommandAdapter {
                             bounded_index_detail(refusal),
                         ));
                     }
-                    Ok(Ok(_)) if indexing.cancelled.load(Ordering::Acquire) => {
-                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    }
                     Ok(Ok(scan_result)) => {
-                        match finish_index_scan(
-                            daemon,
-                            scan_result,
-                            &self.compiler,
-                            &mut self.semantic_authority,
-                            self.owner_cluster.as_deref(),
-                            self.pending_stored_acks.as_ref(),
-                            true,
-                            indexing.operation_key,
-                            &mut indexing.captures,
-                            Some(&mut self.index_operations),
-                        ) {
-                            Ok(PreparedIndex::Ready(prepared)) => {
-                                terminal = self.finish_prepared_index_selection(
-                                    daemon,
-                                    &mut indexing,
-                                    prepared,
-                                    &mut legacy_reply,
-                                );
+                        match self.start_source_phase(daemon, &mut indexing, scan_result) {
+                            Ok(()) => {
+                                self.indexing = Some(indexing);
+                                return self.finish_deferred_poll(daemon, ready);
                             }
-                            Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
-                                indexing.captures = job.captures.clone();
-                                // The source and Pending capture already committed.
-                                // Publish their authenticated current view before
-                                // compiler work can leave the owner serving reads.
-                                match self.publish_view(daemon, None).and_then(|()| {
-                                    self.spawn_next_index_profile(daemon, &mut indexing, job)
-                                }) {
-                                    Ok(()) => {
-                                        self.indexing = Some(indexing);
-                                        return self.finish_deferred_poll(daemon, ready);
-                                    }
-                                    Err(error) => {
-                                        terminal = Some(backend_library::IndexJobOutcome::Failed(
-                                            bounded_index_detail(error),
-                                        ));
-                                    }
-                                }
-                            }
-                            Ok(PreparedIndex::Compile(job)) => {
-                                match finish_deferred_index(daemon, job) {
-                                    Ok(prepared) => {
-                                        terminal = self.finish_prepared_index_selection(
-                                            daemon,
-                                            &mut indexing,
-                                            prepared,
-                                            &mut legacy_reply,
-                                        );
-                                    }
-                                    Err(refusal) => {
-                                        terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                            bounded_index_detail(refusal),
-                                        ));
-                                    }
-                                }
-                            }
-                            Err(refusal) => {
-                                terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                    bounded_index_detail(refusal),
-                                ));
+                            Err(error) => {
+                                terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                    bounded_index_detail(error),
+                                ))
                             }
                         }
                     }
@@ -3145,20 +3280,14 @@ impl CommandAdapter {
                                         }
                                     }
                                 } else {
-                                    match finish_deferred_index(daemon, job) {
-                                        Ok(prepared) => {
-                                            terminal = self.finish_prepared_index_selection(
-                                                daemon,
-                                                &mut indexing,
-                                                prepared,
-                                                &mut legacy_reply,
-                                            );
-                                        }
-                                        Err(refusal) => {
+                                    match self.start_index_finalization(daemon, &mut indexing, job)
+                                    {
+                                        Ok(()) => {}
+                                        Err(error) => {
                                             terminal =
-                                                Some(backend_library::IndexJobOutcome::Refused(
-                                                    bounded_index_detail(refusal),
-                                                ));
+                                                Some(backend_library::IndexJobOutcome::Failed(
+                                                    bounded_index_detail(error),
+                                                ))
                                         }
                                     }
                                 }
@@ -3186,15 +3315,12 @@ impl CommandAdapter {
                                                 }
                                             }
                                         }
-                                        Ok(()) => match finish_deferred_index(daemon, job) {
-                                            Ok(prepared) => {
-                                                terminal = self.finish_prepared_index_selection(
-                                                    daemon,
-                                                    &mut indexing,
-                                                    prepared,
-                                                    &mut legacy_reply,
-                                                );
-                                            }
+                                        Ok(()) => match self.start_index_finalization(
+                                            daemon,
+                                            &mut indexing,
+                                            job,
+                                        ) {
+                                            Ok(()) => {}
                                             Err(error) => {
                                                 terminal =
                                                     Some(backend_library::IndexJobOutcome::Failed(
@@ -3227,6 +3353,11 @@ impl CommandAdapter {
                     worker,
                     mut completion,
                     blocked,
+                }
+                | IndexJobWork::PreparingSource {
+                    worker,
+                    mut completion,
+                    blocked,
                 } => {
                     use index_publication_worker::{Disposition, Event};
                     let retry_admitted = blocked.is_some();
@@ -3236,22 +3367,54 @@ impl CommandAdapter {
                         && blocked == self.journal_readiness.retry_token()
                         && !cancelling_before_grant
                     {
-                        indexing.work = IndexJobWork::PublicationWorker {
+                        indexing.work = Self::owned_publication_state(
+                            preparing_source,
                             worker,
                             completion,
-                            blocked: Some(blocked),
-                        };
+                            Some(blocked),
+                        );
                         self.indexing = Some(indexing);
                         return self.finish_deferred_poll(daemon, ready);
                     }
                     if completion.is_none() {
                         match worker.as_ref().and_then(|w| w.poll()) {
-                            Some(Event::Grant { claim, reply }) => {
+                            Some(Event::Grant {
+                                claim,
+                                reply,
+                                cancellation,
+                            }) => {
                                 let grant = daemon
                                     .engine_mut()
                                     .daemon_mut()
-                                    .grant_workspace_candidate(claim, indexing.cancelled.as_ref());
+                                    .grant_workspace_candidate(claim, cancellation.as_ref());
                                 let _ = reply.send(grant);
+                            }
+                            Some(Event::RefreshApproval {
+                                base_root,
+                                base_sequence,
+                                base_view_root,
+                                base_cursor,
+                                cancellation,
+                                reply,
+                            }) => {
+                                let owner = daemon.engine().daemon().owner();
+                                let library = daemon.engine().daemon().library();
+                                let approved = if cancellation.load(Ordering::Acquire) {
+                                    Err(BuiltinModelError(
+                                        super::super::ingest::INDEX_SCAN_CANCELLED.to_owned(),
+                                    ))
+                                } else if owner.head().root().as_bytes() != &base_root
+                                    || owner.head().sequence() != base_sequence
+                                    || library.view().root().as_bytes() != &base_view_root
+                                    || library.cursor() != base_cursor
+                                {
+                                    Err(BuiltinModelError(
+                                        "admitted base changed before view refresh".to_owned(),
+                                    ))
+                                } else {
+                                    Ok(())
+                                };
+                                let _ = reply.send(approved);
                             }
                             Some(Event::Complete(done)) => completion = Some(done),
                             None => {}
@@ -3260,45 +3423,108 @@ impl CommandAdapter {
                     if let Some(mut done) = completion {
                         if matches!(done.disposition, Disposition::Pending(_)) {
                             if !retry_admitted && !cancelling_before_grant {
-                                indexing.work = IndexJobWork::PublicationWorker {
+                                indexing.work = Self::owned_publication_state(
+                                    preparing_source,
                                     worker,
-                                    completion: Some(done),
-                                    blocked: Some(self.journal_readiness.retry_token()),
-                                };
+                                    Some(done),
+                                    Some(self.journal_readiness.retry_token()),
+                                );
                                 self.indexing = Some(indexing);
                                 return self.finish_deferred_poll(daemon, ready);
                             }
                             if let Some(running) = worker.as_ref() {
                                 match running.retry(done.work) {
                                     Ok(()) => {
-                                        indexing.work = IndexJobWork::PublicationWorker {
+                                        indexing.work = Self::owned_publication_state(
+                                            preparing_source,
                                             worker,
-                                            completion: None,
-                                            blocked: None,
-                                        };
+                                            None,
+                                            None,
+                                        );
                                         self.indexing = Some(indexing);
                                         return self.finish_deferred_poll(daemon, ready);
                                     }
                                     Err(work) => done.work = work,
                                 }
                             }
-                            indexing.work = IndexJobWork::PublicationWorker {
+                            if worker.is_none() && done.work.is_cleanup() {
+                                if self
+                                    .reserve_index_phase_writers(daemon, &mut done.work)
+                                    .is_err()
+                                {
+                                    indexing.work = Self::owned_publication_state(
+                                        preparing_source,
+                                        None,
+                                        Some(done),
+                                        Some(self.journal_readiness.retry_token()),
+                                    );
+                                    self.indexing = Some(indexing);
+                                    return self.finish_deferred_poll(daemon, ready);
+                                }
+                                match index_publication_worker::PublicationWorker::spawn(done.work)
+                                {
+                                    Ok(started) => {
+                                        indexing.work = Self::owned_publication_state(
+                                            preparing_source,
+                                            Some(started),
+                                            None,
+                                            None,
+                                        );
+                                        self.indexing = Some(indexing);
+                                        return self.finish_deferred_poll(daemon, ready);
+                                    }
+                                    Err((work, _)) => done.work = work,
+                                }
+                            }
+                            indexing.work = Self::owned_publication_state(
+                                preparing_source,
                                 worker,
-                                completion: Some(done),
-                                blocked: Some(self.journal_readiness.retry_token()),
-                            };
+                                Some(done),
+                                Some(self.journal_readiness.retry_token()),
+                            );
                         } else {
                             match self.settle_index_publication(daemon, &mut done) {
                                 Err(()) => {
-                                    indexing.work = IndexJobWork::PublicationWorker {
+                                    indexing.work = Self::owned_publication_state(
+                                        preparing_source,
                                         worker,
-                                        completion: Some(done),
-                                        blocked: Some(self.journal_readiness.retry_token()),
-                                    }
+                                        Some(done),
+                                        Some(self.journal_readiness.retry_token()),
+                                    )
                                 }
                                 Ok(retired) => {
+                                    if matches!(
+                                        done.disposition,
+                                        Disposition::SourcePrepared | Disposition::SourceCaptured
+                                    ) {
+                                        let (continuation, captures) =
+                                            done.work.take_source_continuation();
+                                        #[cfg(test)]
+                                        if self.source_test_hook.is_none() {
+                                            self.source_test_hook = done.work.test_hook.take();
+                                        }
+                                        if let Some(worker) = worker {
+                                            worker.retire(done.work, retired);
+                                            indexing.work = IndexJobWork::SourceRetiring {
+                                                worker,
+                                                continuation,
+                                                captures,
+                                            };
+                                        } else {
+                                            unreachable!(
+                                                "source preparation requires an owned worker"
+                                            );
+                                        }
+                                        self.indexing = Some(indexing);
+                                        return self.finish_deferred_poll(daemon, ready);
+                                    }
+                                    if matches!(done.disposition, Disposition::Ready)
+                                        && done.work.failure_outcome().is_some()
+                                    {
+                                        indexing.captures.clear();
+                                    }
                                     let outcome = match done.disposition {
-                                        Disposition::Ready => done
+                                        Disposition::Ready | Disposition::Refreshed => done
                                             .work
                                             .outcome
                                             .take()
@@ -3314,8 +3540,10 @@ impl CommandAdapter {
                                                 }
                                             })
                                         }
-                                        Disposition::Pending(_) => {
-                                            unreachable!("pending is never terminal")
+                                        Disposition::Pending(_)
+                                        | Disposition::SourcePrepared
+                                        | Disposition::SourceCaptured => {
+                                            unreachable!("nonterminal publication disposition")
                                         }
                                     };
                                     if let Some(worker) = worker {
@@ -3323,19 +3551,116 @@ impl CommandAdapter {
                                         indexing.work =
                                             IndexJobWork::PublicationRetiring { worker, outcome };
                                     } else {
-                                        // No thread was created and no private mutation ran.
-                                        drop((done.work, retired));
-                                        terminal = Some(outcome);
+                                        // Even OS startup refusal cannot drop a completed
+                                        // scan or displaced read payload on this actor.
+                                        match index_publication_worker::PublicationWorker::spawn_retirement(done.work, retired) {
+                                            Ok(worker) => indexing.work = IndexJobWork::PublicationRetiring { worker, outcome },
+                                            Err((work, retired, _)) => indexing.work = IndexJobWork::RetirementPending {
+                                                work, retired, outcome,
+                                                retry_at: std::time::Instant::now() + std::time::Duration::from_millis(100),
+                                            },
+                                        }
                                     }
                                 }
                             }
                         }
                     } else {
-                        indexing.work = IndexJobWork::PublicationWorker {
-                            worker,
-                            completion: None,
-                            blocked: None,
+                        indexing.work =
+                            Self::owned_publication_state(preparing_source, worker, None, None);
+                    }
+                }
+                IndexJobWork::RetirementPending {
+                    work,
+                    retired,
+                    outcome,
+                    retry_at,
+                } => {
+                    if std::time::Instant::now() < retry_at {
+                        indexing.work = IndexJobWork::RetirementPending {
+                            work,
+                            retired,
+                            outcome,
+                            retry_at,
                         };
+                    } else {
+                        match index_publication_worker::PublicationWorker::spawn_retirement(
+                            work, retired,
+                        ) {
+                            Ok(worker) => {
+                                indexing.work =
+                                    IndexJobWork::PublicationRetiring { worker, outcome }
+                            }
+                            Err((work, retired, _)) => {
+                                indexing.work = IndexJobWork::RetirementPending {
+                                    work,
+                                    retired,
+                                    outcome,
+                                    retry_at: std::time::Instant::now()
+                                        + std::time::Duration::from_millis(100),
+                                }
+                            }
+                        }
+                    }
+                }
+                IndexJobWork::SourceRetiring {
+                    worker,
+                    continuation,
+                    captures,
+                } => {
+                    if !worker.is_finished() {
+                        indexing.work = IndexJobWork::SourceRetiring {
+                            worker,
+                            continuation,
+                            captures,
+                        };
+                    } else {
+                        worker.join();
+                        if !captures.is_empty() {
+                            indexing.captures = captures;
+                        }
+                        match continuation {
+                            PreparedIndex::Compile(job) if job.has_pending_profiles() => {
+                                if let Err(error) =
+                                    self.spawn_next_index_profile(daemon, &mut indexing, job)
+                                {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                        bounded_index_detail(error),
+                                    ));
+                                }
+                            }
+                            PreparedIndex::Compile(job) => {
+                                if let Err(error) =
+                                    self.start_index_finalization(daemon, &mut indexing, job)
+                                {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                        bounded_index_detail(error),
+                                    ));
+                                }
+                            }
+                            PreparedIndex::Cluster(plan) => {
+                                self.set_index_progress_stage(
+                                    &mut indexing,
+                                    backend_library::IndexJobStage::Compiling,
+                                );
+                                if let Err(error) = self.start_owned_index_phase(
+                                    daemon,
+                                    &mut indexing,
+                                    OwnedIndexPhase::Cluster(plan),
+                                ) {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                        bounded_index_detail(error),
+                                    ));
+                                }
+                            }
+                            PreparedIndex::Ready(prepared) => {
+                                terminal = self.finish_prepared_index_selection(
+                                    daemon,
+                                    &mut indexing,
+                                    prepared,
+                                    &mut legacy_reply,
+                                )
+                            }
+                        }
                     }
                 }
                 IndexJobWork::PublicationRetiring { worker, outcome } => {
@@ -3427,27 +3752,28 @@ impl CommandAdapter {
                     } else {
                         backend_engine::builtin::SemanticUnavailableReason::Rejected
                     };
-                    if let Err(error) = commit_pending_capture_failure(
-                        daemon,
-                        indexing.captured_package,
-                        &indexing.captured_label,
-                        indexing.request_id,
-                        &indexing.captures,
+                    let cleanup = CaptureFailurePlan {
+                        attempts: terminal_attempts.take().unwrap_or_default(),
+                        attempt_reason: index_attempt_retirement_reason(&outcome),
+                        package: indexing.captured_package,
+                        label: indexing.captured_label.clone(),
+                        captures: indexing.captures.clone(),
                         reason,
                         compiler_failure,
-                    )
-                    .and_then(|()| {
-                        // Refusal commits a current source/capture frontier even
-                        // when it cannot replace a coherent semantic generation.
-                        // Reconcile through the same authenticated publication
-                        // seam as success before exposing that terminal outcome.
-                        self.publish_view(daemon, None).map_err(|error| {
-                            BuiltinModelError(format!(
-                                "reconcile committed source-capture view: {error}"
-                            ))
-                        })
-                    }) {
-                        outcome = capture_terminalization_failed(outcome, error);
+                    };
+                    match self.start_owned_index_phase(
+                        daemon,
+                        &mut indexing,
+                        OwnedIndexPhase::Cleanup {
+                            plan: cleanup,
+                            outcome: outcome.clone(),
+                        },
+                    ) {
+                        Ok(()) => {
+                            self.indexing = Some(indexing);
+                            return self.finish_deferred_poll(daemon, ready);
+                        }
+                        Err(error) => outcome = capture_terminalization_failed(outcome, error),
                     }
                 }
                 let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
@@ -6662,8 +6988,14 @@ mod tests {
     mod index_profile_worker_tests;
     #[path = "index_publication_worker.rs"]
     mod index_publication_worker_tests;
+    #[cfg(unix)]
+    #[path = "index_refresh_capability.rs"]
+    mod index_refresh_capability_tests;
     #[path = "index_request_admission.rs"]
     mod index_request_admission_tests;
+    #[cfg(unix)]
+    #[path = "index_source_worker.rs"]
+    mod index_source_worker_tests;
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
@@ -9850,6 +10182,7 @@ mod tests {
     }
 
     fn all_profiles_refused_completion_control(journal_busy: bool, restart_before_receipt: bool) {
+        use index_publication_worker::{Completion, Disposition, Head, TestHook, TestStage};
         let mut fixture = AdapterFixture::new();
         let (_, label) = fixture.add_target();
         fs::write(
@@ -9864,18 +10197,31 @@ mod tests {
         .expect("captured source");
         let operation = backend_library::IndexOperationKey::from_bytes([113; 32]).expect("key");
         let other = backend_library::IndexOperationKey::from_bytes([114; 32]).expect("foreign key");
+        let (selected, selected_at) = std::sync::mpsc::sync_channel(1);
+        let (release_selection, selection_release) = std::sync::mpsc::sync_channel(1);
         let (adapter, daemon) = fixture.parts();
+        if journal_busy || restart_before_receipt {
+            adapter.publication_test_hook = Some(TestHook {
+                stage: TestStage::AfterSelection,
+                run: Box::new(move || {
+                    selected.send(()).expect("actual selected refusal");
+                    selection_release
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("bounded selection release");
+                }),
+            });
+        }
         assert!(matches!(
             adapter.start_index_operation(
                 daemon,
                 operation,
                 backend_library::PackageReference::parse(label.clone()).expect("package"),
                 CompileExecutionIntent::Interactive,
-                706,
+                706
             ),
             Ok(Executed::Reply(_))
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while !adapter
             .indexing
             .as_ref()
@@ -9906,14 +10252,22 @@ mod tests {
             .prepare(other, Some([97; 32]), [98; 32], 1)
             .expect("foreign marker");
         let captured = owner_cursor(daemon);
-        while !adapter
-            .indexing
-            .as_ref()
-            .is_some_and(|job| matches!(job.work, IndexJobWork::Publishing { .. }))
-        {
+        while !adapter.indexing.as_ref().is_some_and(|job| {
+            matches!(
+                &job.work,
+                IndexJobWork::PublicationWorker {
+                    completion: Some(Completion {
+                        disposition: Disposition::Pending(_),
+                        ..
+                    }),
+                    blocked: Some(_),
+                    ..
+                }
+            )
+        }) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "retain refused candidate"
+                "retain owned refused candidate"
             );
             adapter.poll_deferred(daemon);
             std::thread::yield_now();
@@ -9921,10 +10275,10 @@ mod tests {
         assert_eq!(
             owner_cursor(daemon),
             captured,
-            "refusal cannot cross foreign Prepared"
+            "foreign Prepared cannot be crossed"
         );
         assert!(matches!(
-            adapter.index_operations.entry(operation).expect("own row"),
+            foreign.entry(operation).expect("own row"),
             Some(JournalEntry::Retained(StoredOperation {
                 state: StoredOperationState::Accepted,
                 ..
@@ -9937,7 +10291,7 @@ mod tests {
         assert_eq!(
             adapter.index_operations.read_query_count(),
             reads,
-            "refusal does not hot retry"
+            "no hot SQL retry"
         );
         foreign
             .failed(
@@ -9946,56 +10300,29 @@ mod tests {
                 backend_library::ProductText::from_static("foreign retired"),
             )
             .expect("release foreign marker");
+        adapter.journal_readiness.refresh();
+
         if journal_busy || restart_before_receipt {
-            // Stop at the real workspace commit boundary, before the owner
-            // writes its separate operation terminal receipt.
-            let mut indexing = adapter.indexing.take().expect("retained refusal job");
-            let IndexJobWork::Publishing { prepared, .. } =
-                std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
-            else {
-                panic!("retained publication candidate");
-            };
-            let outcome = adapter
-                .finish_prepared_index_selection(daemon, &mut indexing, prepared, &mut None)
-                .expect("exact refusal capture committed");
+            loop {
+                adapter.poll_deferred(daemon);
+                if selected_at.try_recv().is_ok() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "actual refusal selection"
+                );
+                std::thread::yield_now();
+            }
+            // The real worker selected the workspace and coherent read head,
+            // but its operation receipt has not been written or installed.
             assert!(matches!(
-                &outcome,
-                backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
-            ));
-            assert!(matches!(
-                adapter
-                    .index_operations
-                    .entry(operation)
-                    .expect("prepared row"),
+                foreign.entry(operation).expect("prepared original row"),
                 Some(JournalEntry::Retained(StoredOperation {
                     state: StoredOperationState::Prepared { .. },
                     ..
                 }))
             ));
-            if restart_before_receipt {
-                drop(indexing);
-                fixture = fixture.reopen();
-                let (adapter, daemon) = fixture.parts();
-                let recovered = adapter
-                    .resolve_index_operation(daemon, operation, None)
-                    .expect("cold selected refusal recovery");
-                assert!(
-                    matches!(
-                        recovered,
-                        backend_library::IndexOperationObservation::Known(
-                            backend_library::IndexOperationStatus {
-                                state: backend_library::IndexOperationState::Failed { .. },
-                                ..
-                            }
-                        )
-                    ),
-                    "cold refusal cannot become Published: {recovered:?}"
-                );
-                backend_library::SurfaceReply::IndexOperationStatus(recovered)
-                    .admit(backend_library::CommandId::IndexProgress)
-                    .expect("strict cold terminal");
-                return;
-            }
             let mut writer = foreign.connection_for_test();
             let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
             let (release, released) = std::sync::mpsc::sync_channel(1);
@@ -10009,54 +10336,83 @@ mod tests {
                         .expect("hold independent receipt writer");
                     locked.send(()).expect("writer ready");
                     let _ = released.recv_timeout(Duration::from_secs(10));
-                    transaction
-                        .rollback()
-                        .await
-                        .expect("release receipt writer");
+                    transaction.rollback().await.expect("release writer");
                 })
             });
             lock_ready
                 .recv_timeout(Duration::from_secs(10))
                 .expect("writer acquired");
-            let started = std::time::Instant::now();
-            let unresolved = adapter
-                .resolve_index_operation(daemon, operation, Some(&outcome))
-                .expect("selected refusal remains observable during SQL busy");
-            assert!(
-                started.elapsed() >= Duration::from_millis(200),
-                "actual SQL busy timeout"
-            );
-            assert!(matches!(unresolved,
-                backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
-                    state: backend_library::IndexOperationState::Unresolved {
-                        reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed, ..
-                    }, ..
-                })), "busy refusal cannot become Published: {unresolved:?}");
-            assert!(matches!(
-                adapter
-                    .index_operations
-                    .entry(operation)
-                    .expect("retained marker"),
-                Some(JournalEntry::Retained(StoredOperation {
-                    state: StoredOperationState::Prepared { .. },
-                    ..
-                }))
-            ));
-            release.send(()).expect("explicit writer release");
-            holder.join().expect("writer kernel retired");
-            adapter.journal_readiness.refresh();
-            adapter.complete_index_job(daemon, indexing, outcome, None);
-        } else {
-            adapter.journal_readiness.refresh();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while adapter.indexing.is_some() {
+            release_selection
+                .send(())
+                .expect("continue original selected worker");
+            while !adapter.indexing.as_ref().is_some_and(|job| {
+                matches!(&job.work,
+                IndexJobWork::PublicationWorker { completion: Some(Completion {
+                    disposition: Disposition::Pending(_), work,
+                }), blocked: Some(_), .. } if matches!(work.head, Head::Published(_)))
+            }) {
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "complete retained refusal"
+                    "retain selected SQL-busy refusal"
                 );
                 adapter.poll_deferred(daemon);
                 std::thread::yield_now();
             }
+            let started = std::time::Instant::now();
+            let active = adapter
+                .resolve_index_operation(daemon, operation, None)
+                .expect("old read remains observable");
+            assert!(
+                started.elapsed() < Duration::from_millis(200),
+                "owner must not run worker SQL retries"
+            );
+            assert_eq!(
+                owner_cursor(daemon),
+                captured,
+                "uninstalled read head remains coherent"
+            );
+            assert!(matches!(
+                active,
+                backend_library::IndexOperationObservation::Known(
+                    backend_library::IndexOperationStatus {
+                        state: backend_library::IndexOperationState::Active { .. },
+                        ..
+                    }
+                )
+            ));
+            release.send(()).expect("release receipt lock");
+            holder.join().expect("independent writer joined");
+            if restart_before_receipt {
+                // Controlled retirement retains the selected physical head;
+                // no process-death simulation is claimed by this test.
+                fixture = fixture.reopen();
+                let (adapter, daemon) = fixture.parts();
+                let recovered = adapter
+                    .resolve_index_operation(daemon, operation, None)
+                    .expect("cold refusal recovery");
+                assert!(matches!(
+                    recovered,
+                    backend_library::IndexOperationObservation::Known(
+                        backend_library::IndexOperationStatus {
+                            state: backend_library::IndexOperationState::Failed { .. },
+                            ..
+                        }
+                    )
+                ));
+                backend_library::SurfaceReply::IndexOperationStatus(recovered)
+                    .admit(backend_library::CommandId::IndexProgress)
+                    .expect("strict cold terminal");
+                return;
+            }
+            adapter.journal_readiness.refresh();
+        }
+        while adapter.indexing.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "complete retained refusal"
+            );
+            adapter.poll_deferred(daemon);
+            std::thread::yield_now();
         }
         assert!(matches!(
             adapter
