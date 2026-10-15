@@ -1917,7 +1917,6 @@ pub(crate) fn structural_reference_facts_resident(
                 confidence: backend_library::SemanticConfidence::Syntactic,
                 source,
             },
-            place: None,
         });
         if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
             return Err(BuiltinModelError(
@@ -2078,38 +2077,38 @@ impl PlacedFile {
     }
 }
 
-/// Gives every use whose site is captured the line it is written on and that
-/// line's text, read from the source under `root`. A file that is gone,
-/// unreadable or too large leaves its uses with the byte span alone, never a
-/// guessed line.
-pub(crate) fn place_reference_facts(
+/// An optional display placement read from current source bytes.
+/// Captured reference facts retain their original byte-span evidence.
+struct ReferencePlacement {
+    line: u32,
+    text: backend_engine::ProductText,
+}
+
+/// Projects one optional display placement per input fact, in input order.
+/// Missing, unreadable or oversized source files and invalid offsets yield no
+/// placement. The source text is bounded before it enters the display value.
+fn place_reference_facts(
     root: Option<&Path>,
-    facts: &mut [backend_engine::ReferenceFact],
-) {
+    facts: &[backend_engine::ReferenceFact],
+) -> Vec<Option<ReferencePlacement>> {
     let Some(root) = root else {
-        return;
+        return facts.iter().map(|_| None).collect();
     };
     let mut files = BTreeMap::<String, Option<PlacedFile>>::new();
-    for fact in facts {
-        let Some(span) = fact.evidence.source.as_ref() else {
-            continue;
-        };
-        let file = files
-            .entry(span.file.as_str().to_owned())
-            .or_insert_with(|| PlacedFile::read(&root.join(span.file.as_str())));
-        let Some(file) = file.as_ref() else {
-            continue;
-        };
-        let Ok(start) = usize::try_from(span.start) else {
-            continue;
-        };
-        let Some((line, text)) = file.place(start) else {
-            continue;
-        };
-        if let Ok(text) = backend_engine::ProductText::new(text) {
-            fact.place = Some(backend_engine::ReferencePlace { line, text });
-        }
-    }
+    facts
+        .iter()
+        .map(|fact| {
+            let span = fact.evidence.source.as_ref()?;
+            let file = files
+                .entry(span.file.as_str().to_owned())
+                .or_insert_with(|| PlacedFile::read(&root.join(span.file.as_str())))
+                .as_ref()?;
+            let start = usize::try_from(span.start).ok()?;
+            let (line, text) = file.place(start)?;
+            let text = backend_engine::ProductText::new(text).ok()?;
+            Some(ReferencePlacement { line, text })
+        })
+        .collect()
 }
 
 /// The file bytes of `span`, a span in the captured text of a declaration
@@ -2228,7 +2227,6 @@ mod call_span_tests {
                     end,
                 }),
             },
-            place: None,
         }
     }
 
@@ -2238,24 +2236,33 @@ mod call_span_tests {
         std::fs::create_dir_all(&root).expect("root");
         let file = "import os\n\ndef run():\n    # not here: enclose(x)\n    value = enclose(\n        \"a\",\n    )\n    return value\n";
         std::fs::write(root.join("a.py"), file).expect("file");
+        std::fs::write(root.join("unicode.py"), "π = enclose(x)\n").expect("UTF-8 file");
         let at = file.rfind("enclose").expect("call");
-        let mut facts = vec![
+        let facts = vec![
             fact_at("a.py", at as u32, (at + 7) as u32),
             fact_at("missing.py", 0, 3),
             fact_at("a.py", 9_999, 10_000),
+            fact_at("unicode.py", 1, 2),
         ];
-        place_reference_facts(Some(&root), &mut facts);
-        let place = facts[0].place.as_ref().expect("placed");
+        let original = facts.clone();
+        let placements = place_reference_facts(Some(&root), &facts);
+        assert_eq!(facts, original);
+        assert_eq!(placements.len(), facts.len());
+        let place = placements[0].as_ref().expect("placed");
         assert_eq!(place.line, 5);
         assert_eq!(place.text.as_str(), "value = enclose(");
-        assert!(facts[1].place.is_none(), "a missing file places nothing");
+        assert!(placements[1].is_none(), "a missing file places nothing");
         assert!(
-            facts[2].place.is_none(),
+            placements[2].is_none(),
             "a span outside the file places nothing"
         );
-        let mut without_root = vec![fact_at("a.py", at as u32, (at + 7) as u32)];
-        place_reference_facts(None, &mut without_root);
-        assert!(without_root[0].place.is_none());
+        assert!(
+            placements[3].is_none(),
+            "an offset inside a UTF-8 character places nothing"
+        );
+        let without_root = place_reference_facts(None, &facts);
+        assert_eq!(without_root.len(), facts.len());
+        assert!(without_root.iter().all(Option::is_none));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2265,9 +2272,9 @@ mod call_span_tests {
         std::fs::create_dir_all(&root).expect("root");
         let line = format!("x = call({})", "a".repeat(400));
         std::fs::write(root.join("b.py"), format!("{line}\n")).expect("file");
-        let mut facts = vec![fact_at("b.py", 4, 8)];
-        place_reference_facts(Some(&root), &mut facts);
-        let text = facts[0].place.as_ref().expect("placed").text.as_str();
+        let facts = vec![fact_at("b.py", 4, 8)];
+        let placements = place_reference_facts(Some(&root), &facts);
+        let text = placements[0].as_ref().expect("placed").text.as_str();
         assert_eq!(text.chars().count(), MAX_PLACE_CHARS + 1);
         assert!(text.ends_with('…'));
         let _ = std::fs::remove_dir_all(&root);

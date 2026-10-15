@@ -166,22 +166,28 @@ mod tests {
             .expect("actual project SDK admission")
             .expect("project SDK available");
         let inputs = admitted.inputs();
+        let compiler_api = inputs
+            .compiler_api()
+            .expect("explicit Compiler API project SDK admission");
         let local_compiler = std::fs::canonicalize(root.join("node_modules/typescript/bin/tsc"))
             .expect("actual PNPM project SDK compiler");
-        assert_eq!(inputs.compiler_path, local_compiler.as_path());
+        assert_eq!(compiler_api.compiler_path, local_compiler.as_path());
         assert_ne!(
-            inputs.compiler_path,
+            compiler_api.compiler_path,
             global_compiler.as_path(),
             "installed global SDK is a fallback"
         );
-        assert_eq!(inputs.node_path, node.path.as_path());
+        assert_eq!(compiler_api.node_path, node.path.as_path());
         assert_eq!(inputs.package_root, root.as_path());
-        assert_eq!(inputs.compiler_origin, crate::application::typescript_host::TypeScriptSelectionOrigin::ProjectLocalInstallation);
         assert_eq!(
-            inputs.node_origin,
+            compiler_api.compiler_origin,
+            crate::application::typescript_host::TypeScriptSelectionOrigin::ProjectLocalInstallation
+        );
+        assert_eq!(
+            compiler_api.node_origin,
             crate::application::typescript_host::TypeScriptSelectionOrigin::InstalledHostSelection
         );
-        assert!(String::from_utf8_lossy(inputs.compiler_version).contains("5.7.2"));
+        assert!(String::from_utf8_lossy(compiler_api.compiler_version).contains("5.7.2"));
         assert!(
             !inputs.config_candidates.is_empty(),
             "actual project configuration is bound"
@@ -214,7 +220,7 @@ mod tests {
             .admit(&root)
             .expect("repeat project admission")
             .expect("same project SDK");
-        assert_eq!(admitted.fingerprint, restarted.fingerprint);
+        assert_eq!(admitted.fingerprint(), restarted.fingerprint());
         assert_eq!(
             admitted.resolved_toolchain().unwrap().invocation_identity(),
             restarted
@@ -235,10 +241,10 @@ mod tests {
         );
         println!(
             "actual-project-sdk={} node={} host-fallback={} fingerprint={:?}",
-            inputs.compiler_path.display(),
-            inputs.node_path.display(),
+            compiler_api.compiler_path.display(),
+            compiler_api.node_path.display(),
             global_compiler.display(),
-            admitted.fingerprint
+            admitted.fingerprint()
         );
     }
 }

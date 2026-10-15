@@ -4522,6 +4522,18 @@ pub(crate) struct AdmittedCompilerApiTypeScriptProject {
     pub(crate) witness: std::sync::Arc<TypeScriptProjectWitness>,
 }
 
+impl std::fmt::Debug for AdmittedCompilerApiTypeScriptProject {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdmittedCompilerApiTypeScriptProject")
+            .field("compiler", &self.compiler)
+            .field("node", &self.node)
+            .field("module_root", &self.module_root)
+            .field("fingerprint", &self.fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
 impl AdmittedCompilerApiTypeScriptProject {
     pub(crate) fn resolved_toolchain(
         &self,
@@ -5938,10 +5950,7 @@ printf 'Version 5.9.3\n'
         };
         assert_eq!(first_project.version, "5.9.3");
         assert_eq!(second_project.version, "5.8.4");
-        assert_ne!(
-            first_project.compiler_api_for_test().module_root,
-            second_project.compiler_api_for_test().module_root
-        );
+        assert_ne!(first_project.module_root, second_project.module_root);
     }
 
     #[test]

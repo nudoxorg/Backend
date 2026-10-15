@@ -2263,6 +2263,7 @@ fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverage
 #[cfg(test)]
 mod source_degradation_tests {
     use super::*;
+    use backend_semantic::vocabulary::Stage;
 
     fn source() -> SourceAuthority {
         SourceAuthority {

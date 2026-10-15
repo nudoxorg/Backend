@@ -13098,7 +13098,7 @@ describe('suite', () => {\n\
         .map_err(|error| LaneError::ConfiguredProject(format!("compiler API bridge: {error:?}")))?;
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .map_err(|error| {
                 LaneError::ConfiguredProject(format!("resolver witness: {error:?}"))
             })?;

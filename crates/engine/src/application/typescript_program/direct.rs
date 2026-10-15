@@ -63,7 +63,7 @@ impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_> {
         self.observe(|resolver| {
             resolver
                 .realpath(path)
-                .map(|path| path.map(Box::into_path_buf))
+                .map(|path| path.map(|path| path.into_path_buf()))
         })
     }
     fn symlink_metadata(&self, path: &Path) -> io::Result<Option<ResolutionFileKind>> {
@@ -359,8 +359,8 @@ pub(super) fn build_direct_inputs_for_config(
     }
     let work = calculate_work_allowance(inputs, &sources, &libraries, closure_work);
     let metrics = ProgramClosureMetrics::default();
-    let compiler_accesses = Box::new([]);
-    let directory_views = Box::new([]);
+    let compiler_accesses: Box<[ProgramAccess]> = Box::new([]);
+    let directory_views: Box<[ProgramDirectoryView]> = Box::new([]);
     let access_digest = compiler_access_digest(&compiler_accesses, &directory_views, metrics)?;
     Ok(NativeTypeScriptInputs {
         sources,
