@@ -1,0 +1,22 @@
+{
+  "head": "9ede6b5b29af0881d0fa5cc06ad5563dd96dd649",
+  "branch": "codex/ilo-references-rendering-recovery-20261015",
+  "native_validation": "UNRUN; RootGO required",
+  "files": {
+    "crates/local-service/src/builtin/commands/semantic_query.rs": {
+      "sha256": "c7e77efc221d8aa92972506fff51ed3d01ac82b7d1b375f8857cfeb0326e3a58",
+      "mtime_ns": 1792048068109443990,
+      "bytes": 424336
+    },
+    "crates/local-service/src/builtin/view_build/query.rs": {
+      "sha256": "099475d0f5d5b312dac9f4bca98e21701329b0938257185d5036f30a3885ba49",
+      "mtime_ns": 1792047989652775017,
+      "bytes": 34589
+    },
+    "crates/local-service/src/builtin/view_build/semantic.rs": {
+      "sha256": "b2bed74eda3c63c10218029dc0eb481e04d050b419ad71cf92b5b9314bdd2bba",
+      "mtime_ns": 1792047989654481118,
+      "bytes": 75417
+    }
+  }
+}

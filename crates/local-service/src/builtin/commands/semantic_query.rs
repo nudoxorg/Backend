@@ -642,6 +642,57 @@ fn project_semantic_graph_relations(
     )
 }
 
+/// The evidence of one written site of a link: its own confidence and its
+/// own captured span, not the representative of the relation it proves.
+fn occurrence_evidence(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    id: backend_semantic::ir::LinkOccurrenceId,
+    occurrence: backend_semantic::ir::LinkOccurrence,
+) -> Result<backend_engine::SemanticLinkEvidence, BuiltinModelError> {
+    use backend_semantic::ir::{FactAvailability, SemanticCoreReader as _};
+    let authority = image.occurrence_authority(id).ok_or_else(|| {
+        BuiltinModelError("semantic occurrence has no authority record".to_owned())
+    })?;
+    let source = match (authority.source, occurrence.source) {
+        (FactAvailability::Captured, Some(span)) => {
+            let file = image.atom(span.file()).ok_or_else(|| {
+                BuiltinModelError("semantic occurrence path is absent from its image".to_owned())
+            })?;
+            let file = std::str::from_utf8(file).map_err(|_| {
+                BuiltinModelError("semantic occurrence path is not UTF-8".to_owned())
+            })?;
+            Some(backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new(file)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?,
+                start: span.start(),
+                end: span.end(),
+            })
+        }
+        _ => None,
+    };
+    Ok(backend_engine::SemanticLinkEvidence {
+        confidence: semantic_confidence(occurrence.confidence),
+        source,
+    })
+}
+
+/// Whether `facts` already holds this very use: the same caller, relation
+/// and written site.
+fn reference_fact_at_site(
+    facts: &[backend_engine::ReferenceFact],
+    site: backend_engine::SymbolKey,
+    relation: backend_engine::SemanticLinkKind,
+    evidence: &backend_engine::SemanticLinkEvidence,
+) -> bool {
+    evidence.source.as_ref().is_some_and(|source| {
+        facts.iter().any(|fact| {
+            fact.site == site
+                && fact.relation == relation
+                && fact.evidence.source.as_ref() == Some(source)
+        })
+    })
+}
+
 fn reference_fact_has_site_and_relation(
     facts: &[backend_engine::ReferenceFact],
     site: backend_engine::SymbolKey,
@@ -743,6 +794,13 @@ fn project_opened_reference_facts(
     }
     for image in images {
         let caller_path = view_build::compiled_source_path(image)?;
+        let mut occurrence_sites = std::collections::BTreeMap::new();
+        for (id, occurrence) in image.link_occurrences() {
+            occurrence_sites
+                .entry(occurrence.link)
+                .or_insert_with(Vec::new)
+                .push((id, occurrence));
+        }
         let session = DocumentationSession::new(image);
         for source in session.canonical_entities() {
             let source = source.map_err(|error| {
@@ -756,7 +814,7 @@ fn project_opened_reference_facts(
             {
                 continue;
             }
-            for (_, link) in image.links_from(source.entity.id) {
+            for (link_id, link) in image.links_from(source.entity.id) {
                 let LinkTarget::External(external) = link.target else {
                     continue;
                 };
@@ -821,21 +879,30 @@ fn project_opened_reference_facts(
                     continue;
                 }
                 let relation = semantic_link_kind(link.kind);
-                if reference_fact_has_site_and_relation(&facts, caller_symbol, relation) {
-                    continue;
-                }
-                facts.push(backend_engine::ReferenceFact {
-                    site: caller_symbol,
-                    target: backend_engine::SemanticLinkTarget::Local {
-                        declaration: semantic_declaration_identity(identity),
-                    },
-                    relation,
-                    evidence: semantic_link_evidence(image, link)?,
-                });
-                if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
-                    return Err(BuiltinModelError(
-                        "semantic references exceed the bounded result contract".to_owned(),
-                    ));
+                let evidence = match occurrence_sites.get(&link_id) {
+                    Some(sites) => sites
+                        .iter()
+                        .map(|(id, occurrence)| occurrence_evidence(image, *id, *occurrence))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => vec![semantic_link_evidence(image, link)?],
+                };
+                for evidence in evidence {
+                    if reference_fact_at_site(&facts, caller_symbol, relation, &evidence) {
+                        continue;
+                    }
+                    facts.push(backend_engine::ReferenceFact {
+                        site: caller_symbol,
+                        target: backend_engine::SemanticLinkTarget::Local {
+                            declaration: semantic_declaration_identity(identity),
+                        },
+                        relation,
+                        evidence,
+                    });
+                    if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                        return Err(BuiltinModelError(
+                            "semantic references exceed the bounded result contract".to_owned(),
+                        ));
+                    }
                 }
             }
         }
