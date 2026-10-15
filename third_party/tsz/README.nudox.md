@@ -26,3 +26,12 @@ reported (never published), and the partially written image is discarded and reb
 without it by the caller. The checker's module-export lookups no longer repeat one
 program-wide answer once per binder, and the request consensus for a source/specifier
 pair is memoized; both made one named import cost work proportional to the file count.
+
+The recovered React/generic variance hot-loop fix uses `with_ambient_checkpoint`
+to lend a borrowed checkpoint only during a synchronous callback. Its private
+restoration guard cannot escape or be forgotten by callers. Variance recursion
+guards and instantiation polls observe the same file slice as explicit solver
+queries. Variance completed-visit memo keys include bound generic parameter
+names, so shared subtrees under the same complete context are visited once.
+Shared effective-variance masks, partial dependency-walk publication and raw
+lifetime-erased public guards are intentionally not adopted.

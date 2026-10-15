@@ -14,6 +14,10 @@ pub mod id;
 
 /// Shared cooperative cancellation/deadline/work budget for one project run.
 pub mod execution_budget;
+/// Callback-scoped checkpoint for solver walks lacking an explicit database.
+pub mod ambient_checkpoint;
+pub use ambient_checkpoint::{AMBIENT_POLLS_PER_UNIT, ambient_checkpoint_installed,
+    ambient_poll, ambient_stopped, with_ambient_checkpoint};
 pub use execution_budget::{
     ExecutionCheckpoint, ExecutionWorkMeter, FileWorkSlice, LatchedExecutionCheckpoint, ProjectExecutionBudget,
     ProjectExecutionIdentity, ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,

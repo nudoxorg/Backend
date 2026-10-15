@@ -545,7 +545,11 @@ impl ParallelCheckPlan<'_> {
                     observed_file,
                 );
                 if self.checks_file_semantics(file) && !skipped {
-                    checker.check_source_file(file.source_file);
+                    tsz_common::with_ambient_checkpoint(
+                        slice.as_ref().map(|slice| slice as &dyn tsz_common::ExecutionCheckpoint)
+                            .or_else(|| self.execution_control()),
+                        || checker.check_source_file(file.source_file),
+                    );
                 }
                 span.returned();
                 // A program-wide stop wins over a file's own exhaustion.

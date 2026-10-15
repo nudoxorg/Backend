@@ -1678,15 +1678,17 @@ impl<'a> ParallelCheckPlan<'a> {
             &dyn tsz_solver::construction::TypeDatabase,
         ) -> Output,
     ) -> Output {
-        let query_cache = self.make_query_cache_with(checkpoint);
-        let mut checker = self.configured_file_checker(file_idx, file, &query_cache);
+        tsz_common::with_ambient_checkpoint(checkpoint, || {
+            let query_cache = self.make_query_cache_with(checkpoint);
+            let mut checker = self.configured_file_checker(file_idx, file, &query_cache);
 
-        consume(
-            &mut checker,
-            self.all_binders[file_idx].as_ref(),
-            file,
-            &query_cache,
-        )
+            consume(
+                &mut checker,
+                self.all_binders[file_idx].as_ref(),
+                file,
+                &query_cache,
+            )
+        })
     }
 
     /// Construct one checker from the immutable plan. Both fresh-file and
@@ -1823,90 +1825,92 @@ impl<'a> ParallelCheckPlan<'a> {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
 
-        let query_cache = self.make_query_cache();
+        tsz_common::with_ambient_checkpoint(self.execution_control(), || {
+            let query_cache = self.make_query_cache();
 
-        let lib_bound_file = build_lib_bound_file_for_interface_checks(
-            self.program,
-            lib_file,
-            &self.affected_lib_interfaces,
-        );
-        let mut binder =
-            create_binder_from_bound_file(&lib_bound_file, self.program, self.program.files.len());
-        // PERF: `build_lib_bound_file_for_interface_checks` always seeds
-        // `lib_bound_file.semantic_defs` as empty, so the previous
-        // clone-then-overlay collapsed to a deep clone of `program.semantic_defs`
-        // and Arc-wrapping the result. With `program.semantic_defs` now
-        // `Arc`-shared, the fast path is one atomic refcount bump plus a
-        // potential `Arc::make_mut` only when the per-lib map actually
-        // contributes entries (currently never).
-        if lib_bound_file.semantic_defs.is_empty() {
-            binder.semantic_defs = Arc::clone(&self.program.semantic_defs);
-        } else {
-            let mut composed_semantic_defs = (*self.program.semantic_defs).clone();
-            for (sym_id, entry) in lib_bound_file.semantic_defs.iter() {
-                composed_semantic_defs.insert(*sym_id, entry.clone());
+            let lib_bound_file = build_lib_bound_file_for_interface_checks(
+                self.program,
+                lib_file,
+                &self.affected_lib_interfaces,
+            );
+            let mut binder =
+                create_binder_from_bound_file(&lib_bound_file, self.program, self.program.files.len());
+            // PERF: `build_lib_bound_file_for_interface_checks` always seeds
+            // `lib_bound_file.semantic_defs` as empty, so the previous
+            // clone-then-overlay collapsed to a deep clone of `program.semantic_defs`
+            // and Arc-wrapping the result. With `program.semantic_defs` now
+            // `Arc`-shared, the fast path is one atomic refcount bump plus a
+            // potential `Arc::make_mut` only when the per-lib map actually
+            // contributes entries (currently never).
+            if lib_bound_file.semantic_defs.is_empty() {
+                binder.semantic_defs = Arc::clone(&self.program.semantic_defs);
+            } else {
+                let mut composed_semantic_defs = (*self.program.semantic_defs).clone();
+                for (sym_id, entry) in lib_bound_file.semantic_defs.iter() {
+                    composed_semantic_defs.insert(*sym_id, entry.clone());
+                }
+                binder.semantic_defs = Arc::new(composed_semantic_defs);
             }
-            binder.semantic_defs = Arc::new(composed_semantic_defs);
-        }
 
-        let mut checker = CheckerState::with_options(
-            &lib_bound_file.arena,
-            &binder,
-            &query_cache,
-            lib_bound_file.file_name.clone(),
-            self.checker_options,
-        );
-        self.checker_indexes.install_into(&mut checker.ctx);
-        if let Some(ref modules) = self.shared_declared_modules {
+            let mut checker = CheckerState::with_options(
+                &lib_bound_file.arena,
+                &binder,
+                &query_cache,
+                lib_bound_file.file_name.clone(),
+                self.checker_options,
+            );
+            self.checker_indexes.install_into(&mut checker.ctx);
+            if let Some(ref modules) = self.shared_declared_modules {
+                checker
+                    .ctx
+                    .set_declared_modules_from_skeleton(Arc::clone(modules));
+            }
+            // Exact ordered binder views were installed with the sealed indexes.
             checker
                 .ctx
-                .set_declared_modules_from_skeleton(Arc::clone(modules));
-        }
-        // Exact ordered binder views were installed with the sealed indexes.
-        checker
-            .ctx
-            .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
-        checker
-            .ctx
-            .set_resolved_modules(Arc::clone(&self.resolved_modules));
-        checker.ctx.file_is_esm = self
-            .program
-            .file_is_esm_map
-            .get(&checker.ctx.file_name)
-            .copied();
-        checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+                .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
             checker
                 .ctx
-                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
-        }
-        checker
-            .ctx
-            .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
+                .set_resolved_modules(Arc::clone(&self.resolved_modules));
+            checker.ctx.file_is_esm = self
+                .program
+                .file_is_esm_map
+                .get(&checker.ctx.file_name)
+                .copied();
+            checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
+            if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+                checker
+                    .ctx
+                    .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+            }
+            checker
+                .ctx
+                .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
 
-        let other_lib_contexts: Vec<LibContext> = self
-            .lib_contexts
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx != lib_idx)
-            .map(|(_, ctx)| ctx.clone())
-            .collect();
-        checker.ctx.set_lib_contexts(other_lib_contexts);
-        checker
-            .ctx
-            .set_actual_lib_file_count(self.lib_contexts.len());
-        checker.prime_boxed_types();
+            let other_lib_contexts: Vec<LibContext> = self
+                .lib_contexts
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != lib_idx)
+                .map(|(_, ctx)| ctx.clone())
+                .collect();
+            checker.ctx.set_lib_contexts(other_lib_contexts);
+            checker
+                .ctx
+                .set_actual_lib_file_count(self.lib_contexts.len());
+            checker.prime_boxed_types();
 
-        checker.check_source_file_interfaces_only_filtered_post_merge(
-            lib_bound_file.source_file,
-            &self.affected_lib_interfaces,
-            &self.affected_lib_extension_interfaces,
-        );
+            checker.check_source_file_interfaces_only_filtered_post_merge(
+                lib_bound_file.source_file,
+                &self.affected_lib_interfaces,
+                &self.affected_lib_extension_interfaces,
+            );
 
-        let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
-        Self::sort_and_dedup(&mut diagnostics);
+            let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+            Self::sort_and_dedup(&mut diagnostics);
 
-        self.lib_file_result(lib_idx, lib_file, diagnostics)
+            self.lib_file_result(lib_idx, lib_file, diagnostics)
+        })
     }
 
     fn make_lib_baseline_query_cache(&self) -> tsz_solver::construction::QueryCache<'_> {
@@ -1935,43 +1939,45 @@ impl<'a> ParallelCheckPlan<'a> {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
 
-        let query_cache = self.make_lib_baseline_query_cache();
+        tsz_common::with_ambient_checkpoint(self.execution_control(), || {
+            let query_cache = self.make_lib_baseline_query_cache();
 
-        let mut checker = CheckerState::with_options(
-            &lib_file.arena,
-            lib_file.binder.as_ref(),
-            &query_cache,
-            lib_file.file_name.clone(),
-            self.checker_options,
-        );
-        checker.ctx.file_is_esm = self
-            .program
-            .file_is_esm_map
-            .get(&checker.ctx.file_name)
-            .copied();
-        checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
-        let other_lib_contexts: Vec<LibContext> = self
-            .lib_contexts
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx != lib_idx)
-            .map(|(_, ctx)| ctx.clone())
-            .collect();
-        checker.ctx.set_lib_contexts(other_lib_contexts);
-        checker
-            .ctx
-            .set_actual_lib_file_count(self.lib_contexts.len());
-        checker.prime_boxed_types();
-        checker.check_source_file_interfaces_only_filtered_post_merge(
-            lib_file.root_index,
-            &self.affected_lib_interfaces,
-            &self.affected_lib_extension_interfaces,
-        );
+            let mut checker = CheckerState::with_options(
+                &lib_file.arena,
+                lib_file.binder.as_ref(),
+                &query_cache,
+                lib_file.file_name.clone(),
+                self.checker_options,
+            );
+            checker.ctx.file_is_esm = self
+                .program
+                .file_is_esm_map
+                .get(&checker.ctx.file_name)
+                .copied();
+            checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
+            let other_lib_contexts: Vec<LibContext> = self
+                .lib_contexts
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != lib_idx)
+                .map(|(_, ctx)| ctx.clone())
+                .collect();
+            checker.ctx.set_lib_contexts(other_lib_contexts);
+            checker
+                .ctx
+                .set_actual_lib_file_count(self.lib_contexts.len());
+            checker.prime_boxed_types();
+            checker.check_source_file_interfaces_only_filtered_post_merge(
+                lib_file.root_index,
+                &self.affected_lib_interfaces,
+                &self.affected_lib_extension_interfaces,
+            );
 
-        let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
-        Self::sort_and_dedup(&mut diagnostics);
+            let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+            Self::sort_and_dedup(&mut diagnostics);
 
-        self.lib_file_result(lib_idx, lib_file, diagnostics)
+            self.lib_file_result(lib_idx, lib_file, diagnostics)
+        })
     }
 
     /// Run the per-user-file checks, sequentially for a single file and in
