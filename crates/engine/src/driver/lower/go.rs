@@ -7198,7 +7198,7 @@ mod tests {
             .ok_or(TestError::Missing("satisfaction occurrence"))??;
         if occurrence.owner.raw != 1
             || occurrence.occurrence.target != OccurrenceTarget::Local(EntityId::new(0))
-            || occurrence.occurrence.kind != ReferenceKind::TypeReference
+            || occurrence.occurrence.kind != ReferenceKind::Implements
             || occurrence.occurrence.confidence != OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("declaring-package satisfaction target"));
@@ -8168,7 +8168,7 @@ mod tests {
         }
         let (bytes, kind, target) = &sites[3];
         if bytes != b"Lang"
-            || *kind != LinkKind::TypeReference
+            || *kind != LinkKind::Implements
             || *target != LinkTarget::Local(EntityId::new(1))
         {
             return Err(TestError::Missing("satisfaction NAME-TOKEN site"));

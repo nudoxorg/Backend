@@ -1648,7 +1648,7 @@ pub(crate) fn foreign_display_name(
         return Ok(None);
     }
     Ok(Some(
-        go_qualified_display(image, foreign, display).unwrap_or_else(|| display.to_owned()),
+        go_qualified_display(image, &foreign, display).unwrap_or_else(|| display.to_owned()),
     ))
 }
 
@@ -1753,9 +1753,10 @@ mod tsz_source_coordinate_tests {
         .map(str::to_owned)
         .into_iter()
         .collect::<BTreeSet<_>>();
-        let index = index([1; 32], [2; 32]).with_go_module(Some("github.com/gorilla/schema".to_owned()));
+        let scoped = index([1; 32], [2; 32])
+            .with_go_module(Some("github.com/gorilla/schema".to_owned()));
         let files = |specifier: &str, caller: &str| {
-            index
+            scoped
                 .specifier_paths(specifier, caller, &paths)
                 .into_iter()
                 .collect::<Vec<_>>()
