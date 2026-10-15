@@ -194,15 +194,20 @@ impl<'pin> RelationAdmission<'pin> {
         // Legacy files may be visible after a failed directory barrier. Re-observe every file
         // barrier before granting a receipt, then flush names only after all file work joined.
         let file_failure = self.checkpoint(3, root).err();
-        backend_platform::durability::flush_concurrently(&files, |file| {
-            self.checkpoint(0, root).map_err(|error| std::io::Error::other(error.to_string()))?;
+        backend_platform::durability::try_flush_concurrently_bounded(&files, 16, |file| {
+            self.checkpoint(0, root)?;
             if matches!(file, DependencyFile::Object(object) if *object == root)
                 && let Some(error) = file_failure.as_ref()
             {
-                return Err(std::io::Error::other(error.to_string()));
+                return Err(error.clone());
             }
-            self.flush_file(*file).map_err(|error| std::io::Error::other(error.to_string()))
-        }).map_err(|error| io_error(&error))?;
+            self.flush_file(*file)
+        }).map_err(|error| match error {
+            backend_platform::durability::BarrierError::Operation(error) => error,
+            backend_platform::durability::BarrierError::WorkerPanicked => {
+                StoreError::Io("durability barrier worker panicked".to_owned())
+            }
+        })?;
         if let Some(error) = file_failure { return Err(error); }
         for directory in ["objects", "nodes"].into_iter().filter(|_| !files.is_empty()) {
             if directory == "nodes" { self.checkpoint(4, root)?; }

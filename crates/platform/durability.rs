@@ -404,9 +404,34 @@ pub fn flush_concurrently_bounded<T: Sync>(
     max_in_flight: usize,
     flush: impl Fn(&T) -> io::Result<()> + Sync,
 ) -> io::Result<()> {
+    try_flush_concurrently_bounded(items, max_in_flight, flush).map_err(|error| match error {
+        BarrierError::Operation(error) => error,
+        BarrierError::WorkerPanicked => io::Error::other("durability barrier worker panicked"),
+    })
+}
+
+/// A typed failure from a bounded group of independent durability operations.
+#[derive(Debug)]
+pub enum BarrierError<E> {
+    /// An operation returned its domain-specific error.
+    Operation(E),
+    /// A worker panicked before returning an operation result.
+    WorkerPanicked,
+}
+
+/// Completes every independent barrier while preserving the caller's error type.
+///
+/// `max_in_flight` is clamped to 1..=64. A failed thread allocation runs that barrier on the
+/// caller instead. All workers are joined even after failure; the first operation or panic in
+/// input order is returned. No dependent publication may proceed unless this returns success.
+pub fn try_flush_concurrently_bounded<T: Sync, E: Send>(
+    items: &[T],
+    max_in_flight: usize,
+    flush: impl Fn(&T) -> Result<(), E> + Sync,
+) -> Result<(), BarrierError<E>> {
     match items {
         [] => return Ok(()),
-        [only] => return flush(only),
+        [only] => return flush(only).map_err(BarrierError::Operation),
         _ => {}
     }
     let mut first_error = None;
@@ -423,10 +448,12 @@ pub fn flush_concurrently_bounded<T: Sync>(
                 .collect::<Vec<_>>();
             for (thread, item) in started.into_iter().zip(batch) {
                 let result = match thread {
-                    Ok(thread) => thread.join().unwrap_or_else(|_| {
-                        Err(io::Error::other("durability barrier worker panicked"))
-                    }),
-                    Err(_) => flush(item),
+                    Ok(thread) => match thread.join() {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(BarrierError::Operation(error)),
+                        Err(_) => Err(BarrierError::WorkerPanicked),
+                    },
+                    Err(_) => flush(item).map_err(BarrierError::Operation),
                 };
                 if first_error.is_none() {
                     first_error = result.err();
@@ -491,6 +518,33 @@ mod tests {
             }
         });
         assert_eq!(result.expect_err("barrier failed").to_string(), "failed 3");
+        assert_eq!(completed.load(Ordering::SeqCst), items.len());
+    }
+
+    #[test]
+    fn typed_barriers_preserve_domain_errors_and_join_every_item() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Eq, PartialEq)]
+        enum DomainError {
+            UnsafePath,
+            Corrupt,
+        }
+
+        let completed = AtomicUsize::new(0);
+        let items = (0..40).collect::<Vec<_>>();
+        let result = super::try_flush_concurrently_bounded(&items, 4, |item| {
+            completed.fetch_add(1, Ordering::SeqCst);
+            match *item {
+                3 => Err(DomainError::UnsafePath),
+                7 => Err(DomainError::Corrupt),
+                _ => Ok(()),
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(super::BarrierError::Operation(DomainError::UnsafePath))
+        ));
         assert_eq!(completed.load(Ordering::SeqCst), items.len());
     }
 
