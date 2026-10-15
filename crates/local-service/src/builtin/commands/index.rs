@@ -4,7 +4,7 @@ use super::super::{
     BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use super::index_operation::IndexOperationJournal;
-use backend_engine::WorkspaceSnapshot;
+use backend_engine::{Relation, WorkspaceSnapshot};
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -821,7 +821,7 @@ pub(super) fn finish_index_scan(
                 })
                 .cloned()
                 .collect();
-            let (sources, native_candidate_profiles) =
+            let sources =
                 ingest::admit_compiler_sources_with_native_candidates_for_scan(
                     requested_root,
                     revision_fence,
@@ -832,7 +832,7 @@ pub(super) fn finish_index_scan(
                     Some(cancellation.as_ref()),
                 )
                 .map_err(BuiltinModelError);
-            let sources = match sources {
+            let (sources, native_candidate_profiles) = match sources {
                 Ok(sources) => sources,
                 Err(error) => {
                     let terminal = terminal_capture_changes(
@@ -6343,13 +6343,10 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
         hasher.update(path);
         hasher.update(&source.content);
     }
-    for record in scan.native_frontier.iter().filter(|record| match record {
-        ProductNativeFrontierRecord::Profile {
-            profile: candidate, ..
-        }
-        | ProductNativeFrontierRecord::Path {
-            profile: candidate, ..
-        } => *candidate == profile,
+    for record in scan.native_frontier.iter().filter(|record| {
+        record.owner().1 == profile
+            && matches!(record, ProductNativeFrontierRecord::Profile { .. }
+                | ProductNativeFrontierRecord::Path { .. })
     }) {
         let mut encoded = Vec::new();
         ProductNativeFrontierRelation::encode_value(record, &mut encoded);

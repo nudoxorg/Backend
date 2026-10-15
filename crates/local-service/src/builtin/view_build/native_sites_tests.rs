@@ -3,8 +3,10 @@
 //! `VerifiedNativeSource` is always recovered from the real workspace owner.
 
 use super::native_sites::prove_native_sites;
-use crate::builtin::profile::{BuiltinNativeFrontierChange, BuiltinSourceChange};
-use crate::builtin::{BuiltinIntent, BuiltinModel, BuiltinPackageRecord};
+use crate::builtin::BuiltinIntent;
+use crate::builtin::profile::{
+    BuiltinNativeFrontierChange, BuiltinPackageRecord, BuiltinSourceChange,
+};
 use backend_engine::builtin::{
     NativePathDisposition, ProductSourceRecord, ProductSourceSnapshot,
     build_native_frontier_records_with_content,
@@ -13,12 +15,10 @@ use backend_engine::{PackageKey, Relation, SourceLanguage, product_source_file_k
 use backend_semantic::ir::{
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, DeclarationFamilyId,
     EntityAuthorityFacts, EntityVersion, FactAvailability, IrBuilder, ItemKind,
-    LanguageExtensionInput, ParentageAuthority, SemanticCoreReader as _, SemanticImageView,
-    SourceIdentity, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
+    LanguageExtensionInput, PackageLineage, ParentageAuthority, SemanticImageView,
+    SemanticReader as _, SourceIdentity, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
 };
-use backend_semantic::vocabulary::{
-    CxxStandard, LanguageProfile, NativeTool, PackageLineage, Stage,
-};
+use backend_semantic::vocabulary::{CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeSet;
 use std::path::Path;

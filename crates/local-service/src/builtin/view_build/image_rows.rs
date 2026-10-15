@@ -437,7 +437,7 @@ fn projection_key(
     hasher.update(&[u8::from(sink.stale)]);
     if let Some(source) = sink.native_source {
         hasher.update(&[1]);
-        hasher.update(source.source_identity().as_bytes());
+        hasher.update(&source.source_identity().to_bytes());
         hasher.update(&source.content_digest());
     } else {
         hasher.update(&[0]);
@@ -1532,6 +1532,7 @@ mod tests {
         remaining: usize,
         symbols: &mut BTreeSet<RowId>,
         sites: &[&backend_compile::SourceDeclaration],
+        native_source: Option<&backend_engine::builtin::VerifiedNativeSource>,
     ) -> Result<Admitted, super::super::super::BuiltinModelError> {
         let mut rows = Vec::new();
         let mut remaining = remaining;
@@ -1544,7 +1545,7 @@ mod tests {
             stale,
             path: PATH,
             site_declarations: sites,
-            native_source: None,
+            native_source,
         };
         append_resident_image_rows(
             image,

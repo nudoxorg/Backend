@@ -17,7 +17,8 @@ use super::{
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
-    ProductNativeFrontierRecord, ProductNativeFrontierRelation, ProductNativeFrontierRootSchema,
+    NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
+    ProductNativeFrontierRelation, ProductNativeFrontierRootSchema,
     ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
     ProductSemanticCaptureRootSchema, ProductSemanticPublicationKey,
     ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
@@ -3942,7 +3943,7 @@ fn validate_persisted_native_frontier(
             ));
         }
         match disposition {
-            backend_engine::NativePathDisposition::Structural {
+            NativePathDisposition::Structural {
                 content,
                 source_identity,
             } => {
@@ -3959,7 +3960,7 @@ fn validate_persisted_native_frontier(
                     ));
                 }
             }
-            backend_engine::NativePathDisposition::ClangMalformed { .. } => {
+            NativePathDisposition::ClangMalformed { .. } => {
                 if profile.language() != backend_compile::SourceLanguage::Clang
                     || file
                         .admitted_unavailable_reason()
@@ -3972,8 +3973,8 @@ fn validate_persisted_native_frontier(
                     ));
                 }
             }
-            backend_engine::NativePathDisposition::Refused(reason) => {
-                use backend_engine::{NativePathRefusal, SourceUnavailableReason};
+            NativePathDisposition::Refused(reason) => {
+                use backend_engine::SourceUnavailableReason;
                 let expected = match reason {
                     NativePathRefusal::InvalidUtf8 => SourceUnavailableReason::NotText,
                     NativePathRefusal::MalformedOther => SourceUnavailableReason::Unparsed,

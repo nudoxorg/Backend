@@ -209,6 +209,7 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
         false,
         "httpie/context.py",
         &[],
+        None,
     )
     .expect("actual image through current row projector");
     let library = projected_library(&base, &projected);
@@ -394,6 +395,7 @@ fn duplicate_foreign_names_keep_distinct_native_ids_and_empty_name_stays_unknown
         false,
         "caller.rs",
         &[],
+        None,
     )
     .expect("project");
     let same = projected

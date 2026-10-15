@@ -694,7 +694,7 @@ pub(super) fn native_frontier_freshness(
     let mut complete = BTreeSet::new();
     let mut identities = ProfileSourceIdentities::new();
     let mut rows = BTreeMap::new();
-    for record in sources.files.values() {
+    for (_, record) in &sources.files {
         if let Some(file) = record.file_fields() {
             rows.insert((file.project, file.path.to_owned()), record);
         }
@@ -763,7 +763,7 @@ pub(super) fn native_frontier_freshness(
                     if file.content_version != [0; 32]
                         || file.source_identity.is_some()
                         || file.admitted_unavailable_reason().ok().flatten()
-                            != Some(super::super::SourceUnavailableReason::Unparsed)
+                            != Some(backend_engine::SourceUnavailableReason::Unparsed)
                     {
                         row_bindings_valid = false;
                         break;

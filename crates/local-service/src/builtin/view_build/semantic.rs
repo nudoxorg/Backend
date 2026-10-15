@@ -818,7 +818,7 @@ fn semantic_rows(
                     backend_semantic::vocabulary::LanguageProfile::C(_)
                         | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
                 ) {
-                sources.source_snapshot.as_ref().and_then(|snapshot| {
+                sites.sources.source_snapshot.as_ref().and_then(|snapshot| {
                     snapshot
                         .admit_native_frontier(
                             *key.package_key().as_bytes(),
@@ -884,7 +884,8 @@ fn semantic_rows(
                 let native_source = if stale {
                     None
                 } else {
-                    if let Some((snapshot, frontier)) = sources
+                    if let Some((snapshot, frontier)) = sites
+                        .sources
                         .source_snapshot
                         .as_ref()
                         .zip(checked_native_frontier.as_ref())

@@ -8,12 +8,14 @@ use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxError,
     SyntaxFrontend, typed_of,
 };
-use backend_engine::{
+use backend_engine::builtin::{
     NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
+    ProductNativeFrontierRelation, NATIVE_SOURCE_CHUNK_BYTES, build_native_frontier_records,
+    build_native_frontier_records_with_content,
+};
+use backend_engine::{
     ProductSourceFileFactsUpdate, ProductSourceRecord, ProductSourceRelation, Relation,
-    SourceUnavailableReason, NATIVE_SOURCE_CHUNK_BYTES, build_native_frontier_records,
-    build_native_frontier_records_with_content, build_product_source_file_facts,
-    product_source_file_key,
+    SourceUnavailableReason, build_product_source_file_facts, product_source_file_key,
 };
 use backend_library::{
     DiscoveryPolicy, EntryKind, discover_source_entries, source_selection_policy,
@@ -1993,7 +1995,7 @@ fn update_source_version_native_frontier(
         .filter(|record| matches!(record, ProductNativeFrontierRecord::Profile { .. }))
     {
         let mut encoded = Vec::new();
-        <backend_engine::ProductNativeFrontierRelation as Relation>::encode_value(
+        <ProductNativeFrontierRelation as Relation>::encode_value(
             record,
             &mut encoded,
         );

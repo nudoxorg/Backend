@@ -460,6 +460,7 @@ pub fn execute() {}
             stale,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(
             &view,
@@ -575,6 +576,7 @@ pub fn execute() {}
             stale: false,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(&view, &project, profile, &mut sink)
             .map_err(|error| error.to_string())?;
