@@ -1620,6 +1620,26 @@ fn lazy_bulk_frontier_publishes_every_branch_child() {
 }
 
 #[test]
+fn durable_map_publication_keeps_gc_custody_until_selection_or_last_abandonment() {
+    let path = std::env::temp_dir().join(format!("backend-store-durable-map-pin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8192));
+    let map = checked_map([(b"key".to_vec(), v(1))]);
+    let durable = must(must(store.prepare_map(&map, LayoutId::derive(b"pin-test"))).durable());
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_none());
+    let retained = durable.clone();
+    drop(durable);
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_none());
+    drop(retained);
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_some());
+    let durable = must(must(store.prepare_map(&map, LayoutId::derive(b"pin-test"))).durable());
+    must(durable.publish());
+    assert!(must(store.try_with_gc_exclusive_lease(|| Ok(()))).is_some());
+    drop(store);
+    must(std::fs::remove_dir_all(path));
+}
+
+#[test]
 fn filesystem_typestate_reopens_and_rejects_interleaved_stale_publish() {
     let path = std::env::temp_dir().join(format!(
         "backend-store-typestate-{}-{}",

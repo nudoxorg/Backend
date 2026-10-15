@@ -1443,7 +1443,9 @@ impl ArtifactSession {
         {
             return Err(StoreError::Bounds);
         }
-        let relation_write = self.store.write_lazy_relation_update(&update)?;
+        let pin = self.gc_pin.as_ref().ok_or(StoreError::Corrupt)?;
+        let mut admission = nodes::RelationAdmission::new(&self.store, pin)?;
+        let relation_write = self.store.write_lazy_relation_update_admitted(&update, &mut admission)?;
         let candidate_facts = verify_closure_tree(
             &self.store,
             update.target_root(),
@@ -2201,6 +2203,9 @@ impl FileStore {
         if !self.relation_registry.contains_schema(schema) {
             return Ok(0);
         }
+        // Locator writes remain short and outside stream transfer. Serialize their temporary
+        // names with recovery; a locator alone never proves subtree completion.
+        let _process_lock = self.acquire_process_lock()?;
         if self.relation_ref_exists(schema, version)? {
             if self.read_relation_ref(schema, version)? != object {
                 return Err(StoreError::Corrupt);

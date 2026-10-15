@@ -180,6 +180,14 @@ pub(super) struct GcPinLease {
 }
 
 impl GcPinLease {
+    pub(in crate::durable) fn covers_root(&self, root: &Path) -> Result<bool, super::StoreError> {
+        let held = backend_platform::FileIdentity::of_file(&self.file)
+            .map_err(|error| super::io_error(&error))?;
+        let named = backend_platform::FileIdentity::of_path_nofollow(&root.join("GC-PINS.lock"))
+            .map_err(|error| super::io_error(&error))?;
+        Ok(held == named)
+    }
+
     fn open(root: &Path) -> Result<File, super::StoreError> {
         OpenOptions::new()
             .create(true)

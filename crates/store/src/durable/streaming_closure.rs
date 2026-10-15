@@ -454,7 +454,10 @@ impl StreamingClosureBuilder {
         if object_count > u64::try_from(self.budget.max_objects).map_err(|_| StoreError::Bounds)? {
             return Err(StoreError::Bounds);
         }
-        let relation_write = self.store.write_lazy_relation_update(&update)?;
+        let _process_lock = self.store.acquire_process_lock()?;
+        let pin = self.gc_pin.as_ref().ok_or(StoreError::Corrupt)?;
+        let mut admission = nodes::RelationAdmission::new(&self.store, pin)?;
+        let relation_write = self.store.write_lazy_relation_update_admitted(&update, &mut admission)?;
         let facts = verify_closure_tree(
             &self.store,
             update.target_root(),
@@ -478,7 +481,7 @@ impl StreamingClosureBuilder {
         let descriptor_bytes = u64::try_from(descriptor.len()).map_err(|_| StoreError::Bounds)?;
         let relation_bytes =
             u64::try_from(relation_write.bytes_written).map_err(|_| StoreError::Bounds)?;
-        let _process_lock = self.store.acquire_process_lock()?;
+
         let descriptor_created = artifact_fs::write_closure_descriptor(
             &self.staging_dir,
             &self.store,

@@ -23,6 +23,7 @@ pub struct FilePrepared {
 /// A publication whose immutable objects and prepared journal record are synced.
 #[derive(Clone, Debug)]
 pub struct FileDurable {
+    _gc_pin: std::sync::Arc<super::layout::GcPinLease>,
     pub(super) store: FileStore,
     pub(super) descriptor: PublicationDescriptor,
     pub(super) target: StateRoot<RawRelation>,
@@ -47,6 +48,7 @@ pub struct WorkspaceFilePrepared {
 /// A workspace publication whose closure and prepare frame are durable.
 #[derive(Clone, Debug)]
 pub struct WorkspaceFileDurable {
+    _gc_pin: std::sync::Arc<super::layout::GcPinLease>,
     pub(super) store: FileStore,
     pub(super) descriptor: PublicationDescriptor,
     pub(super) target: WorkspaceRoot,
@@ -147,6 +149,8 @@ impl FilePrepared {
             workspace,
             descriptor,
         } = self;
+        let gc_pin = std::sync::Arc::new(store.acquire_gc_pin()?);
+        let mut admission = super::nodes::RelationAdmission::new(&store, &gc_pin)?;
         let prepared_sequence = {
             let _guard = store.lock.lock().map_err(|_| StoreError::Corrupt)?;
             let _process_lock = store.acquire_process_lock()?;
@@ -155,13 +159,13 @@ impl FilePrepared {
                     store.write_pack(pack)?;
                 }
                 (None, Some(tree)) => {
-                    store.write_tree_publication(tree)?;
-                    store.write_root_closure(&closure)?;
+                    store.write_tree_publication(tree, &mut admission)?;
+                    store.write_root_closure(&closure, &mut admission)?;
                 }
                 _ => return Err(StoreError::Corrupt),
             }
             if pack.is_some() {
-                store.write_closure(&closure)?;
+                store.write_closure_admitted(&closure, &mut admission)?;
             }
             if let Some(workspace) = workspace.as_ref()
                 && (workspace.membership_id() != descriptor.closure
@@ -171,7 +175,9 @@ impl FilePrepared {
             }
             store.append_record(PREPARED_TAG, &descriptor, 0)?
         };
+        drop(admission);
         Ok(FileDurable {
+            _gc_pin: gc_pin,
             store,
             descriptor,
             target,
@@ -315,17 +321,21 @@ impl WorkspaceFilePrepared {
             closure,
             descriptor,
         } = self;
+        let gc_pin = std::sync::Arc::new(store.acquire_gc_pin()?);
+        let mut admission = super::nodes::RelationAdmission::new(&store, &gc_pin)?;
         let prepared_sequence = {
             let _guard = store.lock.lock().map_err(|_| StoreError::Corrupt)?;
             let _process_lock = store.acquire_process_lock()?;
             if closure.is_root_only() {
-                store.write_workspace_root_closure(&closure)?;
+                store.write_workspace_root_closure(&closure, &mut admission)?;
             } else {
-                store.write_closure(closure.control_manifest())?;
+                store.write_closure_admitted(closure.control_manifest(), &mut admission)?;
             }
             store.append_record(PREPARED_TAG, &descriptor, 0)?
         };
+        drop(admission);
         Ok(WorkspaceFileDurable {
+            _gc_pin: gc_pin,
             store,
             descriptor,
             target: closure.root(),
