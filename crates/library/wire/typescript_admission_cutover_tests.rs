@@ -6,8 +6,9 @@ use crate::interface::{
 
 #[test]
 fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() {
-    assert!(
-        super::DTO_VERSION >= 31,
+    assert_eq!(
+        super::DTO_VERSION,
+        31,
         "populated TypeScript causes require a matched DTO31 or newer cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
@@ -26,6 +27,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() 
         python_failure: None,
         python_configuration: None,
         typescript_failure: Some(detail.failure_kind()),
+        typescript_stop_site: None,
         typescript_admission: Some(detail),
         typescript_cause: None,
         go_failure: None,
@@ -88,8 +90,9 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() 
 #[test]
 fn typescript_cause_requires_a_matched_cohort_before_strict_dto30_shape_admission() {
     use crate::interface::{TypeScriptAuthorityFailureKind, TypeScriptFailureCause};
-    assert!(
-        super::DTO_VERSION >= 31,
+    assert_eq!(
+        super::DTO_VERSION,
+        31,
         "strict DTO30 readers reject the populated cause field"
     );
     #[derive(serde::Deserialize)]
@@ -154,8 +157,30 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
         typescript_failure: Some(
             crate::interface::TypeScriptAuthorityFailureKind::HostConfigMissing,
         ),
+        typescript_stop_site: None,
         typescript_admission: None,
         typescript_cause: None,
         go_failure: None,
     }
+}
+
+#[test]
+fn typescript_stop_site_is_a_new_strict_field_in_the_matched_dto31_cohort() {
+    assert_eq!(super::DTO_VERSION, 31);
+    let mut facts = plain_facts();
+    facts.typescript_failure = Some(crate::interface::TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted);
+    facts.typescript_stop_site = Some(crate::interface::TypeScriptStopSite::new(
+        Some(crate::interface::TypeScriptStopPhase::FileCheck), Some("src/main.ts"), 9, 10,
+    ));
+    let present = serde_json::to_value(&facts).unwrap();
+    assert_eq!(serde_json::from_value::<CompilerAuthorityDiagnosticFacts>(present.clone()).unwrap(), facts);
+    // Its existence must be accounted for separately from the optional host cause.
+    assert!(present.get("typescript_stop_site").is_some());
+    assert!(present.get("typescript_cause").is_none());
+    let envelope = serde_json::to_vec(&serde_json::json!({
+        "version": super::DTO_VERSION, "reply": {"diagnostic": present}
+    })).unwrap();
+    let refusal = super::super::codec::check_version_header_against(&envelope, "reply", 30).unwrap_err();
+    assert!(refusal.contains("this build supports 30"));
+    assert!(!refusal.contains("unknown field"));
 }
