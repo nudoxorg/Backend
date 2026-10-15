@@ -443,7 +443,7 @@ pub(crate) fn try_arbitrary_extension_declaration(path: &Path, extension: &str) 
 pub(crate) fn try_arbitrary_extension_declaration_with(
     path: &Path,
     extension: &str,
-    is_file: impl FnMut(&Path) -> bool,
+    mut is_file: impl FnMut(&Path) -> bool,
 ) -> Option<PathBuf> {
     let declaration = path.with_extension(format!("d.{extension}.ts"));
     if is_file(&declaration) {
@@ -458,7 +458,7 @@ pub(crate) fn resolve_explicit_unknown_extension(path: &Path) -> Option<PathBuf>
 
 pub(crate) fn resolve_explicit_unknown_extension_with(
     path: &Path,
-    is_file: impl FnMut(&Path) -> bool,
+    mut is_file: impl FnMut(&Path) -> bool,
 ) -> Option<PathBuf> {
     path.extension()?;
     if split_path_extension(path).is_some() {
