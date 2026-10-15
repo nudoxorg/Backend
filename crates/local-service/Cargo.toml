@@ -57,7 +57,7 @@ sha2.workspace = true
 toml.workspace = true
 ureq.workspace = true
 zip.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "signal"] }
 turso.workspace = true
 unicode-normalization = "0.1.25"
 

@@ -26,6 +26,7 @@ pub mod runtime_policy;
 pub use backend_engine::registry;
 pub(crate) mod reconcile;
 pub mod service;
+mod termination;
 pub(crate) mod worker_transport;
 
 use backend_engine::{
