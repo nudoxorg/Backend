@@ -922,6 +922,15 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             // Template parameters first so the pooled start coordinate the
             // extension row carries is final before the fact is pushed.
             let template_start = self.push_template_parameters(index)?;
+            // A function template owns the same ordered signature carriers
+            // as an ordinary executable. Keep it in pass one so the owner
+            // remains an anchor before any later type rows can name it, but
+            // use the shared framing path instead of an empty constructor
+            // attached to a populated function type.
+            if declaration.kind == DeclarationKind::Template && kind == EntityKind::Function {
+                self.push_function_with_template_start(index, template_start)?;
+                continue;
+            }
             let own_ordinal = u32::try_from(self.facts.len())
                 .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
             let extension = self.extension(declaration, template_start)?;
@@ -1088,14 +1097,12 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 DeclarationKind::Parameter if !self.owner_is_unrepresented(declaration) => {
                     // Signature storage of a represented executable is pushed
                     // by that function's own signature framing; what remains
-                    // here is owner-less storage (a function-pointer
-                    // typedef's parameter) with file-scope parentage, and a
-                    // function template's parameters (the template anchor is
-                    // pushed in pass one without signature framing). Both
-                    // keep the executable framing's twin discrimination, or
-                    // macro-generated template operators whose parameters
-                    // share the invocation-text name and a dependent frame
-                    // would mint colliding identities.
+                    // here is owner-less storage (such as a function-pointer
+                    // typedef's parameter) with file-scope parentage. These
+                    // rows keep the executable framing's twin discrimination,
+                    // since macro-generated parameters can share invocation
+                    // text and a dependent frame would mint colliding
+                    // identities.
                     self.push_orphan_parameter(index)?
                 }
                 DeclarationKind::Parameter => {}
@@ -1451,6 +1458,17 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// child width are omitted from the constructor payload; the constructor
     /// and child counts always agree.
     fn push_function(&mut self, index: usize) -> Result<(), ClangCollectError> {
+        self.push_function_with_template_start(index, 0)
+    }
+
+    /// Function templates are emitted in the declaration-anchor pass, where
+    /// their pooled template parameter start is already known. All executable
+    /// rows share the carrier/product/type framing below.
+    fn push_function_with_template_start(
+        &mut self,
+        index: usize,
+        template_start: u32,
+    ) -> Result<(), ClangCollectError> {
         let declarations = self.authority.declarations;
         let Some(declaration) = declarations.get(index) else {
             return Ok(());
@@ -1627,7 +1645,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         for ordinal in &kept_children {
             let _ = projected.child(*ordinal, None);
         }
-        let extension = self.extension(declaration, 0)?;
+        let extension = self.extension(declaration, template_start)?;
         let fact = projected
             .attach(fact)
             .with_extension(EmissionExtension::Clang(extension));
@@ -1649,6 +1667,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         | DeclarationKind::Method
                         | DeclarationKind::Constructor
                         | DeclarationKind::Destructor
+                        | DeclarationKind::Template
                 ) =>
             {
                 fact.with_identity_discriminator(identity.bytes)
@@ -3417,8 +3436,8 @@ mod tests {
     use backend_frontend_clang::{ClangAuthorityEnvironment, ClangProject};
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity,
+        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape,
+        SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
     };
     use backend_semantic::vocabulary::{
         CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
@@ -3580,7 +3599,13 @@ mod tests {
     }
 
     fn owned_ir(source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
-        let profile = LanguageProfile::C(CStandard::C23);
+        owned_ir_with_profile(LanguageProfile::C(CStandard::C23), source)
+    }
+
+    fn owned_ir_with_profile(
+        profile: LanguageProfile,
+        source: &[u8],
+    ) -> Result<backend_semantic::ir::Ir, TestError> {
         let mut facts = FactSet::new();
         let environment = selected_clang_environment()?;
         collect(
@@ -4192,6 +4217,223 @@ mod tests {
             return Err(TestError::Entity {
                 ordinal: value_id.index(),
             });
+        }
+        Ok(())
+    }
+
+    /// Function templates use the same exact parameter/result carrier
+    /// bindings as ordinary functions, while retaining pooled template
+    /// parameters and distinct canonical identities for overloads.
+    #[test]
+    fn function_templates_preserve_signature_carriers_and_overloads() -> Result<(), TestError> {
+        let source = b"template<class T> void consume(T value) {}\ntemplate<class T> T echo(T value) { return value; }\ntemplate<typename T> static void generic_bool_ops_test(const T& obj) {}\ntemplate<class T> void choose(T value) {}\ntemplate<class T> void choose(T* value) {}\n";
+        let profile = LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23);
+        let bytes = lower_with_profile(profile, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let consume = entity_of(&view, b"consume", EntityKind::Function)?;
+        let consume_row = row_for_entity(&view, consume)?;
+        if consume_row.record.tag != SemanticTypeTag::FunctionPointer
+            || consume_row.record.children.length != 1
+        {
+            return Err(TestError::Entity {
+                ordinal: consume.index(),
+            });
+        }
+        let consume_extension = clang_extension(&view, consume.index())?;
+        if pooled_type_parameter(&view, consume_extension.templates)? != b"T" {
+            return Err(TestError::Missing("consume template parameter T"));
+        }
+
+        let echo = entity_of(&view, b"echo", EntityKind::Function)?;
+        let echo_row = row_for_entity(&view, echo)?;
+        if echo_row.record.tag != SemanticTypeTag::FunctionPointer
+            || echo_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || echo_row.record.children.length != 2
+        {
+            return Err(TestError::Entity {
+                ordinal: echo.index(),
+            });
+        }
+        let echo_extension = clang_extension(&view, echo.index())?;
+        if pooled_type_parameter(&view, echo_extension.templates)? != b"T" {
+            return Err(TestError::Missing("echo template parameter T"));
+        }
+
+        // This is the exact signature shape in the pinned pugixml 1.14
+        // tests/helpers.hpp helper: one const lvalue-reference parameter and
+        // a void result. Its carrier must preserve both wrappers around T.
+        let generic = entity_of(&view, b"generic_bool_ops_test", EntityKind::Function)?;
+        let generic_row = row_for_entity(&view, generic)?;
+        if generic_row.record.tag != SemanticTypeTag::FunctionPointer
+            || generic_row.record.children.length != 1
+            || generic_row.record.payload1 != 0
+            || !entity_rows(&view).contains(&(&b"obj"[..], EntityKind::Parameter))
+        {
+            return Err(TestError::Entity {
+                ordinal: generic.index(),
+            });
+        }
+        let generic_extension = clang_extension(&view, generic.index())?;
+        if pooled_type_parameter(&view, generic_extension.templates)? != b"T" {
+            return Err(TestError::Missing("generic helper template parameter T"));
+        }
+
+        let owned = owned_ir_with_profile(profile, source)?;
+        let function_ids: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"consume" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .map(|item| item.id())
+            .collect();
+        let [consume_owner] = function_ids.as_slice() else {
+            return Err(TestError::Missing("unique consume function template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(*consume_owner) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("consume signature carrier bindings")),
+        };
+        if bindings.len() != 1
+            || bindings[0].owner != *consume_owner
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+        {
+            return Err(TestError::Missing("consume parameter slot binding"));
+        }
+
+        let generic_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"generic_bool_ops_test"
+                    && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .collect();
+        let [generic_owner] = generic_owners.as_slice() else {
+            return Err(TestError::Missing("unique generic helper template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(generic_owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("generic helper signature bindings")),
+        };
+        if bindings.len() != 1
+            || bindings[0].owner != generic_owner.id()
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+        {
+            return Err(TestError::Missing("generic helper single parameter binding"));
+        }
+        let rows = type_facts(&view)?;
+        let reference = row_for_entity(&view, bindings[0].carrier)?.record;
+        if reference.tag != SemanticTypeTag::Primitive
+            || reference.payload0 != super::SHAPE_CXX_LVALUE_REFERENCE
+            || reference.children.length != 1
+        {
+            return Err(TestError::Missing("generic helper lvalue-reference parameter"));
+        }
+        let reference_children = local_type_children(&view, reference)?;
+        let [qualified_id] = reference_children.as_slice() else {
+            return Err(TestError::Missing("generic helper reference target"));
+        };
+        let qualified = rows
+            .get(qualified_id.index())
+            .ok_or(TestError::Missing("generic helper qualified target row"))?
+            .record;
+        if qualified.tag != SemanticTypeTag::CQualified
+            || qualified.payload0 != 1
+            || qualified.children.length != 1
+        {
+            return Err(TestError::Missing("generic helper const-qualified T"));
+        }
+        let qualified_children = local_type_children(&view, qualified)?;
+        let [type_var_id] = qualified_children.as_slice() else {
+            return Err(TestError::Missing("generic helper const target"));
+        };
+        let type_var = rows
+            .get(type_var_id.index())
+            .ok_or(TestError::Missing("generic helper TypeVar row"))?
+            .record;
+        if type_var.tag != SemanticTypeTag::TypeVar || type_var.text != Some(&b"T"[..]) {
+            return Err(TestError::Missing("generic helper parameter TypeVar T"));
+        }
+
+        let echo_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"echo" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .collect();
+        let [echo_owner] = echo_owners.as_slice() else {
+            return Err(TestError::Missing("unique echo function template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(echo_owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("echo signature carrier bindings")),
+        };
+        if bindings.len() != 2
+            || bindings[0].owner != echo_owner.id()
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+            || bindings[1].owner != echo_owner.id()
+            || bindings[1].role != backend_semantic::ir::SignatureCarrierBindingRole::Result
+            || bindings[1].position != 0
+        {
+            return Err(TestError::Missing("echo parameter and result bindings"));
+        }
+        let echo_parameter_row = row_for_entity(&view, bindings[0].carrier)?;
+        if echo_parameter_row.record.tag != SemanticTypeTag::TypeVar
+            || echo_parameter_row.record.text != Some(&b"T"[..])
+        {
+            return Err(TestError::Missing("function template parameter TypeVar"));
+        }
+
+        let choose_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"choose" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .map(|item| item.id())
+            .collect();
+        if choose_owners.len() != 2 || choose_owners[0] == choose_owners[1] {
+            return Err(TestError::Missing("distinct choose template overloads"));
+        }
+        let first_identity = owned
+            .item(choose_owners[0])
+            .ok_or(TestError::Missing("first choose overload"))?
+            .version()
+            .identity();
+        let second_identity = owned
+            .item(choose_owners[1])
+            .ok_or(TestError::Missing("second choose overload"))?
+            .version()
+            .identity();
+        if first_identity == second_identity {
+            return Err(TestError::Missing("canonical choose overload identities"));
+        }
+        let mut choose_carriers = Vec::new();
+        for owner in choose_owners {
+            let bindings = match owned.signature_carrier_bindings(owner) {
+                Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
+                    bindings,
+                )) => bindings.collect::<Vec<_>>(),
+                _ => return Err(TestError::Missing("choose signature carrier bindings")),
+            };
+            if bindings.len() != 1
+                || bindings[0].owner != owner
+                || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+                || bindings[0].position != 0
+            {
+                return Err(TestError::Missing("choose overload parameter binding"));
+            }
+            choose_carriers.push(bindings[0].carrier);
+        }
+        if choose_carriers[0] == choose_carriers[1] {
+            return Err(TestError::Missing("overloads retain distinct carriers"));
         }
         Ok(())
     }
