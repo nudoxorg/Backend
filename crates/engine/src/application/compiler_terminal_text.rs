@@ -322,8 +322,8 @@ fn runtime_cause(cause: &CompilerRuntimeCause) -> String {
         CompilerRuntimeCause::RequestOwnerStopped => "it stopped before admitting the request".to_owned(),
         CompilerRuntimeCause::ResponseOwnerStopped => "it stopped before answering".to_owned(),
         CompilerRuntimeCause::ToolchainProbeTimeout => "the toolchain probe timed out".to_owned(),
-        CompilerRuntimeCause::NativePythonProducerAdmission { .. } => {
-            "the native Python checker failed admission".to_owned()
+        CompilerRuntimeCause::NativePythonProducerAdmission { failure } => {
+            format!("the native Python checker failed admission: {}", failure.detail())
         }
         CompilerRuntimeCause::RequestCancelled => "the request was cancelled".to_owned(),
         CompilerRuntimeCause::WorkerPanic(_) => "its worker panicked".to_owned(),
@@ -472,6 +472,22 @@ mod tests {
         assert_eq!(
             text(&terminal),
             "the native compiler rejected the source (exit status 2): bad.go:3:1: syntax error   unexpected }"
+        );
+    }
+
+    #[test]
+    fn a_runtime_terminal_names_the_language_and_the_closed_cause() {
+        let terminal = CompilerTerminal::Runtime {
+            language: Language::Python,
+            stage: Stage::LowerIr,
+            target: None,
+            cause: CompilerRuntimeCause::NativePythonProducerAdmission {
+                failure: backend_library::interface::PythonAuthorityFailureKind::WorkspaceIoFailed,
+            },
+        };
+        assert_eq!(
+            text(&terminal),
+            "the Python compiler owner could not finish the request: the native Python checker failed admission: Python checker workspace I/O failed"
         );
     }
 
