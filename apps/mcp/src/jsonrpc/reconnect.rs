@@ -186,9 +186,13 @@ impl<E: Endpoint> Reconnecting<E> {
             Some(product) => call(product),
             None => Err(ClientError::Disconnected(std::io::ErrorKind::NotConnected)),
         };
-        let first = match &self.request_context {
-            Some(context) => context.check().and(first),
-            None => first,
+        // Reads can still be cancelled while their transport is returning.
+        // For a mutation, preserve the result of the invoked operation: a
+        // confirmed reply is known, and a disconnect is classified as an
+        // unknown outcome below. A later cancellation must not erase either.
+        let first = match (&self.request_context, repeatable) {
+            (Some(context), Repeatable::Yes) => context.check().and(first),
+            _ => first,
         };
         match first {
             Err(
@@ -227,13 +231,21 @@ impl<E: Endpoint> Reconnecting<E> {
                 // Drop the dead transport lease before opening a replacement
                 // either way: the agent's next call must not meet the same
                 // socket, even if opening the replacement fails.
-                let previous = self.take_reconnect_lease()?;
+                let previous = match self.take_reconnect_lease() {
+                    Ok(previous) => previous,
+                    // Once a non-repeatable operation was invoked and its
+                    // transport disconnected, cancellation/deadline at the
+                    // lease boundary cannot establish that it was unsent.
+                    Err(_) if repeatable == Repeatable::No => {
+                        return Err(ClientError::MutationOutcomeUnknown(kind));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let replacement = match self.endpoint.connect(previous) {
                     Ok(replacement) => replacement,
                     // A failed replacement cannot prove the mutation was
                     // unsent. Report the same ambiguous outcome whether the
                     // next lease opened or not.
-                    Err(error @ ClientError::RequestCancelled(_)) => return Err(error),
                     Err(_) if repeatable == Repeatable::No => {
                         return Err(ClientError::MutationOutcomeUnknown(kind));
                     }
@@ -1827,7 +1839,7 @@ mod tests {
         assert_eq!(handle.endpoint.0.connects, 2);
     }
     #[test]
-    fn request_cancellation_survives_socket_disconnect_without_replay() {
+    fn cancellation_preserves_read_and_mutation_dispatch_outcomes() {
         struct CancelConnection {
             inner: Connection,
             context: Option<RequestContext>,
@@ -1939,6 +1951,103 @@ mod tests {
         assert_eq!(
             *log.lock().expect("owner log"),
             ["dead:packages", "live:packages"]
+        );
+
+        // A non-repeatable command that entered the dead transport has an
+        // unknown outcome, even when that same exchange signals cancellation.
+        let mutation_log = Arc::new(Mutex::new(Vec::new()));
+        let mut mutation = Reconnecting::new(
+            CancelEndpoint {
+                log: mutation_log.clone(),
+                connects: 0,
+            },
+            CancelConnection {
+                inner: Connection {
+                    log: mutation_log.clone(),
+                    alive: false,
+                },
+                context: None,
+                cancel: true,
+            },
+        );
+        mutation
+            .set_request_context(Some(RequestContext::new()))
+            .expect("mutation request admission");
+        assert!(matches!(
+            mutation.probe(Probe::Index("/abs/project")),
+            Err(ClientError::MutationOutcomeUnknown(
+                std::io::ErrorKind::ConnectionReset
+            ))
+        ));
+        assert_eq!(
+            mutation.endpoint.connects, 0,
+            "cancelled mutation does not redial"
+        );
+        assert_eq!(
+            *mutation_log.lock().expect("mutation log"),
+            ["dead:index"],
+            "the scripted transport received exactly one mutation write"
+        );
+
+        // Cancellation before dispatch remains an ordinary cancellation and
+        // leaves the scripted transport untouched.
+        let undispatched_log = Arc::new(Mutex::new(Vec::new()));
+        let mut undispatched = Reconnecting::new(
+            CancelEndpoint {
+                log: undispatched_log.clone(),
+                connects: 0,
+            },
+            CancelConnection {
+                inner: Connection {
+                    log: undispatched_log.clone(),
+                    alive: false,
+                },
+                context: None,
+                cancel: false,
+            },
+        );
+        let context = RequestContext::new();
+        undispatched
+            .set_request_context(Some(context.clone()))
+            .expect("request admission before cancellation");
+        context.cancel(backend_client::RequestCancellationReason::Explicit);
+        assert!(matches!(
+            undispatched.probe(Probe::Index("/abs/project")),
+            Err(ClientError::RequestCancelled(
+                backend_client::RequestCancellationReason::Explicit
+            ))
+        ));
+        assert_eq!(undispatched.endpoint.connects, 0);
+        assert!(undispatched_log.lock().expect("undispatched log").is_empty());
+
+        // A reply already returned for an invoked mutation is known even if
+        // cancellation is signalled during that call.
+        let completed_log = Arc::new(Mutex::new(Vec::new()));
+        let mut completed = Reconnecting::new(
+            CancelEndpoint {
+                log: completed_log.clone(),
+                connects: 0,
+            },
+            CancelConnection {
+                inner: Connection {
+                    log: completed_log.clone(),
+                    alive: true,
+                },
+                context: None,
+                cancel: true,
+            },
+        );
+        completed
+            .set_request_context(Some(RequestContext::new()))
+            .expect("completed mutation request admission");
+        assert!(matches!(
+            completed.probe(Probe::Index("/abs/project")),
+            Ok(reply) if matches!(reply.reply, CommandReply::Added(_))
+        ));
+        assert_eq!(completed.endpoint.connects, 0);
+        assert_eq!(
+            *completed_log.lock().expect("completed mutation log"),
+            ["live:index"]
         );
     }
 
