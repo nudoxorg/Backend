@@ -264,7 +264,11 @@ mod tests {
                     .find(|event| event.request == RequestId::new(1))
             },
         );
-        assert!(matches!(outcome.result, Ok(EngineDto::Root { .. })));
+        assert!(
+            matches!(&outcome.result, Ok(EngineDto::Root { .. })),
+            "the recovered owner serves its root: {:?}",
+            outcome.result
+        );
         let admitted = pool.submit(ReadJob {
             key: PageKey::Health,
             request: ReadRequest::Health,
