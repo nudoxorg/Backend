@@ -135,8 +135,13 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                 time.sleep(1)
         else:
             raise RuntimeError('GUI search did not show the authored source result')
+        shutil.copyfile(root / 'window.png', root / 'search-result.png')
         command('xdotool', 'key', '--clearmodifiers', 'Return')
-        command('xdotool', 'key', '--clearmodifiers', 'Escape')
+        # Enter commits the result and dismisses Ask itself. Escape here would
+        # back out of that newly opened declaration before its code is read.
+        time.sleep(0.5)
+        pixels()
+        shutil.copyfile(root / 'window.png', root / 'opened-result.png')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+4')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
