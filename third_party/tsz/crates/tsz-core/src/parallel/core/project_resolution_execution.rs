@@ -46,6 +46,7 @@ fn validate_project_virtual_path_with_poll<E: From<ProjectModuleResolutionError>
 fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
     program: &MergedProgram,
     resolutions: &[ProjectModuleResolution],
+    no_resolve: bool,
     mut poll: impl FnMut(u64) -> std::result::Result<(), E>,
     validate_path: impl Fn(
         &str,
@@ -72,8 +73,6 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
     }
 
     let mut outcomes = ResolvedModuleRequestOutcomeMap::default();
-    let mut reference_importers = FxHashSet::default();
-    let mut reference_sites = FxHashMap::default();
     for resolution in resolutions {
         poll(1)?;
         validate_path(&resolution.importer_path, &mut poll)?;
@@ -113,70 +112,6 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
                 .into());
             }
         };
-        if let Some(offset) = reference_offset {
-            let invalid = || ProjectModuleResolutionError::InvalidReference {
-                importer_path: resolution.importer_path.clone(),
-                offset,
-            };
-            if reference_importers.insert(importer_idx) {
-                let source = program.files[importer_idx]
-                    .arena
-                    .source_files
-                    .first()
-                    .ok_or_else(invalid)
-                    .map_err(E::from)?;
-                for directive in
-                    crate::checker::triple_slash_validator::reference_directives_with_poll(
-                        &source.text,
-                        &mut poll,
-                    )
-                {
-                    let directive = directive?;
-                    let mode = match directive
-                        .types
-                        .and(directive.resolution_mode)
-                        .map(|value| value.text)
-                    {
-                        None => None,
-                        Some("import") => {
-                            Some(crate::checker::context::ResolutionModeOverride::Import)
-                        }
-                        Some("require") => {
-                            Some(crate::checker::context::ResolutionModeOverride::Require)
-                        }
-                        Some(_) => return Err(invalid().into()),
-                    };
-                    for (value, types) in [(directive.path, false), (directive.types, true)] {
-                        if let Some(value) = value {
-                            let site_offset =
-                                u32::try_from(value.offset).map_err(|_| E::from(invalid()))?;
-                            let kind = if types {
-                                ResolutionRequestKind::ReferenceTypes {
-                                    offset: site_offset,
-                                }
-                            } else {
-                                ResolutionRequestKind::ReferencePath {
-                                    offset: site_offset,
-                                }
-                            };
-                            reference_sites.insert(
-                                (importer_idx, kind),
-                                (value.text, if types { mode } else { None }),
-                            );
-                        }
-                    }
-                }
-            }
-            if reference_sites.get(&(importer_idx, request_kind))
-                != Some(&(resolution.specifier.as_str(), resolution.resolution_mode))
-                || matches!(
-                    resolution.target,
-                    ProjectModuleResolutionTarget::External { .. }
-                )
-            {
-                return Err(invalid().into());
-            }
-        }
         let outcome = match &resolution.target {
             ProjectModuleResolutionTarget::File { path } => {
                 validate_path(path, &mut poll)?;
@@ -216,8 +151,111 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
         }
     }
 
+    validate_project_reference_outcomes_with_poll(program, no_resolve, &outcomes, &mut poll)?;
     poll(0)?;
     Ok(outcomes)
+}
+
+/// A closed program may diagnose only captured negatives. Validate every native
+/// reference site, including when the supplied map is empty or partial, then
+/// reject extra rows. This also protects sessions opened from raw program maps.
+fn validate_project_reference_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
+    program: &MergedProgram,
+    no_resolve: bool,
+    outcomes: &crate::checker::context::ResolvedModuleRequestOutcomeMap,
+    mut poll: impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), E> {
+    use crate::checker::context::{
+        ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
+    };
+    if no_resolve {
+        let mut has_reference = false;
+        for key in outcomes.keys() {
+            poll(1)?;
+            if key.3.is_reference() {
+                has_reference = true;
+                break;
+            }
+        }
+        if !has_reference {
+            return poll(0);
+        }
+    }
+    let mut expected = FxHashSet::default();
+    for (importer, file) in program.files.iter().enumerate() {
+        poll(1)?;
+        let Some(source) = file.arena.source_files.first() else {
+            continue;
+        };
+        for directive in crate::checker::triple_slash_validator::reference_directives_with_poll(
+            &source.text,
+            &mut poll,
+        ) {
+            let directive = directive?;
+            let invalid = |offset| ProjectModuleResolutionError::InvalidReference {
+                importer_path: file.file_name.clone(),
+                offset,
+            };
+            let mode = match directive
+                .types
+                .and(directive.resolution_mode)
+                .map(|value| value.text)
+            {
+                None => None,
+                Some("import") => Some(ResolutionModeOverride::Import),
+                Some("require") => Some(ResolutionModeOverride::Require),
+                Some(_) => return Err(invalid(directive.types.unwrap().offset as u32).into()),
+            };
+            for (value, types) in [(directive.path, false), (directive.types, true)] {
+                let Some(value) = value else {
+                    continue;
+                };
+                let offset = u32::try_from(value.offset).map_err(|_| E::from(invalid(u32::MAX)))?;
+                let kind = if types {
+                    ResolutionRequestKind::ReferenceTypes { offset }
+                } else {
+                    ResolutionRequestKind::ReferencePath { offset }
+                };
+                let key = (
+                    importer,
+                    value.text.to_owned(),
+                    if types { mode } else { None },
+                    kind,
+                );
+                let valid = match outcomes.get(&key) {
+                    Some(ResolvedModuleRequestOutcome::File(target)) => {
+                        *target < program.files.len()
+                    }
+                    Some(ResolvedModuleRequestOutcome::Unresolved) => true,
+                    None => no_resolve,
+                    Some(ResolvedModuleRequestOutcome::External { .. }) => false,
+                };
+                if !valid {
+                    return Err(invalid(offset).into());
+                }
+                expected.insert(key);
+            }
+        }
+    }
+    for (key, _) in outcomes {
+        poll(1)?;
+        if key.3.is_reference() && !expected.contains(key) {
+            let offset = match key.3 {
+                ResolutionRequestKind::ReferencePath { offset }
+                | ResolutionRequestKind::ReferenceTypes { offset } => offset,
+                _ => unreachable!(),
+            };
+            return Err(ProjectModuleResolutionError::InvalidReference {
+                importer_path: program.files.get(key.0).map_or_else(
+                    || format!("file-index:{}", key.0),
+                    |file| file.file_name.clone(),
+                ),
+                offset,
+            }
+            .into());
+        }
+    }
+    poll(0)
 }
 
 impl MergedProgram {
@@ -228,26 +266,47 @@ impl MergedProgram {
         resolutions: &[ProjectModuleResolution],
         checkpoint: &dyn tsz_common::ExecutionCheckpoint,
     ) -> Result<(), ProjectProgramCheckError> {
+        self.set_project_module_resolutions_for_checker_options(
+            resolutions,
+            &CheckerOptions::default(),
+            Some(checkpoint),
+        )
+    }
+
+    /// Attach exact outcomes under resolved checker policy. `noResolve` disables
+    /// mandatory source-reference coverage; it never invents negative outcomes.
+    pub fn set_project_module_resolutions_for_checker_options(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+        checker: &CheckerOptions,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), ProjectProgramCheckError> {
         self.project_module_resolution_outcomes = None;
-        let scope = tsz_common::LatchedExecutionCheckpoint::new(checkpoint);
+        let scope = checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
+        let scope = scope
+            .as_ref()
+            .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
         let span = tsz_common::ProjectExecutionSpan::new(
-            Some(&scope),
+            scope,
             tsz_common::ProjectExecutionPhase::ModuleOutcomes,
             None,
         );
         let outcomes = build_project_module_resolution_outcomes_with_poll(
             self,
             resolutions,
+            checker.no_resolve,
             |work| {
                 scope
-                    .checkpoint(work)
+                    .map_or(Ok(()), |scope| scope.checkpoint(work))
                     .map_err(ProjectProgramCheckError::ExecutionStopped)
             },
             |path, poll| validate_project_virtual_path_with_poll(path, poll),
         )?;
-        scope
-            .checkpoint(0)
-            .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        if let Some(scope) = scope {
+            scope
+                .checkpoint(0)
+                .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        }
         self.project_module_resolution_outcomes = Some(Arc::new(outcomes));
         span.returned();
         Ok(())

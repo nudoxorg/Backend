@@ -331,6 +331,7 @@ pub enum ProjectCheckerSessionError {
     /// The merged program has not been bound to compiler-owned module
     /// resolution outcomes, so queries could otherwise guess by filename.
     MissingProjectModuleResolutions,
+    ModuleResolution(ProjectModuleResolutionError),
     /// A prepared check or query request used a budget outside its admission.
     ExecutionCheckpointMismatch,
     /// The requested file index is outside the exact merged program.
@@ -350,6 +351,7 @@ impl std::fmt::Display for ProjectCheckerSessionError {
             Self::MissingProjectModuleResolutions => {
                 formatter.write_str("project checker session requires exact module resolutions")
             }
+            Self::ModuleResolution(error) => write!(formatter, "{error}"),
             Self::ExecutionCheckpointMismatch => formatter.write_str(
                 "project checker scope does not match its admitted execution budget",
             ),
@@ -375,6 +377,10 @@ impl std::fmt::Display for ProjectCheckerSessionError {
 }
 
 impl std::error::Error for ProjectCheckerSessionError {}
+
+impl From<ProjectModuleResolutionError> for ProjectCheckerSessionError {
+    fn from(error: ProjectModuleResolutionError) -> Self { Self::ModuleResolution(error) }
+}
 
 /// Reusable, read-only project checking context for exact semantic queries.
 ///
@@ -408,6 +414,9 @@ impl<'a> ProjectCheckerSession<'a> {
             .project_module_resolution_outcomes
             .clone()
             .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        validate_project_reference_outcomes_with_poll(program, checker_options.no_resolve,
+            &project_module_resolution_outcomes,
+            |work| execution_checkpoint.checkpoint(work).map_err(ProjectCheckerSessionError::ExecutionStopped))?;
         let plan = ParallelCheckPlan::build(
             program,
             checker_options,
@@ -868,7 +877,10 @@ pub fn check_files_parallel_with_project_inputs(
     project_semantic_options: ProjectSemanticOptions,
     resolutions: &[ProjectModuleResolution],
 ) -> Result<CheckResult, ProjectModuleResolutionError> {
-    let outcomes = build_project_module_resolution_outcomes(program, resolutions)?;
+    let outcomes = build_project_module_resolution_outcomes_with_poll(
+        program, resolutions, checker_options.no_resolve, |_| Ok(()),
+        |path, _| validate_project_virtual_path(path),
+    )?;
     Ok(check_files_parallel_with_optional_project_inputs(
         program,
         checker_options,
@@ -896,6 +908,7 @@ pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
     let outcomes = build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
+        checker_options.no_resolve,
         |work| {
             execution_checkpoint
                 .checkpoint(work)
@@ -962,6 +975,7 @@ fn build_project_module_resolution_outcomes(
     build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
+        false,
         |_| Ok(()),
         |path, _poll| validate_project_virtual_path(path),
     )
@@ -1211,6 +1225,8 @@ impl PreparedProjectCheckerImage {
     ) -> Result<Self, ProjectCheckerSessionError> {
         let outcomes = program.project_module_resolution_outcomes.clone()
             .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        validate_project_reference_outcomes_with_poll(&program, checker_options.no_resolve, &outcomes,
+            |work| checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work)).map_err(ProjectCheckerSessionError::ExecutionStopped))?;
         let plan_span = tsz_common::ProjectExecutionSpan::new(checkpoint, tsz_common::ProjectExecutionPhase::CheckerPlan, None);
         let views = ParallelCheckPlan::build(&program, &checker_options, lib_files, semantics, Some(outcomes), checkpoint)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?.views;
@@ -2134,6 +2150,52 @@ mod project_module_resolution_tests {
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    #[test]
+    fn reference_query_admission_rejects_a_forged_incomplete_program_map() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/main.ts".into(),
+                    "/// <reference path='./present.d.ts' />\nexport {};".into(),
+                ),
+                ("src/present.d.ts".into(), "interface Present {}".into()),
+            ],
+            &[],
+        );
+        program.project_module_resolution_outcomes =
+            Some(Arc::new(ResolvedModuleRequestOutcomeMap::default()));
+        let cancelled = AtomicBool::new(false);
+        let budget = tsz_common::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &cancelled,
+            10_000,
+        );
+        let options = CheckerOptions::default();
+        assert!(matches!(
+            ProjectCheckerSession::new(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                &budget
+            ),
+            Err(ProjectCheckerSessionError::ModuleResolution(
+                ProjectModuleResolutionError::InvalidReference { .. }
+            ))
+        ));
+        assert!(matches!(
+            PreparedProjectCheckerImage::new(
+                program,
+                options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                Some(&budget)
+            ),
+            Err(ProjectCheckerSessionError::ModuleResolution(
+                ProjectModuleResolutionError::InvalidReference { .. }
+            ))
+        ));
+    }
     struct ArmedExecutionStop {
         armed: AtomicBool,
         remaining: AtomicU64,

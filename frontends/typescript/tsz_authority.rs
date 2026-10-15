@@ -767,15 +767,11 @@ impl TszProjectAuthority {
             );
             program.set_project_file_formats(&options.file_formats)?;
             formats.returned();
-            if let Some(checkpoint) = checkpoint {
-                program.set_project_module_resolutions_with_execution_checkpoint(&options.module_resolutions, checkpoint)
-                    .map_err(|error| match error {
-                        tsz::parallel::ProjectProgramCheckError::ModuleResolution(error) => TszAuthorityError::ModuleResolution(error),
-                        stopped => TszAuthorityError::ProjectCheck(stopped),
-                    })?;
-            } else {
-                program.set_project_module_resolutions(&options.module_resolutions)?;
-            }
+            program.set_project_module_resolutions_for_checker_options(&options.module_resolutions, &options.checker, checkpoint)
+                .map_err(|error| match error {
+                    tsz::parallel::ProjectProgramCheckError::ModuleResolution(error) => TszAuthorityError::ModuleResolution(error),
+                    stopped => TszAuthorityError::ProjectCheck(stopped),
+                })?;
             let checked = match execution {
                 TszUpdateExecution::Partitions(execution, work) => {
                     let mut image_checker = options.checker.clone();
@@ -2188,6 +2184,85 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[test]
+    fn captured_reference_maps_require_complete_exact_coverage_except_no_resolve() {
+        let source = "/// <reference path='./provided.d.ts' />\n/// <reference types='environment' />\nexport {};";
+        let path = TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "./provided.d.ts".into(),
+            request_kind: TszProjectModuleRequestKind::ReferencePath {
+                offset: source.find("./provided.d.ts").unwrap() as u32,
+            },
+            resolution_mode: None,
+            target: TszProjectModuleResolutionTarget::File {
+                path: "src/provided.d.ts".into(),
+            },
+        };
+        let types = TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "environment".into(),
+            request_kind: TszProjectModuleRequestKind::ReferenceTypes {
+                offset: source.find("environment").unwrap() as u32,
+            },
+            resolution_mode: None,
+            target: TszProjectModuleResolutionTarget::Unresolved,
+        };
+        let sources = vec![
+            input("src/main.ts", source),
+            input("src/provided.d.ts", "interface Present {}"),
+        ];
+        for rows in [
+            vec![],
+            vec![path.clone()],
+            vec![path.clone(), types.clone(), path.clone()],
+            vec![
+                path.clone(),
+                types.clone(),
+                TszProjectModuleResolution {
+                    request_kind: TszProjectModuleRequestKind::ReferenceTypes { offset: 0 },
+                    ..types.clone()
+                },
+            ],
+        ] {
+            let mut recipe = options();
+            recipe.module_resolutions = rows;
+            let mut authority = TszProjectAuthority::new();
+            assert!(matches!(
+                authority.update(sources.clone(), recipe, &[]),
+                Err(TszAuthorityError::ModuleResolution(_))
+            ));
+            assert!(authority.project().is_none());
+        }
+        let mut recipe = options();
+        recipe.module_resolutions = vec![path, types];
+        let mut authority = TszProjectAuthority::new();
+        authority.update(sources.clone(), recipe, &[]).unwrap();
+        let codes = authority
+            .project()
+            .unwrap()
+            .check_result()
+            .file_results
+            .iter()
+            .flat_map(|file| &file.diagnostics)
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert!(!codes.contains(&6053));
+        assert!(codes.contains(&2688));
+        let mut no_resolve = options();
+        no_resolve.checker.no_resolve = true;
+        authority.update(sources, no_resolve, &[]).unwrap();
+        assert!(
+            !authority
+                .project()
+                .unwrap()
+                .check_result()
+                .file_results
+                .iter()
+                .flat_map(|file| &file.diagnostics)
+                .any(|diagnostic| matches!(diagnostic.code, 6053 | 2688))
+        );
     }
     #[test]
     fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {

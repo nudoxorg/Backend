@@ -512,6 +512,7 @@ impl MergedProgram {
         &mut self,
         resolutions: &[ProjectModuleResolution],
     ) -> Result<(), super::ProjectModuleResolutionError> {
+        self.project_module_resolution_outcomes = None;
         self.project_module_resolution_outcomes = Some(Arc::new(
             build_project_module_resolution_outcomes(self, resolutions)?,
         ));

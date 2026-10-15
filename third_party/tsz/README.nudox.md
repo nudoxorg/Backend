@@ -45,6 +45,10 @@ UTF-8 value offsets. Admission validates those kinds, offsets, modes and values
 against the source. Captured misses produce TS6053/TS2688 in the retained checker;
 admitted checks never use the legacy reference-path disk probe. Reference rows
 do not enter ordinary module-resolution projections or consensus.
+Every source path/type directive requires its own explicit outcome, unless the
+resolved checker policy enables `noResolve`. Missing, extra, duplicate or invalid
+rows refuse admission. Prepared images and query sessions also validate reference
+coverage before accepting an immutable program map, including raw caller maps.
 
 Source-free configuration diagnostics still need their own retained compiler
 channel: missing configured `types` entries remain explicit admission refusals,

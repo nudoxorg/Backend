@@ -209,11 +209,13 @@ impl<'a> CheckerState<'a> {
                     if is_types { mode } else { None },
                     kind,
                 );
-                if matches!(
-                    outcomes.get(&key),
-                    Some(ResolvedModuleRequestOutcome::File(_))
-                ) {
-                    continue;
+                match outcomes.get(&key) {
+                    Some(ResolvedModuleRequestOutcome::File(_)) => continue,
+                    Some(ResolvedModuleRequestOutcome::Unresolved) => {}
+                    // Typed project admission rejects an incomplete/invalid
+                    // reference map. A trusted low-level context must never
+                    // turn such an invariant failure into a compiler miss.
+                    None | Some(ResolvedModuleRequestOutcome::External { .. }) => return,
                 }
                 let (code, message) = if is_types {
                     (
