@@ -1341,17 +1341,16 @@ impl BuiltinIntent {
                     encode_optional_compiler_failure(change.compiler_failure.as_ref(), &mut bytes);
                 }
             }
-            if self.encoding_version >= Self::CAPTURE_BASIS_VERSION {
+            if self.encoding_version == Self::CAPTURE_BASIS_VERSION {
                 let basis = self
                     .capture_basis
                     .expect("capture-basis intents are validated at construction");
-                bytes.extend_from_slice(&basis.workspace_root);
-                bytes.extend_from_slice(&basis.workspace_sequence.to_be_bytes());
-                bytes.extend_from_slice(&basis.closure_id);
-                match basis.capture_root {
-                    Some(root) => {
+                encode_capture_basis(basis, &mut bytes);
+            } else if self.encoding_version >= Self::NATIVE_FRONTIER_VERSION {
+                match self.capture_basis {
+                    Some(basis) => {
                         bytes.push(1);
-                        bytes.extend_from_slice(&root);
+                        encode_capture_basis(basis, &mut bytes);
                     }
                     None => bytes.push(0),
                 }
@@ -1647,6 +1646,19 @@ fn encode_optional_native_frontier_record(
             );
             output.extend_from_slice(&encoded);
         }
+    }
+}
+
+fn encode_capture_basis(basis: BuiltinCaptureBasis, output: &mut Vec<u8>) {
+    output.extend_from_slice(&basis.workspace_root);
+    output.extend_from_slice(&basis.workspace_sequence.to_be_bytes());
+    output.extend_from_slice(&basis.closure_id);
+    match basis.capture_root {
+        Some(root) => {
+            output.push(1);
+            output.extend_from_slice(&root);
+        }
+        None => output.push(0),
     }
 }
 
@@ -2041,6 +2053,21 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::CAPTURE_BASIS_VERSION {
             return Ok(None);
         }
+        if self.version >= BuiltinIntent::NATIVE_FRONTIER_VERSION {
+            match self.take(1)?.first().copied() {
+                Some(0) => return Ok(None),
+                Some(1) => {}
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed capture basis presence marker".to_owned(),
+                    ));
+                }
+            }
+        }
+        self.capture_basis_payload().map(Some)
+    }
+
+    fn capture_basis_payload(&mut self) -> Result<BuiltinCaptureBasis, BuiltinModelError> {
         let workspace_root = self
             .take(32)?
             .try_into()
@@ -2066,7 +2093,6 @@ impl<'a> IntentDecoder<'a> {
             }
         };
         BuiltinCaptureBasis::new(workspace_root, workspace_sequence, closure_id, capture_root)
-            .map(Some)
     }
 
     fn source_facts_changes(&mut self) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
@@ -4644,6 +4670,114 @@ mod persisted_intent_tests {
             BuiltinModel.request_id(&first),
             BuiltinModel.request_id(&second),
             "caller key must be bound into the exact workspace request identity",
+        );
+    }
+
+    #[test]
+    fn native_frontier_capture_basis_marker_is_optional_only_in_v10() {
+        let none = [0u8];
+        let mut decoder = IntentDecoder {
+            bytes: &none,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert_eq!(decoder.capture_basis().expect("v10 absent basis"), None);
+        assert_eq!(decoder.at, 1);
+
+        let invalid = [2u8];
+        let mut decoder = IntentDecoder {
+            bytes: &invalid,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert!(decoder.capture_basis().is_err());
+
+        // BPI9 predates the presence marker and continues to read the original
+        // fixed-width basis payload directly.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[1; 32]);
+        payload.extend_from_slice(&7u64.to_be_bytes());
+        payload.extend_from_slice(&[2; 32]);
+        payload.push(0);
+        let mut decoder = IntentDecoder {
+            bytes: &payload,
+            at: 0,
+            version: BuiltinIntent::CAPTURE_BASIS_VERSION,
+        };
+        let basis = decoder
+            .capture_basis()
+            .expect("v9 legacy basis")
+            .expect("v9 basis is mandatory");
+        assert_eq!(basis.workspace_root, [1; 32]);
+        assert_eq!(basis.workspace_sequence, 7);
+        assert_eq!(basis.closure_id, [2; 32]);
+        assert_eq!(basis.capture_root, None);
+        assert_eq!(decoder.at, payload.len());
+
+        let mut marked_payload = Vec::with_capacity(payload.len() + 1);
+        marked_payload.push(1);
+        marked_payload.extend_from_slice(&payload);
+        let mut decoder = IntentDecoder {
+            bytes: &marked_payload,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert_eq!(decoder.capture_basis().expect("v10 present basis"), Some(basis));
+        assert_eq!(decoder.at, marked_payload.len());
+    }
+
+    #[test]
+    fn native_frontier_still_rejects_capture_intents_without_a_basis() {
+        let label = "pkg:cargo/unsealed-capture@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let package_reference = backend_engine::PackageReference::parse(label.to_owned())
+            .expect("package reference");
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
+            .expect("package coordinate");
+        let capture_key = ProductSemanticPublicationKey::new(
+            package_reference,
+            coordinate,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("capture key");
+        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1)
+            .expect("source capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                key: capture_key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                },
+                compiler_failure: None,
+            }],
+        )
+        .expect("unsealed capture intent");
+        let record = ProductNativeFrontierRecord::Profile {
+            project: package.to_bytes(),
+            profile: backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+            path_count: 0,
+            disposition_digest: [7; 32],
+        };
+        let key = product_native_frontier_record_key(&record).expect("frontier profile key");
+        assert!(
+            intent
+                .with_native_frontier(vec![BuiltinNativeFrontierChange {
+                    key,
+                    expected: None,
+                    after: Some(record),
+                }])
+                .is_err(),
+            "native frontier cannot make an unsealed capture publishable"
         );
     }
 

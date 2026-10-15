@@ -759,6 +759,12 @@ pub(super) fn finish_index_scan(
                     capture_intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
             }
             if !native_frontier_changes.is_empty() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    let snapshot = daemon.engine().daemon().owner().snapshot();
+                    capture_intent = capture_intent
+                        .with_capture_basis(super::super::capture_basis_for_snapshot(&snapshot)?)?;
+                }
                 capture_intent = capture_intent
                     .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
             }
@@ -990,6 +996,11 @@ pub(super) fn finish_index_scan(
             )?
         };
         if !native_frontier_changes.is_empty() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                intent = intent
+                    .with_capture_basis(super::super::capture_basis_for_snapshot(&snapshot)?)?;
+            }
             intent = intent.with_native_frontier(native_frontier_changes)?;
         }
         Some(intent)
