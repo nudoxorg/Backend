@@ -7010,11 +7010,25 @@ mod tests {
             .expect("baseline package README origin");
         assert!(matches!(
             owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
-                origin: baseline_origin,
+                origin: baseline_origin.clone(),
                 href: "../guide.md#entry".to_owned(),
             }),
             CargoPackageReadmeLinkResultV1::Read { .. }
         ));
+
+        // Preserve the pre-archive origin mutation law: a path-backed source
+        // whose README changed after origin issuance reports Stale.
+        std::fs::write(helper.join("docs/README.md"), "# changed before archive\n")
+            .expect("mutate pre-archive README");
+        assert!(matches!(
+            owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+                origin: baseline_origin,
+                href: "../guide.md#entry".to_owned(),
+            }),
+            CargoPackageReadmeLinkResultV1::Stale { .. }
+        ));
+        std::fs::write(helper.join("docs/README.md"), readme_contents)
+            .expect("restore README before archive attachment");
 
         // The synthetic archive is attached only to drive the public browse
         // checks. Cargo metadata above admits a local path package; registry
@@ -7159,7 +7173,10 @@ mod tests {
                 origin,
                 href: "../guide.md".to_owned(),
             }),
-            CargoPackageReadmeLinkResultV1::Stale { .. }
+            CargoPackageReadmeLinkResultV1::Unavailable {
+                reason: CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+                ..
+            }
         ));
     }
 
