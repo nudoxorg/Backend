@@ -12,6 +12,7 @@
 //! `config` API is still gated through `mod.rs`.
 use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
+use crate::resolution::filesystem::{ResolutionFileSystem, STD_RESOLUTION_FILE_SYSTEM};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::module_resolver_helpers::{
@@ -76,6 +77,14 @@ pub(super) fn resolve_extends_path(
     current_path: &Path,
     extends: &str,
 ) -> Result<ExtendsResolution> {
+    resolve_extends_path_with_file_system(current_path, extends, &STD_RESOLUTION_FILE_SYSTEM)
+}
+
+pub(super) fn resolve_extends_path_with_file_system(
+    current_path: &Path,
+    extends: &str,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<ExtendsResolution> {
     let base_dir = current_path
         .parent()
         .ok_or_else(|| anyhow!("tsconfig has no parent directory"))?;
@@ -92,7 +101,7 @@ pub(super) fn resolve_extends_path(
         // message) is lexically normalized — `../base.json` becomes an absolute
         // sibling path, not a `<dir>/../base.json` spelling.
         let candidate = normalize_segments(&joined);
-        if candidate.is_file() {
+        if file_system.is_file(&candidate)? {
             return Ok(ExtendsResolution::Found(candidate));
         }
         // A specifier that already ends in `.json` is returned by `tsc`
@@ -104,14 +113,14 @@ pub(super) fn resolve_extends_path(
         // Otherwise `tsc` appends `.json` and re-probes; a miss there is the
         // specifier-anchored TS6053.
         let with_json = append_json_extension(candidate);
-        if with_json.is_file() {
+        if file_system.is_file(&with_json)? {
             return Ok(ExtendsResolution::Found(with_json));
         }
         return Ok(ExtendsResolution::NotFound);
     }
 
     // Non-relative: Node module resolution. `package.json` exports first.
-    if let Some(resolved) = resolve_package_extends_path(current_path, extends) {
+    if let Some(resolved) = resolve_package_extends_path(current_path, extends, file_system)? {
         return Ok(ExtendsResolution::Found(resolved));
     }
 
@@ -120,8 +129,15 @@ pub(super) fn resolve_extends_path(
     let mut search_dir = base_dir.to_path_buf();
     loop {
         let candidate = search_dir.join("node_modules").join(extends);
-        if let Some(resolved) = probe_extends_candidate(&candidate, true) {
+        if let Some(resolved) = probe_extends_candidate_with_file_system(
+            &candidate,
+            true,
+            file_system,
+        )? {
             return Ok(ExtendsResolution::Found(resolved));
+        }
+        if !may_walk_parent(file_system, &search_dir) {
+            break;
         }
         if !search_dir.pop() {
             break;
@@ -141,41 +157,49 @@ fn append_json_extension(path: PathBuf) -> PathBuf {
     PathBuf::from(os)
 }
 
-/// Probe a single candidate path for an `extends` target, returning the
-/// existing config file it names or `None`.
-///
-/// Tries, in order: the candidate as written, the candidate with a `.json`
-/// extension appended when it has none, and — only when `allow_dir_tsconfig`
-/// is set (the `node_modules` package-root case) — a `tsconfig.json` inside the
-/// candidate directory. Existence is checked at every step so a miss is
-/// reported as `None` rather than a path that does not exist.
-fn probe_extends_candidate(candidate: &Path, allow_dir_tsconfig: bool) -> Option<PathBuf> {
-    if candidate.is_file() {
-        return Some(candidate.to_path_buf());
+/// Probe one candidate through the selected filesystem, returning its config
+/// file or `None`. A provider refusal is propagated separately from a miss.
+fn probe_extends_candidate_with_file_system(
+    candidate: &Path,
+    allow_dir_tsconfig: bool,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
+    if file_system.is_file(candidate)? {
+        return Ok(Some(candidate.to_path_buf()));
     }
     if candidate.extension().is_none() {
         let with_json = candidate.with_extension("json");
-        if with_json.is_file() {
-            return Some(with_json);
+        if file_system.is_file(&with_json)? {
+            return Ok(Some(with_json));
         }
     }
-    if allow_dir_tsconfig && candidate.is_dir() {
+    if allow_dir_tsconfig && file_system.is_dir(candidate)? {
         let nested = candidate.join("tsconfig.json");
-        if nested.is_file() {
-            return Some(nested);
+        if file_system.is_file(&nested)? {
+            return Ok(Some(nested));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn resolve_package_extends_path(_current_path: &Path, _extends: &str) -> Option<PathBuf> {
-    None
+fn resolve_package_extends_path(
+    _current_path: &Path,
+    _extends: &str,
+    _file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
+    Ok(None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn resolve_package_extends_path(current_path: &Path, extends: &str) -> Option<PathBuf> {
-    let base_dir = current_path.parent()?;
+fn resolve_package_extends_path(
+    current_path: &Path,
+    extends: &str,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
+    let Some(base_dir) = current_path.parent() else {
+        return Ok(None);
+    };
     let (package_name, subpath) = parse_package_specifier(extends);
     let export_subpath = subpath
         .as_deref()
@@ -186,27 +210,42 @@ fn resolve_package_extends_path(current_path: &Path, extends: &str) -> Option<Pa
     loop {
         let package_dir = search_dir.join("node_modules").join(&package_name);
         let package_json_path = package_dir.join("package.json");
-        if package_json_path.is_file()
-            && let Some(package_json) = read_package_json_for_extends(&package_json_path)
+        if file_system.is_file(&package_json_path)?
+            && let Some(package_json) = read_package_json_for_extends(&package_json_path, file_system)?
             && let Some(exports) = &package_json.exports
             && let Some(resolved) =
-                resolve_package_extends_exports(&package_dir, exports, &export_subpath)
+                resolve_package_extends_exports(&package_dir, exports, &export_subpath, file_system)?
         {
-            return Some(resolved);
+            return Ok(Some(resolved));
         }
 
+        if !may_walk_parent(file_system, &search_dir) {
+            break;
+        }
         if !search_dir.pop() {
             break;
         }
     }
 
-    None
+    Ok(None)
+}
+
+fn may_walk_parent(file_system: &dyn ResolutionFileSystem, directory: &Path) -> bool {
+    file_system.may_walk_parent(directory)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_package_json_for_extends(path: &Path) -> Option<PackageJson> {
-    let source = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&source).ok()
+fn read_package_json_for_extends(
+    path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PackageJson>> {
+    let Some(bytes) = file_system.read_file(path)? else {
+        return Ok(None);
+    };
+    let Ok(source) = String::from_utf8(bytes) else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&source).ok())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,20 +253,26 @@ fn resolve_package_extends_exports(
     package_dir: &Path,
     exports: &PackageExports,
     subpath: &str,
-) -> Option<PathBuf> {
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
     const CONDITIONS: &[&str] = &["types", "node", "import", "require", "default"];
 
     match exports {
         PackageExports::String(target) => {
             if subpath == "." {
-                resolve_config_export_target(package_dir, target)
+                resolve_config_export_target(package_dir, target, file_system)
             } else {
-                None
+                Ok(None)
             }
         }
         PackageExports::Map(map) => {
             if let Some(value) = map.get(subpath) {
-                return resolve_package_extends_export_value(package_dir, value, CONDITIONS);
+                return resolve_package_extends_export_value(
+                    package_dir,
+                    value,
+                    CONDITIONS,
+                    file_system,
+                );
             }
 
             if let Some((pattern, wildcard, value)) =
@@ -242,37 +287,38 @@ fn resolve_package_extends_exports(
                     package_dir,
                     &substituted_value,
                     CONDITIONS,
+                    file_system,
                 );
             }
 
-            None
+            Ok(None)
         }
         PackageExports::Conditional(entries) => {
             for (key, value) in entries {
                 if CONDITIONS.iter().any(|condition| condition == key) {
                     if matches!(value, PackageExports::Null) {
-                        return None;
+                        return Ok(None);
                     }
                     if let Some(resolved) =
-                        resolve_package_extends_exports(package_dir, value, subpath)
+                        resolve_package_extends_exports(package_dir, value, subpath, file_system)?
                     {
-                        return Some(resolved);
+                        return Ok(Some(resolved));
                     }
                 }
             }
-            None
+            Ok(None)
         }
         PackageExports::Array(elements) => {
             for element in elements {
                 if let Some(resolved) =
-                    resolve_package_extends_exports(package_dir, element, subpath)
+                    resolve_package_extends_exports(package_dir, element, subpath, file_system)?
                 {
-                    return Some(resolved);
+                    return Ok(Some(resolved));
                 }
             }
-            None
+            Ok(None)
         }
-        PackageExports::Null => None,
+        PackageExports::Null => Ok(None),
     }
 }
 
@@ -281,45 +327,62 @@ fn resolve_package_extends_export_value(
     package_dir: &Path,
     value: &PackageExports,
     conditions: &[&str],
-) -> Option<PathBuf> {
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
     match value {
-        PackageExports::String(target) => resolve_config_export_target(package_dir, target),
+        PackageExports::String(target) => {
+            resolve_config_export_target(package_dir, target, file_system)
+        }
         PackageExports::Conditional(entries) => {
             for (key, nested) in entries {
                 if conditions.iter().any(|condition| condition == key) {
                     if matches!(nested, PackageExports::Null) {
-                        return None;
+                        return Ok(None);
                     }
                     if let Some(resolved) =
-                        resolve_package_extends_export_value(package_dir, nested, conditions)
+                        resolve_package_extends_export_value(
+                            package_dir,
+                            nested,
+                            conditions,
+                            file_system,
+                        )?
                     {
-                        return Some(resolved);
+                        return Ok(Some(resolved));
                     }
                 }
             }
-            None
+            Ok(None)
         }
         PackageExports::Array(elements) => {
             for element in elements {
                 if let Some(resolved) =
-                    resolve_package_extends_export_value(package_dir, element, conditions)
+                    resolve_package_extends_export_value(
+                        package_dir,
+                        element,
+                        conditions,
+                        file_system,
+                    )?
                 {
-                    return Some(resolved);
+                    return Ok(Some(resolved));
                 }
             }
-            None
+            Ok(None)
         }
-        PackageExports::Map(_) | PackageExports::Null => None,
+        PackageExports::Map(_) | PackageExports::Null => Ok(None),
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn resolve_config_export_target(package_dir: &Path, target: &str) -> Option<PathBuf> {
+fn resolve_config_export_target(
+    package_dir: &Path,
+    target: &str,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<Option<PathBuf>> {
     // A package `"exports"` target names a package-relative path; probe it the
     // same way as a `node_modules` extends candidate (exact file, `.json`
     // append, or directory `tsconfig.json`).
     let resolved = package_dir.join(target.trim_start_matches("./"));
-    probe_extends_candidate(&resolved, true)
+    probe_extends_candidate_with_file_system(&resolved, true, file_system)
 }
 
 /// Anchor relative path-like compiler options at the directory of the
@@ -330,20 +393,32 @@ fn resolve_config_export_target(package_dir: &Path, target: &str) -> Option<Path
 /// perform that anchoring at load time so the merged `CompilerOptions`
 /// carries an absolute path that downstream CLI normalizers leave alone.
 pub(super) fn anchor_inherited_path_options(config: &mut TsConfig, config_path: &Path) {
+    let _ = anchor_inherited_path_options_with_file_system(
+        config,
+        config_path,
+        &STD_RESOLUTION_FILE_SYSTEM,
+    );
+}
+
+pub(super) fn anchor_inherited_path_options_with_file_system(
+    config: &mut TsConfig,
+    config_path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<()> {
     let Some(parent) = config_path.parent() else {
-        return;
+        return Ok(());
     };
     let Some(opts) = config.compiler_options.as_mut() else {
-        return;
+        return Ok(());
     };
-    anchor_relative_path_option(&mut opts.base_url, parent);
-    anchor_relative_path_option(&mut opts.root_dir, parent);
-    anchor_relative_path_option(&mut opts.out_dir, parent);
-    anchor_relative_path_option(&mut opts.declaration_dir, parent);
-    anchor_relative_path_option(&mut opts.ts_build_info_file, parent);
+    anchor_relative_path_option(&mut opts.base_url, parent, file_system)?;
+    anchor_relative_path_option(&mut opts.root_dir, parent, file_system)?;
+    anchor_relative_path_option(&mut opts.out_dir, parent, file_system)?;
+    anchor_relative_path_option(&mut opts.declaration_dir, parent, file_system)?;
+    anchor_relative_path_option(&mut opts.ts_build_info_file, parent, file_system)?;
 
     if let Some(root_dirs) = opts.root_dirs.as_mut() {
-        let parent_abs = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+        let parent_abs = canonicalize_or_lexical(parent, file_system)?;
         for root_dir in root_dirs {
             let trimmed = root_dir.trim();
             if trimmed.is_empty() {
@@ -354,13 +429,13 @@ pub(super) fn anchor_inherited_path_options(config: &mut TsConfig, config_path: 
                 continue;
             }
             let joined = parent_abs.join(candidate);
-            let normalized = std::fs::canonicalize(&joined).unwrap_or(joined);
+            let normalized = canonicalize_or_lexical(&joined, file_system)?;
             *root_dir = normalized.to_string_lossy().into_owned();
         }
     }
 
     if let Some(type_roots) = opts.type_roots.as_mut() {
-        let parent_abs = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+        let parent_abs = canonicalize_or_lexical(parent, file_system)?;
         for type_root in type_roots {
             let trimmed = type_root.trim();
             if trimmed.is_empty() {
@@ -371,29 +446,44 @@ pub(super) fn anchor_inherited_path_options(config: &mut TsConfig, config_path: 
                 continue;
             }
             let joined = parent_abs.join(candidate);
-            let normalized = std::fs::canonicalize(&joined).unwrap_or(joined);
+            let normalized = canonicalize_or_lexical(&joined, file_system)?;
             *type_root = normalized.to_string_lossy().into_owned();
         }
     }
+    Ok(())
 }
 
-fn anchor_relative_path_option(option: &mut Option<String>, base_dir: &Path) {
+fn anchor_relative_path_option(
+    option: &mut Option<String>,
+    base_dir: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<()> {
     let Some(value) = option.as_deref() else {
-        return;
+        return Ok(());
     };
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return;
+        return Ok(());
     }
     let candidate = std::path::Path::new(trimmed);
     if candidate.is_absolute() {
-        return;
+        return Ok(());
     }
 
-    let base_abs = std::fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+    let base_abs = canonicalize_or_lexical(base_dir, file_system)?;
     let joined = base_abs.join(candidate);
-    let normalized = std::fs::canonicalize(&joined).unwrap_or(joined);
+    let normalized = canonicalize_or_lexical(&joined, file_system)?;
     *option = Some(normalized.to_string_lossy().into_owned());
+    Ok(())
+}
+
+fn canonicalize_or_lexical(
+    path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<PathBuf> {
+    Ok(file_system
+        .canonicalize(path)?
+        .unwrap_or_else(|| path.to_path_buf()))
 }
 
 /// The TypeScript 5.5 `${configDir}` tsconfig template variable.
@@ -504,10 +594,22 @@ fn substitute_config_dir(value: &str, config_dir: &Path) -> Option<String> {
 }
 
 pub(super) fn anchor_inherited_root_selectors(config: &mut TsConfig, config_path: &Path) {
+    let _ = anchor_inherited_root_selectors_with_file_system(
+        config,
+        config_path,
+        &STD_RESOLUTION_FILE_SYSTEM,
+    );
+}
+
+pub(super) fn anchor_inherited_root_selectors_with_file_system(
+    config: &mut TsConfig,
+    config_path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<()> {
     let Some(parent) = config_path.parent() else {
-        return;
+        return Ok(());
     };
-    let parent_abs = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let parent_abs = canonicalize_or_lexical(parent, file_system)?;
 
     if let Some(files) = config.files.as_mut() {
         for file in files {
@@ -524,6 +626,7 @@ pub(super) fn anchor_inherited_root_selectors(config: &mut TsConfig, config_path
             anchor_relative_selector(pattern, &parent_abs);
         }
     }
+    Ok(())
 }
 
 fn anchor_relative_selector(selector: &mut String, base_dir: &Path) {

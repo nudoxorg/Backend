@@ -1,6 +1,13 @@
 //! TypeScript OXC syntax and native TSZ project checker authority adapters.
 #![forbid(unsafe_code)]
 
+/// Linked native compiler/program ABI. Library declaration bytes are separately
+/// included in the admitted program identity; no host toolchain selects this value.
+mod native_identity;
+pub use native_identity::TSZ_NATIVE_AUTHORITY_IDENTITY;
+
+pub mod native_project;
+
 mod authority;
 mod coordinate;
 mod error;

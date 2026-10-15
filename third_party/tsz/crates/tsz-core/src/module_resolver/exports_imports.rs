@@ -91,7 +91,7 @@ pub(super) fn is_valid_bare_imports_target(target: &str) -> bool {
     true
 }
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     /// Resolve package.json imports field (#-prefixed specifiers)
     pub(super) fn resolve_package_imports(
         &self,
@@ -126,6 +126,9 @@ impl ModuleResolver {
             // existence check — no separate `cached_is_file` probe needed.
             if let Ok(package_json) = self.read_package_json(&package_json_path) {
                 break (package_json, current);
+            }
+            if !self.may_walk_parent(&current) {
+                return Err(not_found());
             }
             let Some(parent) = current.parent().filter(|&p| p != current) else {
                 return Err(not_found());

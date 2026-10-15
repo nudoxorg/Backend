@@ -30,6 +30,8 @@ use super::typescript_host::{
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
 
+mod direct;
+
 const MAX_BRIDGE_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BRIDGE_FILES: usize = 16_384;
 const MAX_BRIDGE_REQUESTS: usize = 131_072;
@@ -1264,16 +1266,33 @@ fn build_native_inputs_for_config(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
+    if matches!(
+        inputs.authority,
+        super::typescript_host::TypeScriptProjectInputAuthority::Native
+    ) {
+        return direct::build_direct_inputs_for_config(
+            inputs,
+            resolver,
+            package_sources,
+            config,
+            forest,
+            aggregate,
+            validated_host,
+            deadline,
+            cancelled,
+        );
+    }
     check_admission_control(deadline, cancelled)?;
+    let api = inputs.compiler_api()?;
     // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
     // is probed separately to establish the selected tool identity, but it is
     // not the Compiler API module. Resolve that module only from the exact
     // captured TypeScript package closure so `require` cannot silently select
     // a different install from Node's module search path.
-    let compiler_api_path = inputs
+    let compiler_api_path = api
         .typescript_module_root
         .join("typescript/lib/typescript.js");
-    let expected_version = std::str::from_utf8(inputs.compiler_version)
+    let expected_version = std::str::from_utf8(api.compiler_version)
         .ok()
         .map(str::trim)
         .and_then(|version| version.strip_prefix("Version ").or(Some(version)))
@@ -1283,7 +1302,7 @@ fn build_native_inputs_for_config(
         .iter()
         .find(|file| normalize_path(&file.path) == normalize_path(&compiler_api_path))
         .ok_or_else(|| TypeScriptProjectHostError::CompilerApiEntryMissing {
-            package_root: inputs
+            package_root: api
                 .typescript_module_root
                 .join("typescript")
                 .into_boxed_path(),
@@ -1310,6 +1329,7 @@ fn build_native_inputs_for_config(
             if let Some(export) = report.missing_compiler_api_export.as_deref() {
                 return Err(TypeScriptProjectHostError::CompilerApiExportMissing {
                     package_root: inputs
+                        .compiler_api()?
                         .typescript_module_root
                         .join("typescript")
                         .into_boxed_path(),
@@ -1740,7 +1760,7 @@ fn run_program_bridge_with_forest_limits(
         ),
     ];
     let output = run_typescript_program_bridge(
-        inputs.node_path,
+        inputs.compiler_api()?.node_path,
         COMPILER_API_PROGRAM_SCRIPT,
         &arguments,
         inputs.package_root,
@@ -2605,10 +2625,22 @@ impl ProgramWorkShape {
     /// Allowances for this shape, never above the global project cap.
     pub(crate) fn allowance(self) -> ProgramWorkAllowance {
         let program = Self::BASE_UNITS
-            .saturating_add(self.declaration_bytes.saturating_mul(Self::DECLARATION_UNITS_PER_BYTE))
-            .saturating_add(self.application_bytes.saturating_mul(Self::APPLICATION_UNITS_PER_BYTE))
-            .saturating_add(self.application_files.saturating_mul(Self::APPLICATION_FILE_UNITS))
-            .saturating_add(self.closure_replay_work.saturating_mul(Self::CLOSURE_REPLAY_UNITS))
+            .saturating_add(
+                self.declaration_bytes
+                    .saturating_mul(Self::DECLARATION_UNITS_PER_BYTE),
+            )
+            .saturating_add(
+                self.application_bytes
+                    .saturating_mul(Self::APPLICATION_UNITS_PER_BYTE),
+            )
+            .saturating_add(
+                self.application_files
+                    .saturating_mul(Self::APPLICATION_FILE_UNITS),
+            )
+            .saturating_add(
+                self.closure_replay_work
+                    .saturating_mul(Self::CLOSURE_REPLAY_UNITS),
+            )
             .min(MAX_PROJECT_WORK_UNITS);
         let per_file = (program / Self::FILE_SHARE_DENOMINATOR)
             .max(Self::MIN_FILE_UNITS)
@@ -3499,7 +3531,7 @@ process.stdout.write(JSON.stringify(outputs));
         .expect("construct exact configured compiler program and closure");
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .expect("captured compiler and resolver closure still matches");
 
         let project_root = super::normalize_path(&root);
@@ -3594,6 +3626,8 @@ process.stdout.write(JSON.stringify(outputs));
         });
         let serialized = serde_json::to_string(&matcher_input).expect("serialize exact snapshots");
         let compiler_api_path = inputs
+            .compiler_api()
+            .unwrap()
             .typescript_module_root
             .join("typescript/lib/typescript.js");
         let arguments = [
@@ -3601,7 +3635,7 @@ process.stdout.write(JSON.stringify(outputs));
             OsString::from(serialized),
         ];
         let output = run_typescript_program_bridge(
-            inputs.node_path,
+            inputs.compiler_api().unwrap().node_path,
             MATCHER_NEGATIVE_PROBE_SCRIPT,
             &arguments,
             &root,
@@ -3662,9 +3696,7 @@ mod membership_tests;
 
 #[cfg(test)]
 mod work_allowance_tests {
-    use super::{
-        MAX_PROJECT_WORK_UNITS, ProgramWorkShape, is_declaration_path,
-    };
+    use super::{MAX_PROJECT_WORK_UNITS, ProgramWorkShape, is_declaration_path};
 
     #[test]
     fn declaration_paths_are_recognised_in_every_spelling_and_application_paths_are_not() {
@@ -3733,7 +3765,10 @@ mod work_allowance_tests {
             ..ProgramWorkShape::default()
         }
         .allowance();
-        assert_eq!(small.per_file, ProgramWorkShape::MIN_FILE_UNITS.min(small.program));
+        assert_eq!(
+            small.per_file,
+            ProgramWorkShape::MIN_FILE_UNITS.min(small.program)
+        );
         let large = ProgramWorkShape {
             application_files: 4_000,
             application_bytes: 40 * 1024 * 1024,

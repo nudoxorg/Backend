@@ -14,7 +14,8 @@ use std::{
 
 use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
-    CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, ExternalToolchain, NotExternalToolchain, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection,
 };
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
@@ -47,8 +48,8 @@ use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource
 use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
-use super::typescript_host::TypeScriptProjectHost;
 use super::runtime::LocalRuntimeRustToolchainSelection;
+use super::typescript_host::TypeScriptProjectHost;
 
 /// Bounded, explicit package-authority adapters selected by the application
 /// owner.  Every optional field names one independently configured producer;
@@ -343,7 +344,11 @@ impl<'run> GoPackageAuthority<'run> {
         captured: Option<&'run GoPackageAuthorityWitness>,
         sources: &[std::path::PathBuf],
     ) -> Result<Self, PackageAuthorityError> {
-        checkpoint(first.control, first.profile, PackageAuthorityStage::Admission)?;
+        checkpoint(
+            first.control,
+            first.profile,
+            PackageAuthorityStage::Admission,
+        )?;
         if first.unit_key != &CompilationUnitKeyV2::PackageRoot {
             return Err(PackageAuthorityError::CompilationUnitMismatch {
                 profile: first.profile,
@@ -367,14 +372,16 @@ impl<'run> GoPackageAuthority<'run> {
         };
         let witness = match captured {
             Some(witness) => std::borrow::Cow::Borrowed(witness),
-            None => std::borrow::Cow::Owned(
-                oracle.package_authority_witness_cancellable(
-                    first.package_root,
-                    Some(first.control.cancelled),
-                )?,
-            ),
+            None => std::borrow::Cow::Owned(oracle.package_authority_witness_cancellable(
+                first.package_root,
+                Some(first.control.cancelled),
+            )?),
         };
-        checkpoint(first.control, first.profile, PackageAuthorityStage::GoOracle)?;
+        checkpoint(
+            first.control,
+            first.profile,
+            PackageAuthorityStage::GoOracle,
+        )?;
         let session = oracle
             .begin_package_authority(
                 first.package_root,
@@ -996,9 +1003,11 @@ fn checkpoint(
 fn require_resolved_toolchain<'toolchain>(
     selection: ToolchainSelection<'toolchain>,
     profile: LanguageProfile,
-) -> Result<ResolvedToolchain<'toolchain>, PackageAuthorityError> {
+) -> Result<ExternalToolchain<'toolchain>, PackageAuthorityError> {
     match selection {
-        ToolchainSelection::ResolvedNative(resolved) => Ok(resolved),
+        ToolchainSelection::ResolvedNative(resolved) => resolved
+            .external()
+            .map_err(|source| PackageAuthorityError::ExternalToolchainRequired { profile, source }),
         ToolchainSelection::ExplicitlyUnavailable { tool } => {
             Err(PackageAuthorityError::ToolchainUnavailable { profile, tool })
         }
@@ -1134,6 +1143,15 @@ impl std::fmt::Display for PackageAuthorityStage {
 /// Exact package-authority admission terminal.
 #[derive(Debug, Error)]
 pub enum PackageAuthorityError {
+    /// This adapter requires a child-process authority rather than a linked checker.
+    #[error("external compiler invocation required for {profile:?}: {source}")]
+    ExternalToolchainRequired {
+        /// Requested language profile.
+        profile: LanguageProfile,
+        /// Linked authority has no executable capability.
+        #[source]
+        source: NotExternalToolchain,
+    },
     /// The caller's native tool selection was explicitly unavailable.
     #[error("{} package authority cannot enter because {} is not available", ProfileName(.profile), ToolName(.tool))]
     ToolchainUnavailable {

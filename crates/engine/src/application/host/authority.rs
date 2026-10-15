@@ -100,53 +100,63 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
-        let typescript_report = self
-            .executable(
-                LocalHostVariable::NudoxTypeScriptReportProgram,
-                LocalHostPathRole::TypeScriptReportProgram,
-                ArrayVec::new(),
-            )?
-            .or_else(|| typescript_host.report_program.clone());
-        let (node, node_origin) = match typescript_host.node {
-            Some(selection) => (Some(selection.path), Some(selection.origin)),
-            None => (None, None),
-        };
-        let typescript_module_root = typescript_host.module_root;
-        let installed_default_compiler = (!typescript_host.compiler_explicit)
-            .then(|| executables.typescript.clone())
-            .flatten();
-        let explicit_module_root = typescript_host
-            .module_root_explicit
-            .then(|| typescript_module_root.clone())
-            .flatten();
-        let installed_default_module_root = (!typescript_host.compiler_explicit)
-            .then(|| typescript_module_root.clone())
-            .flatten();
-        let typescript_project_host = TypeScriptProjectHost::new_with_node_origin(
-            typescript_host
-                .compiler_explicit
-                .then(|| executables.typescript.clone())
-                .flatten(),
-            node.clone(),
-            node_origin,
-            home.map(Path::to_path_buf),
-            explicit_module_root,
-            typescript_report.clone(),
-            probe_limits,
-        )
-        .with_installed_default(installed_default_compiler, installed_default_module_root)
-        .with_installed_default_origin(typescript_host.compiler_origin)
-        .with_bundled_application(typescript_host.bundled_application);
-        let typescript = if executables.typescript.is_some() {
-            match (typescript_report, node, typescript_module_root) {
-                (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),
-                (None, Some(node), Some(module_root)) => {
-                    Some(TypeScriptChecker::default().with_node(node, module_root)?)
-                }
-                (None, _, _) => None,
-            }
+        let (typescript, typescript_project_host) = if typescript_host.direct_native {
+            (
+                None,
+                TypeScriptProjectHost::direct(home.map(Path::to_path_buf), probe_limits),
+            )
         } else {
-            None
+            let typescript_report = self
+                .executable(
+                    LocalHostVariable::NudoxTypeScriptReportProgram,
+                    LocalHostPathRole::TypeScriptReportProgram,
+                    ArrayVec::new(),
+                )?
+                .or_else(|| typescript_host.report_program.clone());
+            let (node, node_origin) = match typescript_host.node {
+                Some(selection) => (Some(selection.path), Some(selection.origin)),
+                None => (None, None),
+            };
+            let typescript_module_root = typescript_host.module_root;
+            let installed_default_compiler = (!typescript_host.compiler_explicit)
+                .then(|| executables.typescript.clone())
+                .flatten();
+            let explicit_module_root = typescript_host
+                .module_root_explicit
+                .then(|| typescript_module_root.clone())
+                .flatten();
+            let installed_default_module_root = (!typescript_host.compiler_explicit)
+                .then(|| typescript_module_root.clone())
+                .flatten();
+            let project_host = TypeScriptProjectHost::new_with_node_origin(
+                typescript_host
+                    .compiler_explicit
+                    .then(|| executables.typescript.clone())
+                    .flatten(),
+                node.clone(),
+                node_origin,
+                home.map(Path::to_path_buf),
+                explicit_module_root,
+                typescript_report.clone(),
+                probe_limits,
+            )
+            .with_installed_default(installed_default_compiler, installed_default_module_root)
+            .with_installed_default_origin(typescript_host.compiler_origin)
+            .with_bundled_application(typescript_host.bundled_application);
+            let checker = if executables.typescript.is_some() {
+                match (typescript_report, node, typescript_module_root) {
+                    (Some(program), _, _) => {
+                        Some(TypeScriptChecker::default().with_program(program)?)
+                    }
+                    (None, Some(node), Some(module_root)) => {
+                        Some(TypeScriptChecker::default().with_node(node, module_root)?)
+                    }
+                    (None, _, _) => None,
+                }
+            } else {
+                None
+            };
+            (checker, project_host)
         };
         let pyrefly = self.executable(
             LocalHostVariable::NudoxPyrefly,

@@ -199,6 +199,22 @@ pub(crate) struct TypeScriptConfigInput {
 pub(crate) struct TypeScriptProjectInputs<'a> {
     pub(crate) package_root: &'a Path,
     pub(crate) workspace_root: &'a Path,
+    pub(crate) authority: TypeScriptProjectInputAuthority<'a>,
+    pub(crate) fingerprint: [u8; 32],
+    pub(crate) config_candidates: &'a [TypeScriptConfigInput],
+    pub(crate) selected_build_config_paths: &'a [Box<Path>],
+    pub(crate) typescript_files: &'a [TypeScriptFileInput],
+    witness: &'a TypeScriptProjectWitness,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TypeScriptProjectInputAuthority<'a> {
+    Native,
+    CompilerApi(TypeScriptCompilerApiInputs<'a>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeScriptCompilerApiInputs<'a> {
     pub(crate) typescript_module_root: &'a Path,
     pub(crate) compiler_path: &'a Path,
     pub(crate) compiler_version: &'a [u8],
@@ -206,11 +222,6 @@ pub(crate) struct TypeScriptProjectInputs<'a> {
     pub(crate) node_path: &'a Path,
     pub(crate) node_version: &'a [u8],
     pub(crate) node_origin: TypeScriptSelectionOrigin,
-    pub(crate) fingerprint: [u8; 32],
-    pub(crate) config_candidates: &'a [TypeScriptConfigInput],
-    pub(crate) selected_build_config_paths: &'a [Box<Path>],
-    pub(crate) typescript_files: &'a [TypeScriptFileInput],
-    witness: &'a TypeScriptProjectWitness,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +241,19 @@ pub(crate) enum TypeScriptSelectionOrigin {
 }
 
 impl TypeScriptProjectInputs<'_> {
+    pub(crate) fn compiler_api(
+        &self,
+    ) -> Result<&TypeScriptCompilerApiInputs<'_>, TypeScriptProjectHostError> {
+        match &self.authority {
+            TypeScriptProjectInputAuthority::CompilerApi(inputs) => Ok(inputs),
+            TypeScriptProjectInputAuthority::Native => {
+                Err(TypeScriptProjectHostError::CompilerApiBridge {
+                    message: "native TSZ authority cannot launch a Compiler API host".into(),
+                })
+            }
+        }
+    }
+
     pub(crate) fn validated_host(
         &self,
     ) -> Result<ValidatedTypeScriptHost<'_>, TypeScriptProjectHostError> {
@@ -484,6 +508,36 @@ impl TypeScriptResolverCapability<'_> {
             .insert(canonical.clone(), input);
         self.index_captured_peer_manifest(&canonical)?;
         Ok(self.observations.loaded_sources.get(&canonical))
+    }
+
+    /// Classifies a path only after recording its exact lexical/realpath object.
+    /// The same record is revalidated before semantic publication.
+    pub(crate) fn native_path_kind(
+        &mut self,
+        path: &Path,
+        lexical_kind: bool,
+    ) -> Result<Option<TypeScriptDirectoryEntryKind>, TypeScriptProjectHostError> {
+        let Some(canonical) = self.realpath(path)? else {
+            return Ok(None);
+        };
+        let metadata = if lexical_kind {
+            fs::symlink_metadata(path)
+        } else {
+            fs::metadata(&canonical)
+        }
+        .map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+        Ok(Some(if metadata.file_type().is_symlink() {
+            TypeScriptDirectoryEntryKind::Symlink
+        } else if metadata.is_file() {
+            TypeScriptDirectoryEntryKind::RegularFile
+        } else if metadata.is_dir() {
+            TypeScriptDirectoryEntryKind::Directory
+        } else {
+            TypeScriptDirectoryEntryKind::Other
+        }))
     }
 
     pub(crate) fn directory_exists(
@@ -1331,7 +1385,7 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, nearest_parent) in &observations.missing_paths {
-        if !matches!(fs::symlink_metadata(path), Err(ref source) if source.kind() == io::ErrorKind::NotFound)
+        if !matches!(fs::symlink_metadata(path), Err(ref source) if matches!(source.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory))
         {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: path.clone().into_boxed_path(),
@@ -1409,7 +1463,14 @@ fn capture_realpath_snapshot(
             })?;
             Ok(Some((canonical, Some(identity))))
         }
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source)
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
         Err(source) => Err(TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
             source,
@@ -1513,18 +1574,10 @@ enum TypeScriptProjectDiscoveryOrigin {
 
 #[derive(Debug)]
 pub(crate) struct TypeScriptProjectWitness {
-    discovery_origin: TypeScriptProjectDiscoveryOrigin,
-    discovered_compiler_origin: TypeScriptSelectionOrigin,
+    authority: TypeScriptWitnessAuthority,
     project_root: Box<Path>,
     home_root: Option<Box<Path>>,
-    discovered_compiler: Box<Path>,
-    discovered_module_root: Box<Path>,
-    discovered_package_root: Box<Path>,
-    discovered_version: Box<str>,
-    compiler: Box<Path>,
-    node: Box<Path>,
     module_root: Box<Path>,
-    package_root: Box<Path>,
     workspace: Option<WorkspaceBoundary>,
     workspace_root: Box<Path>,
     files: Box<[FileSnapshot]>,
@@ -1534,8 +1587,27 @@ pub(crate) struct TypeScriptProjectWitness {
     config_paths: Box<[Box<Path>]>,
     loaded_source_files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, FileSnapshot>>,
     fingerprint: [u8; 32],
-    invocation_lease: TypeScriptProjectInvocationLease,
     resource_proof: Option<crate::application::host::BundleTypeScriptResourceProof>,
+}
+
+#[derive(Debug)]
+enum TypeScriptWitnessAuthority {
+    Native,
+    CompilerApi(Box<TypeScriptCompilerApiWitness>),
+}
+
+#[derive(Debug)]
+struct TypeScriptCompilerApiWitness {
+    discovery_origin: TypeScriptProjectDiscoveryOrigin,
+    discovered_compiler_origin: TypeScriptSelectionOrigin,
+    discovered_compiler: Box<Path>,
+    discovered_module_root: Box<Path>,
+    discovered_package_root: Box<Path>,
+    discovered_version: Box<str>,
+    compiler: Box<Path>,
+    node: Box<Path>,
+    package_root: Box<Path>,
+    invocation_lease: TypeScriptProjectInvocationLease,
 }
 
 impl TypeScriptProjectWitness {
@@ -1551,7 +1623,12 @@ impl TypeScriptProjectWitness {
     }
 
     fn invocation_lease(&self) -> &TypeScriptProjectInvocationLease {
-        &self.invocation_lease
+        match &self.authority {
+            TypeScriptWitnessAuthority::CompilerApi(host) => &host.invocation_lease,
+            TypeScriptWitnessAuthority::Native => {
+                unreachable!("native TSZ has no child invocation")
+            }
+        }
     }
 
     fn capture(
@@ -1731,18 +1808,23 @@ impl TypeScriptProjectWitness {
             module_closure_digest,
         };
         Ok(Self {
-            discovery_origin: discovered.discovery_origin,
-            discovered_compiler_origin: discovered.compiler_origin,
+            authority: TypeScriptWitnessAuthority::CompilerApi(Box::new(
+                TypeScriptCompilerApiWitness {
+                    discovery_origin: discovered.discovery_origin,
+                    discovered_compiler_origin: discovered.compiler_origin,
+                    discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
+                    discovered_module_root: discovered.module_root.to_path_buf().into_boxed_path(),
+                    discovered_package_root: discovered_package_root.into_boxed_path(),
+                    discovered_version: discovered.version.clone().into_boxed_str(),
+                    compiler: compiler.to_path_buf().into_boxed_path(),
+                    node: node.to_path_buf().into_boxed_path(),
+                    package_root: package_root.into_boxed_path(),
+                    invocation_lease,
+                },
+            )),
             project_root: project_root.into_boxed_path(),
             home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
-            discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
-            discovered_module_root: discovered.module_root.to_path_buf().into_boxed_path(),
-            discovered_package_root: discovered_package_root.into_boxed_path(),
-            discovered_version: discovered.version.clone().into_boxed_str(),
-            compiler: compiler.to_path_buf().into_boxed_path(),
-            node: node.to_path_buf().into_boxed_path(),
             module_root: module_root.into_boxed_path(),
-            package_root: package_root.into_boxed_path(),
             workspace: canonical_workspace,
             workspace_root: workspace_root.into_boxed_path(),
             files: files.into_boxed_slice(),
@@ -1760,7 +1842,69 @@ impl TypeScriptProjectWitness {
             config_candidates: config_candidates.into_boxed_slice(),
             loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             fingerprint,
-            invocation_lease,
+            resource_proof: None,
+        })
+    }
+
+    fn capture_native(
+        project_root: &Path,
+        home_root: Option<&Path>,
+    ) -> Result<Self, TypeScriptProjectHostError> {
+        let project_root = canonical_directory(project_root)?;
+        let workspace = discover_workspace_boundary(&project_root, home_root)?;
+        let workspace_root = workspace.as_ref().map_or_else(
+            || project_root.clone(),
+            |workspace| workspace.root.to_path_buf(),
+        );
+        // Native TSZ resolves dependencies, including hoisted node_modules, within this
+        // captured workspace. No TypeScript compiler package is selected or executed.
+        let module_root = workspace_root.clone();
+        let (selected_build_config_paths, angular_snapshot) =
+            angular_build_config_paths(&workspace_root, &module_root)?;
+        let config_candidates = collect_project_configs_inner(
+            &project_root,
+            &workspace_root,
+            &module_root,
+            &selected_build_config_paths,
+            false,
+        )?;
+        let mut files = config_candidates
+            .iter()
+            .map(snapshot_from_config)
+            .collect::<Vec<_>>();
+        if let Some(workspace) = &workspace {
+            files.extend(workspace.files.iter().cloned());
+        }
+        if let Some(snapshot) = angular_snapshot {
+            files.push(snapshot);
+        }
+        files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        files.dedup_by(|left, right| left.path == right.path);
+        let mut hash = Hasher::new();
+        hash.update(b"typescript.native-tsz-project.v1\0");
+        hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+        hash.update(&witness_fingerprint(&files));
+        let fingerprint = *hash.finalize().as_bytes();
+        Ok(Self {
+            authority: TypeScriptWitnessAuthority::Native,
+            project_root: project_root.into_boxed_path(),
+            home_root: home_root.map(|path| path.to_path_buf().into_boxed_path()),
+            module_root: module_root.into_boxed_path(),
+            workspace,
+            workspace_root: workspace_root.into_boxed_path(),
+            files: files.into_boxed_slice(),
+            typescript_files: Box::new([]),
+            config_paths: config_candidates
+                .iter()
+                .map(|config| config.path.clone())
+                .collect(),
+            config_candidates: config_candidates.into_boxed_slice(),
+            selected_build_config_paths: selected_build_config_paths
+                .into_iter()
+                .map(PathBuf::into_boxed_path)
+                .collect(),
+            loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            fingerprint,
             resource_proof: None,
         })
     }
@@ -1873,94 +2017,104 @@ impl TypeScriptProjectWitness {
             proof.validate_current().map_err(bundle_admission_error)?;
         }
 
-        let current_project =
-            match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
-            {
-                ProjectTypeScriptSearch::Found(project)
-                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::ProjectLocal =>
-                {
-                    project
-                }
-                ProjectTypeScriptSearch::NotFound
-                    if self.discovery_origin
-                        == TypeScriptProjectDiscoveryOrigin::InstalledFallback =>
-                {
-                    // Revalidate the originally selected host installation. Never select a
-                    // new PATH entry or turn a vanished project installation into fallback.
-                    let (module_root, version) =
-                        read_typescript_module(&self.discovered_module_root)?;
-                    let compiler =
-                        fs::canonicalize(&self.discovered_compiler).map_err(|source| {
-                            TypeScriptProjectHostError::PackagePath {
-                                path: self.discovered_compiler.clone(),
-                                source,
-                            }
-                        })?;
-                    ProjectTypeScript {
-                        module_root,
-                        compiler,
-                        version,
-                        workspace: discover_workspace_boundary(
-                            &self.project_root,
-                            self.home_root.as_deref(),
-                        )?,
-                        compiler_origin: self.discovered_compiler_origin,
-                        discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
+        let current = match &self.authority {
+            TypeScriptWitnessAuthority::Native => {
+                Self::capture_native(&self.project_root, self.home_root.as_deref())?
+            }
+            TypeScriptWitnessAuthority::CompilerApi(selected) => {
+                let current_project = match find_project_typescript_with_home(
+                    &self.project_root,
+                    self.home_root.as_deref(),
+                )? {
+                    ProjectTypeScriptSearch::Found(project)
+                        if selected.discovery_origin
+                            == TypeScriptProjectDiscoveryOrigin::ProjectLocal =>
+                    {
+                        project
                     }
-                }
-                ProjectTypeScriptSearch::Found(_)
-                | ProjectTypeScriptSearch::NotFound
-                | ProjectTypeScriptSearch::Pnp(_) => {
+                    ProjectTypeScriptSearch::NotFound
+                        if selected.discovery_origin
+                            == TypeScriptProjectDiscoveryOrigin::InstalledFallback =>
+                    {
+                        // Revalidate the originally selected host installation. Never select a
+                        // new PATH entry or turn a vanished project installation into fallback.
+                        let (module_root, version) =
+                            read_typescript_module(&selected.discovered_module_root)?;
+                        let compiler =
+                            fs::canonicalize(&selected.discovered_compiler).map_err(|source| {
+                                TypeScriptProjectHostError::PackagePath {
+                                    path: selected.discovered_compiler.clone(),
+                                    source,
+                                }
+                            })?;
+                        ProjectTypeScript {
+                            module_root,
+                            compiler,
+                            version,
+                            workspace: discover_workspace_boundary(
+                                &self.project_root,
+                                self.home_root.as_deref(),
+                            )?,
+                            compiler_origin: selected.discovered_compiler_origin,
+                            discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
+                        }
+                    }
+                    ProjectTypeScriptSearch::Found(_)
+                    | ProjectTypeScriptSearch::NotFound
+                    | ProjectTypeScriptSearch::Pnp(_) => {
+                        return Err(TypeScriptProjectHostError::WitnessChanged {
+                            path: self.project_root.to_path_buf().into_boxed_path(),
+                        });
+                    }
+                };
+                let package_root = fs::canonicalize(current_project.module_root.join("typescript"))
+                    .map_err(|source| TypeScriptProjectHostError::PackagePath {
+                        path: current_project
+                            .module_root
+                            .join("typescript")
+                            .into_boxed_path(),
+                        source,
+                    })?;
+                if current_project.compiler.as_path() != selected.discovered_compiler.as_ref()
+                    || current_project.module_root.as_path()
+                        != selected.discovered_module_root.as_ref()
+                    || current_project.version.as_str() != selected.discovered_version.as_ref()
+                    || package_root.as_path() != selected.discovered_package_root.as_ref()
+                    || current_project.workspace != self.workspace
+                {
                     return Err(TypeScriptProjectHostError::WitnessChanged {
                         path: self.project_root.to_path_buf().into_boxed_path(),
                     });
                 }
-            };
-        let package_root = fs::canonicalize(current_project.module_root.join("typescript"))
-            .map_err(|source| TypeScriptProjectHostError::PackagePath {
-                path: current_project
-                    .module_root
-                    .join("typescript")
-                    .into_boxed_path(),
-                source,
-            })?;
-        if current_project.compiler.as_path() != self.discovered_compiler.as_ref()
-            || current_project.module_root.as_path() != self.discovered_module_root.as_ref()
-            || current_project.version.as_str() != self.discovered_version.as_ref()
-            || package_root.as_path() != self.discovered_package_root.as_ref()
-            || current_project.workspace != self.workspace
-        {
-            return Err(TypeScriptProjectHostError::WitnessChanged {
-                path: self.project_root.to_path_buf().into_boxed_path(),
-            });
-        }
 
-        let selected_package_root =
-            fs::canonicalize(self.module_root.join("typescript")).map_err(|source| {
-                TypeScriptProjectHostError::PackagePath {
-                    path: self.module_root.join("typescript").into_boxed_path(),
-                    source,
+                let selected_package_root = fs::canonicalize(self.module_root.join("typescript"))
+                    .map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: self.module_root.join("typescript").into_boxed_path(),
+                        source,
+                    }
+                })?;
+                if selected_package_root.as_path() != selected.package_root.as_ref() {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: self.module_root.join("typescript").into_boxed_path(),
+                    });
                 }
-            })?;
-        if selected_package_root.as_path() != self.package_root.as_ref() {
-            return Err(TypeScriptProjectHostError::WitnessChanged {
-                path: self.module_root.join("typescript").into_boxed_path(),
-            });
-        }
 
-        let current = Self::capture(
-            &self.project_root,
-            self.home_root.as_deref(),
-            &current_project,
-            &self.compiler,
-            &self.node,
-            &self.module_root,
-            &self.package_root,
-            self.workspace.as_ref(),
-        )?;
+                Self::capture(
+                    &self.project_root,
+                    self.home_root.as_deref(),
+                    &current_project,
+                    &selected.compiler,
+                    &selected.node,
+                    &self.module_root,
+                    &selected.package_root,
+                    self.workspace.as_ref(),
+                )?
+            }
+        };
         if current.files != self.files || current.fingerprint != self.fingerprint {
             let changed = first_changed_snapshot(&self.files, &current.files)
-                .unwrap_or_else(|| self.package_root.to_path_buf());
+                .unwrap_or_else(|| self.project_root.to_path_buf());
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: changed.into_boxed_path(),
             });
@@ -2185,9 +2339,8 @@ fn nearest_existing_admitted_parent(
                     .map(|metadata| metadata.is_dir())
                     .unwrap_or(false)
                 {
-                    return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
-                        path: parent.to_path_buf().into_boxed_path(),
-                    });
+                    candidate = parent.parent();
+                    continue;
                 }
                 let canonical = fs::canonicalize(parent).map_err(|source| {
                     TypeScriptProjectHostError::PackagePath {
@@ -2202,7 +2355,12 @@ fn nearest_existing_admitted_parent(
                 }
                 return Ok(Some(canonical));
             }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
                 candidate = parent.parent();
             }
             Err(source) => {
@@ -2799,6 +2957,22 @@ fn collect_project_configs(
     module_root: &Path,
     selected_build_configs: &[PathBuf],
 ) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    collect_project_configs_inner(
+        project_root,
+        workspace_root,
+        module_root,
+        selected_build_configs,
+        true,
+    )
+}
+
+fn collect_project_configs_inner(
+    project_root: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+    selected_build_configs: &[PathBuf],
+    follow_extends: bool,
+) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
     let project_root = canonical_directory(project_root)?;
     let workspace_root = canonical_directory(workspace_root)?;
     let module_root = canonical_directory(module_root)?;
@@ -2874,14 +3048,18 @@ fn collect_project_configs(
             continue;
         }
         let value = parse_typescript_config(&canonical, &config.bytes)?;
-        let extends = config_paths_from_field(
-            &value,
-            &canonical,
-            &project_root,
-            &workspace_root,
-            &module_root,
-            ConfigDependencyKind::Extends,
-        )?;
+        let extends = if follow_extends {
+            config_paths_from_field(
+                &value,
+                &canonical,
+                &project_root,
+                &workspace_root,
+                &module_root,
+                ConfigDependencyKind::Extends,
+            )?
+        } else {
+            Vec::new()
+        };
         let references = if authority == TypeScriptConfigDependencyAuthority::Program {
             config_paths_from_field(
                 &value,
@@ -3739,6 +3917,7 @@ fn collect_regular_module_paths(
 /// Closed host inputs used to admit TypeScript projects after package-root selection.
 #[derive(Clone, Debug)]
 pub struct TypeScriptProjectHost {
+    authority: TypeScriptProjectHostAuthority,
     explicit_compiler: Option<Box<Path>>,
     installed_default_compiler: Option<Box<Path>>,
     installed_default_module_root: Option<Box<Path>>,
@@ -3753,6 +3932,12 @@ pub struct TypeScriptProjectHost {
     node_identity: std::sync::Arc<std::sync::Mutex<Option<NodeRuntimeIdentity>>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TypeScriptProjectHostAuthority {
+    Native,
+    CompilerApi,
+}
+
 #[derive(Clone, Debug)]
 struct NodeRuntimeIdentity {
     path: Box<Path>,
@@ -3761,6 +3946,15 @@ struct NodeRuntimeIdentity {
 }
 
 impl TypeScriptProjectHost {
+    /// Local defaults bind directly to the linked TSZ authority. Host compiler,
+    /// Node, report-helper and PATH selection cannot enter this variant.
+    pub(crate) fn direct(home_root: Option<PathBuf>, probe_limits: ToolchainProbeLimits) -> Self {
+        let mut host =
+            Self::new_with_node_origin(None, None, None, home_root, None, None, probe_limits);
+        host.authority = TypeScriptProjectHostAuthority::Native;
+        host
+    }
+
     pub(crate) fn new(
         explicit_compiler: Option<PathBuf>,
         node: Option<PathBuf>,
@@ -3792,6 +3986,7 @@ impl TypeScriptProjectHost {
         probe_limits: ToolchainProbeLimits,
     ) -> Self {
         Self {
+            authority: TypeScriptProjectHostAuthority::CompilerApi,
             explicit_compiler: explicit_compiler.map(PathBuf::into_boxed_path),
             installed_default_compiler: None,
             installed_default_module_root: None,
@@ -3917,6 +4112,15 @@ impl TypeScriptProjectHost {
                 })
             })
             .transpose()?;
+        if matches!(self.authority, TypeScriptProjectHostAuthority::Native) {
+            let witness =
+                TypeScriptProjectWitness::capture_native(&project_root, home_root.as_deref())?;
+            witness.validate_current()?;
+            return Ok(Some(AdmittedTypeScriptProject::Native {
+                fingerprint: witness.fingerprint,
+                witness: std::sync::Arc::new(witness),
+            }));
+        }
         let mut resource_proof = None;
         let mut bundled_node = None;
         let mut bundled_origin = TypeScriptSelectionOrigin::ValidatedApplicationBundle;
@@ -4163,19 +4367,21 @@ impl TypeScriptProjectHost {
             compiler_origin,
             node_origin,
         );
-        Ok(Some(AdmittedTypeScriptProject {
-            checker,
-            compiler: compiler.to_path_buf().into_boxed_path(),
-            compiler_version: version,
-            compiler_origin,
-            compiler_invocation,
-            node: node.to_path_buf().into_boxed_path(),
-            node_version,
-            node_origin,
-            module_root: module_root.into_boxed_path(),
-            fingerprint,
-            witness: std::sync::Arc::new(witness),
-        }))
+        Ok(Some(AdmittedTypeScriptProject::CompilerApi(
+            AdmittedCompilerApiTypeScriptProject {
+                checker,
+                compiler: compiler.to_path_buf().into_boxed_path(),
+                compiler_version: version,
+                compiler_origin,
+                compiler_invocation,
+                node: node.to_path_buf().into_boxed_path(),
+                node_version,
+                node_origin,
+                module_root: module_root.into_boxed_path(),
+                fingerprint,
+                witness: std::sync::Arc::new(witness),
+            },
+        )))
     }
 
     fn installed_host_project(
@@ -4237,7 +4443,72 @@ enum TypeScriptCompilerInvocation {
 
 /// One project-local checker and the exact toolchain facts admitted for it.
 #[derive(Debug)]
-pub(crate) struct AdmittedTypeScriptProject {
+pub(crate) enum AdmittedTypeScriptProject {
+    Native {
+        fingerprint: [u8; 32],
+        witness: std::sync::Arc<TypeScriptProjectWitness>,
+    },
+    CompilerApi(AdmittedCompilerApiTypeScriptProject),
+}
+
+impl AdmittedTypeScriptProject {
+    pub(crate) fn resolved_toolchain(
+        &self,
+    ) -> Result<ResolvedToolchain<'_>, TypeScriptProjectHostError> {
+        match self {
+            Self::Native { .. } => Ok(ResolvedToolchain::native_typescript()),
+            Self::CompilerApi(project) => project.resolved_toolchain(),
+        }
+    }
+    pub(crate) fn checker(&self) -> Option<&ExplicitTypeScriptChecker> {
+        match self {
+            Self::Native { .. } => None,
+            Self::CompilerApi(project) => Some(&project.checker),
+        }
+    }
+    pub(crate) fn witness(&self) -> &std::sync::Arc<TypeScriptProjectWitness> {
+        match self {
+            Self::Native { witness, .. } => witness,
+            Self::CompilerApi(project) => &project.witness,
+        }
+    }
+    pub(crate) fn fingerprint(&self) -> [u8; 32] {
+        match self {
+            Self::Native { fingerprint, .. } => *fingerprint,
+            Self::CompilerApi(project) => project.fingerprint,
+        }
+    }
+    pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        self.witness().validate_current()
+    }
+    pub(crate) fn inputs(&self) -> TypeScriptProjectInputs<'_> {
+        match self {
+            Self::CompilerApi(project) => project.inputs(),
+            Self::Native {
+                fingerprint,
+                witness,
+            } => TypeScriptProjectInputs {
+                package_root: &witness.project_root,
+                workspace_root: &witness.workspace_root,
+                authority: TypeScriptProjectInputAuthority::Native,
+                fingerprint: *fingerprint,
+                config_candidates: &witness.config_candidates,
+                selected_build_config_paths: &witness.selected_build_config_paths,
+                typescript_files: &[],
+                witness,
+            },
+        }
+    }
+    #[cfg(test)]
+    fn compiler_api_for_test(&self) -> &AdmittedCompilerApiTypeScriptProject {
+        match self {
+            Self::CompilerApi(project) => project,
+            Self::Native { .. } => panic!("expected explicit Compiler API fixture"),
+        }
+    }
+}
+
+pub(crate) struct AdmittedCompilerApiTypeScriptProject {
     pub(crate) checker: ExplicitTypeScriptChecker,
     pub(crate) compiler: Box<Path>,
     pub(crate) compiler_version: Box<[u8]>,
@@ -4251,7 +4522,7 @@ pub(crate) struct AdmittedTypeScriptProject {
     pub(crate) witness: std::sync::Arc<TypeScriptProjectWitness>,
 }
 
-impl AdmittedTypeScriptProject {
+impl AdmittedCompilerApiTypeScriptProject {
     pub(crate) fn resolved_toolchain(
         &self,
     ) -> Result<ResolvedToolchain<'_>, TypeScriptProjectHostError> {
@@ -4280,13 +4551,15 @@ impl AdmittedTypeScriptProject {
         TypeScriptProjectInputs {
             package_root: &self.witness.project_root,
             workspace_root: &self.witness.workspace_root,
-            typescript_module_root: &self.module_root,
-            compiler_path: &self.compiler,
-            compiler_version: &self.compiler_version,
-            compiler_origin: self.compiler_origin,
-            node_path: &self.node,
-            node_version: &self.node_version,
-            node_origin: self.node_origin,
+            authority: TypeScriptProjectInputAuthority::CompilerApi(TypeScriptCompilerApiInputs {
+                typescript_module_root: &self.module_root,
+                compiler_path: &self.compiler,
+                compiler_version: &self.compiler_version,
+                compiler_origin: self.compiler_origin,
+                node_path: &self.node,
+                node_version: &self.node_version,
+                node_origin: self.node_origin,
+            }),
             fingerprint: self.fingerprint,
             config_candidates: &self.witness.config_candidates,
             selected_build_config_paths: &self.witness.selected_build_config_paths,
@@ -5431,10 +5704,25 @@ mod tests {
         let toolchain = admitted
             .resolved_toolchain()
             .expect("bind canonical PNPM member");
-        assert_eq!(toolchain.executable(), package.join("bin/tsc"));
-        assert_eq!(admitted.inputs().typescript_module_root, modules);
+        assert_eq!(
+            toolchain
+                .external()
+                .expect("external Compiler API fixture")
+                .executable(),
+            package.join("bin/tsc")
+        );
+        assert_eq!(
+            admitted
+                .inputs()
+                .compiler_api()
+                .unwrap()
+                .typescript_module_root,
+            modules
+        );
         let hashed_before = crate::application::executable_content_hash_bytes_for_test();
         toolchain
+            .external()
+            .expect("external Compiler API fixture")
             .validate_invocation()
             .expect("unchanged package objects");
         assert_eq!(
@@ -5462,7 +5750,11 @@ mod tests {
         fs::remove_file(modules.join("typescript")).unwrap();
         symlink(other_store.join("typescript"), modules.join("typescript")).unwrap();
         assert!(
-            toolchain.validate_invocation().is_err(),
+            toolchain
+                .external()
+                .expect("external Compiler API fixture")
+                .validate_invocation()
+                .is_err(),
             "same-byte package retarget must refuse"
         );
         assert!(
@@ -5646,7 +5938,10 @@ printf 'Version 5.9.3\n'
         };
         assert_eq!(first_project.version, "5.9.3");
         assert_eq!(second_project.version, "5.8.4");
-        assert_ne!(first_project.module_root, second_project.module_root);
+        assert_ne!(
+            first_project.compiler_api_for_test().module_root,
+            second_project.compiler_api_for_test().module_root
+        );
     }
 
     #[test]
@@ -7700,18 +7995,25 @@ printf 'Version 5.9.3\n'
             .expect("local project installation is present");
             let expected_module_root =
                 fs::canonicalize(&explicit_modules).expect("canonical selected module root");
-            assert_eq!(admitted.compiler.as_ref(), compiler);
+            assert_eq!(admitted.compiler_api_for_test().compiler.as_ref(), compiler);
             assert_eq!(
-                admitted.compiler_origin,
+                admitted.compiler_api_for_test().compiler_origin,
                 TypeScriptSelectionOrigin::ExplicitConfiguration
             );
             assert_eq!(
-                admitted.inputs().typescript_module_root,
+                admitted
+                    .inputs()
+                    .compiler_api()
+                    .unwrap()
+                    .typescript_module_root,
                 expected_module_root
             );
-            assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
             assert_eq!(
-                admitted.inputs().node_origin,
+                admitted.inputs().compiler_api().unwrap().compiler_version,
+                b"Version 5.8.4\n"
+            );
+            assert_eq!(
+                admitted.inputs().compiler_api().unwrap().node_origin,
                 TypeScriptSelectionOrigin::ExplicitConfiguration
             );
             match mutation {
@@ -7723,6 +8025,8 @@ printf 'Version 5.9.3\n'
                         crate::application::executable_content_hash_bytes_for_test();
                     for _ in 0..3 {
                         toolchain
+                            .external()
+                            .expect("external Compiler API fixture")
                             .validate_invocation()
                             .expect("package lease checks only the same selected objects");
                     }
@@ -7732,7 +8036,7 @@ printf 'Version 5.9.3\n'
                         "three source launches must not hash Node or the TypeScript package again",
                     );
                     admitted
-                        .witness
+                        .witness()
                         .validate_current()
                         .expect("unchanged separate authorities");
                 }
@@ -7751,12 +8055,12 @@ printf 'Version 5.9.3\n'
                         let toolchain = admitted
                             .resolved_toolchain()
                             .expect("bind selected compiler package lease");
-                        toolchain.validate_invocation().expect(
+                        toolchain.external().expect("external Compiler API fixture").validate_invocation().expect(
                             "per-spawn lease checks the same object without a duplicate full hash",
                         );
                     }
                     assert!(matches!(
-                        admitted.witness.validate_current(),
+                        admitted.witness().validate_current(),
                         Err(TypeScriptProjectHostError::WitnessChanged { .. })
                     ));
                 }
@@ -7766,7 +8070,7 @@ printf 'Version 5.9.3\n'
                     fs::rename(&package, &target).expect("move selected installation");
                     symlink(&target, &package).expect("retarget selected installation");
                     assert!(matches!(
-                        admitted.witness.validate_current(),
+                        admitted.witness().validate_current(),
                         Err(TypeScriptProjectHostError::WitnessChanged { .. })
                     ));
                 }
@@ -7778,14 +8082,17 @@ printf 'Version 5.9.3\n'
                     fs::rename(&node, &moved).expect("move admitted Node");
                     fs::write(&node, b"replacement Node object").expect("install replacement Node");
                     assert!(matches!(
-                        toolchain.validate_invocation(),
+                        toolchain
+                            .external()
+                            .expect("external Compiler API fixture")
+                            .validate_invocation(),
                         Err(crate::driver::NativeInvocationError::Changed {
                             role: crate::driver::NativeInvocationFileRole::Interpreter,
                             ..
                         })
                     ));
                     assert!(matches!(
-                        admitted.witness.validate_current(),
+                        admitted.witness().validate_current(),
                         Err(TypeScriptProjectHostError::WitnessChanged { .. })
                     ));
                 }
@@ -7823,16 +8130,23 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
             .expect("admit captured installed-host TypeScript")
             .expect("installed host compiler is usable without a project-local copy");
 
-        assert_eq!(admitted.compiler.as_ref(), compiler);
+        assert_eq!(admitted.compiler_api_for_test().compiler.as_ref(), compiler);
         assert_eq!(
-            admitted.compiler_origin,
+            admitted.compiler_api_for_test().compiler_origin,
             TypeScriptSelectionOrigin::InstalledHostSelection
         );
         assert_eq!(
-            admitted.inputs().typescript_module_root,
+            admitted
+                .inputs()
+                .compiler_api()
+                .unwrap()
+                .typescript_module_root,
             fs::canonicalize(modules).expect("canonical TypeScript module root")
         );
-        assert_eq!(admitted.inputs().compiler_version, b"Version 5.9.3\n");
+        assert_eq!(
+            admitted.inputs().compiler_api().unwrap().compiler_version,
+            b"Version 5.9.3\n"
+        );
     }
 
     #[test]
@@ -7868,14 +8182,21 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
             .expect("project-local compiler is usable");
 
         assert_eq!(
-            admitted.compiler_origin,
+            admitted.compiler_api_for_test().compiler_origin,
             TypeScriptSelectionOrigin::ProjectLocalInstallation
         );
         assert_eq!(
-            admitted.inputs().typescript_module_root,
+            admitted
+                .inputs()
+                .compiler_api()
+                .unwrap()
+                .typescript_module_root,
             fs::canonicalize(local_modules).expect("canonical project-local module root")
         );
-        assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
+        assert_eq!(
+            admitted.inputs().compiler_api().unwrap().compiler_version,
+            b"Version 5.8.4\n"
+        );
     }
 
     #[test]
@@ -7906,24 +8227,35 @@ if [ "$1" = "--version" ]; then printf 'v24.21.0\n'; elif [ "$2" = "--version" ]
                 .expect("project authority precedes all bundle work")
                 .unwrap();
         assert_eq!(
-            admitted.inputs().compiler_origin,
+            admitted.inputs().compiler_api().unwrap().compiler_origin,
             TypeScriptSelectionOrigin::ProjectLocalInstallation
         );
-        assert_eq!(admitted.inputs().compiler_version, b"Version 5.7.2\n");
-        assert_eq!(admitted.inputs().node_version, b"v24.21.0\n");
-        assert_eq!(admitted.inputs().node_path, node);
-        assert!(admitted.witness.resource_proof.is_none());
+        assert_eq!(
+            admitted.inputs().compiler_api().unwrap().compiler_version,
+            b"Version 5.7.2\n"
+        );
+        assert_eq!(
+            admitted.inputs().compiler_api().unwrap().node_version,
+            b"v24.21.0\n"
+        );
+        assert_eq!(admitted.inputs().compiler_api().unwrap().node_path, node);
+        assert!(admitted.witness().resource_proof.is_none());
         let expected = Checker::default()
             .with_node(node, fs::canonicalize(modules).unwrap())
             .unwrap();
         assert_eq!(
-            admitted.checker.local_configuration_fingerprint(),
+            admitted
+                .compiler_api_for_test()
+                .checker
+                .local_configuration_fingerprint(),
             expected.local_configuration_fingerprint(),
             "the report recipe uses exactly the selected Node and project Compiler API"
         );
         admitted
             .resolved_toolchain()
             .unwrap()
+            .external()
+            .expect("external Compiler API fixture")
             .validate_invocation()
             .unwrap();
     }

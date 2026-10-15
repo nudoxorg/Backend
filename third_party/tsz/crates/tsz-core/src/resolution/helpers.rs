@@ -383,8 +383,16 @@ pub(crate) fn split_path_extension(path: &Path) -> Option<(PathBuf, &'static str
 }
 
 pub(crate) fn try_file_with_suffixes(path: &Path, suffixes: &[String]) -> Option<PathBuf> {
+    try_file_with_suffixes_with(path, suffixes, cached_is_file)
+}
+
+pub(crate) fn try_file_with_suffixes_with(
+    path: &Path,
+    suffixes: &[String],
+    is_file: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     let (base, extension) = split_path_extension(path)?;
-    try_file_with_suffixes_and_extension(&base, extension, suffixes)
+    try_file_with_suffixes_and_extension_with(&base, extension, suffixes, is_file)
 }
 
 pub(crate) fn try_file_with_suffixes_and_extension(
@@ -392,11 +400,20 @@ pub(crate) fn try_file_with_suffixes_and_extension(
     extension: &str,
     suffixes: &[String],
 ) -> Option<PathBuf> {
+    try_file_with_suffixes_and_extension_with(base, extension, suffixes, cached_is_file)
+}
+
+pub(crate) fn try_file_with_suffixes_and_extension_with(
+    base: &Path,
+    extension: &str,
+    suffixes: &[String],
+    mut is_file: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     for suffix in suffixes {
         let Some(candidate) = path_with_suffix_and_extension(base, suffix, extension) else {
             continue;
         };
-        if cached_is_file(&candidate) {
+        if is_file(&candidate) {
             return Some(candidate);
         }
     }
@@ -420,19 +437,34 @@ pub(crate) fn path_with_suffix_and_extension(
 }
 
 pub(crate) fn try_arbitrary_extension_declaration(path: &Path, extension: &str) -> Option<PathBuf> {
+    try_arbitrary_extension_declaration_with(path, extension, cached_is_file)
+}
+
+pub(crate) fn try_arbitrary_extension_declaration_with(
+    path: &Path,
+    extension: &str,
+    is_file: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     let declaration = path.with_extension(format!("d.{extension}.ts"));
-    if cached_is_file(&declaration) {
+    if is_file(&declaration) {
         return Some(declaration);
     }
     None
 }
 
 pub(crate) fn resolve_explicit_unknown_extension(path: &Path) -> Option<PathBuf> {
+    resolve_explicit_unknown_extension_with(path, cached_is_file)
+}
+
+pub(crate) fn resolve_explicit_unknown_extension_with(
+    path: &Path,
+    is_file: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     path.extension()?;
     if split_path_extension(path).is_some() {
         return None;
     }
-    if cached_is_file(path) {
+    if is_file(path) {
         return Some(path.to_path_buf());
     }
     None

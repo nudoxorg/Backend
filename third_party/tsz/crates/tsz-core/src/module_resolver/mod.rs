@@ -36,9 +36,11 @@ pub use request_types::*;
 use crate::config::{JsxEmit, ModuleResolutionKind, PathMapping, ResolvedCompilerOptions};
 use crate::emitter::ModuleKind;
 use crate::module_resolver_helpers::PackageJson;
+use crate::resolution::filesystem::ResolutionFileSystem;
 use crate::span::Span;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
+use std::io;
 use std::path::{Path, PathBuf};
 use tsz_common::diagnostics::Diagnostic;
 
@@ -116,8 +118,29 @@ impl ModuleResolverCacheStatistics {
 }
 
 /// Module resolver that implements TypeScript's resolution algorithms
-#[derive(Debug)]
-pub struct ModuleResolver {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum PathProbeKind {
+    File,
+    Directory,
+}
+
+/// Module resolver that implements TypeScript's resolution algorithms.
+///
+/// `ModuleResolver::new` preserves the standard CLI/LSP filesystem behavior.
+/// Captured hosts should use [`ModuleResolver::with_file_system`] and the
+/// checked resolution methods, which return filesystem refusals separately
+/// from ordinary module-not-found results.
+pub struct ModuleResolver<'fs> {
+    /// Optional captured provider. `None` preserves the existing ambient
+    /// standard-filesystem path and its thread-local existence cache.
+    file_system: Option<&'fs dyn ResolutionFileSystem>,
+    /// Resolver-local path probes for an injected provider. The cache lifetime
+    /// is one provider instance and is cleared when its epoch changes.
+    file_system_epoch: Cell<u64>,
+    file_system_probe_cache: std::cell::RefCell<FxHashMap<(PathBuf, PathProbeKind), bool>>,
+    /// First provider error is sticky until `clear_cache`; callers cannot
+    /// accidentally downgrade an access refusal to an unresolved import.
+    file_system_error: std::cell::RefCell<Option<(io::ErrorKind, String)>>,
     /// Resolution strategy to use
     resolution_kind: ModuleResolutionKind,
     /// Base URL for path resolution
@@ -224,13 +247,34 @@ fn node_modules_nesting_depth(path: &Path) -> u32 {
         .count() as u32
 }
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     fn increment_counter(counter: &Cell<u64>) {
         counter.set(counter.get().saturating_add(1));
     }
 
     /// Create a new module resolver with the given options
     pub fn new(options: &ResolvedCompilerOptions) -> Self {
+        Self::build(options, None)
+    }
+
+    /// Create a resolver backed by a host-provided filesystem.
+    ///
+    /// Every positive/negative file probe and package metadata read performed
+    /// by this resolver uses `file_system`; it does not consult the ambient
+    /// process filesystem. Access failures are latched and surfaced by
+    /// [`Self::resolve_with_kind_checked`] or
+    /// [`Self::resolve_with_kind_and_module_kind_checked`].
+    pub fn with_file_system(
+        options: &ResolvedCompilerOptions,
+        file_system: &'fs dyn ResolutionFileSystem,
+    ) -> Self {
+        Self::build(options, Some(file_system))
+    }
+
+    fn build(
+        options: &ResolvedCompilerOptions,
+        file_system: Option<&'fs dyn ResolutionFileSystem>,
+    ) -> Self {
         let resolution_kind = options.effective_module_resolution();
 
         let module_suffixes = if options.module_suffixes.is_empty() {
@@ -240,6 +284,10 @@ impl ModuleResolver {
         };
 
         Self {
+            file_system_epoch: Cell::new(file_system.map_or(0, |host| host.cache_epoch())),
+            file_system_probe_cache: std::cell::RefCell::new(FxHashMap::default()),
+            file_system_error: std::cell::RefCell::new(None),
+            file_system,
             resolution_kind,
             base_url: options.base_url.clone(),
             paths_base: options.paths_base().map(Path::to_path_buf),
@@ -282,6 +330,10 @@ impl ModuleResolver {
     /// Create a resolver with default Node resolution
     pub fn node_resolver() -> Self {
         Self {
+            file_system: None,
+            file_system_epoch: Cell::new(0),
+            file_system_probe_cache: std::cell::RefCell::new(FxHashMap::default()),
+            file_system_error: std::cell::RefCell::new(None),
             resolution_kind: ModuleResolutionKind::Node,
             base_url: None,
             paths_base: None,
@@ -355,6 +407,190 @@ impl ModuleResolver {
         )
     }
 
+    /// Resolve a module while preserving host access failures as a separate
+    /// outer error. An ordinary failed lookup remains `Ok(Err(NotFound{..}))`.
+    pub fn resolve_with_kind_checked(
+        &mut self,
+        specifier: &str,
+        containing_file: &Path,
+        specifier_span: Span,
+        import_kind: ImportKind,
+    ) -> io::Result<Result<ResolvedModule, ResolutionFailure>> {
+        self.refresh_file_system_epoch();
+        let result = self.resolve_with_kind_and_module_kind(
+            specifier,
+            containing_file,
+            specifier_span,
+            import_kind,
+            None,
+        );
+        self.check_file_system_error()?;
+        Ok(result)
+    }
+
+    /// Resolve with an explicit TypeScript resolution-mode override, preserving
+    /// host access failures separately from normal resolution failures.
+    pub fn resolve_with_kind_and_module_kind_checked(
+        &mut self,
+        specifier: &str,
+        containing_file: &Path,
+        specifier_span: Span,
+        import_kind: ImportKind,
+        importing_module_kind_override: Option<ImportingModuleKind>,
+    ) -> io::Result<Result<ResolvedModule, ResolutionFailure>> {
+        self.refresh_file_system_epoch();
+        let result = self.resolve_with_kind_and_module_kind(
+            specifier,
+            containing_file,
+            specifier_span,
+            import_kind,
+            importing_module_kind_override,
+        );
+        self.check_file_system_error()?;
+        Ok(result)
+    }
+
+    /// Return a latched host filesystem error, if a previous helper call such
+    /// as package-type classification encountered one.
+    pub fn check_file_system_error(&self) -> io::Result<()> {
+        if let Some((kind, message)) = self.file_system_error.borrow().as_ref() {
+            return Err(io::Error::new(*kind, message.clone()));
+        }
+        Ok(())
+    }
+
+    fn refresh_file_system_epoch(&mut self) {
+        let Some(file_system) = self.file_system else {
+            return;
+        };
+        let epoch = file_system.cache_epoch();
+        if self.file_system_epoch.get() != epoch {
+            self.file_system_probe_cache.borrow_mut().clear();
+            self.resolution_cache.clear();
+            self.package_type_cache.borrow_mut().clear();
+            self.package_json_cache.borrow_mut().clear();
+            self.skip_fallback_cache.borrow_mut().clear();
+            self.node_modules_dir_cache.borrow_mut().clear();
+            self.file_system_error.borrow_mut().take();
+            self.file_system_epoch.set(epoch);
+        }
+    }
+
+    fn record_file_system_error(&self, error: &io::Error) {
+        let mut latched = self.file_system_error.borrow_mut();
+        if latched.is_none() {
+            *latched = Some((error.kind(), error.to_string()));
+        }
+    }
+
+    pub(super) fn is_file(&self, path: &Path) -> bool {
+        self.path_exists(path, PathProbeKind::File)
+    }
+
+    pub(super) fn is_dir(&self, path: &Path) -> bool {
+        self.path_exists(path, PathProbeKind::Directory)
+    }
+
+    fn path_exists(&self, path: &Path, kind: PathProbeKind) -> bool {
+        let Some(file_system) = self.file_system else {
+            return match kind {
+                PathProbeKind::File => crate::module_resolver_helpers::cached_is_file(path),
+                PathProbeKind::Directory => crate::module_resolver_helpers::cached_is_dir(path),
+            };
+        };
+        let key = (path.to_path_buf(), kind);
+        if let Some(exists) = self.file_system_probe_cache.borrow().get(&key) {
+            return *exists;
+        }
+        let result = match kind {
+            PathProbeKind::File => file_system.is_file(path),
+            PathProbeKind::Directory => file_system.is_dir(path),
+        };
+        let exists = match result {
+            Ok(exists) => exists,
+            Err(error) => {
+                self.record_file_system_error(&error);
+                false
+            }
+        };
+        self.file_system_probe_cache
+            .borrow_mut()
+            .insert(key, exists);
+        exists
+    }
+
+    pub(super) fn read_file(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        let Some(file_system) = self.file_system else {
+            return match std::fs::read(path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            };
+        };
+        match file_system.read_file(path) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.record_file_system_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn read_text_file(&self, path: &Path) -> Option<String> {
+        if self.file_system.is_none() {
+            return std::fs::read_to_string(path).ok();
+        }
+        let bytes = match self.read_file(path) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) | Err(_) => return None,
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => Some(text),
+            Err(error) => {
+                self.record_file_system_error(&io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    error.to_string(),
+                ));
+                None
+            }
+        }
+    }
+
+    pub(super) fn symlink_metadata(
+        &self,
+        path: &Path,
+    ) -> Option<crate::resolution::filesystem::ResolutionFileKind> {
+        let Some(file_system) = self.file_system else {
+            return std::fs::symlink_metadata(path).ok().map(|metadata| {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    crate::resolution::filesystem::ResolutionFileKind::Symlink
+                } else if file_type.is_dir() {
+                    crate::resolution::filesystem::ResolutionFileKind::Directory
+                } else if file_type.is_file() {
+                    crate::resolution::filesystem::ResolutionFileKind::File
+                } else {
+                    crate::resolution::filesystem::ResolutionFileKind::Other
+                }
+            });
+        };
+        match file_system.symlink_metadata(path) {
+            Ok(kind) => kind,
+            Err(error) => {
+                self.record_file_system_error(&error);
+                None
+            }
+        }
+    }
+
+    /// Whether an ancestor walk may continue above `directory` for this
+    /// resolver's captured root. Standard filesystem resolution is unbounded,
+    /// preserving the existing CLI/LSP behavior.
+    pub(super) fn may_walk_parent(&self, directory: &Path) -> bool {
+        self.file_system
+            .is_none_or(|file_system| file_system.may_walk_parent(directory))
+    }
+
     fn resolve_with_kind_and_module_kind(
         &mut self,
         specifier: &str,
@@ -363,6 +599,7 @@ impl ModuleResolver {
         import_kind: ImportKind,
         importing_module_kind_override: Option<ImportingModuleKind>,
     ) -> Result<ResolvedModule, ResolutionFailure> {
+        self.refresh_file_system_epoch();
         let containing_dir = containing_file
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -437,7 +674,9 @@ impl ModuleResolver {
         }
 
         // Cache the result
-        self.resolution_cache.insert(cache_key, result.clone());
+        if self.file_system_error.borrow().is_none() {
+            self.resolution_cache.insert(cache_key, result.clone());
+        }
 
         result
     }
@@ -445,6 +684,7 @@ impl ModuleResolver {
     /// Determine the module kind of the importing file based on extension and package.json type.
     /// Public so the driver can pre-compute per-file ESM/CJS status for the checker.
     pub fn get_importing_module_kind(&mut self, file_path: &Path) -> ImportingModuleKind {
+        self.refresh_file_system_epoch();
         let extension = ModuleExtension::from_path(file_path);
 
         // .mts, .mjs force ESM mode
@@ -519,6 +759,7 @@ impl ModuleResolver {
         import_kind: ImportKind,
         resolution_mode_override: Option<ImportingModuleKind>,
     ) -> ImportingModuleKind {
+        self.refresh_file_system_epoch();
         if let Some(over) = resolution_mode_override {
             return over;
         }
@@ -1198,6 +1439,8 @@ impl ModuleResolver {
         self.package_json_cache.borrow_mut().clear();
         self.skip_fallback_cache.borrow_mut().clear();
         self.node_modules_dir_cache.borrow_mut().clear();
+        self.file_system_probe_cache.borrow_mut().clear();
+        self.file_system_error.borrow_mut().take();
         self.resolution_cache_hits.set(0);
         self.resolution_cache_misses.set(0);
         self.package_type_cache_hits.set(0);

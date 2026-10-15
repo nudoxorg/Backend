@@ -433,10 +433,16 @@ impl LocalRuntimeGoAuthorityFailure {
     #[must_use]
     pub const fn explanation(self) -> &'static str {
         match self {
-            Self::ExecutableUnavailable => "the selected go executable could not be used; set NUDOX_GO to its absolute path",
+            Self::ExecutableUnavailable => {
+                "the selected go executable could not be used; set NUDOX_GO to its absolute path"
+            }
             Self::GoRootUnavailable => "the selected go executable did not report a usable GOROOT",
-            Self::ModuleCacheUnavailable => "the Go module cache could not be opened; check GOMODCACHE",
-            Self::ToolchainIdentityUnavailable => "the Go installation could not be read to establish its identity",
+            Self::ModuleCacheUnavailable => {
+                "the Go module cache could not be opened; check GOMODCACHE"
+            }
+            Self::ToolchainIdentityUnavailable => {
+                "the Go installation could not be read to establish its identity"
+            }
             Self::OracleUnavailable => "the selected Go oracle (NUDOX_GO_ORACLE) could not be used",
         }
     }
@@ -666,7 +672,11 @@ impl AdmittedRustRequestAuthority {
     ) -> Option<Self> {
         if profile.language() != Language::Rust
             || resolved.tool != NativeTool::Rustc
-            || resolved.as_ref() != toolchain.tool.as_path()
+            || resolved
+                .external()
+                .ok()
+                .map(|external| external.executable())
+                != Some(toolchain.tool.as_path())
             || configuration.toolchain.selected_rustc() != toolchain.tool.as_path()
         {
             return None;
@@ -1404,20 +1414,30 @@ fn package_authority_fingerprint(
             update_string_list_identity(&mut identity, &rust.features);
         }
         Language::TypeScript => {
-            identity.update(
-                &authority
-                    .typescript
-                    .as_ref()?
-                    .local_configuration_fingerprint(),
-            );
-            match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
-                Some((content, location)) => {
-                    identity.update(&[1]);
-                    identity.update(content.as_ref());
-                    identity.update(&location);
-                }
-                None => {
-                    identity.update(&[0]);
+            if runtime.is_some_and(|runtime| {
+                matches!(
+                    runtime.probe_invocation,
+                    ToolchainProbeInvocation::NativeTypeScript
+                )
+            }) {
+                identity.update(b"linked-native-typescript-project-v1\0");
+                identity.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+            } else {
+                identity.update(
+                    &authority
+                        .typescript
+                        .as_ref()?
+                        .local_configuration_fingerprint(),
+                );
+                match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
+                    Some((content, location)) => {
+                        identity.update(&[1]);
+                        identity.update(content.as_ref());
+                        identity.update(&location);
+                    }
+                    None => {
+                        identity.update(&[0]);
+                    }
                 }
             }
         }
@@ -1960,6 +1980,7 @@ enum ToolchainProbeInvocation {
     #[default]
     Native,
     DeferredNativePython,
+    NativeTypeScript,
     TypeScriptScript {
         node: Box<Path>,
         module_root: Box<Path>,
@@ -2033,6 +2054,20 @@ impl PendingToolchainProbe {
 }
 
 impl LocalRuntimeToolchain {
+    /// Linked TSZ is ready without an executable or a startup version probe.
+    pub(crate) fn compiled_native_typescript() -> Self {
+        Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::TypeScriptCompiler,
+                identity: Some(ResolvedToolchain::native_typescript().identity),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: None,
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::NativeTypeScript,
+        }
+    }
+
     /// Probes one absolute native executable under explicit output and deadline bounds, then owns
     /// the executable together with the identity of the exact returned version bytes.
     ///
@@ -2245,6 +2280,7 @@ impl LocalRuntimeToolchain {
         if matches!(
             self.probe_invocation,
             ToolchainProbeInvocation::DeferredNativePython
+                | ToolchainProbeInvocation::NativeTypeScript
         ) {
             return None; // Request admission is not an external executable --version probe.
         }
@@ -2255,7 +2291,8 @@ impl LocalRuntimeToolchain {
                 .expect("probing toolchain retains its admitted executable")
                 .to_path_buf();
             match &self.probe_invocation {
-                ToolchainProbeInvocation::DeferredNativePython => {
+                ToolchainProbeInvocation::DeferredNativePython
+                | ToolchainProbeInvocation::NativeTypeScript => {
                     unreachable!("request-time admission")
                 }
                 ToolchainProbeInvocation::Native => PendingToolchainProbe::Native {
@@ -2274,6 +2311,14 @@ impl LocalRuntimeToolchain {
     }
 
     fn selection(&self) -> Result<ToolchainSelection<'_>, ToolchainResolutionError> {
+        if matches!(
+            self.probe_invocation,
+            ToolchainProbeInvocation::NativeTypeScript
+        ) {
+            return Ok(ToolchainSelection::ResolvedNative(
+                ResolvedToolchain::native_typescript(),
+            ));
+        }
         match (
             self.facts.state,
             self.executable.as_deref(),
@@ -2281,8 +2326,9 @@ impl LocalRuntimeToolchain {
         ) {
             (LocalRuntimeToolchainState::Ready, Some(executable), Some(identity)) => {
                 let resolved = match &self.probe_invocation {
-                    ToolchainProbeInvocation::DeferredNativePython => {
-                        unreachable!("deferred row has no ready identity")
+                    ToolchainProbeInvocation::DeferredNativePython
+                    | ToolchainProbeInvocation::NativeTypeScript => {
+                        unreachable!("linked or deferred row has no external executable")
                     }
                     ToolchainProbeInvocation::Native => {
                         ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
@@ -2336,6 +2382,31 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 #[cfg(all(test, unix))]
 mod global_typescript_probe_tests {
     use super::*;
+
+    #[test]
+    fn linked_typescript_is_ready_without_a_path_or_pending_probe() {
+        let row = LocalRuntimeToolchain::compiled_native_typescript();
+        assert_eq!(row.state, LocalRuntimeToolchainState::Ready);
+        assert!(row.executable_path().is_none());
+        assert!(row.probe_request().is_none());
+        let ToolchainSelection::ResolvedNative(authority) =
+            row.selection().expect("native authority")
+        else {
+            panic!("linked compiler is available");
+        };
+        assert!(authority.external().is_err());
+        assert_eq!(row.identity, Some(authority.identity));
+        let profile =
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        assert!(
+            package_authority_fingerprint(
+                profile,
+                &LocalRuntimePackageAuthority::default(),
+                Some(&row)
+            )
+            .is_some()
+        );
+    }
 
     fn executable_script(path: &Path, contents: &str) {
         use std::os::unix::fs::PermissionsExt;
@@ -2421,6 +2492,7 @@ mod global_typescript_probe_tests {
         else {
             panic!("admitted TypeScript script remains available")
         };
+        let invocation = invocation.external().expect("external script invocation");
         assert_eq!(
             invocation.invocation(),
             crate::driver::NativeInvocation::InterpretedScript {
