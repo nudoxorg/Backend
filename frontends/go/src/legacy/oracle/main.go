@@ -114,6 +114,9 @@ type Output struct {
 	// example an external-test namespace with only platform-inactive files.
 	// This private source witness never manufactures a JSON Package identity.
 	sourceExclusions []*sourceExclusion
+	// Every entry of Errors with the file it names, so that an authority image is
+	// refused only for the sources a diagnostic can affect (see load_errors.go).
+	loadErrors []loadError
 }
 
 type sourceExclusion struct {
@@ -224,6 +227,16 @@ func main() {
 		}
 		return
 	}
+	// The batch form of the mode above: `--authority-image-package-batch
+	// <module> <source>...` loads the package that owns the (same-directory)
+	// sources once and frames one image or refusal per source.
+	if len(os.Args) >= 4 && os.Args[1] == "--authority-image-package-batch" {
+		if err := writeAuthorityImageBatch(os.Stdout, os.Args[2], os.Args[3:]); err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	dir := "."
 	if len(os.Args) > 1 {
 		dir = os.Args[1]
@@ -299,6 +312,11 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 	out := &Output{SchemaVersion: SchemaVersion}
 	selected := make(map[string]*packages.Package)
 	ignoredByDirectory := make(map[string]map[string]struct{})
+	type pendingLoadErrors struct {
+		directory string
+		errors    []packages.Error
+	}
+	var pending []pendingLoadErrors
 	for _, pkg := range pkgs {
 		// go/packages can expose a directory's ignored external test files
 		// only on its ordinary variant. Preserve the compiler's returned
@@ -313,9 +331,7 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 			}
 			ignoredByDirectory[pkg.Dir][path] = struct{}{}
 		}
-		for _, e := range pkg.Errors {
-			out.Errors = append(out.Errors, e.Error())
-		}
+		pending = append(pending, pendingLoadErrors{directory: pkg.Dir, errors: pkg.Errors})
 		if out.Module == nil && pkg.Module != nil {
 			out.Module = &Module{
 				Path:      pkg.Module.Path,
@@ -334,6 +350,13 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 		current := selected[pkg.PkgPath]
 		if current == nil || richerPackageVariant(pkg, current) {
 			selected[pkg.PkgPath] = pkg
+		}
+	}
+	// Ignored files are known for every directory only once all variants were seen.
+	for _, group := range pending {
+		for _, e := range group.errors {
+			out.Errors = append(out.Errors, e.Error())
+			out.loadErrors = append(out.loadErrors, classifyLoadError(group.directory, e, ignoredByDirectory[group.directory]))
 		}
 	}
 	// Gathered once across every selected package, so `implementsInterfaces`

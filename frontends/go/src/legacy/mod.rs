@@ -26,8 +26,8 @@ pub use self::oracle::{
     ConfiguredGoOracle, GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, GoCgoPolicy,
     GoFilesystemTargetKind, GoLocalOnlyReason, GoOracle, GoOracleChildEnvironment,
     GoOracleConfiguration, GoOracleConfigurationError, GoOracleExecutable, GoOracleExecutableView,
-    GoOracleInvocationModeV1, GoOracleInvocationOptionsV1, GoPackageAuthorityWitness,
-    GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
+    GoOracleInvocationModeV1, GoOracleInvocationOptionsV1, GoPackageAuthoritySession,
+    GoPackageAuthorityWitness, GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
     OracleError, Output,
 };
 pub use self::staging::{StagedGoModule, StagingError, stage_module};
