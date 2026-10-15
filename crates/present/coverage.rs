@@ -8,7 +8,7 @@
 //! a single `~lanes` line:
 //!
 //! ```text
-//! ~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured
+//! ~lanes exact✓12 names✓12 graph◐3/7 semantic✓12
 //! ```
 //!
 //! A lane that finished and published readable rows while explicit source gaps
@@ -485,6 +485,45 @@ pub const fn reason_name(reason: Reason) -> &'static str {
 #[cfg(test)]
 mod page_tests {
     use super::*;
+
+    #[test]
+    fn optional_vectors_stay_typed_while_requested_compiler_refusal_stays_visible() {
+        let optional = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Unconfigured,
+                },
+            ],
+            Some(12),
+        )
+        .with_semantic_search_status(SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::Unconfigured,
+        });
+        assert!(optional.is_quiet());
+        assert!(matches!(
+            optional.lanes()[3].state(),
+            LaneState::Unavailable {
+                reason: Reason::Unconfigured
+            }
+        ));
+        assert!(!optional.render().contains("✗"));
+        assert!(!optional.render().contains("embedding-setup"));
+        let refused = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Incomplete,
+                },
+            ],
+            Some(12),
+        );
+        assert!(!refused.is_quiet());
+        assert!(refused.has_failed_lane());
+        assert!(refused.render().contains("semantic✗ incomplete"));
+    }
 
     #[test]
     fn semantic_search_failure_on_any_page_survives_page_combination() {
