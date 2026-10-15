@@ -538,7 +538,7 @@ fn cxx_parameter_typevar_projection_requires_unique_native_leaf_identity() -> Re
                 .and_then(|declaration| declaration.identity)?;
             facts.declarations.iter().find(|declaration| {
                 declaration.kind == DeclarationKind::TemplateParameter
-                    && declaration.owner == owner
+                    && declaration.owner == Some(owner)
                     && declaration
                         .name
                         .is_some_and(|span| source_at(source, span) == b"T")
