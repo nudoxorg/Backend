@@ -199,7 +199,10 @@ fn compile_fixture(root: &PathBuf) -> Result<Ir, TestError> {
             native_work: root,
         },
     )
-    .map_err(|failure| TestError::Compile(failure_label(&failure)))?
+    .map_err(|failure| {
+        eprintln!("Rust fixture compile failed: {failure:?}");
+        TestError::Compile(failure_label(&failure))
+    })?
     .ir;
     finish("rust", "cross-module-bindings", timer.elapsed(), &ir)?;
     Ok(ir)
