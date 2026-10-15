@@ -260,6 +260,24 @@ impl OwnerContext {
         }
     }
 
+    /// Reads already-resolved local serving paths without resolving or opening them.
+    /// Nonlocal, relative or lossy path metadata cannot authorize CLI advice.
+    #[must_use]
+    pub fn from_local_paths(
+        project: &std::path::Path,
+        workspace: &std::path::Path,
+        endpoint: &std::path::Path,
+    ) -> Option<Self> {
+        if !project.is_absolute() || !workspace.is_absolute() || !endpoint.is_absolute() {
+            return None;
+        }
+        Some(Self::new(
+            project.to_str()?.to_owned(),
+            workspace.to_str()?.to_owned(),
+            endpoint.to_str()?.to_owned(),
+        ))
+    }
+
     fn recovery_shell(&self) -> String {
         format!(
             "nudox --project {} --workspace {} --endpoint {} health",
@@ -297,6 +315,21 @@ pub enum Affordance {
     RecoverOwner {
         /// Exact selected project, durable workspace and local endpoint.
         context: OwnerContext,
+    },
+    /// Read the same native graph input as complete CLI JSON in its serving context.
+    /// MCP has no format argument; this is deliberately a shell-only alternative.
+    ReadPackageGraphJson {
+        /// Observed executable and reproducible default authority attachment.
+        context: crate::StartupRecoveryContext,
+        /// Exact input frontier, effective limit, authority, catalog and control.
+        request: Box<backend_library::PackageGraphPageRequest>,
+        /// Original response detail.
+        detail: crate::Detail,
+    },
+    /// Retry the original read-only startup action using an observed executable.
+    RecoverStartup {
+        /// Frozen default attachment without a displayed authority path.
+        context: crate::StartupRecoveryContext,
     },
     /// Retry one corpus-backed search with its original text and page credit.
     RetrySearch {
@@ -352,6 +385,8 @@ pub enum Affordance {
         /// Same admitted owner/key or ticket/sequence, never mutation authority.
         reference: backend_client::IndexProgressReference,
     },
+    /// Exposes the same typed advice through the compact registered-tool route.
+    ViaRegisteredCall(Box<Affordance>),
     /// Nothing the reader can do changes the outcome.
     None,
 }
@@ -386,9 +421,16 @@ impl Affordance {
     #[must_use]
     pub fn shell(&self) -> Option<String> {
         match self {
+            Self::ViaRegisteredCall(original) => original.shell(),
             Self::Retry => Some("re-run the same command".to_owned()),
             Self::InspectOwner => crate::shell::command("health", &[]),
             Self::RecoverOwner { context } => Some(context.recovery_shell()),
+            Self::ReadPackageGraphJson {
+                context,
+                request,
+                detail,
+            } => context.package_graph_json_shell(request, *detail),
+            Self::RecoverStartup { context } => Some(context.shell()),
             Self::RetrySearch { text, limit } => Some(format!(
                 "nudox search {} --limit {limit}",
                 crate::shell::quote_argument(text),
@@ -440,11 +482,64 @@ impl Affordance {
         }
     }
 
+    /// Renders an index observation only in an admitted installed CLI context.
+    #[must_use]
+    pub fn poll_shell_in_context(
+        &self,
+        context: &crate::StartupRecoveryContext,
+        detail: Option<crate::Detail>,
+    ) -> Option<String> {
+        match self {
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => context.registered_shell(
+                "index_progress",
+                &[
+                    crate::product::index_ticket_json(ticket),
+                    "--after-sequence".to_owned(),
+                    after_sequence.to_string(),
+                ],
+                detail,
+            ),
+            Self::PollIndexOperation { operation_key } => context.registered_shell(
+                "index_progress",
+                &["--operation-key".to_owned(), operation_key.to_string()],
+                detail,
+            ),
+            Self::ObserveIndexChanges { reference } => match reference {
+                backend_client::IndexProgressReference::Operation { operation_key, .. } => {
+                    Self::PollIndexOperation {
+                        operation_key: *operation_key,
+                    }
+                    .poll_shell_in_context(context, detail)
+                }
+                backend_client::IndexProgressReference::Ticket {
+                    ticket,
+                    after_sequence,
+                    ..
+                } => Self::PollIndex {
+                    ticket: ticket.clone(),
+                    after_sequence: *after_sequence,
+                }
+                .poll_shell_in_context(context, detail),
+            },
+            _ => None,
+        }
+    }
+
     /// Renders the affordance as the exact MCP tool call an agent makes next.
     #[must_use]
     pub fn tool_call(&self) -> Option<serde_json::Value> {
         match self {
-            Self::Retry | Self::RecoverOwner { .. } | Self::None => None,
+            Self::ViaRegisteredCall(original) => original
+                .tool_call()
+                .map(|call| crate::McpExposure::RegisteredCall.expose_call(call)),
+            Self::Retry
+            | Self::RecoverOwner { .. }
+            | Self::ReadPackageGraphJson { .. }
+            | Self::RecoverStartup { .. }
+            | Self::None => None,
             Self::InspectOwner => Some(serde_json::json!({
                 "name": "backend.status",
                 "arguments": {}
@@ -719,6 +814,13 @@ impl Fault {
         self
     }
 
+    /// Changes only the executable MCP advice for the reader’s exposed route.
+    #[must_use]
+    pub fn with_mcp_exposure(mut self, exposure: crate::McpExposure) -> Self {
+        self.affordance = exposure.advice(self.affordance);
+        self
+    }
+
     /// Returns a fault whose operand names the coordinate the caller supplied.
     #[must_use]
     pub fn about(mut self, operand: Operand) -> Self {
@@ -888,6 +990,12 @@ impl Fault {
                 fault.query_preparation = Some((*basis, *state));
                 return fault;
             }
+            CommandFailure::ReplyTooLarge { .. } => (
+                FaultSlug::Transport,
+                CauseSlug::Oversized,
+                "a complete catalog page exceeds the native reply ceiling".to_owned(),
+                Affordance::None,
+            ),
             CommandFailure::PartiallyPublished(partial) => {
                 return Self::partial_publication(partial, operand);
             }
@@ -977,11 +1085,7 @@ impl Fault {
             operand,
             Cause::new(
                 CauseSlug::Refused,
-                format!(
-                    "{}: {phase}/{}; {explanation}",
-                    scope,
-                    failure.kind_tag(),
-                ),
+                format!("{}: {phase}/{}; {explanation}", scope, failure.kind_tag(),),
             ),
             Affordance::None,
         );
@@ -1095,6 +1199,10 @@ impl Fault {
                 CauseSlug::Unproven,
                 format!("a frame, DTO, or identity proof failed admission: {detail}"),
                 Affordance::None,
+            ),
+            ClientError::ResponseTooLarge { .. } | ClientError::ResponseFrameTooLarge { .. } => (
+                FaultSlug::Transport, CauseSlug::Oversized,
+                "the native reply exceeds its bounded byte/allocation ceiling".to_owned(), Affordance::None,
             ),
             ClientError::Transport(detail) => (
                 FaultSlug::Transport,

@@ -246,10 +246,7 @@ impl std::error::Error for WorkspaceCreateRollbackFailure {
 impl std::fmt::Debug for WorkspaceDirectoryCreateFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotCreated(source) => formatter
-                .debug_tuple("NotCreated")
-                .field(source)
-                .finish(),
+            Self::NotCreated(source) => formatter.debug_tuple("NotCreated").field(source).finish(),
             Self::Created { source, .. } => formatter
                 .debug_struct("Created")
                 .field("source", source)
@@ -538,14 +535,8 @@ impl WorkspaceRoot {
         // reopening an untrusted name. A successful renameable stage swaps to
         // a separate operation handle without DELETE rights below.
         access |= FILE_DELETE_CHILD | DELETE;
-        let handle = create_relative(
-            self.handle(),
-            name,
-            access,
-            FILE_DIRECTORY_FILE,
-            sharing,
-        )
-        .map_err(WorkspaceDirectoryCreateFailure::NotCreated)?;
+        let handle = create_relative(self.handle(), name, access, FILE_DIRECTORY_FILE, sharing)
+            .map_err(WorkspaceDirectoryCreateFailure::NotCreated)?;
         let directory = Self(Arc::new(DirectoryNode {
             handle,
             _parent: Some(Arc::clone(&self.0)),
@@ -582,15 +573,13 @@ impl WorkspaceRoot {
         if let Err(source) = ensure_private_handle(operational.handle.as_raw_handle()) {
             return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
         }
-        let same_object = match same_directory_object(
-            operational.handle.as_raw_handle(),
-            directory.handle(),
-        ) {
-            Ok(same_object) => same_object,
-            Err(source) => {
-                return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
-            }
-        };
+        let same_object =
+            match same_directory_object(operational.handle.as_raw_handle(), directory.handle()) {
+                Ok(same_object) => same_object,
+                Err(source) => {
+                    return Err(WorkspaceDirectoryCreateFailure::Created { directory, source });
+                }
+            };
         if !same_object {
             return Err(WorkspaceDirectoryCreateFailure::Created {
                 directory,
@@ -618,14 +607,16 @@ impl WorkspaceRoot {
             ._parent
             .as_ref()
             .ok_or_else(|| invalid_data("created child has no pinned parent"))?;
-        if !Arc::ptr_eq(&parent, expected_parent)
-            || expected.0.name.as_deref() != Some(name)
-        {
-            return Err(invalid_data("created child receipt belongs to another parent or name"));
+        if !Arc::ptr_eq(&parent, expected_parent) || expected.0.name.as_deref() != Some(name) {
+            return Err(invalid_data(
+                "created child receipt belongs to another parent or name",
+            ));
         }
         let current = open_directory_child_for_created_delete(&parent, leaf)?;
         if !same_directory_object(current.handle.as_raw_handle(), expected.handle())? {
-            return Err(invalid_data("created directory name now refers to another object"));
+            return Err(invalid_data(
+                "created directory name now refers to another object",
+            ));
         }
         let mut visited = 0_usize;
         remove_tree_contents(&current, &mut visited, maximum_entries)?;
@@ -977,7 +968,82 @@ impl WorkspaceRoot {
         maximum: usize,
     ) -> io::Result<Vec<DirEntry>> {
         let directory = self.open_dir_checked(path)?;
-        directory.read_open_directory_limited(maximum, WorkspacePurpose::PrivateState)
+        directory
+            .read_open_directory_limited(maximum, WorkspacePurpose::PrivateState, &mut || Ok(()))
+    }
+
+    /// Matches only the selected no-reparse child directory to its enumerated
+    /// long name. Other directory entries supply names/IDs only and remain
+    /// unopened, so an unrelated reparse point cannot redirect this lookup.
+    pub(crate) fn actual_source_child_directory(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, Self)> {
+        checkpoint()?;
+        let selected = self.open_dir_source_checked(&[name])?;
+        let selected_id = FileId128::of_handle(selected.handle())?;
+        let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
+        let mut matched = None;
+        for entry in enumerate_names_controlled(parent.handle(), maximum, checkpoint)? {
+            checkpoint()?;
+            if entry.id != selected_id {
+                continue;
+            }
+            let actual = parent.open_dir_source_checked(&[&entry.name])?;
+            if !actual.same_object_as(&selected)? {
+                return Err(invalid_data(
+                    "selected directory changed during identity lookup",
+                ));
+            }
+            if entry.name == name {
+                return Ok((entry.name, actual));
+            }
+            if matched.replace((entry.name, actual)).is_some() {
+                return Err(invalid_data(
+                    "selected directory identity has ambiguous names",
+                ));
+            }
+        }
+        matched.ok_or_else(|| invalid_data("selected directory disappeared during identity lookup"))
+    }
+
+    /// Returns the kernel-enumerated name and held file of a selected regular
+    /// single-link source. Matching its full object ID admits genuine filesystem
+    /// case/short-name aliases, never another hard-link entry or a reparse point.
+    pub(crate) fn actual_source_child_file(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, File)> {
+        checkpoint()?;
+        let selected = self.open_file_read_source_checked(&[name])?;
+        let selected_id = FileId128::of_handle(selected.as_raw_handle())?;
+        let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
+        let mut matched = None;
+        for entry in enumerate_names_controlled(parent.handle(), maximum, checkpoint)? {
+            checkpoint()?;
+            if entry.id != selected_id {
+                continue;
+            }
+            let actual = parent.open_file_read_source_checked(&[&entry.name])?;
+            if super::file::identity_of(&selected)? != super::file::identity_of(&actual)? {
+                return Err(invalid_data(
+                    "selected source file changed during identity lookup",
+                ));
+            }
+            if matched.replace((entry.name, actual)).is_some() {
+                return Err(invalid_data("selected source file has ambiguous names"));
+            }
+        }
+        // Keep the named single-link condition through the final boundary;
+        // inode equality alone cannot authorize a newly created hard-link name.
+        ensure_regular_file_handle(selected.as_raw_handle())?;
+        checkpoint()?;
+        matched
+            .ok_or_else(|| invalid_data("selected source file disappeared during identity lookup"))
     }
 
     /// Lists a source directory without imposing workspace-private ACLs.
@@ -986,19 +1052,34 @@ impl WorkspaceRoot {
         path: &[&str],
         maximum: usize,
     ) -> io::Result<Vec<DirEntry>> {
+        self.read_dir_source_checked_limited_controlled(path, maximum, &mut || Ok(()))
+    }
+
+    /// Retains the same source-object/reparse checks while allowing cancellation
+    /// between enumeration records and per-entry handle validation.
+    pub fn read_dir_source_checked_limited_controlled(
+        &self,
+        path: &[&str],
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<DirEntry>> {
+        checkpoint()?;
         let directory = self.open_dir_source_checked(path)?;
-        directory.read_open_directory_limited(maximum, WorkspacePurpose::ReadOnlySource)
+        directory.read_open_directory_limited(maximum, WorkspacePurpose::ReadOnlySource, checkpoint)
     }
 
     fn read_open_directory_limited(
         &self,
         maximum: usize,
         purpose: WorkspacePurpose,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<DirEntry>> {
+        checkpoint()?;
         let directory = self.reopen_current_directory(purpose)?;
-        let names = enumerate_names(directory.handle(), maximum)?;
+        let names = enumerate_names_controlled(directory.handle(), maximum, checkpoint)?;
         let mut entries = Vec::with_capacity(names.len());
         for EnumeratedEntry { name, id } in names {
+            checkpoint()?;
             let handle = open_relative(
                 directory.handle(),
                 ExistingName::parse(&name)?,
@@ -1039,6 +1120,7 @@ impl WorkspaceRoot {
             };
             entries.push(DirEntry { name, kind });
         }
+        checkpoint()?;
         Ok(entries)
     }
 
@@ -2373,10 +2455,19 @@ struct EnumeratedEntry {
 }
 
 fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<EnumeratedEntry>> {
+    enumerate_names_controlled(handle, maximum, &mut || Ok(()))
+}
+
+fn enumerate_names_controlled(
+    handle: HANDLE,
+    maximum: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<EnumeratedEntry>> {
     let mut buffer = vec![0_u64; 8192];
     let mut restart = true;
     let mut names = Vec::new();
     loop {
+        checkpoint()?;
         let class: FILE_INFO_BY_HANDLE_CLASS = if restart {
             FileIdExtdDirectoryRestartInfo
         } else {
@@ -2400,7 +2491,7 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<EnumeratedE
             return Err(error);
         }
         restart = false;
-        decode_directory_records(&buffer, &mut names, maximum)?;
+        decode_directory_records(&buffer, &mut names, maximum, checkpoint)?;
     }
     Ok(names)
 }
@@ -2412,11 +2503,13 @@ fn decode_directory_records(
     buffer: &[u64],
     names: &mut Vec<EnumeratedEntry>,
     maximum: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     let bytes = std::mem::size_of_val(buffer);
     let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
     let mut offset = 0usize;
     loop {
+        checkpoint()?;
         if offset % align_of::<FILE_ID_EXTD_DIR_INFO>() != 0
             || offset
                 .checked_add(size_of::<FILE_ID_EXTD_DIR_INFO>())
@@ -2764,10 +2857,8 @@ mod tests {
     fn postcreate_setup_refusal_rolls_back_the_held_object_not_its_replacement_name() {
         let path = fresh_path("created-handle-rollback");
         let root = WorkspaceRoot::create(&path).expect("create private root");
-        let result = root.create_child_dir_exclusive_with_sharing(
-            "stage",
-            Sharing::Transient,
-            || {
+        let result =
+            root.create_child_dir_exclusive_with_sharing("stage", Sharing::Transient, || {
                 fs::rename(path.join("stage"), path.join("original-created-object"))?;
                 fs::create_dir(path.join("stage"))?;
                 fs::write(path.join("stage/payload"), b"replacement")?;
@@ -2775,8 +2866,7 @@ mod tests {
                     io::ErrorKind::PermissionDenied,
                     "injected setup refusal after FILE_CREATE",
                 ))
-            },
-        );
+            });
         let Err(WorkspaceDirectoryCreateFailure::Created { directory, source }) = result else {
             panic!("post-create refusal lost the exact created handle");
         };

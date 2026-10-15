@@ -149,6 +149,7 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
         .map_err(|error| io::Error::other(error.to_string()))?;
     let mut first_python_source_version = None;
     let mut selected_generation = None;
+    let mut portable_source: Option<(backend_library::SemanticSourceReference, String)> = None;
     for cold in [false, true] {
         let selection =
             LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
@@ -383,6 +384,23 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
             );
         }
         selected_generation = Some(source.generation);
+        if let Some((reference, canonical)) = &portable_source {
+            let reopened = session.semantic_source(reference.clone())?;
+            assert_eq!(
+                backend_library::canonical_semantic_source(&reopened)?,
+                *canonical,
+                "cold native read must preserve the original complete captured bytes, including frozen history/freshness"
+            );
+        } else {
+            let reference = captured_source_reference(&mut session, &source)?;
+            let reopened = session.semantic_source(reference.clone())?;
+            assert_eq!(reopened.generation, source.generation);
+            assert_eq!(reopened.coordinate, source.coordinate);
+            portable_source = Some((
+                reference,
+                backend_library::canonical_semantic_source(&reopened)?,
+            ));
+        }
         let marker = selected_symbol_by_name(&mut session, "deferred_public_marker")?;
         let marker_package =
             selected_package_by_symbol(&mut session, "deferred_public_marker", marker)?;
@@ -400,8 +418,10 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
             DeclarationKind::Function,
             answer_package,
         )?;
+        let source_epoch = captured_source_epoch(&mut session, &package)?;
         let shapes = session.semantic_shapes(
             source.clone(),
+            source_epoch,
             &[marker],
             SemanticShapeBudget::new(512, 64 * 1024)?,
         )?;
@@ -767,10 +787,95 @@ fn run_public_index_operation_lifecycle(
             }
         }
     };
+    let source_epoch = captured_source_epoch(&mut session, &package)?;
+    let mut foreign_epoch = source_epoch;
+    foreign_epoch.semantic_relation_root[0] ^= 0xff;
+    assert!(
+        matches!(
+            session.semantic_shapes(
+                selected_source.clone(),
+                foreign_epoch,
+                &[cadence, signal],
+                shape_budget
+            ),
+            Err(ClientError::CommandFailed(CommandFailure::InvalidQuery(_)))
+        ),
+        "current source fields cannot mint shapes under a foreign captured semantic root"
+    );
+    let exact_reference = captured_published_source_reference(&mut session, &selected_source)?;
+    let history = backend_replication::FileSemanticRangeStore::open(
+        backend_store::FileStore::open(paths.data().join("semantic-objects"), 512 * 1024 * 1024)
+            .map_err(|error| {
+                io::Error::other(format!("open real source history CAS: {error:?}"))
+            })?,
+        backend_replication::TransportLimits::default(),
+    )
+    .map_err(io::Error::other)?;
+    let target = backend_replication::SemanticTargetKey::new(
+        exact_reference.metadata.package.as_str(),
+        exact_reference.metadata.coordinate.as_str(),
+        exact_reference
+            .metadata
+            .profile
+            .profile()
+            .map_err(|error| io::Error::other(error.to_string()))?,
+    )
+    .map_err(io::Error::other)?;
+    let backend_library::SemanticSourceHistory::Published {
+        proof, reference, ..
+    } = &exact_reference.history
+    else {
+        return Err(
+            io::Error::other("source retention control requires real native publication").into(),
+        );
+    };
+    let publication_ref =
+        backend_replication::HistoryRefName::new(reference.clone()).map_err(io::Error::other)?;
+    let captured_tip = backend_replication::HistoryCommitId::from_bytes(proof.reference_tip);
+    let query_tag = backend_replication::HistoryRefName::new(format!(
+        "semantic-source-v1/{}",
+        captured_tip
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+    .map_err(io::Error::other)?;
+    assert!(
+        history
+            .history_ref(
+                &target,
+                backend_replication::HistoryRefKind::Tag,
+                &query_tag
+            )
+            .map_err(io::Error::other)?
+            .is_none(),
+        "discovery must not create a durable query root"
+    );
+    let exact_source_bytes = backend_library::canonical_semantic_source(
+        &session.semantic_source(exact_reference.clone())?,
+    )?;
+    assert!(
+        history
+            .history_ref(
+                &target,
+                backend_replication::HistoryRefKind::Tag,
+                &query_tag
+            )
+            .map_err(io::Error::other)?
+            .is_none(),
+        "all source byte ranges must remain read-only for lifetime roots"
+    );
+    let mut foreign_reference = exact_reference.clone();
+    foreign_reference.semantic_relation_root[0] ^= 0xff;
+    assert!(
+        session.semantic_source(foreign_reference).is_err(),
+        "parsed guard roots cannot bypass owner seal verification"
+    );
     let mut stale_source = selected_source.clone();
     stale_source.freshness = changed_freshness;
     if session
-        .semantic_shapes(stale_source, &[cadence, signal], shape_budget)
+        .semantic_shapes(stale_source, source_epoch, &[cadence, signal], shape_budget)
         .is_ok()
     {
         return Err(io::Error::other(
@@ -783,7 +888,12 @@ fn run_public_index_operation_lifecycle(
     replaced_generation[0] ^= 0xff;
     replaced_source.generation = backend_library::SemanticGenerationId::new(replaced_generation);
     if session
-        .semantic_shapes(replaced_source, &[cadence, signal], shape_budget)
+        .semantic_shapes(
+            replaced_source,
+            source_epoch,
+            &[cadence, signal],
+            shape_budget,
+        )
         .is_ok()
     {
         return Err(io::Error::other(
@@ -793,7 +903,12 @@ fn run_public_index_operation_lifecycle(
     }
     let carrier_shapes = with_phase_context(
         "query the published parameter carrier shape",
-        session.semantic_shapes(selected_source.clone(), &[parameter_carrier], shape_budget),
+        session.semantic_shapes(
+            selected_source.clone(),
+            source_epoch,
+            &[parameter_carrier],
+            shape_budget,
+        ),
     )?;
     assert_eq!(carrier_shapes.entries.len(), 1);
     let parameter_identity = carrier_shapes.entries[0]
@@ -802,7 +917,12 @@ fn run_public_index_operation_lifecycle(
 
     let shapes = with_phase_context(
         "query the published callable and aggregate shapes",
-        session.semantic_shapes(selected_source.clone(), &[cadence, signal], shape_budget),
+        session.semantic_shapes(
+            selected_source.clone(),
+            source_epoch,
+            &[cadence, signal],
+            shape_budget,
+        ),
     )?;
     assert_eq!(shapes.entries.len(), 2);
     let cadence_shape = &shapes.entries[0];
@@ -1086,6 +1206,23 @@ fn run_public_index_operation_lifecycle(
         backend_library::IndexOperationSemanticProfileState::Failed { prior, .. }
             if prior.generation == same_add_source.generation.to_bytes()
     )));
+    let reopened_old_source = restarted_session.semantic_source(exact_reference.clone())?;
+    assert_eq!(
+        backend_library::canonical_semantic_source(&reopened_old_source)?,
+        exact_source_bytes,
+        "cold retained source stays byte-identical after a newer captured source frontier/freshness"
+    );
+    assert!(
+        restarted_session
+            .semantic_shapes(
+                reopened_old_source,
+                source_epoch,
+                &[cadence, signal],
+                shape_budget
+            )
+            .is_err(),
+        "an old source remains readable without being relabeled as a fresh shape selector"
+    );
     let failed_source = selected_rust_source(&mut restarted_session, &package)?;
     assert_eq!(failed_source.generation, same_add_source.generation);
     assert!(matches!(
@@ -1108,7 +1245,7 @@ fn run_public_index_operation_lifecycle(
 
     let cold_owner = with_phase_context(
         "cold reopen after same-add and actual compiler refusal",
-        EmbeddedLocalService::start(config),
+        EmbeddedLocalService::start(config.clone()),
     )?;
     let mut cold_session = with_phase_context(
         "connect after failed compiler cold reopen",
@@ -1143,8 +1280,79 @@ fn run_public_index_operation_lifecycle(
         "exact-key replay must preserve the failed operation and its source receipt"
     );
     assert_eq!(cold_session.revision()?.root, before_failed_replay);
+    // The warm byte plan cannot outlive its publication-owned retention root.
+    assert_eq!(
+        backend_library::canonical_semantic_source(
+            &cold_session.semantic_source(exact_reference.clone())?
+        )?,
+        exact_source_bytes
+    );
+    let before_release =
+        cold_session.semantic_versions_page(exact_reference.metadata.package.clone(), 1, None)?;
+    let current_tip = history
+        .history_ref(
+            &target,
+            backend_replication::HistoryRefKind::Branch,
+            &publication_ref,
+        )
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("native publication root unexpectedly absent"))?
+        .commit();
+    history
+        .compare_and_swap_history_ref(
+            &target,
+            backend_replication::HistoryRefKind::Branch,
+            publication_ref.clone(),
+            Some(current_tip),
+            None,
+        )
+        .map_err(io::Error::other)?;
+    assert!(
+        matches!(
+            cold_session.semantic_source(exact_reference.clone()),
+            Err(ClientError::CommandFailed(CommandFailure::NotFound))
+        ),
+        "a cached source guard must honestly become Gone after publication release"
+    );
+    let after_release =
+        cold_session.semantic_versions_page(exact_reference.metadata.package.clone(), 1, None)?;
+    assert_eq!(
+        after_release.total, before_release.total,
+        "releasing navigation retention does not delete compiler generation membership"
+    );
+    assert!(
+        history
+            .history_ref(
+                &target,
+                backend_replication::HistoryRefKind::Tag,
+                &query_tag
+            )
+            .map_err(io::Error::other)?
+            .is_none(),
+        "queries must never recreate hidden lifetime pins"
+    );
     drop(cold_session);
     with_phase_context("close failed compiler cold owner", cold_owner.close())?;
+    let cold_history = backend_replication::FileSemanticRangeStore::open(
+        backend_store::FileStore::open(paths.data().join("semantic-objects"), 512 * 1024 * 1024)
+            .map_err(|error| {
+                io::Error::other(format!("cold real source history CAS: {error:?}"))
+            })?,
+        backend_replication::TransportLimits::default(),
+    )
+    .map_err(io::Error::other)?;
+    assert!(
+        cold_history
+            .history_ref_ancestry_if_retained(
+                &target,
+                backend_replication::HistoryRefKind::Branch,
+                &publication_ref,
+                captured_tip,
+            )
+            .map_err(io::Error::other)?
+            .is_none(),
+        "cold history must preserve release until its publication owner explicitly republishes"
+    );
     Ok(())
 }
 
@@ -1182,16 +1390,88 @@ fn assert_first_refusal_has_no_authority(
         selected_source_frontier: None,
     };
     let budget = SemanticShapeBudget::new(4096, 256 * 1024)?;
+    let source_epoch = captured_source_epoch(session, package)?;
     let symbol = backend_library::SymbolKey::from_value("unselected-first-refusal-probe");
     assert!(
         matches!(
-            session.semantic_shapes(source, &[symbol], budget),
-            Err(ClientError::CommandFailed(CommandFailure::NotFound))
+            session.semantic_shapes(source, source_epoch, &[symbol], budget),
+            Err(ClientError::CommandFailed(
+                CommandFailure::NotFound | CommandFailure::InvalidQuery(_)
+            ))
         ),
         "an invented compiler source must get the typed absent-selection refusal"
     );
     Ok(())
 }
+fn captured_published_source_reference(
+    session: &mut Session,
+    source: &backend_library::SemanticVersionRecord,
+) -> Result<backend_library::SemanticSourceReference, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        let reference = captured_source_reference(session, source)?;
+        if matches!(
+            reference.history,
+            backend_library::SemanticSourceHistory::Published { .. }
+        ) {
+            return Ok(reference);
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                io::Error::other("real captured history did not reach native publication").into(),
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn captured_source_reference(
+    session: &mut Session,
+    source: &backend_library::SemanticVersionRecord,
+) -> Result<backend_library::SemanticSourceReference, Box<dyn Error>> {
+    let mut cursor = None;
+    loop {
+        let page = session.semantic_versions_page(source.package.clone(), 1, cursor)?;
+        for descriptor in &page.entries {
+            let metadata = descriptor.metadata();
+            if metadata.coordinate == source.coordinate
+                && metadata.profile == source.profile
+                && metadata.generation == source.generation
+            {
+                return match descriptor {
+                    backend_library::SemanticVersionDescriptor::Available { reference } => {
+                        Ok(reference.clone())
+                    }
+                    backend_library::SemanticVersionDescriptor::Unavailable { reason, .. } => {
+                        Err(io::Error::other(format!(
+                            "real captured source retention refused: {reason}"
+                        ))
+                        .into())
+                    }
+                };
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Err(io::Error::other(
+                "native descriptor discovery lost the exact captured generation",
+            )
+            .into());
+        }
+    }
+}
+
+fn captured_source_epoch(
+    session: &mut Session,
+    package: &PackageReference,
+) -> Result<backend_library::SemanticSourceEpoch, Box<dyn Error>> {
+    let page = session.semantic_versions_page(package.clone(), 1, None)?;
+    Ok(backend_library::SemanticSourceEpoch {
+        source_relation_root: page.source_relation_root,
+        semantic_relation_root: page.semantic_relation_root,
+    })
+}
+
 fn selected_rust_source(
     session: &mut Session,
     package: &PackageReference,
@@ -1213,7 +1493,8 @@ fn assert_shape_facts_preserved(
     budget: SemanticShapeBudget,
     expected: &backend_library::SemanticShapeBatch,
 ) -> Result<(), Box<dyn Error>> {
-    let actual = session.semantic_shapes(source, symbols, budget)?;
+    let source_epoch = captured_source_epoch(session, &source.package)?;
+    let actual = session.semantic_shapes(source, source_epoch, symbols, budget)?;
     assert_eq!(actual.entries.len(), expected.entries.len());
     for (actual, expected) in actual.entries.iter().zip(expected.entries.iter()) {
         assert_eq!(actual.identity, expected.identity);

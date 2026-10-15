@@ -62,6 +62,8 @@ pub enum CompilerWorkspaceFileRoleV2 {
     Lock = 3,
     /// Another file captured by the workspace policy.
     Other = 4,
+    /// Canonical immutable Python environment payload, separate from project sources.
+    PythonEnvironment = 5,
 }
 
 /// One workspace entry or exact compiler read observation.
@@ -1857,6 +1859,7 @@ fn decode_page(
                 2 => CompilerWorkspaceFileRoleV2::Configuration,
                 3 => CompilerWorkspaceFileRoleV2::Lock,
                 4 => CompilerWorkspaceFileRoleV2::Other,
+                5 => CompilerWorkspaceFileRoleV2::PythonEnvironment,
                 _ => return Err(CompilerInputTreeV2Error::PageEncoding),
             };
             CompilerInputTreeRecordV2::File {
@@ -1963,6 +1966,52 @@ impl PageReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_role_survives_cas_codec_and_changes_input_identity() {
+        let record = CompilerInputTreeRecordV2::File {
+            path: ".nudox-python-environment.capture".into(),
+            role: CompilerWorkspaceFileRoleV2::PythonEnvironment,
+            object_id: [0x41; 32],
+            length: 128,
+        };
+        let environment = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            vec![
+                CompilerInputTreeRecordV2::Directory { path: "".into() },
+                record.clone(),
+            ],
+        )
+        .unwrap();
+        for page in environment.pages() {
+            let decoded =
+                CompilerInputMerklePageV2::from_typed_object(&page.typed_object()).unwrap();
+            assert_eq!(page.record(), decoded.record());
+        }
+        let CompilerInputTreeRecordV2::File {
+            path,
+            object_id,
+            length,
+            ..
+        } = record
+        else {
+            unreachable!()
+        };
+        let source = CompilerInputMerkleTreeV2::from_sorted_records(
+            CompilerInputTreeKindV2::Workspace,
+            vec![
+                CompilerInputTreeRecordV2::Directory { path: "".into() },
+                CompilerInputTreeRecordV2::File {
+                    path,
+                    role: CompilerWorkspaceFileRoleV2::Source,
+                    object_id,
+                    length,
+                },
+            ],
+        )
+        .unwrap();
+        assert_ne!(environment.root(), source.root());
+    }
 
     #[test]
     fn page_getters_describe_the_same_canonical_typed_payload() {

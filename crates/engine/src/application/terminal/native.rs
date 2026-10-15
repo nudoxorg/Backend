@@ -296,12 +296,16 @@ const fn fragment_terminal(
     compile_from_driver(source, recipe, CompilerCause::Fragment(cause))
 }
 
-const fn fragment_failure_terminal(
+fn fragment_failure_terminal(
     source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     failure: CompilerFragmentFailure,
 ) -> CompilerTerminal {
-    compile_from_driver(source, recipe, CompilerCause::FragmentFailure(failure))
+    compile_from_driver(
+        source,
+        recipe,
+        CompilerCause::FragmentFailure(Box::new(failure)),
+    )
 }
 
 const fn configured_tool(
@@ -375,7 +379,7 @@ mod tests {
         let CompilerCause::FragmentFailure(failure) = cause else {
             panic!("fragment failures must not be reclassified as authority failures")
         };
-        failure
+        *failure
     }
 
     #[test]

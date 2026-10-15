@@ -5,8 +5,12 @@ use crate::interface::{
 };
 
 #[test]
-fn typescript_admission_dto29_refuses_old28_before_populated_fact_shape() {
-    assert_eq!(super::DTO_VERSION, 29, "one combined undeployed cutover");
+fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() {
+    assert_eq!(
+        super::DTO_VERSION,
+        30,
+        "catalog windows require a matched DTO30 cohort"
+    );
     let detail = TypeScriptCompilerAdmissionDetail::new(
         TypeScriptCompilerPackageRole::SelectedCompiler,
         Some(TypeScriptCompilerVersion::new("5.9.3").unwrap()),
@@ -69,7 +73,7 @@ fn typescript_admission_dto29_refuses_old28_before_populated_fact_shape() {
     .unwrap();
     let mismatch =
         super::super::codec::check_version_header_against(&bytes, "reply", 28).unwrap_err();
-    assert!(mismatch.contains("reply DTO version 29"));
+    assert!(mismatch.contains(&format!("reply DTO version {}", super::DTO_VERSION)));
     assert!(mismatch.contains("this build supports 28"));
     assert!(mismatch.contains("same build"));
     assert!(!mismatch.contains("unknown field"));

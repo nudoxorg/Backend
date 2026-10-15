@@ -742,6 +742,8 @@ fn fault(error: ClientError) -> EngineFault {
         | ClientError::IndexOperationDeliveryUnknown { .. }
         | ClientError::Io(_)
         | ClientError::Transport(_)
+        | ClientError::ResponseTooLarge { .. }
+        | ClientError::ResponseFrameTooLarge { .. }
         | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
         ClientError::CommandFailed(_) => FaultCode::Missing,
         ClientError::BasisMismatch { .. }

@@ -576,6 +576,27 @@ fn a_page_bound_outside_its_range_is_refused_with_the_value() {
 }
 
 #[test]
+fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
+    let help = invoke::help_for(grammar_for("package-graph").expect("package graph grammar"));
+    assert!(help.contains(&format!(
+        "Range: 1 to {}; default 64.",
+        backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS
+    )));
+    assert!(
+        invoke::help_for(grammar_for("search").expect("search grammar"))
+            .contains("Range: 1 to 200; default 25.")
+    );
+    for (bound, valid) in [(128, true), (129, false)] {
+        let args = words(&format!(
+            "package-graph pkg:cargo/serde@1.0.228 dependencies --limit {bound}"
+        ));
+        let (options, command) = options::split(&args).expect("global page option");
+        let input = invoke::parse(&command, options.limit()).expect("CLI parse");
+        assert_eq!(lower(&input, "/abs/project").is_ok(), valid);
+    }
+}
+
+#[test]
 fn add_defaults_to_interactive_and_advertises_the_background_option() {
     let invocation = invoke::parse(&words("add /abs/project"), None).expect("parse Add");
     let Request::Index(path) = lower(&invocation, "/unused").expect("lower Add") else {

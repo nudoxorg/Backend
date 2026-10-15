@@ -1757,3 +1757,97 @@ fn configured_skip_lib_check_matches_sdk_diagnostics_without_losing_declaration_
         }
     }
 }
+
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn production_lane_reuses_checked_forest_and_rechecks_source_dependency_and_options_edits() {
+    use crate::application::{
+        LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
+        LocalCompilerTimeout, LocalPackageRootSet, LocalToolchainSet,
+        PackageAuthorityConfiguration, PackageSourceSet,
+    };
+    use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl};
+    use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+    use backend_store::journal::PublicationLimits;
+    let fixture = Fixture::new();
+    let host = fixture.host();
+    let tools = [];
+    let cancelled = AtomicBool::new(false);
+    let artifacts = fixture.root.join("artifacts");
+    let journal = fixture.root.join("journal");
+    let work = fixture.root.join("native-work");
+    fs::create_dir(&work).unwrap();
+    let mut scratch = LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(16 * 1024 * 1024).unwrap()).unwrap();
+    let mut compiler = LocalCompiler::create_with_package_authority(
+        LocalCompilerConfig {
+            toolchains: LocalToolchainSet::validate(&tools).unwrap(),
+            artifact_directory: &artifacts,
+            journal_directory: &journal,
+            native_work_directory: &work,
+            control: LocalCompilerControl {
+                timeout: LocalCompilerTimeout::new(Duration::from_secs(120)).unwrap(),
+                cancelled: &cancelled,
+            },
+        },
+        LocalPackageRootSet::EMPTY,
+        PackageAuthorityConfiguration { typescript_project_host: Some(&host), ..PackageAuthorityConfiguration::UNAVAILABLE },
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+        &mut scratch,
+    ).unwrap();
+    let request = PackageCompileRequest::new(
+        GenerateTarget { correlation: CorrelationId(143), profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript), stage: Stage::LowerIr },
+        PackageUrl::try_from("pkg:npm/program-membership@1.0.0".to_owned()).unwrap(),
+    ).unwrap();
+    let compile = |compiler: &mut LocalCompiler<'_, '_, '_>, sources: &[PackageSource<'_>]| {
+        let staged = compiler.compile_package_sources_staged(
+            PackageSourceSet::new(&request, &fixture.root, sources).unwrap(), &mut |_| {},
+        ).unwrap();
+        assert_eq!(staged.artifacts().len(), 2);
+        assert_eq!(staged.coverage_gaps().len(), 3);
+        assert!(staged.native_program_sources().is_some());
+        staged
+    };
+    let sources = Fixture::sources();
+    let first = compile(&mut compiler, &sources);
+    let initial = compiler.typescript_program_work_for_test();
+    assert_eq!((initial.checked_programs, initial.reused_checked_programs), (1, 0));
+    assert!(initial.parsed_and_bound >= 3);
+    let repeated = compile(&mut compiler, &sources);
+    let exact = compiler.typescript_program_work_for_test();
+    assert_eq!(exact.checked_programs, initial.checked_programs);
+    assert_eq!(exact.parsed_and_bound, initial.parsed_and_bound);
+    assert_eq!(exact.reused_checked_programs, 1);
+    assert_eq!(first.native_program_sources(), repeated.native_program_sources());
+
+    let edited_main = format!("{MAIN}export const edited: string = 'new';\n");
+    fs::write(fixture.root.join("src/main.ts"), &edited_main).unwrap();
+    let edited = Fixture::all_sources().into_iter().map(|(path, text)|
+        PackageSource::new(path, if path == "src/main.ts" { &edited_main } else { text }).unwrap()
+    ).collect::<Vec<_>>();
+    let edited_stage = compile(&mut compiler, &edited);
+    let source_edit = compiler.typescript_program_work_for_test();
+    assert_eq!(source_edit.checked_programs, 2);
+    assert_eq!(source_edit.parsed_and_bound, exact.parsed_and_bound + 1);
+    assert_ne!(first.native_program_sources(), edited_stage.native_program_sources());
+
+    // This declaration is outside the selected package source frontier, but
+    // belongs to the freshly admitted dependency closure and checked program.
+    fs::write(fixture.root.join("types/ambient.d.ts"), "export interface Token { value: number; optional?: string; }\n").unwrap();
+    let dependency_stage = compile(&mut compiler, &edited);
+    let dependency_edit = compiler.typescript_program_work_for_test();
+    assert_eq!(dependency_edit.checked_programs, 3);
+    assert_eq!(dependency_edit.parsed_and_bound, source_edit.parsed_and_bound + 1);
+    assert_ne!(edited_stage.native_program_sources(), dependency_stage.native_program_sources());
+
+    fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
+        "compilerOptions": {"strict":false,"target":"ES2020","module":"CommonJS"},
+        "include":["src/**/*"]
+    })).unwrap()).unwrap();
+    let options_stage = compile(&mut compiler, &edited);
+    let option_edit = compiler.typescript_program_work_for_test();
+    assert_eq!(option_edit.checked_programs, 4);
+    assert_eq!(option_edit.parsed_and_bound, dependency_edit.parsed_and_bound);
+    assert_ne!(dependency_stage.native_program_sources(), options_stage.native_program_sources());
+    assert_eq!(option_edit.reused_checked_programs, 1);
+}

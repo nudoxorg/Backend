@@ -261,6 +261,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 clang,
                 typescript,
                 python_checker,
+                python_interpreter: Some(std::sync::Arc::new(
+                    super::PythonInterpreterHostAdmission::capture(self, home),
+                )),
                 deferred_native_python,
                 rust,
                 go,

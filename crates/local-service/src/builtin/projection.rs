@@ -270,18 +270,25 @@ fn projection_page_certificate(
     owner_root: &ViewRoot,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    let recipe = paged_recipe(command)?;
-    let mut certificate = view_certificate(
-        &page.snapshot.root,
-        &identity_preimage(&[
+    let preimage = match command {
+        Command::GraphPage {
+            symbol,
+            page: request,
+        } => backend_engine::QueryPageRecipe::graph_window(
+            page.snapshot.root.basis().root,
+            *symbol,
+            request.window(),
+        )
+        .canonical_preimage()
+        .to_vec(),
+        _ => identity_preimage(&[
             b"query",
-            &recipe,
+            &paged_recipe(command)?,
             page.snapshot.root.basis().root.as_bytes(),
             &[0],
         ]),
-        Some(owner_root),
-        base,
-    )?;
+    };
+    let mut certificate = view_certificate(&page.snapshot.root, &preimage, Some(owner_root), base)?;
     if let PageTerminal::More(continuation) = page.terminal {
         append_cursor_claim(&mut certificate, continuation.cursor());
     }

@@ -244,6 +244,17 @@ pub enum ClientError {
     Protocol(String),
     /// A bounded transport allocation was rejected.
     Transport(ReplicationError),
+    /// A native reply exceeded its byte/allocation ceiling after request admission.
+    /// Pure windowed reads may reduce delivery; request/proof overflow is distinct.
+    ResponseTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
+    /// Only the reply frame header was consumed. The transport is unusable.
+    ResponseFrameTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
     /// The application service rejected an admitted command.
     CommandFailed(CommandFailure),
     /// A successful view reply was not coherent.
@@ -319,6 +330,11 @@ impl fmt::Display for ClientError {
             Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
+            Self::ResponseTooLarge { .. } => {
+                formatter.write_str("native reply exceeds its bounded byte/allocation ceiling")
+            }
+            Self::ResponseFrameTooLarge { .. } => formatter
+                .write_str("native reply frame exceeds its ceiling; the connection was retired"),
             Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
             Self::IncoherentView => formatter.write_str("daemon returned an incoherent view"),
             Self::BasisMismatch { .. } => {
@@ -890,6 +906,13 @@ impl Session {
         }
     }
 
+    /// Borrows the existing caller scope so bounded read retries preserve its
+    /// absolute deadline and cancellation rather than renewing a request.
+    #[must_use]
+    pub fn request_context(&self) -> Option<&RequestContext> {
+        self.request_context.as_ref()
+    }
+
     /// Installs or retires the context for one caller-owned request.
     /// # Errors
     /// Returns cancellation if this request stopped before transport admission.
@@ -960,7 +983,9 @@ impl Session {
         let encoded = token
             .strip_prefix("pc1-")
             .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
-        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2) {
+        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+            && encoded.len() != backend_library::CURSOR_WINDOW_QUERY_BYTES.saturating_mul(2)
+        {
             return Err(ClientError::Protocol(
                 "malformed continuation token".to_owned(),
             ));
@@ -1189,6 +1214,55 @@ impl Session {
         })
     }
 
+    /// Reads a complete native catalog window under unchanged issued credit.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn search_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        self.with_default_search_wait(|this| {
+            let deadline = query_preparation::QueryReadDeadline::new(
+                CLIENT_REQUEST_TIMEOUT,
+                this.search_wait_scope
+                    .as_ref()
+                    .or(this.request_context.as_ref()),
+            )?;
+            if this.prepared_query.is_some() {
+                return this.resume_prepared_query_window(
+                    "Search",
+                    text,
+                    window.issued().get(),
+                    continuation,
+                    Some(deadline.remaining()?),
+                    Some(window),
+                );
+            }
+            let revision = this.revision_with_budget(deadline.remaining()?)?;
+            let query = Query::new(text, revision.root, window.issued())
+                .with_window(window)
+                .ok_or_else(|| ClientError::Protocol("search window changed credit".to_owned()))?;
+            let query = if let Some(cursor) = continuation {
+                query.with_cursor(cursor.cursor())
+            } else {
+                query
+            };
+            this.send_success_with_budget(
+                Command::Search(query),
+                Some(this.page_certificate(revision.certificate, continuation)),
+                Some(deadline.remaining()?),
+            )
+        })
+    }
+
     fn with_default_search_wait<T>(
         &mut self,
         call: impl FnOnce(&mut Self) -> Result<T, ClientError>,
@@ -1269,6 +1343,46 @@ impl Session {
         let query = match continuation {
             Some(cursor) => query.with_cursor(cursor.cursor()),
             None => query,
+        };
+        self.send_success(
+            Command::Name(query),
+            Some(self.page_certificate(revision.certificate, continuation)),
+        )
+    }
+
+    /// Reads a complete name window, independently bounding this delivery.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn names_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_query_window(
+                "Name",
+                text,
+                window.issued().get(),
+                continuation,
+                None,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let query = NameQuery::new(text, revision.root, window.issued())
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("name window changed credit".to_owned()))?;
+        let query = if let Some(cursor) = continuation {
+            query.with_cursor(cursor.cursor())
+        } else {
+            query
         };
         self.send_success(
             Command::Name(query),
@@ -1468,6 +1582,48 @@ impl Session {
         )
     }
 
+    /// Reads a plain graph window from the exact admitted input frontier.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn graph_page_window(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_graph_window(
+                SymbolAddress::canonical(symbol_key(coordinate)),
+                window.issued().get(),
+                continuation,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let symbol = symbol_key(coordinate);
+        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+            value: coordinate.to_owned(),
+        });
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        self.send_success(
+            Command::GraphPage {
+                symbol: SymbolAddress::canonical(symbol),
+                page,
+            },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
     /// Reads a bounded graph page for a producer-admitted selected symbol.
     ///
     /// # Errors
@@ -1607,8 +1763,15 @@ impl Session {
             let budget = request
                 .budget()
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            let source = match request.source() {
+                backend_library::SemanticShapeSource::Inline(source) => source.clone(),
+                backend_library::SemanticShapeSource::Reference(reference) => {
+                    self.semantic_source(reference.clone())?
+                }
+            };
             let (_, admitted_request, reply) = self.read_semantic_shapes(
-                request.source().clone(),
+                source,
+                request.source_epoch(),
                 keys.into_boxed_slice(),
                 budget,
             )?;
@@ -1619,6 +1782,20 @@ impl Session {
             .map_err(ClientError::Protocol)?;
             return Ok(SurfaceReply::SemanticShapes(export));
         }
+        let source_read = match &command {
+            SurfaceCommand::SemanticSource { request } => {
+                Some((request.reference.source.clone(), request.range.clone()))
+            }
+            _ => None,
+        };
+        let version_read = match &command {
+            SurfaceCommand::SemanticVersions {
+                package,
+                limit,
+                cursor,
+            } => Some((package.clone(), *limit, cursor.clone())),
+            _ => None,
+        };
         let expected = command.id();
         let reply = self.send_success(Command::Surface(command), None)?;
         let CommandReply::Surface(reply) = reply.reply else {
@@ -1626,9 +1803,29 @@ impl Session {
                 "surface reply changed shape".to_owned(),
             ));
         };
-        reply
-            .admit(expected)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if let Some((source, range)) = source_read {
+            let SurfaceReply::SemanticSource(chunk) = &reply else {
+                return Err(ClientError::Protocol(
+                    "semantic source reply changed shape".to_owned(),
+                ));
+            };
+            chunk
+                .admit_range(&source, &range)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        } else {
+            reply
+                .admit(expected)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
+        if let Some((package, limit, cursor)) = version_read {
+            let SurfaceReply::SemanticVersionsPage(page) = &reply else {
+                return Err(ClientError::Protocol(
+                    "paged semantic-versions command requires a native descriptor page".to_owned(),
+                ));
+            };
+            page.admit_request(&package, limit, cursor.as_ref())
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
         Ok(reply)
     }
 
@@ -1792,12 +1989,117 @@ impl Session {
         &mut self,
         package: PackageReference,
     ) -> Result<Box<[SemanticVersionRecord]>, ClientError> {
-        match self.surface(SurfaceCommand::SemanticVersions { package })? {
-            SurfaceReply::SemanticVersions(records) => Ok(records),
+        let mut cursor = None;
+        let mut records = Vec::new();
+        loop {
+            let reply = self.surface(SurfaceCommand::SemanticVersions {
+                package: package.clone(),
+                limit: 1,
+                cursor,
+            })?;
+            let SurfaceReply::SemanticVersionsPage(page) = reply else {
+                return Err(ClientError::Protocol(
+                    "semantic versions reply changed shape".to_owned(),
+                ));
+            };
+            for entry in &page.entries {
+                let backend_library::SemanticVersionDescriptor::Available { reference } = entry
+                else {
+                    return Err(ClientError::Protocol(
+                        "exact semantic source retention is unavailable".to_owned(),
+                    ));
+                };
+                records.push(self.semantic_source(reference.clone())?);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(records.into_boxed_slice())
+    }
+
+    /// Reads a bounded native version descriptor page with exact root bindings.
+    ///
+    /// # Errors
+    /// Refuses stale/foreign continuations and malformed native page replies.
+    pub fn semantic_versions_page(
+        &mut self,
+        package: PackageReference,
+        limit: u16,
+        cursor: Option<backend_library::SemanticVersionsCursor>,
+    ) -> Result<backend_library::SemanticVersionsPage, ClientError> {
+        match self.surface(SurfaceCommand::SemanticVersions {
+            package,
+            limit,
+            cursor,
+        })? {
+            SurfaceReply::SemanticVersionsPage(page) => Ok(page),
             _ => Err(ClientError::Protocol(
-                "semantic versions reply changed shape".to_owned(),
+                "semantic versions page changed shape".to_owned(),
             )),
         }
+    }
+
+    /// Reconstructs one complete captured record through exact native ranges.
+    ///
+    /// # Errors
+    /// Refuses gaps, reordered or foreign chunks, changed extents and digest
+    /// mismatch; each source read retains the same portable owner reference.
+    pub fn semantic_source(
+        &mut self,
+        reference: backend_library::SemanticSourceReference,
+    ) -> Result<SemanticVersionRecord, ClientError> {
+        let mut assembly = backend_library::SemanticSourceAssembly::new(reference.source.clone())
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        loop {
+            let range = backend_library::SemanticSourceRange {
+                offset: assembly
+                    .offset()
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?,
+                ..Default::default()
+            };
+            let admitted = self.semantic_source_range(&reference, range)?;
+            let complete = admitted.complete();
+            assembly
+                .append_admitted(admitted)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            if complete {
+                break;
+            }
+        }
+        assembly
+            .finish()
+            .map_err(|error| ClientError::Protocol(error.to_string()))
+    }
+
+    fn semantic_source_range(
+        &mut self,
+        reference: &backend_library::SemanticSourceReference,
+        range: backend_library::SemanticSourceRange,
+    ) -> Result<backend_library::AdmittedSemanticSourceChunk, ClientError> {
+        let command = SurfaceCommand::SemanticSource {
+            request: backend_library::SemanticSourceRequest {
+                reference: reference.clone(),
+                range: range.clone(),
+            },
+        };
+        command
+            .admit()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let reply = self.send_success(Command::Surface(command), None)?;
+        let CommandReply::Surface(SurfaceReply::SemanticSource(chunk)) = reply.reply else {
+            return Err(ClientError::Protocol(
+                "semantic source range reply changed shape".to_owned(),
+            ));
+        };
+        let admitted = chunk
+            .admit_decoded()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        admitted
+            .correlate(&reference.source, &range)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(admitted)
     }
 
     /// Reads one bounded page of exact source File rows selected by a local Project.
@@ -1857,11 +2159,13 @@ impl Session {
     pub fn semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: &[SymbolKey],
         budget: SemanticShapeBudget,
     ) -> Result<SemanticShapeBatch, ClientError> {
         self.read_semantic_shapes(
             source,
+            source_epoch,
             symbols
                 .iter()
                 .copied()
@@ -1876,6 +2180,7 @@ impl Session {
     fn read_semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: Box<[SymbolAddress]>,
         budget: SemanticShapeBudget,
     ) -> Result<(SemanticShapeBatch, SemanticShapeRequest, ReplyDto), ClientError> {
@@ -1893,8 +2198,9 @@ impl Session {
                     id: encode_id(&symbol.claimed_bytes()),
                 })
             });
-        let request = SemanticShapeRequest::new(revision.root, source, symbols, budget)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let request =
+            SemanticShapeRequest::new(revision.root, source, source_epoch, symbols, budget)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let reply =
             self.send_success(Command::SemanticShapes(request.clone()), Some(certificate))?;
         let CommandReply::SemanticShapes(batch) = &reply.reply else {
@@ -2139,6 +2445,11 @@ fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {
 
 fn require_command_success(reply: ReplyDto) -> Result<ReplyDto, ClientError> {
     match &reply.reply {
+        CommandReply::Failed(CommandFailure::ReplyTooLarge { basis }) => {
+            Err(ClientError::ResponseTooLarge {
+                basis: Some(*basis),
+            })
+        }
         CommandReply::Failed(failure) => Err(ClientError::CommandFailed(failure.clone())),
         // `Error` remains decodable for peers using the pre-typed reply schema.
         CommandReply::Error(message) => Err(ClientError::Protocol(message.clone())),
@@ -2336,7 +2647,10 @@ fn write_body(writer: &mut impl Write, body: &[u8]) -> Result<(), ClientError> {
 }
 
 fn read_body(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
-    read_frame(reader, limits()).map_err(map_frame)
+    read_frame(reader, limits()).map_err(|error| match error {
+        LocalControlError::FrameTooLarge => ClientError::ResponseFrameTooLarge { basis: None },
+        other => map_frame(other),
+    })
 }
 
 /// Admits one bounded command.
@@ -2373,12 +2687,16 @@ pub fn admit_reply_with_capability(
 ) -> Result<ReplyDto, ClientError> {
     backend_library::admit_reply_with_capability(request, &reply, capability).map_err(map_reply)?;
     if backend_library::reply_memory_bound(&reply) > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     let encoded =
         serde_json::to_vec(&reply).map_err(|error| ClientError::Protocol(error.to_string()))?;
     if encoded.len() > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     Ok(reply)
 }

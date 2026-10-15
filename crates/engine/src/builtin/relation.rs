@@ -21,7 +21,7 @@ use backend_library::{
     MAX_RUST_CARGO_METADATA_TEXT_BYTES,
 };
 use backend_replication::ImmutableObjectSchema;
-use backend_semantic::vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::{LanguageProfile, PythonVersion};
 use backend_version::{
     CanonicalRelation, ContentId, CoverageWitness, CutPolicy, DEFAULT_CUT_POLICY, Relation,
     RelationState, SourceFactDomain, StateRoot, WorkspaceRoot, anchored_cut_points,
@@ -59,7 +59,93 @@ const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
 
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 14;
+const SOURCE_RECORD_VERSION: u8 = 16;
+
+/// File format with a literal supported Python minor, full facts, and optional identity.
+const SOURCE_RECORD_FORMAT_PYTHON_PROFILE: &[u8; 4] = b"PSRF";
+
+/// Exact bindings with an optional Python minor, full facts, and optional identity.
+const SOURCE_RECORD_FORMAT_BINDINGS: &[u8; 4] = b"PSRG";
+
+/// Orthogonal file-only extensions. Historical formats keep their exact bytes;
+/// Python's literal-profile layout never acquires the binding layout's fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileRecordExtension {
+    Legacy,
+    PythonProfile,
+    Bindings,
+}
+
+impl FileRecordExtension {
+    fn for_file(declarations: &[SourceDeclaration], python_version: Option<PythonVersion>) -> Self {
+        if declarations.iter().any(|declaration| {
+            matches!(
+                declaration.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(_)
+            ) || matches!(declaration.container(), Container::Binding { .. })
+        }) {
+            Self::Bindings
+        } else if python_version.is_some() {
+            Self::PythonProfile
+        } else {
+            Self::Legacy
+        }
+    }
+
+    const fn from_version(version: u8) -> Self {
+        match version {
+            15 => Self::PythonProfile,
+            16 => Self::Bindings,
+            _ => Self::Legacy,
+        }
+    }
+
+    const fn format(self) -> Option<&'static [u8; 4]> {
+        match self {
+            Self::Legacy => None,
+            Self::PythonProfile => Some(SOURCE_RECORD_FORMAT_PYTHON_PROFILE),
+            Self::Bindings => Some(SOURCE_RECORD_FORMAT_BINDINGS),
+        }
+    }
+
+    fn profile_byte(self, profile: Option<PythonVersion>) -> Option<u8> {
+        let minor = |profile| match profile {
+            PythonVersion::Python310 => 10,
+            PythonVersion::Python311 => 11,
+            PythonVersion::Python312 => 12,
+            PythonVersion::Python313 => 13,
+            PythonVersion::Python314 => 14,
+        };
+        match self {
+            Self::Legacy => None,
+            Self::PythonProfile => Some(minor(profile.expect("selected literal Python profile"))),
+            Self::Bindings => Some(profile.map_or(0, minor)),
+        }
+    }
+
+    fn decode_profile(
+        self,
+        reader: &mut SourceReader<'_>,
+        language: SourceLanguage,
+    ) -> Result<Option<PythonVersion>, ()> {
+        if self == Self::Legacy {
+            return Ok(None);
+        }
+        let profile = match reader.byte()? {
+            0 if self == Self::Bindings => return Ok(None),
+            10 => PythonVersion::Python310,
+            11 => PythonVersion::Python311,
+            12 => PythonVersion::Python312,
+            13 => PythonVersion::Python313,
+            14 => PythonVersion::Python314,
+            _ => return Err(()),
+        };
+        if language != SourceLanguage::Python {
+            return Err(());
+        }
+        Ok(Some(profile))
+    }
+}
 
 /// Minimum file keys in every non-final membership page. The shared
 /// content-defined cut policy also cuts on encoded-byte anchors; 256 remains
@@ -92,7 +178,9 @@ const PROJECT_MEMBERSHIP_CUT_POLICY: CutPolicy = CutPolicy::new(
 /// states which `SourceFactDomain` content identity its exact bytes hash to",
 /// `PSRC` carries Cargo alias observations on an inline project frontier,
 /// `PSRD` carries paged project membership or one project-bound membership
-/// page, and `PSRE` adds exact page-prefix offsets.
+/// page, `PSRE` adds exact page-prefix offsets, `PSRF` carries a literal Python
+/// minor, and `PSRG` adds exact binding byte anchors and lexical targets with
+/// an optional Python minor. Other record kinds keep their existing minimal tags.
 ///
 /// Decoding stays liberal - it admits a `PSR9` record that states no
 /// containment and normalizes it to `PSR8` on the way out - because refusing
@@ -121,10 +209,15 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
         ProductSourceRecord::Project { .. } => SOURCE_RECORD_FORMAT_PLAIN,
         ProductSourceRecord::File {
             declarations,
+            python_version,
             source_identity,
             ..
         } => {
-            if states_facts(declarations) {
+            if let Some(format) =
+                FileRecordExtension::for_file(declarations, *python_version).format()
+            {
+                format
+            } else if states_facts(declarations) {
                 SOURCE_RECORD_FORMAT_FACTS
             } else if source_identity.is_some() {
                 SOURCE_RECORD_FORMAT_IDENTIFIED
@@ -165,6 +258,8 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'C' => 12,
         b'D' => 13,
         b'E' => 14,
+        b'F' => 15,
+        b'G' => 16,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -212,6 +307,9 @@ pub enum ProductSourceRecord {
         content_version: [u8; 32],
         /// Identity of the parser, grammar, and extraction contract.
         analysis_version: [u8; 32],
+        /// Actual admitted Python minor. None means a historical legacy record,
+        /// whose Python producer used 3.14; it does not infer a current environment.
+        python_version: Option<PythonVersion>,
         /// The `SourceFactDomain` content identity the semantic compiler
         /// derives from the same bytes, when it is known to the producer.
         ///
@@ -684,6 +782,8 @@ pub struct ProductFileRef<'a> {
     pub content_version: [u8; 32],
     /// Parser, grammar, and extraction contract identity.
     pub analysis_version: [u8; 32],
+    /// Explicit admitted Python minor; None preserves historical 3.14 records.
+    pub python_version: Option<PythonVersion>,
     /// The semantic source content identity, when the producer stated it.
     pub source_identity: Option<ContentId<SourceFactDomain>>,
     /// Shared declaration storage.
@@ -1069,6 +1169,7 @@ impl ProductSourceRecord {
             declarations,
             retention,
             None,
+            None,
         )
     }
 
@@ -1081,14 +1182,21 @@ impl ProductSourceRecord {
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         retention: DeclarationRetention,
         source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
+        if python_version.is_some() && language != SourceLanguage::Python {
+            return Err("Python profile is invalid on a different language row".to_owned());
+        }
         if path.is_empty() || path.len() > Self::MAX_LABEL_BYTES {
             return Err("source file path is empty or oversized".to_owned());
         }
         if declarations.len() > Self::MAX_FILE_DECLARATIONS {
             return Err("source file declaration set is oversized".to_owned());
+        }
+        for declaration in declarations.iter() {
+            declaration.admit_binding_parentage()?;
         }
         let record = Self::File {
             project,
@@ -1096,6 +1204,7 @@ impl ProductSourceRecord {
             language,
             content_version,
             analysis_version,
+            python_version,
             source_identity,
             declarations,
             retention,
@@ -1168,6 +1277,7 @@ impl ProductSourceRecord {
             analysis_version,
             declarations,
             None,
+            None,
         )
     }
 
@@ -1197,6 +1307,62 @@ impl ProductSourceRecord {
             analysis_version,
             declarations,
             Some(source_identity),
+            None,
+        )
+    }
+
+    /// Constructs a source row using its final admitted Python profile. The profile
+    /// participates in every compaction probe, together with semantic identity.
+    ///
+    /// # Errors
+    /// Rejects non-Python profile claims or a bare identity exceeding the row bound.
+    pub fn profiled_file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: ContentId<SourceFactDomain>,
+        python_version: Option<PythonVersion>,
+    ) -> Result<Self, String> {
+        if python_version.is_some() && language != SourceLanguage::Python {
+            return Err("Python profile is invalid on a different language row".to_owned());
+        }
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            Some(source_identity),
+            python_version,
+        )
+    }
+
+    /// Constructs an unavailable source row with the same explicit project profile.
+    ///
+    /// # Errors
+    /// Rejects an invalid path/profile claim or a row exceeding the canonical bound.
+    pub fn profiled_file_unavailable(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        analysis_version: [u8; 32],
+        reason: SourceUnavailableReason,
+        python_version: Option<PythonVersion>,
+    ) -> Result<Self, String> {
+        Self::file_with_retention_and_identity(
+            project,
+            path,
+            language,
+            [0; 32],
+            analysis_version,
+            Vec::new(),
+            DeclarationRetention::Unavailable(reason),
+            None,
+            python_version,
         )
     }
 
@@ -1208,6 +1374,7 @@ impl ProductSourceRecord {
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
         let path = path.into();
         let extracted = declarations.into();
@@ -1221,6 +1388,7 @@ impl ProductSourceRecord {
                 declarations,
                 retention,
                 source_identity,
+                python_version,
             )
         };
         if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
@@ -1322,6 +1490,7 @@ impl ProductSourceRecord {
                 language,
                 content_version,
                 analysis_version,
+                python_version,
                 source_identity,
                 declarations,
                 retention,
@@ -1331,6 +1500,7 @@ impl ProductSourceRecord {
                 language: *language,
                 content_version: *content_version,
                 analysis_version: *analysis_version,
+                python_version: *python_version,
                 source_identity: *source_identity,
                 declarations,
                 retention: *retention,
@@ -1566,6 +1736,7 @@ fn shed_prose(declarations: &[SourceDeclaration]) -> Result<Arc<[SourceDeclarati
                 reduced
                     .with_source_excerpt(SourceExcerpt::NotHydrated)
                     .with_container(declaration.container().clone())
+                    .with_binding_identity(declaration.binding_identity())
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -1612,7 +1783,8 @@ impl Relation for ProductSourceRelation {
     }
 
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        output.extend_from_slice(source_record_format(value));
+        let format = source_record_format(value);
+        output.extend_from_slice(format);
         match value {
             ProductSourceRecord::Project {
                 label,
@@ -1659,7 +1831,7 @@ impl Relation for ProductSourceRelation {
                     encode_cargo_package_alias_evidence(evidence, output);
                 }
             }
-            ProductSourceRecord::File { .. } => encode_file_record(value, output),
+            ProductSourceRecord::File { .. } => encode_file_record(value, format, output),
             ProductSourceRecord::MembershipPage { project, files } => {
                 output.push(3);
                 output.extend_from_slice(project);
@@ -1673,13 +1845,14 @@ impl Relation for ProductSourceRelation {
 }
 
 /// Encodes one file record body after the format tag.
-fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
+fn encode_file_record(value: &ProductSourceRecord, format: &[u8; 4], output: &mut Vec<u8>) {
     let ProductSourceRecord::File {
         project,
         path,
         language,
         content_version,
         analysis_version,
+        python_version,
         source_identity,
         declarations,
         retention,
@@ -1687,8 +1860,11 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
     else {
         return;
     };
-    let format = source_record_format(value);
-    let factual = format == SOURCE_RECORD_FORMAT_FACTS;
+    let extension = FileRecordExtension::from_version(
+        format_version(format).expect("selected canonical source format"),
+    );
+    let bindings = extension == FileRecordExtension::Bindings;
+    let factual = format == SOURCE_RECORD_FORMAT_FACTS || extension != FileRecordExtension::Legacy;
     let identified = !factual && source_identity.is_some();
     debug_assert_eq!(
         identified,
@@ -1702,6 +1878,9 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
     output.push(language.wire_tag());
     output.extend_from_slice(content_version);
     output.extend_from_slice(analysis_version);
+    if let Some(profile) = extension.profile_byte(*python_version) {
+        output.push(profile);
+    }
     if factual {
         match source_identity {
             Some(identity) => {
@@ -1736,6 +1915,9 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         }
         if factual {
             push_facts(output, declaration.facts());
+        }
+        if bindings {
+            push_binding_identity(output, declaration.binding_identity());
         }
     }
 }
@@ -1772,10 +1954,38 @@ fn push_optional_text(output: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-/// Encodes one declaration's extracted containment.
+/// Encodes one minimal captured-name anchor.
+pub(super) fn push_binding(output: &mut Vec<u8>, binding: backend_compile::SourceBinding) {
+    let (start, end) = binding.name();
+    for offset in [start, end] {
+        output.extend_from_slice(&offset.to_be_bytes());
+    }
+}
+
+pub(super) fn push_binding_identity(
+    output: &mut Vec<u8>,
+    identity: backend_compile::SourceBindingIdentity,
+) {
+    match identity {
+        backend_compile::SourceBindingIdentity::Legacy => output.push(0),
+        backend_compile::SourceBindingIdentity::Exact(capture) => {
+            output.push(1);
+            let (start, end) = capture.owner();
+            output.extend_from_slice(&start.to_be_bytes());
+            output.extend_from_slice(&end.to_be_bytes());
+            push_binding(output, capture.binding());
+        }
+    }
+}
+
+/// Encodes legacy metadata or an exact lexical binding target.
 fn push_container(output: &mut Vec<u8>, container: &Container) {
     match container {
         Container::Module => output.push(0),
+        Container::Binding { binding } => {
+            output.push(3);
+            push_binding(output, *binding);
+        }
         Container::Enclosing { name, line } => {
             output.push(1);
             push_text(output, name);
@@ -2056,8 +2266,9 @@ const fn cargo_alias_unavailable_from_tag(tag: u8) -> Option<CargoPackageAliasUn
 fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
     let mut reader = SourceReader::new(bytes);
     let version = format_version(reader.take(4)?).ok_or(())?;
+    let extension = FileRecordExtension::from_version(version);
     let record = match reader.byte()? {
-        1 => {
+        1 if extension == FileRecordExtension::Legacy => {
             let label = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
             let source_version = reader.array()?;
             if version >= 13 {
@@ -2108,8 +2319,10 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                 }
             }
         }
-        2 if version < 12 => decode_file_record(&mut reader, version)?,
-        3 if version >= 13 => {
+        2 if version < 12 || extension != FileRecordExtension::Legacy => {
+            decode_file_record(&mut reader, version, extension)?
+        }
+        3 if version >= 13 && extension == FileRecordExtension::Legacy => {
             let project = reader.array()?;
             let count = reader.count(MAX_PROJECT_MEMBERSHIP_PAGE_FILES)?;
             let mut files = Vec::with_capacity(count);
@@ -2128,6 +2341,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
 fn decode_file_record(
     reader: &mut SourceReader<'_>,
     version: u8,
+    extension: FileRecordExtension,
 ) -> Result<ProductSourceRecord, ()> {
     let project = reader.array()?;
     let path = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
@@ -2138,6 +2352,7 @@ fn decode_file_record(
     } else {
         [0; 32]
     };
+    let python_version = extension.decode_profile(reader, language)?;
     let source_identity = if version >= 11 {
         match reader.byte()? {
             0 => None,
@@ -2160,7 +2375,9 @@ fn decode_file_record(
     let contained = version >= 9;
     let mut declarations = Vec::with_capacity(count);
     for _ in 0..count {
-        declarations.push(decode_declaration(reader, version, &path, contained)?);
+        declarations.push(decode_declaration(
+            reader, version, extension, &path, contained,
+        )?);
     }
     if version == 6 {
         skip_legacy_semantics(reader)?;
@@ -2174,6 +2391,7 @@ fn decode_file_record(
         declarations,
         retention,
         source_identity,
+        python_version,
     )
     .map_err(|_| ())
 }
@@ -2182,6 +2400,7 @@ fn decode_file_record(
 fn decode_declaration(
     reader: &mut SourceReader<'_>,
     version: u8,
+    extension: FileRecordExtension,
     path: &str,
     contained: bool,
 ) -> Result<SourceDeclaration, ()> {
@@ -2208,7 +2427,7 @@ fn decode_declaration(
         SourceExcerpt::NotCaptured
     };
     let decoded_container = if contained {
-        decode_container(reader)?
+        decode_container(reader, extension == FileRecordExtension::Bindings)?
     } else {
         Container::Module
     };
@@ -2216,6 +2435,15 @@ fn decode_declaration(
         decode_facts(reader)?
     } else {
         DeclarationFacts::UNOBSERVED
+    };
+    let identity = if extension == FileRecordExtension::Bindings {
+        match reader.byte()? {
+            0 => backend_compile::SourceBindingIdentity::Legacy,
+            1 => backend_compile::SourceBindingIdentity::Exact(decode_binding_capture(reader)?),
+            _ => return Err(()),
+        }
+    } else {
+        backend_compile::SourceBindingIdentity::Legacy
     };
     Ok(SourceDeclaration::with_location(
         SourceLocation::new(declaration_path, line).map_err(|_| ())?,
@@ -2227,6 +2455,7 @@ fn decode_declaration(
     .map_err(|_| ())?
     .with_source_excerpt(source_excerpt)
     .with_container(decoded_container)
+    .with_binding_identity(identity)
     .with_facts(facts))
 }
 
@@ -2261,10 +2490,29 @@ fn decode_optional_text(reader: &mut SourceReader<'_>) -> Result<Option<String>,
         _ => Err(()),
     }
 }
-/// Decodes one declaration's containment, rejecting an unknown discriminant.
-fn decode_container(reader: &mut SourceReader<'_>) -> Result<Container, ()> {
+/// Decodes checked capture extent evidence independently of parent identity.
+fn decode_binding_capture(
+    reader: &mut SourceReader<'_>,
+) -> Result<backend_compile::SourceBindingCapture, ()> {
+    backend_compile::SourceBindingCapture::new(
+        reader.u32()?,
+        reader.u32()?,
+        reader.u32()?,
+        reader.u32()?,
+    )
+    .ok_or(())
+}
+
+fn decode_binding(reader: &mut SourceReader<'_>) -> Result<backend_compile::SourceBinding, ()> {
+    backend_compile::SourceBinding::new(reader.u32()?, reader.u32()?).ok_or(())
+}
+
+fn decode_container(reader: &mut SourceReader<'_>, exact: bool) -> Result<Container, ()> {
     match reader.byte()? {
         0 => Ok(Container::Module),
+        3 if exact => Ok(Container::Binding {
+            binding: decode_binding(reader)?,
+        }),
         1 => {
             let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
             let line = NonZeroU32::new(reader.u32()?).ok_or(())?;
@@ -3451,6 +3699,8 @@ mod tests {
             (b'C', 12_u8),
             (b'D', 13_u8),
             (b'E', 14_u8),
+            (b'F', 15_u8),
+            (b'G', 16_u8),
         ] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
@@ -3459,7 +3709,7 @@ mod tests {
             );
         }
 
-        for tag in [b'0', b'1', b':', b';', b'<', b'F', b'?', 0xff] {
+        for tag in [b'0', b'1', b':', b';', b'<', b'H', b'?', 0xff] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 None,
@@ -3559,6 +3809,455 @@ mod tests {
     /// semantic compiler would hash the same way.
     fn fixture_source_identity() -> ContentId<SourceFactDomain> {
         ContentId::<SourceFactDomain>::from_canonical_bytes(b"fixture source bytes")
+    }
+
+    #[test]
+    fn python_profile_roundtrip_is_literal_bounded_and_preserves_legacy_bytes() {
+        use backend_semantic::vocabulary::PythonVersion;
+        let identity = fixture_source_identity();
+        for profile in [
+            PythonVersion::Python310,
+            PythonVersion::Python311,
+            PythonVersion::Python312,
+            PythonVersion::Python313,
+            PythonVersion::Python314,
+        ] {
+            let record = ProductSourceRecord::profiled_file_within_row_capacity(
+                [3; 32],
+                "main.py",
+                super::SourceLanguage::Python,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                identity,
+                Some(profile),
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(&record, &mut bytes);
+            assert_eq!(&bytes[..4], b"PSRF");
+            let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+            assert_eq!(decoded.file_fields().unwrap().python_version, Some(profile));
+            assert_eq!(decoded, record);
+            let mut again = Vec::new();
+            ProductSourceRelation::encode_value(&decoded, &mut again);
+            assert_eq!(again, bytes);
+            // The literal minor follows tag/kind/project/path/language/content/analysis.
+            let version_offset = 4 + 1 + 32 + 4 + "main.py".len() + 1 + 32 + 32;
+            bytes[version_offset] = 15;
+            assert!(ProductSourceRelation::decode_value(&bytes).is_err());
+        }
+        let legacy = legacy_file_record();
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut bytes);
+        let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+        assert_eq!(decoded.file_fields().unwrap().python_version, None);
+        let mut again = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut again);
+        assert_eq!(again, bytes);
+        assert!(
+            ProductSourceRecord::profiled_file_within_row_capacity(
+                [3; 32],
+                "lib.rs",
+                super::SourceLanguage::Rust,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                identity,
+                Some(PythonVersion::Python312)
+            )
+            .is_err()
+        );
+        let declarations = (0..2048)
+            .map(|index| wide_declaration_at_path(index, "main.py"))
+            .collect::<Vec<_>>();
+        let compact = ProductSourceRecord::profiled_file_within_row_capacity(
+            [3; 32],
+            "main.py",
+            super::SourceLanguage::Python,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+            identity,
+            Some(PythonVersion::Python312),
+        )
+        .unwrap();
+        assert!(compact.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        assert_eq!(
+            compact.file_fields().unwrap().python_version,
+            Some(PythonVersion::Python312)
+        );
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&compact, &mut bytes);
+        assert_eq!(
+            ProductSourceRelation::decode_value(&bytes).unwrap(),
+            compact
+        );
+    }
+
+    fn extension_fixture(
+        language: super::SourceLanguage,
+        profile: Option<super::PythonVersion>,
+        bindings: bool,
+        identity: bool,
+        facts: bool,
+    ) -> ProductSourceRecord {
+        use backend_compile::{SourceBindingCapture, SourceBindingIdentity};
+        let source = "def π():\n    child = 1\n";
+        let end = u32::try_from(source.len()).unwrap();
+        let parent_start = u32::try_from(source.find('π').unwrap()).unwrap();
+        let child_start = u32::try_from(source.find("child").unwrap()).unwrap();
+        let parent = SourceBindingCapture::new(0, end, parent_start, parent_start + 2).unwrap();
+        let child =
+            SourceBindingCapture::new(child_start, end, child_start, child_start + 5).unwrap();
+        assert!(parent.strictly_contains(child));
+        let declarations = [("π", 1, parent), ("child", 2, child)]
+            .into_iter()
+            .map(|(name, line, capture)| {
+                let mut declaration = SourceDeclaration::at_path(
+                    "src/π.py",
+                    name,
+                    "function",
+                    line,
+                    name,
+                    "Unicode binding fixture",
+                )
+                .unwrap()
+                .with_source_excerpt(
+                    SourceExcerpt::captured(source, SourceExcerptExtent::Complete).unwrap(),
+                );
+                if bindings {
+                    declaration =
+                        declaration.with_binding_identity(SourceBindingIdentity::Exact(capture));
+                    if line == 2 {
+                        declaration = declaration.with_container(super::Container::Binding {
+                            binding: parent.binding(),
+                        });
+                    }
+                }
+                if facts {
+                    declaration = declaration.with_facts(backend_compile::DeclarationFacts {
+                        deprecation: backend_compile::Fact::Present(
+                            backend_compile::Deprecation::new(
+                                Some("1.0"),
+                                Some("use the captured replacement"),
+                            ),
+                        ),
+                        obligation: backend_compile::Fact::Present(
+                            backend_compile::Obligation::Required,
+                        ),
+                    });
+                }
+                declaration
+            })
+            .collect::<Vec<_>>();
+        ProductSourceRecord::file_with_retention_and_identity(
+            [3; 32],
+            "src/π.py",
+            language,
+            [4; 32],
+            [5; 32],
+            declarations,
+            DeclarationRetention::Complete,
+            identity
+                .then(|| ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes())),
+            profile,
+        )
+        .expect("admitted extension fixture")
+    }
+
+    fn encode_source_record(record: &ProductSourceRecord) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(record, &mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn python_profile_and_exact_bindings_round_trip_the_full_feature_cross_product() {
+        use backend_semantic::vocabulary::PythonVersion;
+        for profile in [
+            None,
+            Some(PythonVersion::Python310),
+            Some(PythonVersion::Python311),
+            Some(PythonVersion::Python312),
+            Some(PythonVersion::Python313),
+            Some(PythonVersion::Python314),
+        ] {
+            for bindings in [false, true] {
+                for identity in [false, true] {
+                    for facts in [false, true] {
+                        let record = extension_fixture(
+                            super::SourceLanguage::Python,
+                            profile,
+                            bindings,
+                            identity,
+                            facts,
+                        );
+                        let encoded = encode_source_record(&record);
+                        let expected = if bindings {
+                            b"PSRG"
+                        } else if profile.is_some() {
+                            b"PSRF"
+                        } else if facts {
+                            b"PSRB"
+                        } else if identity {
+                            b"PSRA"
+                        } else {
+                            b"PSR8"
+                        };
+                        assert_eq!(&encoded[..4], expected, "smallest admitted tag");
+                        let decoded = ProductSourceRelation::decode_value(&encoded).unwrap();
+                        assert_eq!(
+                            decoded, record,
+                            "profile, UTF-8 anchors, lexical parents, facts and identity"
+                        );
+                        assert_eq!(
+                            encode_source_record(&decoded),
+                            encoded,
+                            "exact restart bytes"
+                        );
+                        if bindings {
+                            let fields = decoded.file_fields().unwrap();
+                            let backend_compile::SourceBindingIdentity::Exact(parent) =
+                                fields.declarations[0].binding_identity()
+                            else {
+                                panic!("exact parent anchor");
+                            };
+                            let source = "def π():\n    child = 1\n";
+                            let (start, end) = parent.name();
+                            assert_eq!(&source[start as usize..end as usize], "π");
+                            assert_eq!(
+                                fields.declarations[1].container(),
+                                &super::Container::Binding {
+                                    binding: parent.binding()
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let typescript =
+            extension_fixture(super::SourceLanguage::TypeScript, None, true, true, true);
+        let encoded = encode_source_record(&typescript);
+        let offset = 4 + 1 + 32 + 4 + "src/π.py".len() + 1 + 32 + 32;
+        assert_eq!(
+            encoded[offset], 0,
+            "bindings permit an absent Python profile"
+        );
+        assert_eq!(
+            ProductSourceRelation::decode_value(&encoded).unwrap(),
+            typescript
+        );
+    }
+
+    #[test]
+    fn literal_python_profile_extension_keeps_its_independent_exact_bytes() {
+        use backend_semantic::vocabulary::PythonVersion;
+        for (profile, minor) in [
+            (PythonVersion::Python310, 10),
+            (PythonVersion::Python311, 11),
+            (PythonVersion::Python312, 12),
+            (PythonVersion::Python313, 13),
+            (PythonVersion::Python314, 14),
+        ] {
+            let record = ProductSourceRecord::file_with_retention_and_identity(
+                [3; 32],
+                "main.py",
+                super::SourceLanguage::Python,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                DeclarationRetention::Complete,
+                None,
+                Some(profile),
+            )
+            .unwrap();
+            let mut expected = b"PSRF".to_vec();
+            expected.push(2);
+            expected.extend_from_slice(&[3; 32]);
+            super::push_text(&mut expected, "main.py");
+            expected.push(super::SourceLanguage::Python.wire_tag());
+            expected.extend_from_slice(&[4; 32]);
+            expected.extend_from_slice(&[5; 32]);
+            expected.extend_from_slice(&[minor, 0, 0]); // Literal minor, absent identity, complete retention.
+            expected.extend_from_slice(&0_u32.to_be_bytes());
+            assert_eq!(encode_source_record(&record), expected);
+            assert_eq!(
+                ProductSourceRelation::decode_value(&expected).unwrap(),
+                record
+            );
+        }
+    }
+
+    #[test]
+    fn file_extensions_reject_unknown_foreign_profiles_and_incomplete_or_extra_payloads() {
+        use backend_semantic::vocabulary::PythonVersion;
+        let path = "src/π.py";
+        let language_offset = 4 + 1 + 32 + 4 + path.len();
+        let profile_offset = language_offset + 1 + 32 + 32;
+        for bindings in [false, true] {
+            let record = extension_fixture(
+                super::SourceLanguage::Python,
+                Some(PythonVersion::Python312),
+                bindings,
+                true,
+                true,
+            );
+            let encoded = encode_source_record(&record);
+            for minor in [1, 9, 15, 255] {
+                let mut invalid = encoded.clone();
+                invalid[profile_offset] = minor;
+                assert!(ProductSourceRelation::decode_value(&invalid).is_err());
+            }
+            let mut no_profile = encoded.clone();
+            no_profile[profile_offset] = 0;
+            assert_eq!(
+                ProductSourceRelation::decode_value(&no_profile).is_ok(),
+                bindings,
+                "only PSRG permits no profile"
+            );
+            let mut foreign = encoded.clone();
+            foreign[language_offset] = super::SourceLanguage::TypeScript.wire_tag();
+            assert!(ProductSourceRelation::decode_value(&foreign).is_err());
+            for end in 0..encoded.len() {
+                assert!(
+                    ProductSourceRelation::decode_value(&encoded[..end]).is_err(),
+                    "truncation at {end}"
+                );
+            }
+            let mut extra = encoded;
+            extra.push(0);
+            assert!(ProductSourceRelation::decode_value(&extra).is_err());
+        }
+        assert!(
+            ProductSourceRecord::file_with_retention_and_identity(
+                [3; 32],
+                path,
+                super::SourceLanguage::TypeScript,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                DeclarationRetention::Complete,
+                None,
+                Some(PythonVersion::Python312),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn binding_extension_checks_parentage_and_cannot_grant_binding_fields_to_psrf() {
+        use backend_semantic::vocabulary::PythonVersion;
+        let record = extension_fixture(
+            super::SourceLanguage::Python,
+            Some(PythonVersion::Python312),
+            true,
+            false,
+            false,
+        );
+        let encoded = encode_source_record(&record);
+        // The final exact identity is one discriminant and four checked u32 offsets.
+        let identity_offset = encoded.len() - 17;
+        assert_eq!(encoded[identity_offset], 1);
+        let mut unknown = encoded.clone();
+        unknown[identity_offset] = 2;
+        assert!(ProductSourceRelation::decode_value(&unknown).is_err());
+        let mut outside = encoded.clone();
+        outside[identity_offset + 1..identity_offset + 5].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(ProductSourceRelation::decode_value(&outside).is_err());
+        let mut missing_child = encoded.clone();
+        missing_child[identity_offset] = 0;
+        missing_child.truncate(identity_offset + 1);
+        assert!(
+            ProductSourceRelation::decode_value(&missing_child).is_err(),
+            "exact parent requires exact child"
+        );
+        // Two unobserved fact bytes precede the identity; binding containment has
+        // one discriminant plus the parent's two captured-name offsets.
+        let container_offset = identity_offset - 2 - 9;
+        assert_eq!(encoded[container_offset], 3);
+        let backend_compile::SourceBindingIdentity::Exact(child) =
+            record.file_fields().unwrap().declarations[1].binding_identity()
+        else {
+            panic!("exact child");
+        };
+        let mut self_parent = encoded;
+        let (start, end) = child.name();
+        self_parent[container_offset + 1..container_offset + 5]
+            .copy_from_slice(&start.to_be_bytes());
+        self_parent[container_offset + 5..container_offset + 9].copy_from_slice(&end.to_be_bytes());
+        assert!(
+            ProductSourceRelation::decode_value(&self_parent).is_err(),
+            "self parent rejected"
+        );
+
+        let fields = record.file_fields().unwrap();
+        for index in [0, 1] {
+            let single = ProductSourceRecord::file_with_retention_and_identity(
+                [3; 32],
+                "src/π.py",
+                super::SourceLanguage::Python,
+                [4; 32],
+                [5; 32],
+                vec![fields.declarations[index].clone()],
+                DeclarationRetention::Complete,
+                None,
+                Some(PythonVersion::Python312),
+            )
+            .unwrap();
+            let mut as_profile = encode_source_record(&single);
+            as_profile[..4].copy_from_slice(b"PSRF");
+            assert!(
+                ProductSourceRelation::decode_value(&as_profile).is_err(),
+                "PSRF never consumes binding identity bytes"
+            );
+            as_profile.truncate(as_profile.len() - 17);
+            if index == 0 {
+                let legacy = ProductSourceRelation::decode_value(&as_profile).unwrap();
+                assert_eq!(
+                    legacy.file_fields().unwrap().declarations[0].binding_identity(),
+                    backend_compile::SourceBindingIdentity::Legacy
+                );
+                assert_eq!(encode_source_record(&legacy), as_profile);
+            } else {
+                assert!(
+                    ProductSourceRelation::decode_value(&as_profile).is_err(),
+                    "PSRF cannot grant Binding containment"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn file_only_extensions_reject_project_membership_and_reserved_file_kinds() {
+        let update = ProductSourceRecord::project_with_membership_pages(
+            "fixture",
+            [7; 32],
+            ordered_membership_keys(ProductSourceRecord::MAX_FRONTIER_FILES + 1),
+            None,
+        )
+        .unwrap();
+        for record in [update.project_record(), &update.membership_pages()[0].1] {
+            let encoded = encode_source_record(record);
+            assert_eq!(
+                ProductSourceRelation::decode_value(&encoded).unwrap(),
+                *record
+            );
+            for tag in [b"PSRF", b"PSRG"] {
+                let mut file_only = encoded.clone();
+                file_only[..4].copy_from_slice(tag);
+                assert!(
+                    ProductSourceRelation::decode_value(&file_only).is_err(),
+                    "file-only tag cannot change record kind"
+                );
+            }
+        }
+        for tag in [b"PSRC", b"PSRD", b"PSRE"] {
+            let mut reserved = legacy_file_record_bytes();
+            reserved[..4].copy_from_slice(tag);
+            assert!(ProductSourceRelation::decode_value(&reserved).is_err());
+        }
     }
 
     #[test]
@@ -3785,8 +4484,12 @@ mod tests {
     }
 
     fn wide_declaration(index: usize) -> SourceDeclaration {
+        wide_declaration_at_path(index, "src/lib.rs")
+    }
+
+    fn wide_declaration_at_path(index: usize, path: &str) -> SourceDeclaration {
         SourceDeclaration::at_path(
-            "src/lib.rs",
+            path,
             format!("declaration_{index}"),
             "function",
             u32::try_from(index).unwrap_or(0).saturating_add(1),
@@ -3953,6 +4656,100 @@ mod tests {
         assert_eq!(
             ProductSourceRelation::decode_value(&bytes).expect("identified round trip"),
             record
+        );
+    }
+
+    #[test]
+    fn profiled_binding_compaction_uses_final_psrg_capacity_and_retains_exact_precision() {
+        use backend_compile::{SourceBinding, SourceBindingCapture, SourceBindingIdentity};
+        use backend_semantic::vocabulary::PythonVersion;
+        let path = "src/π.py";
+        let parent = SourceBinding::new(1, 6).unwrap();
+        // This is an absent-parent compact-row fixture: no input declaration
+        // names the parent. Every child keeps its exact anchor and admitted target.
+        let declarations: Arc<[SourceDeclaration]> = (0..2048)
+            .map(|index| {
+                let declaration = wide_declaration_at_path(index, path);
+                let start = u32::try_from(index).unwrap() * 64 + 16;
+                let name_end = start + u32::try_from(declaration.name().len()).unwrap();
+                declaration
+                    .with_binding_identity(SourceBindingIdentity::Exact(
+                        SourceBindingCapture::new(start, start + 48, start, name_end).unwrap(),
+                    ))
+                    .with_container(super::Container::Binding { binding: parent })
+                    .with_facts(backend_compile::DeclarationFacts {
+                        deprecation: backend_compile::Fact::Absent,
+                        obligation: backend_compile::Fact::Present(
+                            backend_compile::Obligation::Required,
+                        ),
+                    })
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let identity = fixture_source_identity();
+        let profile = Some(PythonVersion::Python312);
+        let error = ProductSourceRecord::file_with_retention_and_identity(
+            [3; 32],
+            path,
+            super::SourceLanguage::Python,
+            [4; 32],
+            [5; 32],
+            Arc::clone(&declarations),
+            DeclarationRetention::Complete,
+            Some(identity),
+            profile,
+        )
+        .expect_err("the complete wide PSRG row exceeds canonical capacity");
+        assert!(error.contains("canonical row capacity"));
+        let compact = || {
+            ProductSourceRecord::profiled_file_within_row_capacity(
+                [3; 32],
+                path,
+                super::SourceLanguage::Python,
+                [4; 32],
+                [5; 32],
+                Arc::clone(&declarations),
+                identity,
+                profile,
+            )
+            .expect("compaction must weigh the final PSRG header and binding fields")
+        };
+        let record = compact();
+        let bytes = encode_source_record(&record);
+        assert_eq!(&bytes[..4], b"PSRG");
+        assert!(bytes.len() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        let fields = record.file_fields().unwrap();
+        assert_eq!(fields.python_version, profile);
+        assert_eq!(fields.source_identity, Some(identity));
+        let DeclarationRetention::Truncated(counts) = fields.retention else {
+            panic!("the source-rich row must retain explicit truncation");
+        };
+        assert!(counts.retained() > 0 && counts.retained() < counts.extracted());
+        assert_eq!(counts.extracted() as usize, declarations.len());
+        assert_eq!(counts.retained() as usize, fields.declarations.len());
+        for (retained, extracted) in fields.declarations.iter().zip(declarations.iter()) {
+            assert_eq!(retained.binding_identity(), extracted.binding_identity());
+            assert_eq!(
+                retained.container(),
+                &super::Container::Binding { binding: parent }
+            );
+            retained.admit_binding_parentage().unwrap();
+            assert!(
+                retained.facts().is_unobserved(),
+                "shed facts are explicit missing evidence"
+            );
+            assert!(matches!(
+                retained.source_excerpt(),
+                SourceExcerpt::NotHydrated
+            ));
+        }
+        assert_eq!(compact(), record, "bounded shedding is deterministic");
+        let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(
+            encode_source_record(&decoded),
+            bytes,
+            "canonical restart bytes"
         );
     }
 

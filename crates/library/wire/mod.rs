@@ -37,7 +37,8 @@ pub use codec::{
     encode_command_body,
 };
 pub use command::{
-    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command, expand_binary_certificate_command,
+    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command,
+    expand_binary_certificate_command,
 };
 pub use event_dto::EventDto;
 pub use journal_grammar::JournalViewGrammarV3;
@@ -69,7 +70,7 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. The combined version-29 cutover adds typed
-/// TypeScript compiler admission details and native semantic source pages/epochs.
-/// Persisted view rows, certificates and compact events are unchanged.
-pub const DTO_VERSION: u16 = 29;
+/// Current transport DTO version. Version 30 adds independent catalog delivery
+/// windows, authenticated predecessor spans, and a typed native reply ceiling.
+/// Persisted owner snapshots, certificates and compact events are unchanged.
+pub const DTO_VERSION: u16 = 30;

@@ -4,8 +4,8 @@ use super::membership_tests::{TempWorkspace, open_daemon};
 use super::*;
 use crate::builtin::{read_package_sources, view_build};
 use backend_engine::builtin::{
-    ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord, ProductSourceFileFactsUpdate,
-    admit_product_source_file_facts, build_product_source_file_facts,
+    DeclarationRetention, ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsUpdate, admit_product_source_file_facts, build_product_source_file_facts,
     product_source_file_facts_relation,
 };
 use backend_engine::{PackageKey, ProductSourceRecord, SourceLanguage};
@@ -172,6 +172,15 @@ fn parsed_file(
     let analysis = frontend
         .analyze(Path::new(path), source.as_bytes())
         .expect("real source parse");
+    parsed_analysis_file(package, path, &source, &analysis)
+}
+
+fn parsed_analysis_file(
+    package: PackageKey,
+    path: &str,
+    source: &str,
+    analysis: &backend_compile::SourceAnalysis,
+) -> (ProductSourceRecord, ProductSourceFileFactsUpdate) {
     let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
     let record = ProductSourceRecord::identified_file_within_row_capacity(
         package.to_bytes(),
@@ -397,6 +406,243 @@ fn commit_files(
     super::super::commands::commit_builtin_intent(daemon, request, &intent)
         .expect("real owner commit");
     fact_changes
+}
+
+fn assert_complete_structural_query_corpus(
+    label: &str,
+    source: &str,
+    check_compact: impl FnOnce(
+        backend_engine::builtin::ProductFileRef<'_>,
+        &[backend_compile::SourceDeclaration],
+    ),
+) {
+    use backend_compile::{Container, SourceBindingIdentity};
+    use backend_engine::RowId;
+    use backend_engine::application::{
+        LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
+        LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
+        LocalRuntimeToolchain,
+    };
+    use backend_semantic::vocabulary::NativeTool;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::num::NonZeroUsize;
+
+    // Real parser output and production persistence/admission; no semantic
+    // compiler publication is manufactured for this structural query.
+    let path = "complete.ts";
+    let package = PackageKey::from_value(label);
+    let analysis = backend_frontend_typescript::syntax_frontend()
+        .expect("actual TypeScript frontend")
+        .analyze(Path::new(path), source.as_bytes())
+        .expect("actual source analysis");
+    let declarations = analysis.declarations();
+    let (record, facts) = parsed_analysis_file(package, path, source, &analysis);
+    check_compact(record.file_fields().expect("compact file"), declarations);
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    commit_files(
+        &mut daemon,
+        package,
+        label,
+        1,
+        &[(record.clone(), Some(facts))],
+    );
+    drop(daemon);
+    let cold = open_daemon(workspace.0.path());
+    let snapshot = cold.engine().daemon().owner().snapshot();
+    let sources = crate::builtin::read_indexed_sources(&snapshot).expect("cold selected sources");
+    assert_eq!(sources.files.len(), 1);
+    assert_eq!(
+        sources.files[0].1, record,
+        "compact row survives persistence"
+    );
+    assert!(matches!(
+        sources
+            .source_snapshot
+            .as_ref()
+            .expect("selected closure")
+            .admit_complete_file_facts(&sources.files[0].1)
+            .expect("verified selected facts")
+            .expect("complete facts manifest"),
+        ProductSourceFileFactsAdmission::PagedVerified(_)
+    ));
+
+    let compiler_root = workspace.0.path().join("query-compiler");
+    let compiler = LocalCompilerClient::start(
+        LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                compiler_root.join("artifacts"),
+                compiler_root.join("journal"),
+                compiler_root.join("native-work"),
+            )
+            .unwrap(),
+            vec![LocalRuntimeToolchain::unavailable(NativeTool::Python)].into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(std::time::Duration::from_secs(2)).unwrap(),
+            backend_store::journal::PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(1024 * 1024).unwrap())
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .expect("compiler storage client; no compilation is requested");
+    let corpus = view_build::semantic_query_corpus(
+        &snapshot,
+        &compiler,
+        &sources,
+        &mut crate::builtin::generation_residence::SemanticGenerationResidence::default(),
+        &mut view_build::ImageRowResidence::default(),
+    )
+    .expect("actual corpus admits every complete structural declaration and parent");
+
+    let package_id = RowId::Package(package).stable_key();
+    let module_coordinate = format!("{label}::{path}");
+    let id_for = |declaration: &backend_compile::SourceDeclaration| {
+        let coordinate = if declaration.kind() == backend_compile::DeclarationKind::Module {
+            module_coordinate.clone()
+        } else {
+            format!(
+                "{label}::{path}:{}::{}",
+                declaration.line(),
+                declaration.name()
+            )
+        };
+        RowId::Symbol(backend_engine::symbol_key(&coordinate)).stable_key()
+    };
+    let binding_ids = declarations
+        .iter()
+        .filter_map(|declaration| match declaration.binding_identity() {
+            SourceBindingIdentity::Exact(capture) => Some((capture.binding(), id_for(declaration))),
+            SourceBindingIdentity::Legacy => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let module_id = RowId::Symbol(backend_engine::symbol_key(&module_coordinate)).stable_key();
+    let actual = corpus
+        .facts()
+        .iter()
+        .map(|fact| (fact.presentation().id.clone(), fact.presentation()))
+        .collect::<BTreeMap<_, _>>();
+    let mut expected_ids = declarations.iter().map(&id_for).collect::<BTreeSet<_>>();
+    assert_eq!(
+        expected_ids.len(),
+        declarations.len(),
+        "fixture has unique coordinates"
+    );
+    expected_ids.insert(package_id.clone());
+    assert_eq!(
+        actual.keys().cloned().collect::<BTreeSet<_>>(),
+        expected_ids
+    );
+    for declaration in declarations.iter() {
+        let presentation = actual
+            .get(&id_for(declaration))
+            .expect("complete declaration query fact");
+        let is_module = declaration.kind() == backend_compile::DeclarationKind::Module;
+        let parent = if is_module {
+            None
+        } else {
+            Some(match declaration.container() {
+                Container::Binding { binding } => binding_ids
+                    .get(binding)
+                    .expect("exact source parent")
+                    .clone(),
+                Container::Module => module_id.clone(),
+                other => panic!("unexpected fixture parent {other:?}"),
+            })
+        };
+        let documentation = if is_module {
+            format!("{} source · {path}", SourceLanguage::TypeScript.name())
+        } else if declaration.documentation().is_empty() {
+            format!(
+                "{} in {path}:{}",
+                declaration.kind_name(),
+                declaration.line()
+            )
+        } else {
+            declaration.documentation().to_owned()
+        };
+        assert_eq!(presentation.name, declaration.name());
+        assert_eq!(
+            presentation.signature.as_deref(),
+            Some(declaration.signature())
+        );
+        assert_eq!(presentation.documentation, documentation);
+        assert_eq!(presentation.project.as_deref(), Some(package_id.as_str()));
+        assert_eq!(presentation.parent, parent);
+        assert!(presentation.related.is_empty());
+    }
+}
+
+#[test]
+fn structural_query_reads_names_only_prose_from_persisted_complete_facts() {
+    let prose = "Documented source contract. ".repeat(40);
+    let source = (0..160).map(|index| format!(
+        "/** {prose} */\nexport function function_{index:04}(): number {{ return {index}; }}\n"
+    )).collect::<String>();
+    assert_complete_structural_query_corpus(
+        "pkg:npm/names-only-query@1.0.0",
+        &source,
+        |compact, declarations| {
+            assert_eq!(compact.retention, DeclarationRetention::NamesOnly);
+            assert_eq!(compact.declarations.len(), declarations.len());
+            assert!(
+                compact
+                    .declarations
+                    .iter()
+                    .all(|declaration| declaration.signature().is_empty()
+                        && declaration.documentation().is_empty())
+            );
+            assert!(declarations.iter().skip(1).all(|declaration| {
+                !declaration.signature().is_empty()
+                    && declaration
+                        .documentation()
+                        .contains("Documented source contract.")
+            }));
+        },
+    );
+}
+
+#[test]
+fn structural_query_reads_truncated_tail_and_exact_parents_from_persisted_complete_facts() {
+    use backend_compile::{Container, SourceBindingIdentity};
+    // All definitions share a line. Source sorting places each a-child before
+    // every z-parent, so the compact prefix cannot close these parent edges.
+    let source = (0..1200).map(|index| format!(
+        "/** Parent {index}. */ function z{index:04}(): number {{ /** Child {index}. */ function a{index:04}(): number {{ return {index}; }} return a{index:04}(); }} "
+    )).collect::<String>();
+    assert_complete_structural_query_corpus(
+        "pkg:npm/truncated-query@1.0.0",
+        &source,
+        |compact, declarations| {
+            assert!(matches!(
+                compact.retention,
+                DeclarationRetention::Truncated(_)
+            ));
+            assert!(compact.declarations.len() < declarations.len());
+            let retained = compact
+                .declarations
+                .iter()
+                .filter_map(|declaration| match declaration.binding_identity() {
+                    SourceBindingIdentity::Exact(capture) => Some(capture.binding()),
+                    SourceBindingIdentity::Legacy => None,
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(compact.declarations.iter().any(|declaration| matches!(declaration.container(), Container::Binding { binding } if !retained.contains(binding))), "old compact-prefix query emission would leave a missing exact parent");
+            assert!(
+                declarations
+                    .iter()
+                    .any(|declaration| declaration.name() == "z1199")
+            );
+            assert!(
+                !compact
+                    .declarations
+                    .iter()
+                    .any(|declaration| declaration.name() == "z1199")
+            );
+        },
+    );
 }
 
 fn assert_complete(

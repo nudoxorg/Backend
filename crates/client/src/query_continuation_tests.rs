@@ -169,8 +169,8 @@ impl CommandTransport for Transport {
             let recipe = match &request.command {
                 Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query),
                 Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query),
-                Command::GraphPage { symbol, .. } => {
-                    QueryPageRecipe::graph(library.revision_root(), *symbol)
+                Command::GraphPage { symbol, page } => {
+                    QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
                 }
                 _ => unreachable!("query reply"),
             };
@@ -2168,5 +2168,251 @@ fn caller_context_cancels_preparation_without_sending_shared_worker_control() {
         sent.len(),
         2,
         "only one Revision and one Search; cancellation sends no owner control"
+    );
+}
+
+fn delivery_window(issued: u16, delivery: u16) -> backend_library::QueryWindow {
+    backend_library::QueryWindow::new(
+        QueryLimit::new(issued).expect("issued"),
+        QueryLimit::new(delivery).expect("delivery"),
+    )
+    .expect("window")
+}
+
+fn read_window(
+    session: &mut Session,
+    family: u8,
+    delivery: u16,
+    continuation: Option<PageContinuation>,
+) -> Result<ReplyDto, ClientError> {
+    let window = delivery_window(4, delivery);
+    match family {
+        0 => session.names_page_window("Thing", window, continuation),
+        1 => session.search_page_window("Thing", window, continuation),
+        _ => session.graph_page_window("graph::source", window, continuation),
+    }
+}
+
+fn window_snapshot(reply: &ReplyDto) -> &backend_library::ViewSnapshot {
+    match &reply.reply {
+        CommandReply::Names(page) | CommandReply::Search(page) => page,
+        CommandReply::ProjectionPage(page) => &page.snapshot,
+        _ => panic!("catalog window reply"),
+    }
+}
+
+#[test]
+fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_smaller_delivery() {
+    // The injected transport refusal exercises Session consumption and re-import;
+    // native producer, strict DTO decoding, certificates and admission remain real.
+    struct RefuseWideResume(Transport);
+    impl CommandTransport for RefuseWideResume {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            let refused = match &request.command {
+                Command::Name(query) => {
+                    query.cursor().is_some() && query.window().delivery().get() > 1
+                }
+                Command::Search(query) => {
+                    query.cursor().is_some() && query.window().delivery().get() > 1
+                }
+                Command::GraphPage { page, .. } => {
+                    page.continuation().is_some() && page.window().delivery().get() > 1
+                }
+                _ => false,
+            };
+            let basis = super::query_continuation::basis(&request.command);
+            let reply = self.0.request(request)?;
+            if refused {
+                Err(ClientError::ResponseTooLarge { basis })
+            } else {
+                Ok(reply)
+            }
+        }
+    }
+    for family in 0..3 {
+        let (owner, requests) = if family < 2 {
+            fixture()
+        } else {
+            (
+                Arc::new(Mutex::new(graph_fixture(false, 1, 7))),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+        };
+        let mut issuing = session(&owner, &requests);
+        let first = read_window(&mut issuing, family, 4, None).expect("first window");
+        let next = PageContinuation::from_cursor(window_snapshot(&first).next.expect("successor"));
+        let signed_input = issuing
+            .encode_query_continuation(next)
+            .expect("portable input");
+        let mut resumed = Session::from_transport(
+            "/private/window-owner.sock",
+            RefuseWideResume(Transport {
+                owner: owner.clone(),
+                requests: requests.clone(),
+                graph_ids: None,
+            }),
+        );
+        let imported = resumed
+            .decode_page_continuation(&signed_input)
+            .expect("original immutable proof");
+        assert_eq!(imported, next);
+        assert!(resumed.prepared_query.is_some());
+        assert!(matches!(
+            read_window(&mut resumed, family, 4, Some(imported)),
+            Err(ClientError::ResponseTooLarge { basis: Some(_) })
+        ));
+        assert!(
+            resumed.prepared_query.is_none(),
+            "the failed read consumed preparation"
+        );
+        let same = resumed
+            .decode_page_continuation(&signed_input)
+            .expect("re-import exact same signed input");
+        assert_eq!(same, imported);
+        let actual = read_window(&mut resumed, family, 1, Some(same)).expect("smaller delivery");
+        let mut replay = session(&owner, &requests);
+        let same = replay
+            .decode_page_continuation(&signed_input)
+            .expect("fresh-session same proof");
+        let repeated =
+            read_window(&mut replay, family, 1, Some(same)).expect("deterministic retry");
+        assert_eq!(window_snapshot(&actual), window_snapshot(&repeated));
+        assert_eq!(window_snapshot(&actual).root.row_count(), 1);
+        if let Some(cursor) = window_snapshot(&actual).next {
+            assert_eq!(cursor.query_offset(), 5);
+            assert_eq!(
+                cursor.query_position().predecessor(),
+                Some(delivery_window(4, 1))
+            );
+        }
+        let mut seen = window_snapshot(&first)
+            .root
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut reply = actual;
+        let mut emitted = 4;
+        let mut delivery = 2;
+        loop {
+            let page = window_snapshot(&reply);
+            emitted += page.root.row_count();
+            for row in page.root.rows() {
+                assert!(seen.insert(row.id), "no duplicate frontier row");
+            }
+            let Some(cursor) = page.next else {
+                break;
+            };
+            assert_eq!(cursor.query_offset(), emitted);
+            let token = resumed
+                .encode_query_continuation(PageContinuation::from_cursor(cursor))
+                .expect("next portable command");
+            let mut fresh = session(&owner, &requests);
+            let next = fresh
+                .decode_page_continuation(&token)
+                .expect("fresh authority");
+            reply = read_window(&mut fresh, family, delivery, Some(next))
+                .expect("next bounded delivery");
+            resumed = fresh;
+            delivery = if delivery == 2 { 1 } else { 2 };
+        }
+        assert_eq!(seen.len(), if family < 2 { 37 } else { 7 });
+        assert_eq!(emitted as usize, seen.len());
+        // An exact selected-source change is still rejected before a retry page.
+        *owner.lock().expect("owner") = if family < 2 {
+            self::owner(2, 37, 0)
+        } else {
+            graph_fixture(false, 2, 7)
+        };
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&signed_input)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn portable_window_versions_zero_spans_and_credit_mismatches_refuse() {
+    let (owner, requests) = fixture();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .names_page_window("Thing", delivery_window(4, 2), None)
+        .expect("native window");
+    let good = issuing
+        .encode_query_continuation(PageContinuation::from_cursor(
+            page(&first).next.expect("next"),
+        ))
+        .expect("portable window");
+    for (field, value) in [
+        ("version", 2),
+        ("delivery", 0),
+        ("delivery", 5),
+        ("issued", 0),
+    ] {
+        let mut bad = token_value(&good);
+        bad["command"]["data"]["cursor"]["query_window"][field] = serde_json::json!(value);
+        let before = requests.lock().expect("requests").len();
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&token(&bad))
+                .is_err()
+        );
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "malformed window before owner RPC"
+        );
+    }
+    let mut changed = token_value(&good);
+    changed["command"]["data"]["window"]["issued"] = serde_json::json!(3);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&token(&changed))
+            .is_err()
+    );
+}
+
+#[test]
+fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_legacy_handover() {
+    let (owner, requests) = fixture();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .names_page("Thing", 4, None)
+        .expect("legacy fixed page");
+    let next = PageContinuation::from_cursor(page(&first).next.expect("legacy next"));
+    let active = issuing.encode_page_continuation(next);
+    let portable = issuing
+        .encode_query_continuation(next)
+        .expect("legacy command with complete proof");
+    assert_eq!(
+        issuing
+            .decode_page_continuation(&active)
+            .expect("legacy active still decodes"),
+        next
+    );
+    let before = requests.lock().expect("requests").len();
+    assert!(matches!(
+        issuing.names_page_window("Thing", delivery_window(4, 1), Some(next)),
+        Err(ClientError::Protocol(_))
+    ));
+    assert_eq!(
+        requests.lock().expect("requests").len(),
+        before,
+        "explicit refusal before a new page can consume the only retained authority"
+    );
+    let imported = issuing
+        .decode_page_continuation(&portable)
+        .expect("portable legacy proof");
+    let second = issuing
+        .names_page_window("Thing", delivery_window(4, 1), Some(imported))
+        .expect("authenticate old recipe before new window recipe");
+    assert_eq!(
+        page(&second)
+            .next
+            .expect("windowed successor")
+            .query_position()
+            .predecessor(),
+        Some(delivery_window(4, 1))
     );
 }

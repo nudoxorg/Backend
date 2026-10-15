@@ -16,7 +16,7 @@ use super::index::{
     PreparedIndex, PreparedProductSelection, capture_index_scan, commit_pending_capture_failure,
     finish_deferred_index, finish_index_scan, index_project_intent_at,
     index_project_intent_with_cluster_and_intent, package_source_membership_page,
-    remove_project_intent, run_index_scan, semantic_version_record, semantic_versions,
+    remove_project_intent, run_index_scan, semantic_version_record,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -336,6 +336,7 @@ pub(in crate::builtin) struct CommandAdapter {
     structural_calls: super::super::view_build::StructuralCallResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
+    semantic_source_plan: Option<super::semantic_source::SourceReadPlan>,
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
@@ -515,6 +516,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::IndexSearch { .. }
                 | S::PackageVersions { .. }
                 | S::SemanticVersions { .. }
+                | S::SemanticSource { .. }
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
@@ -675,11 +677,7 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
-    fn can_answer_short_control(
-        &self,
-        command: &Command,
-        origin: &DeferredCommandOrigin,
-    ) -> bool {
+    fn can_answer_short_control(&self, command: &Command, origin: &DeferredCommandOrigin) -> bool {
         if !answers_while_indexing(command) {
             return false;
         }
@@ -778,6 +776,7 @@ impl CommandAdapter {
             structural_calls: super::super::view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
+            semantic_source_plan: None,
             owner_cluster,
             pending_stored_acks,
             dependencies: None,
@@ -1143,7 +1142,8 @@ impl CommandAdapter {
             self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
-        self.execute_from(daemon, body, &origin).map(Executed::Reply)
+        self.execute_from(daemon, body, &origin)
+            .map(Executed::Reply)
     }
 
     fn start_index_operation(
@@ -2865,6 +2865,7 @@ impl CommandAdapter {
             indexing.execution_intent,
             self.owner_cluster.is_some(),
             Arc::clone(&indexing.cancelled),
+            self.compiler.python_interpreter_admission(),
         )?;
         indexing._staged_project = Some(staged);
         self.spawn_index_scan(indexing, work)
@@ -3738,6 +3739,7 @@ impl CommandAdapter {
                     execution_intent,
                     self.owner_cluster.is_some(),
                     Arc::clone(&cancelled),
+                    self.compiler.python_interpreter_admission(),
                 )?;
                 self.spawn_index_scan(&mut indexing, work)?;
             }
@@ -4078,6 +4080,12 @@ impl CommandAdapter {
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
+        let catalog_basis = match &request.command {
+            Command::Search(query) => Some(query.basis()),
+            Command::Name(query) => Some(query.basis()),
+            Command::GraphPage { page, .. } => Some(page.basis()),
+            _ => None,
+        };
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
@@ -4085,7 +4093,23 @@ impl CommandAdapter {
         } else {
             None
         };
-        Self::encode(daemon, request_id, admitted, status)
+        let encoded = Self::encode(daemon, request_id, admitted, status)?;
+        Self::bound_catalog_reply(request_id, catalog_basis, encoded)
+    }
+
+    fn bound_catalog_reply(
+        request_id: u64,
+        basis: Option<backend_library::ViewRevision>,
+        encoded: Vec<u8>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
+        let Some(basis) = basis.filter(|_| encoded.len() > backend_library::MAX_REPLY_BODY) else {
+            return Ok(encoded);
+        };
+        backend_engine::encode_reply_dto(&backend_engine::ReplyDto::new(
+            request_id,
+            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis }),
+        ))
+        .map_err(BuiltinModelError)
     }
 
     /// One admitted reply as the wire's reply DTO.
@@ -5058,7 +5082,11 @@ impl CommandAdapter {
         }
         vec![(
             pending.ticket,
-            reply.and_then(|reply| Self::encode(daemon, pending.request_id, reply, status)),
+            reply
+                .and_then(|reply| Self::encode(daemon, pending.request_id, reply, status))
+                .and_then(|encoded| {
+                    Self::bound_catalog_reply(pending.request_id, Some(query.basis()), encoded)
+                }),
         )]
     }
 
@@ -5530,23 +5558,23 @@ impl CommandAdapter {
                 },
                 |rows| CommandReply::Surface(backend_engine::SurfaceReply::Diff(rows)),
             ),
-            backend_engine::SurfaceCommand::SemanticVersions { package } => {
-                let workspace = self
-                    .registry
-                    .as_ref()
-                    .map(|gateway| gateway.workspace_root());
-                semantic_versions(daemon, &package, workspace, &mut self.semantic_authority)
+            backend_engine::SurfaceCommand::SemanticSource { request } => {
+                super::semantic_source::read(daemon, &self.semantic_authority, &request, &mut self.semantic_source_plan)
+                    .map_or_else(
+                        |error| CommandReply::Failed(match error {
+                            super::semantic_source::SourceReadError::Gone => backend_engine::CommandFailure::NotFound,
+                            super::semantic_source::SourceReadError::Admission(error) => backend_engine::CommandFailure::InvalidQuery(error.to_string()),
+                        }),
+                        |chunk| CommandReply::Surface(backend_engine::SurfaceReply::SemanticSource(chunk)),
+                    )
             }
-            .map_or_else(
-                |error| {
-                    CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
-                        error.to_string(),
-                    ))
-                },
-                |records| {
-                    CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersions(records))
-                },
-            ),
+            backend_engine::SurfaceCommand::SemanticVersions { package, limit, cursor } => {
+                super::semantic_source::versions(daemon, &mut self.semantic_authority, &package, limit, cursor.as_ref())
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |page| CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersionsPage(page)),
+                    )
+            }
             backend_engine::SurfaceCommand::SemanticShapes { .. } => CommandReply::Failed(
                 backend_engine::CommandFailure::InvalidQuery(
                     "semantic shapes require the certificate-bearing direct command selected by Session".to_owned())),
@@ -5707,11 +5735,19 @@ impl CommandAdapter {
                         .bind_catalog_snapshot(cached.catalog.rows_snapshot())
                         .map_err(|error| error.to_string())
                         .and_then(|request| {
-                            let page = futures_executor::block_on(
-                                self.sql_projection.read_package_graph_page(&request),
+                            let authority = self
+                                .semantic_authority
+                                .product_statement_authority()
+                                .map_err(|error| error.to_string())?;
+                            let verified = backend_library::VerifiedPackageGraphPageRequest::verify(
+                                &request, authority,
                             )
                             .map_err(|error| error.to_string())?;
-                            page.admit_against_checked_facts(&request, root, &cached.graph.indexed)
+                            let mut page = futures_executor::block_on(
+                                self.sql_projection.read_package_graph_page(&verified),
+                            )
+                            .map_err(|error| error.to_string())?;
+                            page.seal_against_checked_facts(&verified, root, &cached.graph.indexed)
                                 .map_err(|error| error.to_string())?;
                             Ok(backend_engine::SurfaceReply::PackageGraphPage(page))
                         }),
@@ -6317,6 +6353,53 @@ mod tests {
     }
 
     #[test]
+    fn catalog_reply_ceiling_is_typed_and_keeps_its_exact_requested_revision() {
+        let root = backend_library::view_state_root(&[]);
+        let basis = root.into();
+        let fitting = vec![0; backend_library::MAX_REPLY_BODY];
+        assert_eq!(
+            CommandAdapter::bound_catalog_reply(7, Some(basis), fitting.clone())
+                .expect("at ceiling"),
+            fitting
+        );
+        let encoded = CommandAdapter::bound_catalog_reply(
+            7,
+            Some(basis),
+            vec![0; backend_library::MAX_REPLY_BODY + 1],
+        )
+        .expect("bounded refusal");
+        let reply = backend_library::decode_reply_body(&encoded).expect("strict typed refusal");
+        assert_eq!(reply.request_id, 7);
+        assert_eq!(
+            reply.reply,
+            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis })
+        );
+        let command = backend_library::CommandDto::new(
+            7,
+            backend_library::Command::Name(backend_library::NameQuery::new(
+                "Thing",
+                root,
+                backend_library::QueryLimit::default(),
+            )),
+        );
+        assert!(backend_library::admit_reply(&command, &reply).is_ok());
+        let foreign_root =
+            backend_library::view_state_root(&[("other".to_owned(), "root".to_owned())]);
+        assert_ne!(root, foreign_root);
+        let foreign = backend_library::CommandDto::new(
+            7,
+            backend_library::Command::Name(backend_library::NameQuery::new(
+                "Thing",
+                foreign_root,
+                backend_library::QueryLimit::default(),
+            )),
+        );
+        assert!(backend_library::admit_reply(&foreign, &reply).is_err());
+        let unrelated = backend_library::CommandDto::new(7, backend_library::Command::Health);
+        assert!(backend_library::admit_reply(&unrelated, &reply).is_err());
+    }
+
+    #[test]
     fn source_capture_terminalization_failure_keeps_primary_typed_refusal() {
         let primary = typed_compiler_refusal();
         let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &primary
@@ -6874,8 +6957,11 @@ mod tests {
                 .expect("start unavailable-toolchain compiler owner");
 
             let mut authority =
-                super::super::super::semantic_authority::SemanticAuthority::open(&workspace)
-                    .expect("open semantic authority");
+                super::super::super::semantic_authority::SemanticAuthority::open_with_product_authority(
+                    &workspace,
+                    Some([0x67; 32]),
+                )
+                .expect("open semantic authority with persisted fixture product key");
             let mut image_rows = super::super::super::view_build::ImageRowResidence::default();
             let mut generations = super::super::super::SemanticGenerationResidence::default();
             authority.install_image_loader(&mut generations);
@@ -7870,11 +7956,10 @@ mod tests {
             backend_engine::application::LocalCompilerCapabilityState::Unavailable,
             "closed fixture must retain an actual absent TypeScript SDK",
         );
-        let python = capabilities.for_profile(
-            backend_semantic::vocabulary::LanguageProfile::Python(
+        let python =
+            capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
                 backend_semantic::vocabulary::PythonVersion::Python314,
-            ),
-        );
+            ));
         assert_eq!(
             python.state(),
             backend_engine::application::LocalCompilerCapabilityState::Deferred,
@@ -7889,11 +7974,10 @@ mod tests {
 
     fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
         let capabilities = compiler.capabilities();
-        let python = capabilities.for_profile(
-            backend_semantic::vocabulary::LanguageProfile::Python(
+        let python =
+            capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
                 backend_semantic::vocabulary::PythonVersion::Python314,
-            ),
-        );
+            ));
         assert_eq!(
             python.state(),
             backend_engine::application::LocalCompilerCapabilityState::Ready,

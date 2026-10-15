@@ -6,6 +6,7 @@ mod arrangement_owned_run;
 mod name_ranking;
 mod outline_navigation;
 mod public_coordinates;
+mod query_delivery_window;
 
 fn source() -> (ViewStateRoot, SemanticObject) {
     (view_state_root(&[]), object_version(b"source"))

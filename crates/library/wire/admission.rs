@@ -86,6 +86,28 @@ impl std::error::Error for ReplyAdmissionError {}
 /// Returns [`RequestAdmissionError`] when a text-bearing command is empty or
 /// exceeds [`MAX_COMMAND_TEXT`].
 pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> {
+    if matches!(&request.command, Command::PackagePage(page) | Command::OutlinePage { page, .. } if page.window().is_windowed() || page.continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
+    {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
+    if matches!(&request.command, Command::GraphQuery(query) if query.page().window().is_windowed() || query.page().continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
+    {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
+    let catalog = match &request.command {
+        Command::Name(query) => Some((query.window(), query.cursor())),
+        Command::Search(query) => Some((query.window(), query.cursor())),
+        Command::GraphPage { page, .. } => Some((
+            page.window(),
+            page.continuation().map(crate::PageContinuation::cursor),
+        )),
+        _ => None,
+    };
+    if catalog.is_some_and(|(window, cursor)| {
+        cursor.is_some_and(|cursor| window.predecessor(cursor.query_position()).is_none())
+    }) {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
     let text = match &request.command {
         Command::Name(query) => Some(query.text()),
         Command::Search(query) => Some(query.text()),
@@ -244,62 +266,81 @@ fn admit_query_page(
     snapshot: &crate::ViewSnapshot,
 ) -> Result<(), ReplyAdmissionError> {
     use crate::QueryPageRecipe;
-    let source_root = snapshot.root.basis().root;
-    let (recipe, limit, predecessor) = match command {
-        Command::Name(query) => (
-            QueryPageRecipe::names(source_root, query),
-            query.limit(),
-            query.cursor(),
-        ),
-        Command::Search(query) => (
-            QueryPageRecipe::search(source_root, query),
-            query.limit(),
-            query.cursor(),
-        ),
-        _ => {
-            return Err(ReplyAdmissionError::Protocol(
-                "query page does not match its command".to_owned(),
-            ));
-        }
-    };
-    let expected_recipe = recipe.identity();
+    let root = snapshot.root.basis().root;
     let invalid = || {
         ReplyAdmissionError::Protocol(
             "query page does not match its continuation contract".to_owned(),
         )
     };
-    if snapshot.root.recipe() != expected_recipe
-        || snapshot.root.row_count() > u64::from(limit.get())
-    {
+    let (output, input, window, predecessor) = match command {
+        Command::Name(query) => (
+            QueryPageRecipe::names(root, query),
+            QueryPageRecipe::names_predecessor(root, query).ok_or_else(invalid)?,
+            query.window(),
+            query.cursor(),
+        ),
+        Command::Search(query) => (
+            QueryPageRecipe::search(root, query),
+            QueryPageRecipe::search_predecessor(root, query).ok_or_else(invalid)?,
+            query.window(),
+            query.cursor(),
+        ),
+        _ => return Err(invalid()),
+    };
+    if snapshot.root.recipe() != output.identity() {
+        return Err(invalid());
+    }
+    admit_catalog_window(snapshot, window, predecessor, input.identity())
+}
+
+fn admit_catalog_window(
+    snapshot: &crate::ViewSnapshot,
+    window: crate::QueryWindow,
+    predecessor: Option<Cursor>,
+    predecessor_recipe: crate::ViewRecipeId,
+) -> Result<(), ReplyAdmissionError> {
+    let invalid = || {
+        ReplyAdmissionError::Protocol(
+            "catalog page does not match its issued credit/delivery/predecessor contract"
+                .to_owned(),
+        )
+    };
+    let count = snapshot.root.row_count();
+    if count > u64::from(window.delivery().get()) {
         return Err(invalid());
     }
     let offset = predecessor.map_or(0, Cursor::query_offset);
     if let Some(cursor) = predecessor {
         let frontier = snapshot.root.frontier();
-        if cursor.recipe() != expected_recipe
+        let previous = window
+            .predecessor(cursor.query_position())
+            .ok_or_else(invalid)?;
+        if cursor.recipe() != predecessor_recipe
             || cursor.branch() != frontier.branch
             || cursor.log() != frontier.log
             || cursor.schema() != crate::CURSOR_SCHEMA
+            || (offset > 0 && count == 0)
             || (offset == 0 && cursor.root() != snapshot.root.basis().root)
-            || (offset > 0 && (offset < u64::from(limit.get()) || snapshot.root.row_count() == 0))
+            || (offset > 0 && offset < u64::from(previous.delivery().get()))
         {
             return Err(invalid());
         }
     }
     if let Some(next) = snapshot.next {
-        let expected_offset = offset
-            .checked_add(snapshot.root.row_count())
-            .ok_or_else(invalid)?;
-        if snapshot.root.row_count() != u64::from(limit.get())
-            || next.query_offset() != expected_offset
+        if count != u64::from(window.delivery().get())
+            || next.query_offset() != offset.checked_add(count).ok_or_else(invalid)?
             || predecessor.is_some_and(|cursor| next.sequence() < cursor.sequence())
         {
             return Err(invalid());
         }
+        match (window.is_windowed(), next.query_position().predecessor()) {
+            (false, None) => {}
+            (true, Some(span))
+                if span.issued() == window.issued()
+                    && u64::from(span.delivery().get()) == count => {}
+            _ => return Err(invalid()),
+        }
     }
-    // Intent events can advance the admitted owner stream without changing
-    // the retained view frontier. Never compare stream sequence with that
-    // frontier; from_snapshot checks the successor's own root/cursor pair.
     Ok(())
 }
 
@@ -370,18 +411,51 @@ fn admit_projection_page(
             "projection page reply does not match a paged command".to_owned(),
         )
     })?;
-    let expected_recipe = view_identity_bytes(&[
-        b"query",
-        &recipe,
-        page.snapshot.root.basis().root.as_bytes(),
-        &[0],
-    ]);
+    let expected_recipe = match command {
+        Command::GraphPage {
+            symbol,
+            page: request,
+        } => crate::QueryPageRecipe::graph_window(
+            page.snapshot.root.basis().root,
+            *symbol,
+            request.window(),
+        )
+        .identity(),
+        _ => view_identity_bytes(&[
+            b"query",
+            &recipe,
+            page.snapshot.root.basis().root.as_bytes(),
+            &[0],
+        ]),
+    };
     if page.snapshot.root.recipe != expected_recipe {
         return Err(ReplyAdmissionError::Protocol(
             "projection page recipe does not match the requested query".to_owned(),
         ));
     }
 
+    if let Command::GraphPage {
+        symbol,
+        page: request,
+    } = command
+        && request.window().is_windowed()
+    {
+        let predecessor = request.continuation().map(crate::PageContinuation::cursor);
+        let input = crate::QueryPageRecipe::graph_predecessor(
+            page.snapshot.root.basis().root,
+            *symbol,
+            *request,
+        )
+        .ok_or_else(|| {
+            ReplyAdmissionError::Protocol("graph query predecessor changed credit".to_owned())
+        })?;
+        admit_catalog_window(
+            &page.snapshot,
+            request.window(),
+            predecessor,
+            input.identity(),
+        )?;
+    }
     let expected_next = page.snapshot.next.map(crate::PageContinuation::from_cursor);
     let terminal_matches_snapshot = match page.terminal {
         crate::PageTerminal::More(continuation) => expected_next == Some(continuation),
@@ -636,6 +710,24 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
+        (_, CommandReply::Failed(crate::CommandFailure::ReplyTooLarge { basis })) => {
+            let expected = match command {
+                Command::Search(query) => query.basis(),
+                Command::Name(query) => query.basis(),
+                Command::GraphPage { page, .. } => page.basis(),
+                _ => {
+                    return Err(ReplyAdmissionError::Protocol(
+                        "catalog reply ceiling does not match this command".to_owned(),
+                    ));
+                }
+            };
+            if *basis != expected {
+                return Err(ReplyAdmissionError::Protocol(
+                    "catalog reply ceiling changed its requested revision".to_owned(),
+                ));
+            }
+            true
+        }
         (_, CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, .. })) => {
             let expected = match command {
                 Command::Search(query) => query.basis(),
@@ -835,9 +927,35 @@ pub fn admit_surface_reply(
     command: &crate::SurfaceCommand,
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
-    reply
-        .admit(command.id())
-        .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    if let (
+        crate::SurfaceCommand::SemanticSource { request },
+        crate::SurfaceReply::SemanticSource(chunk),
+    ) = (command, reply)
+    {
+        // Exact variant matching supplies the command-kind check. Correlation
+        // includes complete chunk admission and decodes this range only once.
+        chunk
+            .admit_request(request)
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    } else {
+        reply
+            .admit(command.id())
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
+    if let crate::SurfaceCommand::SemanticVersions {
+        package,
+        limit,
+        cursor,
+    } = command
+    {
+        let crate::SurfaceReply::SemanticVersionsPage(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "paged semantic-versions command requires a native descriptor page".to_owned(),
+            ));
+        };
+        page.admit_request(package, *limit, cursor.as_ref())
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
     admit_index_reply(command, reply)?;
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)

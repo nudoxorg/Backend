@@ -10,6 +10,7 @@ pub(crate) enum CommandFailureWire {
     WrongBasis(WrongBasisWire),
     InvalidQuery(TextWire),
     QueryPreparation(QueryPreparationWire),
+    ReplyTooLarge(ReplyTooLargeWire),
     CompilerRefused(CompilerRefusedWire),
     PartiallyPublished(crate::IndexJobPartialPublication),
     CursorMismatch(EmptyWire),
@@ -30,6 +31,12 @@ pub(crate) struct WrongBasisWire {
 pub(crate) struct QueryPreparationWire {
     basis: String,
     state: crate::QueryPreparationState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplyTooLargeWire {
+    basis: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,6 +62,11 @@ pub(crate) fn command_failure_to_wire(failure: &CommandFailure) -> CommandFailur
             CommandFailureWire::QueryPreparation(QueryPreparationWire {
                 basis: encode_id(basis.as_bytes()),
                 state: *state,
+            })
+        }
+        CommandFailure::ReplyTooLarge { basis } => {
+            CommandFailureWire::ReplyTooLarge(ReplyTooLargeWire {
+                basis: encode_id(basis.as_bytes()),
             })
         }
         CommandFailure::PartiallyPublished(partial) => {
@@ -98,6 +110,11 @@ pub(crate) fn command_failure_from_wire(
                 decode_id(&value.basis).map_err(|error| error.to_string())?,
             ),
             state: value.state,
+        },
+        CommandFailureWire::ReplyTooLarge(value) => CommandFailure::ReplyTooLarge {
+            basis: ViewRevision::from_bytes(
+                decode_id(&value.basis).map_err(|error| error.to_string())?,
+            ),
         },
         CommandFailureWire::PartiallyPublished(partial) => {
             partial.admit().map_err(|error| error.to_string())?;
@@ -145,6 +162,9 @@ mod tests {
                 observed: ViewRevision::from_bytes([2; backend_version::ID_BYTES]),
             },
             CommandFailure::InvalidQuery("invalid".to_owned()),
+            CommandFailure::ReplyTooLarge {
+                basis: ViewRevision::from_bytes([3; backend_version::ID_BYTES]),
+            },
             CommandFailure::CompilerRefused {
                 detail: "local semantic compilation failed".to_owned(),
                 failure: package_failure,

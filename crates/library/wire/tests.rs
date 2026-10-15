@@ -1311,6 +1311,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let request = crate::SemanticShapeRequest::new(
         root.root(),
         source.clone(),
+        crate::SemanticSourceEpoch {
+            source_relation_root: [0x21; 32],
+            semantic_relation_root: [0x22; 32],
+        },
         vec![crate::SymbolAddress::selected(symbol)].into_boxed_slice(),
         crate::SemanticShapeBudget::new(4096, crate::MAX_SEMANTIC_SHAPE_BYTES as u32)
             .expect("hard limits are valid"),
@@ -1538,6 +1542,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let other_basis_request = crate::SemanticShapeRequest::new(
         view_state_root(&[("different".to_owned(), "view".to_owned())]),
         source.clone(),
+        request.source_epoch(),
         request.symbols().to_vec().into_boxed_slice(),
         request.budget(),
     )
@@ -1871,7 +1876,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=28 {
+    for historical in 21..=29 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -2749,13 +2754,12 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 #[path = "index_ticket_reply_tests.rs"]
 mod index_ticket_reply;
 
-
 #[test]
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 29,
-        "combined source and admission detail cutover uses DTO29; worker refusal first shipped with DTO28"
+        DTO_VERSION, 30,
+        "catalog-window DTO30 retains admission details from DTO29 and worker refusal from DTO28"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2770,7 +2774,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     .unwrap();
     let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
         .expect_err("DTO27 peer must refuse the current DTO before decoding its failure variant");
-    assert!(old_peer.contains("reply DTO version 29"));
+    assert!(old_peer.contains(&format!("reply DTO version {DTO_VERSION}")));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
     let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
@@ -2783,5 +2787,174 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     assert!(!error.contains("unknown variant"));
 }
 
+#[test]
+fn semantic_source_current_live_dto_refuses_dto28_before_source_or_epoch_payload() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("unchanged actual source capture");
+    let record: crate::SemanticVersionRecord =
+        serde_json::from_value(packet["surface"]["data"][0].clone()).expect("exact typed record");
+    let root = record
+        .selected_source_frontier
+        .as_ref()
+        .expect("captured frontier")
+        .source_relation_root;
+    let reference = crate::SemanticSourceReference::capture(&record, root, [34; 32], &[7; 32])
+        .expect("selector only; not native authority");
+    let command = crate::CommandDto::new(
+        1,
+        crate::Command::Surface(crate::SurfaceCommand::SemanticSource {
+            request: crate::SemanticSourceRequest {
+                reference,
+                range: Default::default(),
+            },
+        }),
+    );
+    let bytes = serde_json::to_vec(&command).expect("current exact live DTO");
+    let error = super::codec::check_version_header_against(&bytes, "command", 28)
+        .expect_err("old peer must refuse before new payload variant");
+    assert!(error.contains(&format!("command DTO version {DTO_VERSION}")));
+    assert!(error.contains("this build supports 28"));
+    let mut downgraded: serde_json::Value = serde_json::from_slice(&bytes).expect("wire envelope");
+    downgraded["version"] = serde_json::json!(28);
+    downgraded["command"] = serde_json::json!({"operation":"unknown_future_source"});
+    let error = crate::decode_command_body(&serde_json::to_vec(&downgraded).expect("old envelope"))
+        .expect_err("current peer refuses old version first");
+    assert!(error.contains("command DTO version 28"));
+    assert!(!error.contains("unknown variant"));
+}
+
 #[path = "typescript_admission_cutover_tests.rs"]
 mod typescript_admission_cutover;
+
+#[test]
+fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span() {
+    let (library, mut ids) = paged_query_fixture(0);
+    ids.sort();
+    let issued = QueryLimit::new(4).expect("issued");
+    let window =
+        crate::QueryWindow::new(issued, QueryLimit::new(2).expect("delivery")).expect("window");
+    let query = NameQuery::new("Thing", library.revision_root(), issued)
+        .with_window(window)
+        .expect("window");
+    let names = library.names(&query).expect("native names");
+    let symbol = symbol_key("pkg::Thing0");
+    let address = crate::SymbolAddress::canonical(symbol);
+    let page = crate::PageRequest::new(library.revision_root(), issued)
+        .with_window(window)
+        .expect("window");
+    let graph = library
+        .graph_page_from_ids(symbol, address, page, &ids)
+        .expect("native selected graph");
+    for (command, snapshot) in [
+        (Command::Name(query.clone()), names),
+        (
+            Command::GraphPage {
+                symbol: address,
+                page,
+            },
+            graph.snapshot,
+        ),
+    ] {
+        let reply = |snapshot: ViewSnapshot| match &command {
+            Command::Name(_) => CommandReply::Names(snapshot),
+            _ => CommandReply::ProjectionPage(crate::ProjectionPage {
+                terminal: snapshot
+                    .next
+                    .map_or(crate::PageTerminal::Complete, |cursor| {
+                        crate::PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
+                    }),
+                snapshot,
+            }),
+        };
+        let request = CommandDto::new(1, command.clone());
+        assert!(admit_reply(&request, &ReplyDto::new(1, reply(snapshot.clone()))).is_ok());
+        let next = snapshot.next.expect("native More");
+        let bad_positions = [
+            crate::QueryPosition::legacy(2),
+            crate::QueryPosition::windowed(3, window).expect("wrong offset"),
+            crate::QueryPosition::windowed(
+                2,
+                crate::QueryWindow::new(issued, QueryLimit::new(1).expect("wrong span"))
+                    .expect("window"),
+            )
+            .expect("wrong span"),
+            crate::QueryPosition::windowed(
+                2,
+                crate::QueryWindow::new(
+                    QueryLimit::new(3).expect("wrong credit"),
+                    QueryLimit::new(2).expect("span"),
+                )
+                .expect("window"),
+            )
+            .expect("wrong credit"),
+        ];
+        for position in bad_positions {
+            let mut bad = snapshot.clone();
+            bad.next = Some(next.with_query_position(position));
+            assert!(
+                admit_reply(&request, &ReplyDto::new(1, reply(bad))).is_err(),
+                "forged cursor advance/span/credit"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_window_dto30_refuses_dto29_before_new_fields_and_keeps_owner_journal_grammar() {
+    assert_eq!(DTO_VERSION, 30);
+    let issued = QueryLimit::new(4).expect("issued");
+    let fixed = CommandDto::new(
+        1,
+        Command::Name(NameQuery::new("Thing", view_state_root(&[]), issued)),
+    );
+    let legacy = serde_json::to_value(&fixed).expect("legacy shape");
+    assert!(legacy["command"]["data"].get("window").is_none());
+    let window =
+        crate::QueryWindow::new(issued, QueryLimit::new(2).expect("delivery")).expect("window");
+    let command = CommandDto::new(
+        1,
+        Command::Name(
+            NameQuery::new("Thing", view_state_root(&[]), issued)
+                .with_window(window)
+                .expect("window"),
+        ),
+    );
+    let bytes = serde_json::to_vec(&command).expect("new command");
+    let old_peer = super::codec::check_version_header_against(&bytes, "command", 29)
+        .expect_err("old peer rejects before its deny-unknown-fields decoder");
+    assert!(old_peer.contains("command DTO version 30"));
+    let mut old: serde_json::Value = serde_json::from_slice(&bytes).expect("envelope");
+    old["version"] = serde_json::json!(29);
+    let error = crate::decode_command_body(&serde_json::to_vec(&old).expect("old envelope"))
+        .expect_err("old version rejected before window shape");
+    assert!(error.contains("command DTO version 29"));
+    assert!(!error.contains("unknown field"));
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("existing grammar");
+    assert!(grammar.check_envelope_version(29).is_ok());
+    assert!(grammar.check_envelope_version(30).is_ok());
+    assert!(grammar.check_envelope_version(31).is_err());
+}
+
+#[test]
+fn legacy_wire_empty_initial_owner_cursor_admission_is_preserved() {
+    let (library, _) = paged_query_fixture(0);
+    let query = NameQuery::new(
+        "absent",
+        library.revision_root(),
+        QueryLimit::new(2).expect("credit"),
+    );
+    let empty = library.names(&query).expect("actual empty initial page");
+    let owner_position = Cursor::for_view(
+        empty.root.recipe(),
+        library.view().version(),
+        library.cursor().frontier(),
+    );
+    assert_eq!(owner_position.query_offset(), 0);
+    let command = CommandDto::new(1, Command::Name(query.with_cursor(owner_position)));
+    assert!(
+        admit_reply(&command, &ReplyDto::new(1, CommandReply::Names(empty))).is_ok(),
+        "shared wire admission historically allows an empty initial owner position"
+    );
+}

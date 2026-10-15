@@ -69,7 +69,8 @@ impl UnixCommandTransport {
         } else {
             write_body(&mut self.stream, original)?;
         }
-        let mut body = read_before(&mut self.stream, started + initial)?;
+        let mut body = read_before(&mut self.stream, started + initial)
+            .map_err(|error| bind_reply_basis(error, request))?;
         if body.starts_with(&DEFERRED_COMMAND_ACK_MAGIC) {
             if !opted_in {
                 return Err(ClientError::Protocol(
@@ -96,7 +97,8 @@ impl UnixCommandTransport {
                     .unwrap_or(absolute),
                 None => absolute,
             };
-            body = read_before(&mut self.stream, deadline)?;
+            body = read_before(&mut self.stream, deadline)
+                .map_err(|error| bind_reply_basis(error, request))?;
             if body.starts_with(&DEFERRED_COMMAND_ACK_MAGIC) {
                 return Err(ClientError::Protocol(
                     "repeated deferred command ACK".to_owned(),
@@ -111,7 +113,21 @@ fn read_before(
     stream: &mut backend_replication::LocalStream,
     deadline: Instant,
 ) -> Result<Vec<u8>, ClientError> {
-    read_body(&mut DeadlineRead { stream, deadline })
+    let result = read_body(&mut DeadlineRead { stream, deadline });
+    if matches!(result, Err(ClientError::ResponseFrameTooLarge { .. })) {
+        // The body remains unread. Never interpret it as a later frame.
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+    result
+}
+
+fn bind_reply_basis(error: ClientError, request: &CommandDto) -> ClientError {
+    match error {
+        ClientError::ResponseFrameTooLarge { .. } => ClientError::ResponseFrameTooLarge {
+            basis: super::query_continuation::basis(&request.command),
+        },
+        other => other,
+    }
 }
 
 struct DeadlineRead<'a> {
@@ -159,6 +175,25 @@ mod tests {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
+
+    #[test]
+    fn oversized_reply_header_shuts_down_the_exact_socket_before_another_read() {
+        let (mut stream, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
+        peer.write_all(&length.to_be_bytes())
+            .expect("oversized header");
+        peer.write_all(b"unconsumed body bytes")
+            .expect("body prefix");
+        assert!(matches!(
+            read_before(&mut stream, Instant::now() + Duration::from_secs(1)),
+            Err(ClientError::ResponseFrameTooLarge { basis: None })
+        ));
+        let mut byte = [0];
+        assert!(
+            matches!(stream.read(&mut byte), Ok(0) | Err(_)),
+            "body bytes must never become a subsequent frame"
+        );
+    }
 
     /// A private short-path directory for named-socket tests. `temp_dir()` can
     /// point into a deeply nested runner directory, longer than `sun_path`.

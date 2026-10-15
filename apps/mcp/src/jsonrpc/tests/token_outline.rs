@@ -178,7 +178,9 @@ fn outline_budget_reread_refuses_a_new_source_and_cancelled_original_lifetime() 
 }
 #[test]
 fn whole_envelope_counts_unicode_punctuation_id_and_escaping_and_preserves_small_typed_fields() {
-    let typed = json!({"answer":"records","coordinate":"/α::café","more":true,"nextCursor":"actual-owner-proof"});
+    let typed = json!({"answer":"records","coordinate":"/α::café","more":true,"nextCursor":"actual-owner-proof",
+        "continuation_call":{"name":"backend.call","arguments":{"name":"backend.search","arguments":{
+            "query":"literal ' \" \n scope","limit":3,"cursor":"actual-owner-proof"}}}});
     let reply = success(
         json!("id-".to_owned() + &"אב🙂".repeat(500)),
         tool_result(&"\\\"🙂[]{}:".repeat(6000), typed.clone(), false),
@@ -187,6 +189,11 @@ fn whole_envelope_counts_unicode_punctuation_id_and_escaping_and_preserves_small
         let bounded = bound_rpc_reply(reply.clone(), transport);
         assert!(wire_fits(&bounded, transport));
         assert_eq!(bounded["result"]["structuredContent"], typed);
+        assert!(
+            text_of(&bounded["result"])
+                .contains("when present, copy structuredContent.continuation_call unchanged"),
+            "both transport preview fits preserve the executable continuation hint"
+        );
         assert_eq!(
             bounded["result"]["_meta"]["backend/wireBudget"]["tokenPolicy"],
             CL100K_POLICY

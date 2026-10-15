@@ -78,6 +78,67 @@ pub(crate) fn try_answer_with_cursor(
     }
 }
 
+/// Admits the complete selected native graph under the actual CLI format,
+/// without preview truncation hiding an edge or continuation. Other commands
+/// retain their existing response policy.
+pub(crate) fn admit_graph_answer(answer: &Answer, options: &Options) -> Result<(), Fault> {
+    let mut text = match options.format() {
+        Format::Json => {
+            let payload = encode_answer(
+                answer,
+                options.detail(),
+                None,
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .map_err(oversized_fault)?;
+            String::from_utf8(payload.bytes.into_vec())
+                .map_err(|_| Fault::usage("response", "invalid UTF-8"))?
+        }
+        Format::Human => text::answer_with_detail(
+            answer,
+            options.theme(),
+            options.detail(),
+            None,
+            ContinuationTarget::CliOption,
+        ),
+        Format::Markdown => markdown::answer_with_detail(
+            answer,
+            options.detail(),
+            None,
+            ContinuationTarget::CliOption,
+        ),
+    };
+    let budget = match options.format() {
+        Format::Json => DEFAULT_RESPONSE_BUDGET_BYTES,
+        Format::Human | Format::Markdown => backend_present::MAX_PREVIEW_TEXT_BYTES,
+    };
+    // The process appends this framing newline to every CLI answer.
+    text.push('\n');
+    if text.len() > budget {
+        return Err(oversized_fault(backend_present::BudgetExceeded {
+            bytes: text.len(),
+            budget,
+        }));
+    }
+    let tokens = backend_present::cl100k_tokens(&text)
+        .map_err(|error| Fault::usage("response", error.to_string()))?;
+    if tokens > backend_present::DEFAULT_RESPONSE_TOKEN_BUDGET {
+        return Err(Fault::new(
+            FaultSlug::Transport,
+            backend_present::Operand::Whole,
+            backend_present::Cause::new(
+                backend_present::CauseSlug::Oversized,
+                format!(
+                    "complete graph output has {tokens} cl100k_base/ordinary-v1 tokens, above the {} token budget",
+                    backend_present::DEFAULT_RESPONSE_TOKEN_BUDGET
+                ),
+            ),
+            backend_present::Affordance::None,
+        ));
+    }
+    Ok(())
+}
+
 /// Renders one answer as the exact Markdown the MCP text block carries.
 #[must_use]
 pub fn markdown_text(answer: &Answer) -> String {

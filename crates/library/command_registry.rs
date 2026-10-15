@@ -39,6 +39,7 @@ impl CommandSpec {
                 | CommandId::IndexSearch
                 | CommandId::PackageVersions
                 | CommandId::SemanticVersions
+                | CommandId::SemanticSource
                 | CommandId::SemanticShapes
                 | CommandId::PackageSourceMembership
                 | CommandId::SelectSemanticVersion
@@ -97,7 +98,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 53] = [
+pub const COMMANDS: [CommandSpec; 54] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -522,12 +523,21 @@ pub const COMMANDS: [CommandSpec; 53] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::SemanticSource,
+        name: "semantic-source",
+        title: "Semantic Source",
+        description: "Read one bounded native byte range of an exact captured semantic source.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one shared command row or internal owner-command description.
 #[must_use]
 pub fn command_spec(id: CommandId) -> CommandSpec {
     let index = match id {
+        CommandId::SemanticSource => 53,
         CommandId::SemanticShapes => {
             return CommandSpec {
                 id,

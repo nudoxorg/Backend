@@ -382,7 +382,7 @@ impl CompilerFragmentFailure {
                 actual: *actual,
                 maximum: u32::MAX,
             },
-            CompilerFragmentFault::Prepare(PrepareError::OccurrenceLane { ordinal, fault }) => {
+            CompilerFragmentFault::Prepare(PrepareError::OccurrenceLane { fault, .. }) => {
                 nested::occurrence(*fault)
             }
             CompilerFragmentFault::Write(WriteError::OutputTooSmall {

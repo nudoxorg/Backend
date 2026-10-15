@@ -25,6 +25,8 @@ pub const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
 
 /// Default structured response budget for a context-sized answer.
 pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 48 * 1024;
+/// Named cl100k ordinary-text ceiling shared by complete graph outputs.
+pub const DEFAULT_RESPONSE_TOKEN_BUDGET: usize = 12_000;
 
 /// Hard response budget for the largest complete typed payload admitted.
 pub const MAX_RESPONSE_BUDGET_BYTES: usize = 256 * 1024;
@@ -162,16 +164,82 @@ pub fn encode_answer(
     next_cursor: Option<&str>,
     budget: usize,
 ) -> Result<EncodedPayload, BudgetExceeded> {
+    encode_answer_with_call(answer, detail, next_cursor, budget, None)
+}
+
+/// Encodes the exact CLI graph JSON projection while borrowing its canonical page.
+/// This is also the fitting proof for a shell-only JSON alternative.
+pub fn encode_package_graph_json(
+    page: &backend_library::PackageGraphPage,
+    detail: Detail,
+    budget: usize,
+) -> Result<EncodedPayload, BudgetExceeded> {
+    let view = crate::product::package_graph_page_records(
+        page,
+        crate::product::GraphRecordProjection::Compact,
+    );
+    encode_graph_product(&view, page, detail, None, budget, None)
+}
+
+fn encode_graph_product(
+    view: &crate::ProductView,
+    page: &backend_library::PackageGraphPage,
+    detail: Detail,
+    next_cursor: Option<&str>,
+    budget: usize,
+    continuation_call: Option<&crate::McpExecutableCall<'_>>,
+) -> Result<EncodedPayload, BudgetExceeded> {
+    encode_typed_with_call(
+        "product",
+        detail,
+        next_cursor,
+        BorrowedGraphProduct {
+            heading: view.heading(),
+            records: view
+                .records()
+                .iter()
+                .map(|row| BorrowedGraphRow {
+                    extent: row.extent(),
+                    title: row.title(),
+                    operand: row.operand(),
+                    tags: row.tags(),
+                })
+                .collect(),
+            note: view.note(),
+            fault: view.fault().map(FaultDto::new),
+            package_graph_page: page,
+        },
+        budget,
+        continuation_call,
+    )
+}
+
+/// Encodes an answer and optional executable reader metadata under one cap.
+pub fn encode_answer_with_call(
+    answer: &Answer,
+    detail: Detail,
+    next_cursor: Option<&str>,
+    budget: usize,
+    continuation_call: Option<&crate::McpExecutableCall<'_>>,
+) -> Result<EncodedPayload, BudgetExceeded> {
+    if let Answer::Product(view) = answer
+        && let Some(page) = view.package_graph_page()
+    {
+        // The complete graph is borrowed during count and serialization;
+        // projecting this answer never clones its canonical edge payload.
+        return encode_graph_product(view, page, detail, next_cursor, budget, continuation_call);
+    }
     if matches!(detail, Detail::Summary) {
         return match answer {
-            Answer::Page(page) => encode_typed(
+            Answer::Page(page) => encode_typed_with_call(
                 answer.kind(),
                 detail,
                 next_cursor,
                 SummaryPageDto::new(&PageProjection::new(page, detail)),
                 budget,
+                continuation_call,
             ),
-            Answer::Records(list) => encode_typed(
+            Answer::Records(list) => encode_typed_with_call(
                 answer.kind(),
                 detail,
                 next_cursor,
@@ -185,6 +253,7 @@ pub fn encode_answer(
                     semantic_search: list.coverage().semantic_search_status(),
                 },
                 budget,
+                continuation_call,
             ),
             Answer::Shelf(shelf) => {
                 let projects = shelf
@@ -201,7 +270,7 @@ pub fn encode_answer(
                         }
                     })
                     .collect();
-                encode_typed(
+                encode_typed_with_call(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -210,11 +279,12 @@ pub fn encode_answer(
                         projects,
                     },
                     budget,
+                    continuation_call,
                 )
             }
             Answer::Outline(outline) => {
                 let outline = OutlineDto::new(outline);
-                encode_typed(
+                encode_typed_with_call(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -227,11 +297,12 @@ pub fn encode_answer(
                         page: outline.page,
                     },
                     budget,
+                    continuation_call,
                 )
             }
             Answer::Status(status) => {
                 let status = StatusDto::new(status);
-                encode_typed(
+                encode_typed_with_call(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -247,11 +318,12 @@ pub fn encode_answer(
                         capabilities: status.capabilities,
                     },
                     budget,
+                    continuation_call,
                 )
             }
             Answer::Product(product) => {
                 let product = ProductDto::for_detail(product, detail);
-                encode_typed(
+                encode_typed_with_call(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -266,56 +338,64 @@ pub fn encode_answer(
                         index_poll: product.index_poll,
                         selected_source_frontier: product.selected_source_frontier,
                         package_source_membership_page: product.package_source_membership_page,
+                        package_graph_page: product.package_graph_page,
                         semantic_data: product.semantic_data,
                         package_discovery: product.package_discovery,
                     },
                     budget,
+                    continuation_call,
                 )
             }
         };
     }
     match answer {
-        Answer::Page(page) => encode_typed(
+        Answer::Page(page) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             PageDto::from_projection(&PageProjection::new(page, detail)),
             budget,
+            continuation_call,
         ),
-        Answer::Records(list) => encode_typed(
+        Answer::Records(list) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             RecordListDto::new(list),
             budget,
+            continuation_call,
         ),
-        Answer::Shelf(shelf) => encode_typed(
+        Answer::Shelf(shelf) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             ShelfDto::new(shelf),
             budget,
+            continuation_call,
         ),
-        Answer::Outline(outline) => encode_typed(
+        Answer::Outline(outline) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             OutlineDto::new(outline),
             budget,
+            continuation_call,
         ),
-        Answer::Status(status) => encode_typed(
+        Answer::Status(status) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             StatusDto::new(status),
             budget,
+            continuation_call,
         ),
-        Answer::Product(product) => encode_typed(
+        Answer::Product(product) => encode_typed_with_call(
             answer.kind(),
             detail,
             next_cursor,
             ProductDto::for_detail(product, detail),
             budget,
+            continuation_call,
         ),
     }
 }
@@ -327,6 +407,17 @@ fn encode_typed<'a, T: Serialize>(
     body: T,
     budget: usize,
 ) -> Result<EncodedPayload, BudgetExceeded> {
+    encode_typed_with_call(answer, detail, next_cursor, body, budget, None)
+}
+
+fn encode_typed_with_call<'a, T: Serialize>(
+    answer: &'static str,
+    detail: Detail,
+    next_cursor: Option<&'a str>,
+    body: T,
+    budget: usize,
+    continuation_call: Option<&'a crate::McpExecutableCall<'a>>,
+) -> Result<EncodedPayload, BudgetExceeded> {
     // Keep every adapter behind the same protocol ceiling, even if a caller
     // accidentally supplies an unbounded or oversized local budget.
     let budget = budget.min(MAX_RESPONSE_BUDGET_BYTES);
@@ -335,6 +426,7 @@ fn encode_typed<'a, T: Serialize>(
         answer,
         projection: ProjectionDetail::new(answer, detail),
         next_cursor,
+        continuation_call,
         budget: BudgetMetadata::default(),
     };
     let mut measured = count_json(&envelope);
@@ -432,6 +524,8 @@ struct BudgetEnvelope<'a, T> {
     projection: ProjectionDetail,
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     next_cursor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation_call: Option<&'a crate::McpExecutableCall<'a>>,
     budget: BudgetMetadata,
 }
 
@@ -705,6 +799,30 @@ struct SummaryProductDto {
     semantic_data: Option<crate::product::ProductSemanticData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_graph_page: Option<backend_library::PackageGraphPage>,
+}
+
+/// Native graph rows have only readable identities; all canonical fields
+/// live in the borrowed owner page and remain complete in every detail mode.
+#[derive(Serialize)]
+struct BorrowedGraphRow<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extent: Option<backend_library::DeclarationReadExtent>,
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operand: Option<&'a str>,
+    tags: &'a [String],
+}
+#[derive(Serialize)]
+struct BorrowedGraphProduct<'a> {
+    heading: &'a str,
+    records: Vec<BorrowedGraphRow<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fault: Option<FaultDto>,
+    package_graph_page: &'a backend_library::PackageGraphPage,
 }
 
 #[derive(Default)]
@@ -1664,5 +1782,60 @@ mod tests {
         );
         assert!(p95 > 0);
         assert!(a95 > 0);
+    }
+}
+
+#[cfg(test)]
+mod invocation_budget_tests {
+    use super::*;
+    use crate::{McpExposure, McpInvocation};
+
+    #[test]
+    fn complete_borrowed_arguments_are_inside_envelope_admission() {
+        let arguments = serde_json::json!({"query":"x".repeat(8000),"variables":{"names":["λאב".repeat(8000)]},"limit":1});
+        let invocation = McpInvocation::new(
+            McpExposure::RegisteredCall,
+            "backend.query",
+            arguments.as_object().expect("args"),
+        );
+        let call = invocation.continuation_call("next");
+        let body = serde_json::json!({"rows":[],"terminal":"limit_reached"});
+        let direct = encode_typed("query", Detail::Full, Some("next"), &body, 1024)
+            .expect("small direct page");
+        let refused = encode_typed_with_call(
+            "query",
+            Detail::Full,
+            Some("next"),
+            &body,
+            1024,
+            Some(&call),
+        )
+        .expect_err("complete retry exceeds cap");
+        assert!(refused.bytes > direct.budget.bytes + 48_000);
+        let complete = encode_typed_with_call(
+            "query",
+            Detail::Full,
+            Some("next"),
+            &body,
+            MAX_RESPONSE_BUDGET_BYTES,
+            Some(&call),
+        )
+        .expect("complete measured retry");
+        let value: Value = serde_json::from_slice(&complete.bytes).expect("envelope");
+        assert_eq!(value["budget"]["bytes"], complete.bytes.len());
+        assert_eq!(
+            value["continuation_call"]["arguments"]["arguments"]["query"],
+            arguments["query"]
+        );
+        assert_eq!(
+            value["continuation_call"]["arguments"]["arguments"]["variables"],
+            arguments["variables"]
+        );
+        assert_eq!(
+            value["continuation_call"]["arguments"]["arguments"]["cursor"],
+            "next"
+        );
+        let direct: Value = serde_json::from_slice(&direct.bytes).expect("direct");
+        assert!(direct.get("continuation_call").is_none());
     }
 }

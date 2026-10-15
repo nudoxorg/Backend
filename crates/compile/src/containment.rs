@@ -17,6 +17,7 @@
 //! by the single extraction loop and must agree about one grammar's nodes.
 
 use crate::syntax::{Container, node_text};
+use crate::{SourceBinding, SourceBindingIdentity};
 use std::{collections::BTreeMap, num::NonZeroU32};
 use tree_sitter::Node;
 
@@ -24,7 +25,7 @@ use tree_sitter::Node;
 type ByteRange = (usize, usize);
 
 /// How a declaration is addressed by whatever contains it.
-type DefinitionIdentity = (String, NonZeroU32);
+type DefinitionIdentity = (String, NonZeroU32, SourceBindingIdentity);
 
 /// Maximum ancestors walked before a definition is treated as file-level.
 const MAX_CONTAINER_DEPTH: usize = 256;
@@ -37,7 +38,8 @@ const MAX_CONTAINER_DEPTH: usize = 256;
 /// the tags query produced its matches in.
 pub(crate) struct DefinitionIndex {
     by_range: BTreeMap<ByteRange, DefinitionIdentity>,
-    tags: BTreeMap<DefinitionIdentity, String>,
+    tags: BTreeMap<(String, NonZeroU32), String>,
+    binding_tags: BTreeMap<SourceBinding, String>,
 }
 
 impl DefinitionIndex {
@@ -46,6 +48,7 @@ impl DefinitionIndex {
         Self {
             by_range: BTreeMap::new(),
             tags: BTreeMap::new(),
+            binding_tags: BTreeMap::new(),
         }
     }
 
@@ -54,10 +57,22 @@ impl DefinitionIndex {
     /// Two tags patterns routinely select the same node - a Rust `impl`
     /// method is both `definition.method` and `definition.function` - and they
     /// always agree about its name, so the first capture is authoritative.
-    pub(crate) fn insert(&mut self, node: Node<'_>, name: &str, line: NonZeroU32, tag: &str) {
+    pub(crate) fn insert(
+        &mut self,
+        node: Node<'_>,
+        name: &str,
+        line: NonZeroU32,
+        tag: &str,
+        identity: SourceBindingIdentity,
+    ) {
         self.by_range
             .entry((node.start_byte(), node.end_byte()))
-            .or_insert_with(|| (name.to_owned(), line));
+            .or_insert_with(|| (name.to_owned(), line, identity));
+        if let SourceBindingIdentity::Exact(binding) = identity {
+            self.binding_tags
+                .entry(binding.binding())
+                .or_insert_with(|| tag.to_owned());
+        }
         self.tags
             .entry((name.to_owned(), line))
             .or_insert_with(|| tag.to_owned());
@@ -73,6 +88,10 @@ impl DefinitionIndex {
         match container {
             Container::Module => false,
             Container::Attached { .. } => true,
+            Container::Binding { binding } => self
+                .binding_tags
+                .get(binding)
+                .is_some_and(|tag| owns_members(tag)),
             Container::Enclosing { name, line } => self
                 .tags
                 .get(&(name.clone(), *line))
@@ -105,6 +124,7 @@ pub(crate) fn container_of(
     node: Node<'_>,
     definitions: &DefinitionIndex,
     source: &str,
+    identity: SourceBindingIdentity,
 ) -> Container {
     if let Some(type_name) = attached_type(node, source) {
         return Container::attached(&type_name);
@@ -115,8 +135,22 @@ pub(crate) fn container_of(
         let Some(parent) = current.parent() else {
             break;
         };
-        if let Some((name, line)) = definitions.strictly_containing(parent, contained) {
-            return Container::enclosing(name, *line);
+        if let Some((name, line, parent_identity)) =
+            definitions.strictly_containing(parent, contained)
+        {
+            if let (SourceBindingIdentity::Exact(own), SourceBindingIdentity::Exact(enclosing)) =
+                (identity, *parent_identity)
+                && own.binding() == enclosing.binding()
+            {
+                current = parent;
+                continue;
+            }
+            return match parent_identity {
+                SourceBindingIdentity::Exact(binding) => Container::Binding {
+                    binding: binding.binding(),
+                },
+                SourceBindingIdentity::Legacy => Container::enclosing(name, *line),
+            };
         }
         if let Some(type_name) = attached_type(parent, source) {
             return Container::attached(&type_name);

@@ -5,12 +5,12 @@
 //! resource makes capability-dependent routes and the two advanced lanes
 //! inspectable without promising that every workspace can answer them.
 
-use super::codec::empty_cursor;
+use super::codec::{empty_cursor, no_extra, string};
 use super::{RpcError, default_detail};
 use backend_library::CommandDomain;
 use backend_present::{
-    ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, Fault, GRAMMARS, domain_name, encode_serializable, grammar_for_tool, oversized_fault,
+    ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault,
+    GRAMMARS, domain_name, encode_serializable, grammar_for_tool, oversized_fault,
 };
 use serde_json::{Map, Value, json};
 use std::fmt::Write as _;
@@ -20,6 +20,11 @@ pub(super) const SURFACE_TOOL: &str = "backend.surface";
 
 /// The typed Trustfall lane, which is a capability rather than a registry row.
 pub(super) const QUERY_TOOL: &str = "backend.query";
+
+/// Compact access to registered named routes on tool-list-only hosts.
+pub(super) const CALL_TOOL: &str = "backend.call";
+pub(super) const CATALOG_RESOURCE_URI: &str = "backend://tools/catalog";
+pub(super) const CATALOG_SCHEMA: &str = "backend-mcp.tool-catalog/v2";
 
 /// Starts one owner-managed package indexing operation.
 pub(super) const INDEX_START_TOOL: &str = "backend.index_start";
@@ -42,6 +47,7 @@ pub(super) enum ToolRoute {
     IndexProgress,
     IndexCancel,
     RefusedIndexAwait,
+    NamedCall,
 }
 
 /// Whether a callable route belongs in the default agent tool set.
@@ -56,6 +62,66 @@ struct ToolDescriptor {
     name: &'static str,
     route: ToolRoute,
     discovery: Discovery,
+}
+
+/// One admitted target with its original borrowed inputs. The held descriptor
+/// owns both canonical name and route; forwarding cannot pair a route with a
+/// caller-supplied or separately mutable identity.
+pub(super) struct NamedToolCall<'a> {
+    descriptor: ToolDescriptor,
+    arguments: &'a Map<String, Value>,
+}
+
+impl<'a> NamedToolCall<'a> {
+    pub(super) fn admit(arguments: &'a Map<String, Value>) -> Result<Self, RpcError> {
+        no_extra(arguments, &["name", "arguments"])?;
+        let name = string(arguments, "name")?;
+        let descriptor = descriptor(name)
+            .filter(|descriptor| named_target(descriptor.route))
+            .ok_or_else(|| {
+                RpcError::invalid_argument(
+                    "name",
+                    "backend.call requires a registered named tool from its name enum; surface, recursive and unknown routes are refused",
+                )
+            })?;
+        let arguments = arguments
+            .get("arguments")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                RpcError::invalid_argument(
+                    "arguments",
+                    "backend.call requires arguments.arguments as an object",
+                )
+            })?;
+        Ok(Self {
+            descriptor,
+            arguments,
+        })
+    }
+
+    pub(super) const fn name(&self) -> &'static str {
+        self.descriptor.name
+    }
+
+    pub(super) const fn route(&self) -> ToolRoute {
+        self.descriptor.route
+    }
+
+    pub(super) const fn arguments(&self) -> &'a Map<String, Value> {
+        self.arguments
+    }
+}
+
+const fn named_target(route: ToolRoute) -> bool {
+    matches!(
+        route,
+        ToolRoute::Registry(_)
+            | ToolRoute::Query
+            | ToolRoute::IndexStart
+            | ToolRoute::IndexProgress
+            | ToolRoute::IndexCancel
+            | ToolRoute::RefusedIndexAwait
+    )
 }
 
 /// Tools advertised to an MCP client, in the order the instructions use them.
@@ -86,6 +152,11 @@ pub(super) fn tool_route(name: &str) -> Option<ToolRoute> {
 
 fn descriptor(name: &str) -> Option<ToolDescriptor> {
     let descriptor = match name {
+        CALL_TOOL => ToolDescriptor {
+            name: CALL_TOOL,
+            route: ToolRoute::NamedCall,
+            discovery: Discovery::Listed,
+        },
         SURFACE_TOOL => ToolDescriptor {
             name: SURFACE_TOOL,
             route: ToolRoute::Surface,
@@ -133,61 +204,120 @@ fn descriptor(name: &str) -> Option<ToolDescriptor> {
 }
 
 fn descriptors() -> Vec<ToolDescriptor> {
-    let mut descriptors = Vec::with_capacity(GRAMMARS.len() + 2);
+    let mut descriptors = Vec::with_capacity(GRAMMARS.len() + 3);
     descriptors.extend(GRAMMARS.iter().copied().map(|grammar| {
         descriptor(grammar.tool()).expect("every grammar row has an MCP descriptor")
     }));
     descriptors.extend([
         descriptor(QUERY_TOOL).expect("query tool descriptor"),
         descriptor(SURFACE_TOOL).expect("surface tool descriptor"),
+        descriptor(CALL_TOOL).expect("named call descriptor"),
     ]);
     descriptors
 }
 
-/// Describes every callable-but-not-default route, including its registry
-/// description, so capability-dependent features remain inspectable without
-/// advertising them as universally ready.
+/// Small complete route index. Exact schemas live at the named resource
+/// linked by each entry, so one complex operand cannot hide other capabilities.
 pub(super) fn catalog_markdown() -> String {
-    let mut output = String::from(
-        "# MCP tool catalog\n\n`tools/list` contains the default session tools. The registry routes below are callable by exact name but are not in the default set. Each input schema is the accepted JSON shape. A route can still return a typed fault when its required source metadata or product capability is unavailable; read `backend.status` and `backend://workspace/current` before treating an empty or unavailable result as evidence that the project has none.\n\n## Capability-dependent registry routes\n\n",
+    let mut output = format!(
+        "# MCP tool catalog\n\nSchema: `{CATALOG_SCHEMA}`. Resource: `{CATALOG_RESOURCE_URI}`.\n\n"
     );
-    let descriptors = descriptors();
-    for descriptor in &descriptors {
-        if descriptor.discovery == Discovery::CatalogOnly
-            && let ToolRoute::Registry(grammar) = descriptor.route
-        {
-            let domain = grammar.domain().unwrap_or(CommandDomain::Library);
-            let schema = registry_tool(grammar, domain)["inputSchema"].clone();
-            let schema = serde_json::to_string_pretty(&schema)
-                .expect("registry input schema always serializes");
-            let _ = writeln!(
-                output,
-                "- `{}` — {}\n\n```json\n{schema}\n```\n",
-                descriptor.name,
-                grammar.description()
-            );
-        }
-    }
-    output.push_str("\n## Advanced and retired routes\n\n");
-    for descriptor in &descriptors {
-        if descriptor.discovery != Discovery::CatalogOnly {
-            continue;
-        }
-        match descriptor.route {
-            ToolRoute::Registry(_) => {}
-            ToolRoute::Query => output.push_str(
-                "- `backend.query` — Typed Trustfall joins over the selected immutable revision. This advanced lane is not in the default session tool set; read `backend://schema/query` for its input contract and executable examples.\n",
-            ),
-            ToolRoute::Surface => output.push_str(
-                "- `backend.surface` — Generic typed `SurfaceCommand` escape hatch. Pass `command` as a tagged object with an `operation` field; its accepted operations and fields are defined by `SurfaceCommand`. Prefer a matching named tool when one exists.\n",
-            ),
-            ToolRoute::RefusedIndexAwait => output.push_str(
-                "- `backend.index_await` — Retired over MCP because it may block on owner work; use `backend.index_progress` for immediate bounded polling. Calls are refused.\n",
-            ),
-            ToolRoute::IndexStart | ToolRoute::IndexProgress | ToolRoute::IndexCancel => {}
-        }
+    output.push_str(
+        "`tools/list` contains the default session tools. Read a route's linked card for its complete input schema, result contract and help before calling it. A large card returns UTF-8 JSON text ranges: append contents[0].text in exact backend/catalogRange.offset/end order, copy result._meta[backend/nextUri] until complete, verify its unchanged version and totalBytes, then parse the full JSON. Fragments use text/plain; an unsplit card uses application/json. Every registered named handler's argument schema is retained; direct-only Surface is expert protocol guidance, not a named schema card. On a host exposing only listed tools, pass {\"name\":\"backend.<route>\",\"arguments\":{...}} to `backend.call`; put detail and cursor inside that selected arguments object. Copy `structuredContent.continuation_call` unchanged to continue an adaptive page. Preserve effective limits, typed native JSON cursors, exact source references and byte ranges.\n\nA registered route can still return a typed capability/source refusal. Read `backend.status` and `backend://workspace/current`; an unavailable or partial lane is not a complete empty answer. `backend.query` also has executable examples at `backend://schema/query`. `backend.surface` is direct-only and is refused by `backend.call`. `backend.index_await` is retired over MCP; poll `backend.index_progress` instead.\n\n## All closed routes\n\n",
+    );
+    for descriptor in descriptors() {
+        let title = match descriptor.route {
+            ToolRoute::Registry(grammar) => {
+                grammar.spec().map_or(grammar.name(), |spec| spec.title)
+            }
+            ToolRoute::Query => "Typed graph query",
+            ToolRoute::Surface => "Direct-only expert protocol guidance",
+            ToolRoute::IndexStart => "Start indexing",
+            ToolRoute::IndexProgress => "Saved operation progress",
+            ToolRoute::IndexCancel => "Cancel indexing",
+            ToolRoute::RefusedIndexAwait => "Retired MCP wait",
+            ToolRoute::NamedCall => "Call registered tool",
+        };
+        let policy = if matches!(descriptor.route, ToolRoute::RefusedIndexAwait) {
+            "retired; calls refused"
+        } else if matches!(descriptor.route, ToolRoute::Surface) {
+            "direct-only"
+        } else if descriptor.discovery == Discovery::Listed {
+            "listed"
+        } else {
+            "capability-dependent"
+        };
+        let link = if matches!(descriptor.route, ToolRoute::Surface) {
+            "expert protocol guidance"
+        } else {
+            "schema and help"
+        };
+        let _ = writeln!(
+            output,
+            "- `{}` — {title} ({policy}); [{link}]({CATALOG_RESOURCE_URI}/{})",
+            descriptor.name, descriptor.name
+        );
     }
     output
+}
+
+/// Complete descriptor-driven JSON card; constructing it performs no owner
+/// access and never substitutes a command-line grammar for an MCP job handler.
+pub(super) fn catalog_tool(name: &str) -> Option<Value> {
+    let descriptor = descriptor(name)?;
+    let mut tool = match descriptor.route {
+        ToolRoute::Query => query_catalog_tool(),
+        ToolRoute::Surface => json!({
+            "name":SURFACE_TOOL, "title":"Direct-only expert protocol guidance",
+            "description":"Direct clients may send {command:<closed tagged SurfaceCommand>,detail:<summary|standard|full>}. The command carries an operation tag and its exact typed operands. This private escape hatch is not a registered named target: backend.call refuses it before native dispatch. Use the equivalent registered route's complete schema and executable continuation when available; never move a returned command cursor into an outer argument.",
+            "_meta":{"backend/directOnly":true,"backend/registeredTarget":false}
+        }),
+        ToolRoute::RefusedIndexAwait => json!({
+            "name":"backend.index_await", "title":"Retired MCP wait",
+            "description":"MCP always refuses this retired route without owner work. Use backend.index_progress with the exact returned operation_key or ticket and admitted conditional-wait arguments; CLI add --wait is a separate caller lifetime.",
+            "_meta":{"backend/retired":true},
+            "inputSchema":{"type":"object","additionalProperties":true},
+            "outputSchema":{"type":"object","description":"Typed usage refusal; this route never publishes a terminal owner outcome."}
+        }),
+        _ => listed_tool(descriptor),
+    };
+    tool["_meta"]["backend/catalog"] = json!({
+        "schema":CATALOG_SCHEMA, "uri":format!("{CATALOG_RESOURCE_URI}/{name}"),
+        "index":CATALOG_RESOURCE_URI, "registeredTarget":named_target(descriptor.route),
+        "listed":descriptor.discovery == Discovery::Listed,
+        "continuation":"Copy structuredContent.continuation_call unchanged, including exposure, effective limit, cursor, source reference and byte range."
+    });
+    Some(tool)
+}
+
+fn query_catalog_tool() -> Value {
+    json!({
+        "name":QUERY_TOOL, "title":"Typed graph query",
+        "description":"Typed Trustfall joins over one selected immutable revision. Read backend://schema/query for starting edges, fields and executable examples. Variables are scalars or lists, never objects, and nesting is bounded. A first page may adapt its limit; copy its exact continuation_call to resume the same query/revision with the issued limit. Typed refusals preserve unavailable, cancelled and stale-source facts.",
+        "inputSchema":{
+            "type":"object", "properties":{
+                "query":{"type":"string","minLength":1,
+                    "description":format!("Nonempty query text; at most {} UTF-8 bytes, not Unicode characters.", backend_library::MAX_GRAPH_QUERY_BYTES)},
+                "variables":{
+                    "description":format!("At most {} nonempty variable names. Aggregate admission is at most {} bytes: UTF-8 variable names and string values, recursively summed lists, and 16 bytes per non-string scalar.",backend_library::MAX_GRAPH_QUERY_FIELDS,backend_library::MAX_GRAPH_VALUE_BYTES),
+                    "anyOf":[{"type":"null"},{"type":"object","maxProperties":backend_library::MAX_GRAPH_QUERY_FIELDS,"propertyNames":{"minLength":1},"additionalProperties":{"$ref":"#/$defs/value"}}]},
+                "limit":{"type":"integer","minimum":1,"maximum":backend_library::QueryLimit::MAX,"default":backend_present::DEFAULT_LIMIT},
+                "cursor":{"type":"string","minLength":1,"description":"Exact owner continuation for this immutable query; prefer the complete executable continuation_call."},
+                "detail":detail_property(QUERY_TOOL)
+            },
+            "required":["query"],"additionalProperties":false,
+            "$defs":{"value":{"description":format!("Finite JSON scalars or lists, with at most {} nested array levels; object values are refused.",backend_library::MAX_GRAPH_VALUE_DEPTH),
+                "anyOf":[{"type":["null","boolean","number","string"]},{"type":"array","items":{"$ref":"#/$defs/value"}}]}}
+        },
+        "outputSchema":{"type":"object","description":"Unchanged graph-page structuredContent, including revision, rows, emitted count, terminal and optional executable continuation_call; errors are typed refusals."},
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},
+        "_meta":{"backend/querySchema":"backend://schema/query",
+            "backend/queryAdmission":{"maxQueryUtf8Bytes":backend_library::MAX_GRAPH_QUERY_BYTES,
+                "maxVariables":backend_library::MAX_GRAPH_QUERY_FIELDS,
+                "maxAggregateVariableBytes":backend_library::MAX_GRAPH_VALUE_BYTES,
+                "nonStringScalarBytes":16,"maxValueDepth":backend_library::MAX_GRAPH_VALUE_DEPTH,
+                "variableNames":"nonempty UTF-8; name bytes count toward the aggregate"}}
+    })
 }
 
 /// Checks JSON values against the primitive and collection shapes projected by
@@ -254,7 +384,7 @@ fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
     if spec.kind() == ArgumentKind::IndexJobTicket {
         return backend_present::decode_index_job_ticket(value).map(|_| ());
     }
-    let type_matches = match spec.kind().json_type() {
+    let type_matches = match spec.json_type() {
         "string" => value.is_string(),
         "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
         "boolean" => value.is_boolean(),
@@ -263,13 +393,20 @@ fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
     };
     if type_matches {
         Ok(())
+    } else if let Some(domain) = spec.page_limit_domain() {
+        Err(argument_fault(
+            spec,
+            &format!(
+                "an integer from {} through {}",
+                domain.minimum(),
+                domain.maximum()
+            ),
+        ))
     } else {
-        let expected = if spec.kind() == ArgumentKind::Limit {
-            "an integer from 1 through 200"
-        } else if spec.is_repeated() {
+        let expected = if spec.is_repeated() {
             "an array of values with the declared type"
         } else {
-            match spec.kind().json_type() {
+            match spec.json_type() {
                 "integer" => "an integer",
                 "boolean" => "a boolean",
                 "object" => "an object",
@@ -310,13 +447,16 @@ fn bounded_tools() -> Result<Value, RpcError> {
 }
 
 fn tools_value() -> Value {
-    let mut tools = Vec::with_capacity(SESSION_TOOLS.len() + INDEX_JOB_TOOLS.len());
+    let mut tools = Vec::with_capacity(SESSION_TOOLS.len() + INDEX_JOB_TOOLS.len() + 1);
     for name in SESSION_TOOLS.iter().chain(INDEX_JOB_TOOLS) {
         let descriptor =
             descriptor(name).unwrap_or_else(|| panic!("listed MCP tool {name} has no descriptor"));
         assert_eq!(descriptor.discovery, Discovery::Listed);
         tools.push(listed_tool(descriptor));
     }
+    tools.push(listed_tool(
+        descriptor(CALL_TOOL).expect("named call descriptor"),
+    ));
     json!({ "tools": tools })
 }
 
@@ -329,6 +469,7 @@ fn listed_tool(descriptor: ToolDescriptor) -> Value {
         ToolRoute::IndexStart => index_start_tool(),
         ToolRoute::IndexProgress => index_progress_tool(),
         ToolRoute::IndexCancel => index_cancel_tool(),
+        ToolRoute::NamedCall => named_call_tool(),
         ToolRoute::Query | ToolRoute::Surface | ToolRoute::RefusedIndexAwait => {
             panic!(
                 "non-default route {} was put in tools/list",
@@ -336,6 +477,31 @@ fn listed_tool(descriptor: ToolDescriptor) -> Value {
             )
         }
     }
+}
+
+fn named_call_tool() -> Value {
+    let names = descriptors()
+        .into_iter()
+        .filter(|descriptor| named_target(descriptor.route))
+        .map(|descriptor| descriptor.name)
+        .collect::<Vec<_>>();
+    json!({
+        "name": CALL_TOOL,
+        "title": "Call Registered Tool",
+        "description": "Call a registered named tool using its exact catalog arguments. Read backend://tools/catalog for capability-dependent routes and backend://schema/query for the typed query lane. Pass the selected name and its arguments object; the original route validates inputs and returns its original result. Source/owner capabilities may remain unavailable. Mutation, deadlines, cancellation, cursor identity and response budgets follow the selected tool. Surface and recursive calls are refused.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "enum": names},
+                "arguments": {"type": "object", "description": "Exact input object described by the selected registered tool's catalog schema; place detail and cursor here when that route accepts them."}
+            },
+            "required": ["name", "arguments"],
+            "additionalProperties": false
+        },
+        "outputSchema": {"type": "object", "description": "Unchanged structuredContent of the selected registered tool; its response contract is defined by that route.", "additionalProperties": true},
+        "annotations": {"title": "Call Registered Tool", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+        "_meta": {"backend/catalog": {"uri": CATALOG_RESOURCE_URI, "schema": CATALOG_SCHEMA}}
+    })
 }
 
 fn index_start_tool() -> Value {
@@ -549,7 +715,7 @@ fn index_poll_schema() -> Value {
         "type": "object",
         "description": "Exact next observation for accepted or active work; omitted for terminal, unknown, unresolved or expired operations.",
         "properties": {
-            "shell": {"type": "string"},
+            "shell": {"type": "string", "description":"Optional exact command for an observed CLI in the serving bundle and a reproducible default authority attachment; absent when unavailable."},
             "call": {
                 "type": "object",
                 "properties": {
@@ -560,7 +726,7 @@ fn index_poll_schema() -> Value {
                 "additionalProperties": false
             }
         },
-        "required": ["shell", "call"],
+        "required": ["call"],
         "additionalProperties": false
     })
 }
@@ -631,30 +797,26 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
     properties.insert("detail".to_owned(), detail_property(grammar.tool()));
-    if matches!(
-        grammar.name(),
-        "search" | "resolve" | "name" | "graph" | "index-search" | "outline"
-    ) {
-        properties.insert(
-            "cursor".to_owned(),
-            json!({
-                "type": "string",
-                "description": "Opaque continuation returned by the preceding page."
-            }),
-        );
-        if matches!(grammar.name(), "graph" | "outline") {
-            properties.insert(
-                "limit".to_owned(),
-                json!({
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": if grammar.name() == "outline" { 200 } else { 25 },
-                    "description": if grammar.name() == "outline" {
-                        "Maximum declarations requested. The first page may use a smaller effective limit to fit the named token budget; continue with page.limit and the returned cursor."
-                    } else { "Maximum graph rows in this page." }
-                }),
-            );
+    if let Some(cursor_domain) = grammar.continuation_domain() {
+        properties.entry("cursor".to_owned()).or_insert_with(|| json!({
+            "type": if cursor_domain == backend_present::ContinuationDomain::NativeOwnerJson {"object"} else {"string"},
+            "description":"Exact continuation returned by the preceding page. Preserve its original operands and page limit."
+        }));
+        let id = grammar.spec().map(|spec| spec.id);
+        if matches!(
+            id,
+            Some(
+                backend_library::CommandId::Graph
+                    | backend_library::CommandId::GraphQuery
+                    | backend_library::CommandId::Outline
+            )
+        ) {
+            let outline = matches!(id, Some(backend_library::CommandId::Outline));
+            properties.insert("limit".to_owned(),json!({
+                "type":"integer", "minimum":1, "maximum":backend_library::QueryLimit::MAX,
+                "default":if outline {backend_library::QueryLimit::MAX} else {backend_present::DEFAULT_LIMIT},
+                "description":if outline {"Maximum declarations requested. The first page may use a smaller effective limit to fit the named token budget; continue with page.limit and the returned cursor."} else {"Maximum graph rows in this page."}
+            }));
         }
     }
     let title = grammar
@@ -689,18 +851,28 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
 
 /// Projects one operand into its JSON Schema property.
 fn property(spec: ArgumentSpec) -> Value {
+    if spec.kind() == ArgumentKind::SemanticShapeRequest {
+        let mut schema = backend_library::SemanticShapeReadRequest::json_schema();
+        schema["description"] = json!(spec.help());
+        return schema;
+    }
+    if spec.kind() == ArgumentKind::SemanticSourceRequest {
+        let mut schema = backend_library::SemanticSourceRequest::json_schema();
+        schema["description"] = json!(spec.help());
+        return schema;
+    }
     if spec.kind() == ArgumentKind::IndexJobTicket {
         return ticket_schema();
     }
     let choices = spec.kind().enumeration();
-    let mut scalar = json!({ "type": spec.kind().json_type() });
+    let mut scalar = json!({ "type": spec.json_type() });
     if !choices.is_empty() {
         scalar["enum"] = json!(choices);
     }
-    if spec.kind() == ArgumentKind::Limit {
-        scalar["minimum"] = json!(1);
-        scalar["maximum"] = json!(200);
-        scalar["default"] = json!(DEFAULT_LIMIT);
+    if let Some(domain) = spec.page_limit_domain() {
+        scalar["minimum"] = json!(domain.minimum());
+        scalar["maximum"] = json!(domain.maximum());
+        scalar["default"] = json!(domain.default_limit());
     }
     if spec.kind() == ArgumentKind::ExecutionIntent {
         scalar["default"] = json!("interactive");
