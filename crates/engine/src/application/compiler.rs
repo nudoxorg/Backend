@@ -2290,11 +2290,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             forest_root = forest.root;
             configured_forest = forest.configured_forest;
             tsz_package_membership = forest.package_membership;
-            tsz_budget = Some(super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
-                control.deadline,
-                cancelled,
-                forest.work_units,
-            ));
+            tsz_budget = Some(
+                super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
+                    control.deadline,
+                    cancelled,
+                    forest.work_units,
+                ),
+            );
             let budget = tsz_budget.as_ref().expect("shared forest budget");
             let mut witnesses = Vec::with_capacity(forest.nodes.len());
             for node in forest.nodes {
@@ -3049,7 +3051,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let java_sourcepath = if matches!(target.profile, LanguageProfile::Java(_)) {
+            let java_sourcepath = if matches!(
+                target.profile,
+                backend_semantic::vocabulary::LanguageProfile::Java(_)
+            ) {
                 package
                     .compilation_sources()
                     .filter(|captured| captured.relative_path() != source.relative_path)
