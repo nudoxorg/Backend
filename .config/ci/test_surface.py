@@ -8,6 +8,53 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class OwnerLifecycleTests(unittest.TestCase):
+    def exercise(self, startup_failure=False):
+        import tempfile
+        from unittest.mock import Mock, patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "fixed-project-case"
+            case.mkdir()
+            process = Mock()
+            process.poll.return_value = 0 if startup_failure else None
+            process.returncode = 7 if startup_failure else 0
+            observed = {}
+            def launch(command, **kwargs):
+                workspace = Path(command[command.index("--workspace") + 1])
+                observed.update(workspace=workspace, log=kwargs["stdout"])
+                self.assertEqual(workspace.parent.parent, root / ".local")
+                self.assertEqual(workspace.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(command[command.index("--endpoint") + 1], str(case / "locald.sock"))
+                self.assertEqual(command[command.index("--timeout-ms") + 1], "180000")
+                self.assertEqual(command[command.index("--idle-timeout-ms") + 1], "5000")
+                self.assertNotIn(str(workspace), str(case / "project"))
+                if startup_failure:
+                    kwargs["stdout"].write("authority startup refused\n")
+                else:
+                    (case / "locald.sock").touch()
+                return process
+            with patch.object(surface, "ROOT", root), patch.object(surface.subprocess, "Popen", side_effect=launch):
+                if startup_failure:
+                    with self.assertRaisesRegex(RuntimeError, "did not open its endpoint") as failure:
+                        surface.Owner(root / "bin", case)
+                    self.assertIn("authority startup refused", str(failure.exception))
+                    self.assertIn("exited 7", str(failure.exception))
+                else:
+                    owner = surface.Owner(root / "bin", case)
+                    self.assertTrue(owner.workspace.is_dir())
+                    process.poll.return_value = 0
+                    owner.stop()
+            self.assertFalse(observed["workspace"].parent.exists())
+            self.assertTrue(observed["log"].closed)
+
+    def test_owner_state_uses_private_task_volume_without_changing_public_project_paths(self):
+        self.exercise()
+
+    def test_failed_startup_releases_log_and_private_state(self):
+        self.exercise(startup_failure=True)
+
+
 class AdmissionTests(unittest.TestCase):
     def test_failed_index_is_never_a_golden_answer(self):
         for answer in (
