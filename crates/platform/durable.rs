@@ -60,6 +60,21 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_private_atomic_platform(path, bytes)
 }
 
+/// Atomically replaces a private diagnostic that may be lost after a crash.
+///
+/// Use only for recomputable observations that never decide authority or readiness. Unix
+/// omits both durability barriers; other platforms retain the durable publication protocol.
+pub fn write_private_atomic_unflushed(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        write_private_atomic_unix(path, bytes, false)
+    }
+    #[cfg(not(unix))]
+    {
+        write_private_atomic(path, bytes)
+    }
+}
+
 /// Opens a private state file for reading after checking the opened file.
 ///
 /// On Windows this rejects reparse points throughout the path chain and on
@@ -218,6 +233,11 @@ pub fn sync_parent(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn write_private_atomic_platform(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private_atomic_unix(path, bytes, true)
+}
+
+#[cfg(unix)]
+fn write_private_atomic_unix(path: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
 
     let parent = parent(path);
@@ -229,7 +249,7 @@ fn write_private_atomic_platform(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Err(error) = file
         .set_permissions(fs::Permissions::from_mode(0o600))
         .and_then(|()| file.write_all(bytes))
-        .and_then(|()| file.sync_all())
+        .and_then(|()| if durable { file.sync_all() } else { Ok(()) })
     {
         let _ = fs::remove_file(&temporary);
         return Err(error);
@@ -239,7 +259,11 @@ fn write_private_atomic_platform(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temporary);
         return Err(error);
     }
-    sync_parent(path)
+    if durable {
+        sync_parent(path)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -713,6 +737,30 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("fixture directory");
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unflushed_diagnostic_replaces_complete_private_bytes_and_refuses_links() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let root = fixture("unflushed-diagnostic");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private root");
+        let path = root.join("timing.json");
+        write_private_atomic_unflushed(&path, b"first").expect("first diagnostic");
+        let mut previous = open_private_read(&path).expect("retain first generation");
+        write_private_atomic_unflushed(&path, b"second").expect("replace diagnostic");
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut previous, &mut bytes).expect("read retained generation");
+        assert_eq!(bytes, b"first");
+        assert_eq!(fs::read(&path).expect("current generation"), b"second");
+        assert_eq!(fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        let link = root.join("linked.json");
+        symlink(&path, &link).expect("link diagnostic");
+        assert!(write_private_atomic_unflushed(&link, b"unsafe").is_err());
+        assert_eq!(fs::read(&path).expect("original preserved"), b"second");
+        assert_eq!(fs::read_dir(&root).expect("entries").count(), 2, "no temporary remains");
+        fs::remove_dir_all(root).expect("remove diagnostics");
     }
 
     #[cfg(unix)]

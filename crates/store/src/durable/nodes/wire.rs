@@ -196,6 +196,19 @@ pub(super) fn write_relation_ref(
     write_immutable_descriptor_with_status(path, &bytes, directory)
 }
 
+pub(super) fn write_complete_relation_ref(
+    path: &Path,
+    schema: SchemaIdentity,
+    version: &Hash,
+    complete: super::DependencyComplete<'_>,
+    directory: &Path,
+) -> Result<bool, StoreError> {
+    if complete.schema != schema || &complete.version != version {
+        return Err(StoreError::Corrupt);
+    }
+    write_relation_ref(path, schema, version, complete.object, directory)
+}
+
 pub(super) fn write_immutable_descriptor(
     path: &Path,
     bytes: &[u8],
@@ -234,7 +247,10 @@ fn write_immutable_descriptor_with_status(
         return Err(io_error(&error));
     }
     let result = match fs::hard_link(&temporary, path) {
-        Ok(()) => sync_directory(directory).map(|()| true),
+        Ok(()) => fs::remove_file(&temporary)
+            .map_err(|error| io_error(&error))
+            .and_then(|()| sync_directory(directory))
+            .map(|()| true),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let existing = fs::read(path).map_err(|read_error| io_error(&read_error))?;
             if existing == bytes {

@@ -346,8 +346,10 @@ impl IndexOperationJournal {
                 .await
                 .map_err(database_error)?;
             set_and_verify_database_page_limit(&connection, MAX_DATABASE_PAGES).await?;
+            // Keep schema admission atomic and pay one durable commit for a new journal.
+            // A deferred transaction avoids opening a write transaction on the temp database.
             connection
-                .execute_batch(SCHEMA)
+                .execute_batch(format!("BEGIN;{SCHEMA}COMMIT;"))
                 .await
                 .map_err(database_error)?;
             database_directory

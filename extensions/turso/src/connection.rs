@@ -170,7 +170,11 @@ async fn prepare_generation(
             .map_err(ProjectionError::from)?;
         let connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        connection.execute_batch(schema::SCHEMA).await?;
+        // One durable transaction admits the schema before the seed transactions begin.
+        // Keep normal WAL durability for every commit, including the private generation.
+        connection
+            .execute_batch(format!("BEGIN;{}COMMIT;", schema::SCHEMA))
+            .await?;
         let mut projection = TursoProjection {
             _database: database,
             connection,

@@ -13,6 +13,7 @@
 
 mod admission;
 mod contracts;
+mod deferred;
 mod delta;
 mod engine;
 mod identity;

@@ -81,7 +81,9 @@ impl<'a> VerifiedObjectView<'a> {
 /// Removes crash-orphaned files only from the store writer's private temp namespace.
 pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
     let mut removed = 0usize;
-    for name in ["packs", "objects", "closures"] {
+    // Relation-reference writers also hold the process lease. A crashed pre-link publication
+    // can leave its final reference with a second temporary link until this recovery pass.
+    for name in ["packs", "objects", "closures", "nodes"] {
         let directory = root.join(name);
         let mut removed_here = false;
         for entry in fs::read_dir(&directory).map_err(|error| io_error(&error))? {

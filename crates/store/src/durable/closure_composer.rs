@@ -459,7 +459,8 @@ impl FileStore {
 
         let closure = ClosureId::from_bytes(*update.target().root().as_bytes());
         let _process_lock = self.acquire_process_lock()?;
-        let relation_write = self.write_lazy_relation_update(&update)?;
+        let mut admission = nodes::RelationAdmission::controlled(self, &gc_pin, cancellation)?;
+        let relation_write = self.write_lazy_relation_update_admitted(&update, &mut admission)?;
         if take_test_fault(FAULT_AFTER_NODES) {
             return Err(StoreError::Io(
                 "injected interruption after closure relation nodes".to_owned(),

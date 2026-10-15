@@ -3,7 +3,7 @@
 use super::super::{
     FileStore, Hash, LayoutId, PackId, RawRelation, StateRoot, StoreError, io_error,
 };
-use super::{TreePackDescriptor, TreePublication, TreeReadStats, TreeWriteStats, wire};
+use super::{RelationAdmission, TreePackDescriptor, TreePublication, TreeReadStats, TreeWriteStats, wire};
 use crate::{OrderedMap, StoredValue, digest};
 use backend_version::{CheckedCanonicalRoot, IdContext, SchemaIdentity, UntrustedId};
 use std::collections::HashSet;
@@ -174,6 +174,7 @@ impl FileStore {
     pub(in crate::durable) fn write_tree_publication(
         &self,
         publication: &TreePublication,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<TreeWriteStats, StoreError> {
         if publication.root.id().to_bytes() != *publication.target.as_bytes() {
             return Err(StoreError::Corrupt);
@@ -184,7 +185,7 @@ impl FileStore {
         let mut seen = HashSet::new();
         if let Some(frontier) = publication.frontier.as_deref() {
             for node in frontier {
-                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false)?;
+                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false, admission)?;
             }
         } else {
             self.write_relation_node_handle(
@@ -193,6 +194,7 @@ impl FileStore {
                 &mut stats,
                 &mut seen,
                 true,
+                admission,
             )?;
         }
         let descriptor = TreePackDescriptor {

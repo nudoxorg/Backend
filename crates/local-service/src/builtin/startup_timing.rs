@@ -165,7 +165,7 @@ impl Timing {
         };
         let receipt = self.receipt(composed, Instant::now());
         if let Ok(bytes) = serde_json::to_vec(&receipt) {
-            let _ = backend_platform::durable::write_private_atomic(&destination, &bytes);
+            let _ = backend_platform::durable::write_private_atomic_unflushed(&destination, &bytes);
         }
     }
 }
