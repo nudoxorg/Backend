@@ -468,8 +468,16 @@ fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations()
             .declarations()
             .map(|declaration| declaration.map(|value| value.name.bytes))
             .collect::<Result<Vec<_>, _>>()?;
-        assert!(names.iter().any(|name| *name == b"CheckForNull"));
-        assert!(!names.iter().any(|name| *name == b"Nonnull"));
+        assert!(
+            names
+                .iter()
+                .any(|name| *name == b"javax.annotation.CheckForNull")
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| *name == b"javax.annotation.Nonnull")
+        );
 
         let modular_dependencies = [
             JavaSource {
@@ -488,8 +496,16 @@ fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations()
             .declarations()
             .map(|declaration| declaration.map(|value| value.name.bytes))
             .collect::<Result<Vec<_>, _>>()?;
-        assert!(names.iter().any(|name| *name == b"CheckForNull"));
-        assert!(!names.iter().any(|name| *name == b"Nonnull"));
+        assert!(
+            names
+                .iter()
+                .any(|name| *name == b"javax.annotation.CheckForNull")
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| *name == b"javax.annotation.Nonnull")
+        );
 
         // A valid file present only on disk is not admitted as a dependency and must not resolve.
         write_source(
