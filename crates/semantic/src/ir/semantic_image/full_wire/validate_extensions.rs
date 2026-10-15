@@ -92,6 +92,24 @@ pub(super) fn validate_extensions(
             }
             previous = Some((entity, fact));
             let entity_row = decode::entity(bytes, layout, entity)?;
+            if language_for_extension(plane_index) == crate::ir::Language::Clang {
+                let value = extension_value(bytes, facts, fact)?;
+                let clang = extensions_decode::clang(value, fact, counts)?;
+                if let Some(name_span) = clang.declared_name {
+                    let contained = entity_row.source.is_some_and(|extent| {
+                        extent.file() == name_span.file()
+                            && extent.start() <= name_span.start()
+                            && name_span.end() <= extent.end()
+                    });
+                    if !contained {
+                        return Err(FullSemanticImageFault::SourceSpan {
+                            row: entity,
+                            start: name_span.start(),
+                            end: name_span.end(),
+                        });
+                    }
+                }
+            }
             if entity_row.authority.language_extension != FactAvailability::Captured {
                 return Err(FullSemanticImageFault::Authority {
                     row: entity,

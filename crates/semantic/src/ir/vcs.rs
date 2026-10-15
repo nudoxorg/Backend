@@ -907,6 +907,12 @@ fn semantic_clang_facts_equal<Before: SemanticReader + ?Sized, After: SemanticRe
             0,
         ),
         semantic_atoms_equal(before_reader, before.includes, after_reader, after.includes),
+        semantic_source_equal(
+            before_reader,
+            before.declared_name,
+            after_reader,
+            after.declared_name,
+        ),
     ])
 }
 

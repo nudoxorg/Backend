@@ -500,6 +500,7 @@ pub struct PackageSourceSet<'source> {
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
+    native_clang_candidate: bool,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -570,7 +571,29 @@ impl<'source> PackageSourceSet<'source> {
             input_claim: None,
             embedding_provisioning_failure: None,
             go_authority_witness: None,
+            native_clang_candidate: false,
         })
+    }
+
+    /// Marks this exact checked package frontier as compiler-only native Clang input.
+    /// The owned-runtime admission boundary requires selected-frontier permits before
+    /// calling this method; it is not available to public callers.
+    pub(crate) fn with_native_clang_candidate(mut self) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.request.target.profile,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+        ) {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        self.native_clang_candidate = true;
+        Ok(self)
+    }
+
+    /// Whether this package crossed the distinct checked native-candidate admission route.
+    #[must_use]
+    pub const fn is_native_clang_candidate(&self) -> bool {
+        self.native_clang_candidate
     }
 
     pub(super) fn with_python_raw_sources(
@@ -764,6 +787,9 @@ pub enum PackageSourceSetError {
     /// The decoded and raw frontiers did not describe the same exact bytes.
     #[error("decoded source differs from the retained raw Python frontier")]
     RawSourceMismatch,
+    /// The distinct native Clang candidate route was requested for a non-C/C++ profile.
+    #[error("native Clang source candidates require a C or C++ profile and UTF-8 bytes")]
+    NativeClangProfileMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,

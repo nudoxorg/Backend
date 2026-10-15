@@ -5,11 +5,15 @@ use super::source_budget::SourceAdmissionLimits;
 use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
 use backend_compile::{
-    DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
+    DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxError,
+    SyntaxFrontend, typed_of,
 };
 use backend_engine::{
+    NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
     ProductSourceFileFactsUpdate, ProductSourceRecord, ProductSourceRelation, Relation,
-    SourceUnavailableReason, build_product_source_file_facts, product_source_file_key,
+    SourceUnavailableReason, NATIVE_SOURCE_CHUNK_BYTES, build_native_frontier_records,
+    build_native_frontier_records_with_content, build_product_source_file_facts,
+    product_source_file_key,
 };
 use backend_library::{
     DiscoveryPolicy, EntryKind, discover_source_entries, source_selection_policy,
@@ -76,6 +80,10 @@ pub(super) struct IndexSnapshot {
     /// Full persisted fact-page charges, including unchanged frontier files.
     pub(super) encoded_fact_bytes: Vec<([u8; 32], usize)>,
     pub(super) compiler_sources: Vec<CompilerSourceHandle>,
+    /// Exact per-path disposition for every C/C++ source in this scan.
+    pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
+    /// Parser-malformed, UTF-8 native sources eligible for the separate Clang route.
+    pub(super) native_clang_candidates: Vec<NativeClangCandidateHandle>,
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
     pub(super) revision_fence: CompilerRevisionFence,
@@ -213,6 +221,17 @@ pub(super) struct CompilerSourceHandle {
     pub(super) source_fact_identity: SourceFactIdentity,
 }
 
+/// Exact parser-malformed source admitted only to the separate local native
+/// Clang candidate route. Callers must use the dedicated materializer.
+#[derive(Clone)]
+pub(super) struct NativeClangCandidateHandle {
+    pub(super) relative_path: String,
+    pub(super) profile: LanguageProfile,
+    pub(super) content: [u8; 32],
+    pub(super) source_fact_identity: SourceFactIdentity,
+    pub(super) source_bytes: Option<Box<[u8]>>,
+}
+
 /// Exact source bytes admitted for one semantic authority slot; Python may remain undecoded.
 #[derive(Clone)]
 pub(super) struct CompilerSource {
@@ -254,6 +273,8 @@ struct ScannedFile {
     compiler_source: Option<CompilerSourceHandle>,
     reused_compiler: Option<ReusedCompilerFile>,
     source_facts: Option<ProductSourceFileFactsUpdate>,
+    native_frontier: Option<(LanguageProfile, NativePathDisposition)>,
+    native_clang_candidate: Option<NativeClangCandidateHandle>,
 }
 
 /// An opened project directory capability. Source reads resolve every path
@@ -1846,6 +1867,41 @@ fn scan_project_with_configuration_policy_attempt(
     let mut source_facts = Vec::with_capacity(scanned.len());
     let mut encoded_fact_bytes = Vec::with_capacity(scanned.len());
     let mut compiler_sources = Vec::with_capacity(scanned.len());
+    let mut native_by_profile =
+        BTreeMap::<LanguageProfile, Vec<(String, NativePathDisposition)>>::new();
+    let mut native_clang_candidates = Vec::new();
+    for file in &scanned {
+        if let Some((profile, disposition)) = &file.native_frontier {
+            native_by_profile
+                .entry(*profile)
+                .or_default()
+                .push((file.relative.clone(), disposition.clone()));
+        }
+        native_clang_candidates.extend(file.native_clang_candidate.iter().cloned());
+    }
+    let mut native_frontier = Vec::new();
+    for (profile, paths) in native_by_profile {
+        let mut content = Vec::new();
+        for candidate in scanned
+            .iter_mut()
+            .filter_map(|file| file.native_clang_candidate.as_mut())
+            .filter(|candidate| candidate.profile == profile)
+        {
+            let bytes = candidate
+                .source_bytes
+                .take()
+                .ok_or_else(|| "native candidate bytes were already consumed".to_owned())?;
+            content.push((candidate.relative_path.clone(), bytes.into_vec()));
+        }
+        native_frontier.extend(
+            build_native_frontier_records_with_content(project, profile, paths, content)
+                .map_err(|error| format!("build native Clang frontier: {error}"))?,
+        );
+    }
+    // Parser-unavailable C/C++ rows retain the ordinary zero content version.
+    // Bind their exact byte identity through the separate native frontier so
+    // a malformed-source edit still changes the selected project source root.
+    update_source_version_native_frontier(&mut source, &native_frontier);
     let mut reused_compiler_files = Vec::with_capacity(scanned.len());
     for scanned in scanned {
         let ScannedFile {
@@ -1876,6 +1932,11 @@ fn scan_project_with_configuration_policy_attempt(
         .iter()
         .map(|source| source.profile.language())
         .chain(
+            native_clang_candidates
+                .iter()
+                .map(|source| source.profile.language()),
+        )
+        .chain(
             reused_compiler_files
                 .iter()
                 .map(|source| source.profile.language()),
@@ -1899,6 +1960,8 @@ fn scan_project_with_configuration_policy_attempt(
         source_facts,
         encoded_fact_bytes,
         compiler_sources,
+        native_frontier,
+        native_clang_candidates,
         reused_compiler_files,
         compiler_configuration,
         revision_fence,
@@ -1915,6 +1978,28 @@ fn scan_project_with_configuration_policy_attempt(
         }
     }
     Ok(snapshot)
+}
+
+fn update_source_version_native_frontier(
+    source: &mut blake3::Hasher,
+    records: &[ProductNativeFrontierRecord],
+) {
+    if records.is_empty() {
+        return;
+    }
+    source.update(b"nudox.project-native-frontier-source-version.v1\0");
+    for record in records
+        .iter()
+        .filter(|record| matches!(record, ProductNativeFrontierRecord::Profile { .. }))
+    {
+        let mut encoded = Vec::new();
+        <backend_engine::ProductNativeFrontierRelation as Relation>::encode_value(
+            record,
+            &mut encoded,
+        );
+        source.update(&(encoded.len() as u64).to_be_bytes());
+        source.update(&encoded);
+    }
 }
 
 /// Revalidates the scanner's source/configuration revision without a second
@@ -2418,6 +2503,17 @@ fn unavailable_file(
     )?;
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
+    let native_frontier = profile_of(frontends, path)
+        .filter(|profile| matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)))
+        .map(|profile| {
+            let refusal = match reason {
+                SourceUnavailableReason::Unreadable => NativePathRefusal::ReadUnavailable,
+                SourceUnavailableReason::NotText => NativePathRefusal::InvalidUtf8,
+                SourceUnavailableReason::TooLarge => NativePathRefusal::Oversized,
+                SourceUnavailableReason::Unparsed => NativePathRefusal::MalformedOther,
+            };
+            (profile, NativePathDisposition::Refused(refusal))
+        });
     Ok(ScannedFile {
         // An unavailable source must not be turned into an empty compiler
         // artifact.  The relation row carries the typed terminal and the
@@ -2433,6 +2529,8 @@ fn unavailable_file(
         encoded_record_bytes: encoded.len(),
         encoded_fact_bytes: 0,
         source_facts: None,
+        native_frontier,
+        native_clang_candidate: None,
     })
 }
 
@@ -2556,6 +2654,57 @@ fn scan_one(
             unavailable.source_bytes = source_bytes;
             return Ok(unavailable);
         }
+        Err(SyntaxError::MalformedSource(SourceLanguage::Clang))
+            if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) =>
+        {
+            let mut unavailable = unavailable_file(
+                root,
+                path,
+                project,
+                frontends,
+                SourceUnavailableReason::Unparsed,
+                source_bytes,
+            )
+            .map_err(SourceFault::Fatal)?;
+            let source_fact_identity = SourceFactIdentity::from_canonical_bytes(source.as_bytes());
+            unavailable.native_frontier = Some((
+                profile,
+                NativePathDisposition::ClangMalformed {
+                    content,
+                    source_identity: source_fact_identity,
+                    byte_length: u32::try_from(source_bytes)
+                        .map_err(|_| SourceFault::Fatal("native source length exceeds u32".to_owned()))?,
+                    chunk_count: u32::try_from(source_bytes.div_ceil(NATIVE_SOURCE_CHUNK_BYTES))
+                        .map_err(|_| SourceFault::Fatal("native source chunk count exceeds u32".to_owned()))?,
+                },
+            ));
+            unavailable.native_clang_candidate = Some(NativeClangCandidateHandle {
+                relative_path: relative,
+                profile,
+                content,
+                source_fact_identity,
+                source_bytes: Some(source.into_bytes().into_boxed_slice()),
+            });
+            unavailable.source_bytes = source_bytes;
+            return Ok(unavailable);
+        }
+        Err(_) if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) => {
+            let mut unavailable = unavailable_file(
+                root,
+                path,
+                project,
+                frontends,
+                SourceUnavailableReason::Unparsed,
+                source_bytes,
+            )
+            .map_err(SourceFault::Fatal)?;
+            unavailable.native_frontier = Some((
+                profile,
+                NativePathDisposition::Refused(NativePathRefusal::MalformedOther),
+            ));
+            unavailable.source_bytes = source_bytes;
+            return Ok(unavailable);
+        }
         Err(_) => {
             return Err(SourceFault::UnavailableRead(
                 SourceUnavailableReason::Unparsed,
@@ -2645,7 +2794,7 @@ fn scanned_file(
     content: [u8; 32],
     source_fact_identity: SourceFactIdentity,
 ) -> Result<ScannedFile, String> {
-    finish_scanned_file(
+    let mut scanned = finish_scanned_file(
         relative.clone(),
         key,
         record,
@@ -2661,7 +2810,17 @@ fn scanned_file(
         None,
         None,
         Some(source_facts),
-    )
+    )?;
+    if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) {
+        scanned.native_frontier = Some((
+            profile,
+            NativePathDisposition::Structural {
+                content,
+                source_identity: source_fact_identity,
+            },
+        ));
+    }
+    Ok(scanned)
 }
 
 fn reused_scanned_file(
@@ -2676,7 +2835,7 @@ fn reused_scanned_file(
     encoded_record_bytes: Option<usize>,
 ) -> Result<ScannedFile, String> {
     let path = PathBuf::from(&relative);
-    finish_scanned_file(
+    let mut scanned = finish_scanned_file(
         relative.clone(),
         key,
         record,
@@ -2692,7 +2851,17 @@ fn reused_scanned_file(
         }),
         encoded_record_bytes,
         None,
-    )
+    )?;
+    if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) {
+        scanned.native_frontier = Some((
+            profile,
+            NativePathDisposition::Structural {
+                content,
+                source_identity: source_fact_identity,
+            },
+        ));
+    }
+    Ok(scanned)
 }
 
 fn finish_scanned_file(
@@ -2734,6 +2903,8 @@ fn finish_scanned_file(
             .as_ref()
             .map_or(0, ProductSourceFileFactsUpdate::encoded_bytes),
         source_facts,
+        native_frontier: None,
+        native_clang_candidate: None,
     })
 }
 
@@ -2767,6 +2938,44 @@ pub(super) fn admit_compiler_sources_for_scan(
     }
     check_scan_cancellation(cancellation)?;
     Ok(admitted)
+}
+
+/// Reopens normal source handles and distinct parser-malformed Clang
+/// candidates through the same pinned root and one shared byte budget.
+pub(super) fn admit_compiler_sources_with_native_candidates_for_scan(
+    root: &Path,
+    revision_fence: &CompilerRevisionFence,
+    mut fresh: Vec<CompilerSourceHandle>,
+    reused: Vec<ReusedCompilerFile>,
+    candidates: Vec<NativeClangCandidateHandle>,
+    source_policy: SourceAdmissionPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> Result<(Vec<CompilerSource>, BTreeSet<LanguageProfile>), String> {
+    let mut candidate_profiles = BTreeSet::new();
+    for candidate in candidates {
+        if !matches!(
+            candidate.profile,
+            LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+        ) {
+            return Err("native candidate carries a non-Clang profile".to_owned());
+        }
+        candidate_profiles.insert(candidate.profile);
+        fresh.push(CompilerSourceHandle {
+            relative_path: candidate.relative_path,
+            profile: candidate.profile,
+            content: candidate.content,
+            source_fact_identity: candidate.source_fact_identity,
+        });
+    }
+    let sources = admit_compiler_sources_for_scan(
+        root,
+        revision_fence,
+        fresh,
+        reused,
+        source_policy,
+        cancellation,
+    )?;
+    Ok((sources, candidate_profiles))
 }
 
 #[cfg(test)]
@@ -3069,6 +3278,14 @@ fn profile_of(frontends: &FrontendSet, path: &Path) -> Option<LanguageProfile> {
     dialect(language, &extension)
 }
 
+pub(super) fn native_clang_profile_for_relative(relative_path: &str) -> Option<LanguageProfile> {
+    let extension = Path::new(relative_path)
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase();
+    dialect(SourceLanguage::Clang, &extension)
+}
+
 /// Returns the key the view uses to pair a publication with its files.
 ///
 /// A path names its language and dialect, never a Rust crate's edition: the
@@ -3111,6 +3328,49 @@ fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_native_bytes_change_project_source_version() -> Result<(), String> {
+        let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let frontier = |content: u8| {
+            let bytes = vec![content];
+            build_native_frontier_records_with_content(
+                [7; 32],
+                profile,
+                vec![(
+                    "src/broken.cpp".to_owned(),
+                    NativePathDisposition::ClangMalformed {
+                        content: typed_of::<InputContentSchema>(&bytes).to_bytes(),
+                        source_identity: backend_version::ContentId::<
+                            backend_version::SourceFactDomain,
+                        >::from_canonical_bytes(&bytes),
+                        byte_length: 0,
+                        chunk_count: 0,
+                    },
+                )],
+                vec![("src/broken.cpp".to_owned(), bytes)],
+            )
+            .expect("construct exact malformed-source frontier")
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>()
+        };
+        let first = frontier(1);
+        let second = frontier(2);
+        let version = |records: &[ProductNativeFrontierRecord]| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"same ordinary source root");
+            update_source_version_native_frontier(&mut hasher, records);
+            *hasher.finalize().as_bytes()
+        };
+        if version(&first) == version(&second) {
+            return Err(
+                "malformed native byte changes did not invalidate project source version"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
     use std::sync::Arc;
 
     #[test]

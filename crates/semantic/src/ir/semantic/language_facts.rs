@@ -264,6 +264,12 @@ pub struct ClangFacts {
     pub templates: TypeParameterListId,
     /// Include spellings associated with the declaration.
     pub includes: AtomListId,
+    /// Exact declared-name token in the image's captured source file.
+    ///
+    /// This is separate from the semantic entity's full declaration extent:
+    /// the frontend supplies this range only when native authority identifies
+    /// the exact token. `None` means no name-token source proof was retained.
+    pub declared_name: Option<SourceSpan>,
 }
 
 /// Authority bound into one semantic image before language facts are admitted.

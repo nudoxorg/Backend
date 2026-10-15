@@ -19,7 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::driver::{CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use crate::builtin::NativeClangCandidatePermit;
+use crate::driver::{
+    CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection,
+};
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
@@ -199,6 +202,21 @@ pub struct OwnedPackageSourceSet {
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
+    admission: OwnedPackageSourceAdmission,
+    native_clang_permits: Box<[NativeClangCandidatePermit]>,
+}
+
+/// Authority by which a complete source set entered the native compiler.
+/// Ordinary parsed frontiers and parser-malformed native Clang candidates use
+/// separate constructors so a malformed source can never silently fall back
+/// through the ordinary package-source admission route.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OwnedPackageSourceAdmission {
+    /// Sources admitted through the normal parsed-source contract.
+    #[default]
+    Parsed,
+    /// Exact UTF-8 C/C++ bytes admitted by the local native-source frontier.
+    NativeClangCandidate,
 }
 
 impl OwnedPackageSourceSet {
@@ -240,7 +258,54 @@ impl OwnedPackageSourceSet {
             package_root: package_root.into_boxed_path(),
             sources,
             input_claim: None,
+            admission: OwnedPackageSourceAdmission::Parsed,
+            native_clang_permits: Box::new([]),
         })
+    }
+
+    /// Admits a source set specifically as exact native Clang candidates.
+    /// This route is limited to C/C++ profiles and UTF-8 source buffers; it
+    /// does not turn Python raw-source admission or remote include readiness
+    /// into Clang authority.
+    pub fn new_native_clang_candidate(
+        request: PackageCompileRequest,
+        package_root: PathBuf,
+        sources: Box<[OwnedPackageSource]>,
+        permits: Box<[NativeClangCandidatePermit]>,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            request.target.profile,
+            LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+        ) || sources
+            .iter()
+            .any(|source| matches!(source.source, OwnedPackageSourceContents::Raw(_)))
+        {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        if permits.is_empty()
+            || permits.iter().any(|permit| {
+                permit.profile() != request.target.profile
+                    || !sources.iter().any(|source| {
+                        permit.admits(
+                            &source.relative_path,
+                            request.target.profile,
+                            source.source_bytes(),
+                        )
+                    })
+            })
+        {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        let mut admitted = Self::new(request, package_root, sources)?;
+        admitted.admission = OwnedPackageSourceAdmission::NativeClangCandidate;
+        admitted.native_clang_permits = permits;
+        Ok(admitted)
+    }
+
+    /// Reports the explicit source authority route carried to the compiler owner.
+    #[must_use]
+    pub const fn admission(&self) -> OwnedPackageSourceAdmission {
+        self.admission
     }
 
     /// Attaches the opaque exact input-manifest claim admitted by the caller.
@@ -5197,6 +5262,29 @@ fn run_lane(
                                 &request.package_root,
                                 &sources,
                             )?;
+                            let package = match request.admission {
+                                OwnedPackageSourceAdmission::Parsed => package,
+                                OwnedPackageSourceAdmission::NativeClangCandidate => {
+                                    if request.native_clang_permits.is_empty()
+                                        || request.native_clang_permits.iter().any(|permit| {
+                                            permit.profile() != request.request.target.profile
+                                                || !request.sources.iter().any(|source| {
+                                                    permit.admits(
+                                                        &source.relative_path,
+                                                        request.request.target.profile,
+                                                        source.source_bytes(),
+                                                    )
+                                                })
+                                        })
+                                    {
+                                        return Err(
+                                            PackageSourceSetError::NativeClangProfileMismatch
+                                                .into(),
+                                        );
+                                    }
+                                    package.with_native_clang_candidate()?
+                                }
+                            };
                             let package = match raw_sources.as_ref() {
                                 Some(raw_sources) => package.with_python_raw_sources(raw_sources)?,
                                 None => package,

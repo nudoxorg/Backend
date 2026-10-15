@@ -28,7 +28,7 @@ use super::{
     validate::{self, TypedLayout, ValidatedFullImage},
     wire::{
         FullDirectoryKind, FullImageLayout, NONE, SCHEMA_CARRIER_BINDINGS, SCHEMA_LEGACY,
-        SCHEMA_TYPED_NAMES, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        SCHEMA_NAME_SPANS, SCHEMA_TYPED_NAMES, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
         SPARSE_BINDING_ROW_BYTES, get_u32,
     },
 };
@@ -614,7 +614,7 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         let layout = self.layout();
         let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
         if layout.schema != SCHEMA_CARRIER_BINDINGS
-            && (layout.schema != SCHEMA_TYPED_NAMES || ranges.count == 0)
+            && (!matches!(layout.schema, SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS) || ranges.count == 0)
         {
             return Some(SignatureCarrierBindingsObservation::Unavailable);
         }

@@ -236,6 +236,7 @@ pub(crate) fn clang(
     row: u32,
     counts: ExtensionCounts,
 ) -> Result<ClangFacts, FullSemanticImageFault> {
+    let with_name = value.len() != 24;
     let mut cursor = Cursor::new(value, row, 6)?;
     let qualifiers = ClangQualifiers {
         is_const: cursor.boolean()?,
@@ -257,6 +258,11 @@ pub(crate) fn clang(
     };
     let templates = TypeParameterListId::new(cursor.id(counts.typed.count(6), counts, 0)?);
     let includes = AtomListId::new(cursor.id(counts.typed.count(5), counts, 0)?);
+    let declared_name = if with_name {
+        cursor.optional_source(counts)?
+    } else {
+        None
+    };
     cursor.finish()?;
     Ok(ClangFacts {
         qualifiers,
@@ -264,6 +270,7 @@ pub(crate) fn clang(
         layout,
         templates,
         includes,
+        declared_name,
     })
 }
 

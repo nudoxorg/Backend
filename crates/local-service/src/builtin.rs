@@ -95,7 +95,9 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
             BuiltinModelError(format!("register semantic capture relation: {error:?}"))
         })?
         .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
-        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductNativeFrontierRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native frontier relation: {error:?}")))
 }
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
@@ -423,6 +425,8 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) capture_pointer: Option<&'a TypedObject>,
     pub(super) source_facts_objects: &'a [TypedObject],
     pub(super) source_facts_pointer: Option<&'a TypedObject>,
+    pub(super) native_frontier_objects: &'a [TypedObject],
+    pub(super) native_frontier_pointer: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -471,11 +475,26 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.source_facts_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(
+        update
+            .native_frontier_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .native_frontier_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.native_frontier_pointer {
+        objects.push(pointer.clone());
+    }
     let registry = product_relation_registry()?;
     let mut frontier = update
         .capture_objects
         .iter()
         .chain(update.source_facts_objects)
+        .chain(update.native_frontier_objects)
         .cloned()
         .collect::<Vec<_>>();
     let closure = if update.changed_sources.is_empty() {

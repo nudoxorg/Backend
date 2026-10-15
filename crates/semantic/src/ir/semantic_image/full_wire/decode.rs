@@ -14,7 +14,7 @@ use super::{
     fault::{FullSemanticImageFault, FullSemanticImageField, FullSemanticImageIdentityField},
     wire::{
         ENTITY_ROW_BYTES, EXTERNAL_ROW_BYTES, FullDirectoryKind, FullImageLayout, LINK_ROW_BYTES,
-        NONE, OCCURRENCE_ROW_BYTES, SCHEMA_TYPED_NAMES, get_u16, get_u32, read_array,
+        NONE, OCCURRENCE_ROW_BYTES, SCHEMA_NAME_SPANS, SCHEMA_TYPED_NAMES, get_u16, get_u32, read_array,
     },
 };
 
@@ -48,7 +48,7 @@ pub(crate) fn entity(
             field: FullSemanticImageField::Entities,
         })?;
     let name_atom = AtomId::new(get_u32(bytes, offset, FullSemanticImageField::Entities)?);
-    let name_tag = if layout.schema == SCHEMA_TYPED_NAMES {
+    let name_tag = if matches!(layout.schema, SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS) {
         *bytes
             .get(offset + 32)
             .ok_or(FullSemanticImageFault::Truncated {

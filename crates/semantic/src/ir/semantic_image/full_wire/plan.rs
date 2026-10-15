@@ -135,8 +135,11 @@ impl<'image> FullSemanticImagePlan<'image> {
             ir.semantic_entity(row.entity)
                 .is_some_and(|entity| entity.name.anonymous_callable_anchor().is_some())
         });
-        let schema = if has_anonymous_callable {
-            super::wire::SCHEMA_TYPED_NAMES
+        let has_clang_name_span = ir
+            .clang_extensions()
+            .any(|(_, facts)| facts.declared_name.is_some());
+        let schema = if has_anonymous_callable || has_clang_name_span {
+            super::wire::SCHEMA_NAME_SPANS
         } else if signature_carrier_binding_ranges.is_some() {
             super::wire::SCHEMA_CARRIER_BINDINGS
         } else if signature_carrier_roles.is_some() {
@@ -948,12 +951,12 @@ fn layout(
 ) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
     let kinds =
         FullDirectoryKind::kinds_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_TYPED_NAMES,
+            expected: super::wire::SCHEMA_NAME_SPANS,
             observed: schema,
         })?;
     let directory_count =
         FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_TYPED_NAMES,
+            expected: super::wire::SCHEMA_NAME_SPANS,
             observed: schema,
         })?;
     let directory_bytes = DIRECTORY_BYTES

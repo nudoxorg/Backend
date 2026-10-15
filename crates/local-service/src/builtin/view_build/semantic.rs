@@ -11,8 +11,8 @@ use super::identity::{
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
-    profile_source_paths, projected_source_capacity,
+    StructuralProjectionPlan, complete_declarations_for_file, native_frontier_freshness,
+    profile_source_identities, profile_source_paths, projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -88,7 +88,14 @@ pub(crate) fn rows_for_indexed_sources(
     }
     let available = SourceAvailability::of(sources)?;
     let current_paths = profile_source_paths(sources)?;
-    let current_identities = profile_source_identities(sources)?;
+    let mut current_identities = profile_source_identities(sources)?;
+    let native_frontier = native_frontier_freshness(sources, &current_paths);
+    for (target, identities) in native_frontier.identities {
+        current_identities
+            .entry(target)
+            .or_default()
+            .extend(identities);
+    }
     let sites = StructuralSites::of(sources)?;
     let semantics = semantic_rows(
         snapshot,
@@ -96,6 +103,7 @@ pub(crate) fn rows_for_indexed_sources(
         &sources.projects,
         &current_paths,
         &current_identities,
+        &native_frontier.complete,
         &sites,
         &available,
         initial,
@@ -556,6 +564,7 @@ fn semantic_rows(
     projects: &BTreeMap<[u8; 32], IndexedProject>,
     current_paths: &ProfileSourcePaths,
     current_identities: &ProfileSourceIdentities,
+    native_frontier_complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     sites: &StructuralSites<'_>,
     available: &SourceAvailability,
     initial: &ViewRoot,
@@ -717,11 +726,29 @@ fn semantic_rows(
                 compiled_sources.insert(path.clone(), *identity);
             }
             let empty = BTreeSet::new();
-            let decision = freshness_decision(
+            let mut decision = freshness_decision(
                 &compiled_sources,
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
+            let native_frontier_is_complete = !matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+                    | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+            ) || native_frontier_complete.contains(&target);
+            if !native_frontier_is_complete {
+                decision.stale_paths = current_paths.get(&target).cloned().unwrap_or_default();
+                decision.path_sets_differ = true;
+                decision.identity_decisive = false;
+                decision.identities = None;
+                if let Some(paths) = current_paths.get(&target) {
+                    for path in paths {
+                        targets
+                            .partial_artifacts
+                            .insert((target.0, target.1, path.clone()));
+                    }
+                }
+            }
             if matches!(
                 key.profile(),
                 backend_semantic::vocabulary::LanguageProfile::C(_)
@@ -785,6 +812,25 @@ fn semantic_rows(
                     );
                 }
             }
+            let checked_native_frontier = if native_frontier_is_complete
+                && matches!(
+                    key.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::C(_)
+                        | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                ) {
+                sources.source_snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .admit_native_frontier(
+                            *key.package_key().as_bytes(),
+                            key.profile(),
+                            current_paths.get(&target).unwrap_or(&empty),
+                        )
+                        .ok()
+                        .flatten()
+                })
+            } else {
+                None
+            };
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
             let mut group_by_path = BTreeMap::<String, usize>::new();
             for (index, image) in opened.iter().enumerate() {
@@ -818,7 +864,8 @@ fn semantic_rows(
                 if matches!(
                     coverage,
                     backend_engine::builtin::SemanticPublicationCoverage::Partial(_)
-                ) {
+                ) || !native_frontier_is_complete
+                {
                     targets
                         .partial_artifacts
                         .insert((target.0, target.1, path.clone()));
@@ -834,6 +881,17 @@ fn semantic_rows(
                     sites.declarations(key.package_key().as_bytes(), &path)?
                 };
                 let site_declarations = owned_site_declarations.iter().collect::<Vec<_>>();
+                let native_source = if stale {
+                    None
+                } else {
+                    sources
+                        .source_snapshot
+                        .as_ref()
+                        .zip(checked_native_frontier.as_ref())
+                        .and_then(|(snapshot, frontier)| {
+                            snapshot.verified_native_source(frontier, &path).ok()
+                        })
+                };
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
@@ -845,6 +903,7 @@ fn semantic_rows(
                         stale,
                         path: &path,
                         site_declarations: &site_declarations,
+                        native_source: native_source.as_ref(),
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -884,10 +943,12 @@ fn semantic_rows(
                     }
                 }
             }
-            if matches!(
-                coverage,
-                backend_engine::builtin::SemanticPublicationCoverage::Complete
-            ) {
+            if native_frontier_is_complete
+                && matches!(
+                    coverage,
+                    backend_engine::builtin::SemanticPublicationCoverage::Complete
+                )
+            {
                 complete.insert(target);
             }
             if matches!(
@@ -1082,6 +1143,22 @@ pub(super) struct SemanticRowSink<'a> {
     /// The structural declarations extracted from the same current bytes of
     /// [`Self::path`]; empty when the image is stale.
     pub(super) site_declarations: &'a [&'a backend_compile::SourceDeclaration],
+    /// Authenticated bytes from the same selected native-only frontier.
+    pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
+}
+
+impl SemanticRowSink<'_> {
+    pub(super) fn native_projection(&self) -> Option<super::native_sites::NativeProjection<'_>> {
+        if self.stale {
+            return None;
+        }
+        self.native_source
+            .map(|source| super::native_sites::NativeProjection {
+                source,
+                max_sites: self.capacity.saturating_sub(self.rows.len()),
+                max_working_bytes: *self.remaining_bytes,
+            })
+    }
 }
 
 /// Structural declarations of every indexed file, keyed by owning project
@@ -1257,9 +1334,30 @@ pub(super) fn project_image_rows(
     stale: bool,
     path: &str,
     site_declarations: &[&backend_compile::SourceDeclaration],
+    native: Option<super::native_sites::NativeProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let sites = semantic_sites(&session, site_declarations, profile)?;
+    let native_sites = if stale {
+        None
+    } else {
+        native
+            .filter(|proof| {
+                proof.source.relative_path() == path && proof.source.profile() == profile
+            })
+            .map(|proof| {
+                super::native_sites::prove_native_sites(
+                    image,
+                    project.package.to_bytes(),
+                    proof.source,
+                    proof.max_sites,
+                    proof.max_working_bytes,
+                )
+            })
+            .transpose()?
+    };
+    let temporary_bytes = native_sites.as_ref().map_or(0, |sites| sites.working_bytes);
+
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -1334,6 +1432,17 @@ pub(super) fn project_image_rows(
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
+        }
+        if !sites.contains_key(&identity) {
+            if let Some(site) = native_sites.as_ref().and_then(|sites| sites.get(&identity)) {
+                let excerpt = site.excerpt();
+                charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
+                let location =
+                    backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
+                        BuiltinModelError(format!("native declaration source site: {error}"))
+                    })?;
+                row = row.with_source(location).with_excerpt(excerpt);
+            }
         }
         // A reader's signature is the declaration as written. The semantic
         // type renders as canonical IR text (`function(parameters=[element(
@@ -1411,7 +1520,10 @@ pub(super) fn project_image_rows(
             });
         }
     }
-    Ok(ProjectedImage { rows: projected })
+    Ok(ProjectedImage {
+        rows: projected,
+        temporary_bytes,
+    })
 }
 
 /// Projects one image and admits those rows into `sink`.
@@ -1431,6 +1543,7 @@ pub(super) fn append_image_rows(
         sink.stale,
         sink.path,
         sink.site_declarations,
+        sink.native_projection(),
     )?;
     super::image_rows::apply_projected_image(&projected, sink)
 }

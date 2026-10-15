@@ -29,7 +29,7 @@ use super::{
     typed_decode,
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
-        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_TYPED_NAMES,
+        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_NAME_SPANS, SCHEMA_TYPED_NAMES,
         SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES, get_u32,
     },
 };
@@ -96,7 +96,7 @@ pub(crate) fn reopen_full_semantic_image(
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
     if layout.schema == SCHEMA_CARRIER_BINDINGS
-        || (layout.schema == SCHEMA_TYPED_NAMES
+        || (matches!(layout.schema, SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS)
             && layout
                 .entry(FullDirectoryKind::SignatureCarrierBindingRanges)
                 .count
@@ -121,7 +121,7 @@ fn validate_signature_carrier_roles(
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
-        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS
     ) || layout.entry(FullDirectoryKind::SignatureCarrierRoles).count == 0
     {
         return Ok(());
@@ -671,12 +671,12 @@ fn validate_entity_reserved(
         + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::Entities,
         })? * ENTITY_ROW_BYTES;
-    let reserved_start = if layout.schema == SCHEMA_TYPED_NAMES {
+    let reserved_start = if matches!(layout.schema, SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS) {
         offset + 33
     } else {
         offset + 32
     };
-    if layout.schema == SCHEMA_TYPED_NAMES && !matches!(bytes[offset + 32], 0 | 1) {
+    if matches!(layout.schema, SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS) && !matches!(bytes[offset + 32], 0 | 1) {
         return Err(FullSemanticImageFault::EntityNameTag {
             row,
             observed: bytes[offset + 32],

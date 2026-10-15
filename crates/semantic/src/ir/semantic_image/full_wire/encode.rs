@@ -8,7 +8,7 @@ use super::{
     wire::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, HEADER_BYTES_U32, MAGIC,
         RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_LEGACY,
-        SCHEMA_TYPED_NAMES, SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES,
+        SCHEMA_NAME_SPANS, SCHEMA_TYPED_NAMES, SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES,
         put_u16, put_u32,
     },
 };
@@ -82,7 +82,7 @@ fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {
     output[..4].copy_from_slice(&MAGIC);
     let (directory_kinds, directory_count) = if matches!(
         plan.layout.schema,
-        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | SCHEMA_NAME_SPANS
     ) {
         (&FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS[..], 29)
     } else if plan.layout.schema == SCHEMA_CARRIER_ROLES {

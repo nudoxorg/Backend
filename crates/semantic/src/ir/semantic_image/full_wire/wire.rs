@@ -18,6 +18,9 @@ pub(crate) const SCHEMA_CARRIER_BINDINGS: u16 = 3;
 /// Schema 4 adds a tagged declaration-name cell for source-backed anonymous
 /// callable anchors while retaining the schema-3 directory layout.
 pub(crate) const SCHEMA_TYPED_NAMES: u16 = 4;
+/// Schema 5 commits exact native Clang declaration-name source spans in the
+/// Clang extension payload. Schema 4 remains readable with absent spans.
+pub(crate) const SCHEMA_NAME_SPANS: u16 = 5;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
@@ -176,6 +179,7 @@ impl FullDirectoryKind {
             SCHEMA_CARRIER_ROLES => Some(&Self::ALL_WITH_CARRIER_ROLES),
             SCHEMA_CARRIER_BINDINGS => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             SCHEMA_TYPED_NAMES => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
+            SCHEMA_NAME_SPANS => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             _ => None,
         }
     }
@@ -186,6 +190,7 @@ impl FullDirectoryKind {
             SCHEMA_CARRIER_ROLES => Some(27),
             SCHEMA_CARRIER_BINDINGS => Some(29),
             SCHEMA_TYPED_NAMES => Some(29),
+            SCHEMA_NAME_SPANS => Some(29),
             _ => None,
         }
     }
