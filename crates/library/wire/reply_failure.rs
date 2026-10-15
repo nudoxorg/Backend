@@ -174,7 +174,13 @@ mod tests {
             CommandFailure::SequenceOverflow,
             CommandFailure::MutationRequiresOwner,
         ];
-        let display = failures[3].to_string();
+        let display = failures
+            .iter()
+            .find_map(|failure| {
+                matches!(failure, CommandFailure::CompilerRefused { .. })
+                    .then(|| failure.to_string())
+            })
+            .expect("compiler refusal fixture");
         for failure in failures {
             let decoded = command_failure_from_wire(command_failure_to_wire(&failure))?;
             assert_eq!(decoded, failure);
