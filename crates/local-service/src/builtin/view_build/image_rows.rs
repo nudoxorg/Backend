@@ -67,6 +67,7 @@ pub(super) struct ProjectedRow {
 /// Rows projected from one image under one overlay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ProjectedImage {
+    pub(super) ownership_complete: bool,
     /// Declaration rows, then that declaration's external targets.
     pub(super) rows: Vec<ProjectedRow>,
 }
@@ -362,6 +363,7 @@ pub(super) fn apply_projected_image(
     sink: &mut SemanticRowSink<'_>,
 ) -> Result<(), super::super::BuiltinModelError> {
     let basis = sink.initial.basis();
+    *sink.ownership_complete &= projected.ownership_complete;
     for projected_row in &projected.rows {
         match projected_row.duplicate {
             DuplicatePolicy::Skip => {
@@ -1280,6 +1282,7 @@ fn publish_image_batch(
             BatchImage::Opened(view) => {
                 let path = compiled_source(view).expect("compiled source").0;
                 let mut sink = SemanticRowSink {
+                    ownership_complete: &mut true,
                     exact_sites: &mut Default::default(),
                     initial,
                     symbols: &mut symbols,
@@ -1295,6 +1298,7 @@ fn publish_image_batch(
             }
             BatchImage::Resident { digest, path } => {
                 let mut sink = SemanticRowSink {
+                    ownership_complete: &mut true,
                     exact_sites: &mut Default::default(),
                     initial,
                     symbols: &mut symbols,
@@ -1340,6 +1344,7 @@ fn admit(
     let mut rows = Vec::new();
     let mut remaining = usize::MAX;
     let mut sink = SemanticRowSink {
+        ownership_complete: &mut true,
         exact_sites: &mut Default::default(),
         initial,
         symbols: &mut symbols,
@@ -1540,6 +1545,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = remaining;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial,
             symbols,
@@ -1581,6 +1587,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial,
             symbols: &mut symbols,
@@ -1607,6 +1614,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = remaining;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial,
             symbols: &mut symbols,
@@ -2016,6 +2024,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2175,6 +2184,7 @@ mod tests {
             let mut rows = Vec::new();
             let mut remaining = usize::MAX;
             let mut sink = SemanticRowSink {
+                ownership_complete: &mut true,
                 exact_sites: &mut Default::default(),
                 initial: &fixture.initial,
                 symbols: &mut symbols,
@@ -2200,6 +2210,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2223,6 +2234,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2264,7 +2276,7 @@ mod tests {
         }
         assert!(
             residence
-                .store([9_u8; 32], ProjectedImage { rows })
+                .store([9_u8; 32], ProjectedImage { rows, ownership_complete: true })
                 .is_err()
         );
         assert_eq!(residence.len(), 0, "one image past the row budget leaves");
@@ -2274,6 +2286,7 @@ mod tests {
             .store(
                 [8_u8; 32],
                 ProjectedImage {
+                    ownership_complete: true,
                     rows: vec![ProjectedRow {
                         exact_binding: None,
                         row: Row::new(
@@ -2292,6 +2305,7 @@ mod tests {
 
     fn one_projected_row(label: &str, basis: backend_engine::Basis) -> ProjectedImage {
         ProjectedImage {
+            ownership_complete: true,
             rows: vec![ProjectedRow {
                 exact_binding: None,
                 row: Row::new(
@@ -2440,6 +2454,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining_bytes = 100;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial,
             symbols: &mut symbols,
@@ -2593,6 +2608,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2645,6 +2661,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2691,6 +2708,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2746,6 +2764,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -2774,6 +2793,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,
@@ -3134,6 +3154,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &fixture.initial,
             symbols: &mut symbols,

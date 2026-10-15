@@ -491,6 +491,82 @@ fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     Ok(bytes)
 }
 
+#[test]
+fn publication_roles_round_trip_reject_invalid_tags_and_preserve_legacy_absence()
+-> Result<(), crate::ir::BuildError> {
+    use crate::ir::DeclarationPublicationRole as Role;
+    for role in [Role::Unavailable, Role::PrimaryOwned, Role::ReferenceOnly] {
+        let item = TreeItemInput {
+            name: b"Owner",
+            anonymous_callable_anchor: None,
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                publication: role,
+                ..authority()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        let mut builder = IrBuilder::new();
+        builder.add_borrowed_tree(BorrowedTree {
+            versions: &[version(41)],
+            items: &[item],
+            links: &[],
+        })?;
+        let ir = builder.finish()?;
+        assert_eq!(ir.entity_authority_columns().publication, &[role]);
+        let bytes = encoded(&ir)?;
+        let schema = u16::from_le_bytes([bytes[4], bytes[5]]);
+        assert_eq!(schema == 5, role != Role::Unavailable);
+        let view = SemanticImageView::reopen(&bytes).expect("ownership image reopens");
+        assert_eq!(
+            view.canonical_entities()
+                .next()
+                .expect("owner")
+                .authority
+                .publication,
+            role
+        );
+        let census = crate::ir::SemanticImageDiscovery::new(&view)
+            .census()
+            .expect("role census");
+        assert_eq!(
+            census.entity_authority.publication.unavailable,
+            usize::from(role == Role::Unavailable)
+        );
+        assert_eq!(
+            census.entity_authority.publication.primary_owned,
+            usize::from(role == Role::PrimaryOwned)
+        );
+        assert_eq!(
+            census.entity_authority.publication.reference_only,
+            usize::from(role == Role::ReferenceOnly)
+        );
+        if role != Role::Unavailable {
+            let offset = lane_payload_offset(&bytes, FullDirectoryKind::Entities);
+            let mut invalid = bytes.clone();
+            invalid[offset + 33] = 3;
+            assert!(
+                SemanticImageView::reopen(&invalid).is_err(),
+                "invalid role is rejected"
+            );
+            let mut downgraded = bytes.clone();
+            downgraded[4..6].copy_from_slice(&4_u16.to_le_bytes());
+            assert!(
+                SemanticImageView::reopen(&downgraded).is_err(),
+                "schema downgrade cannot reinterpret role evidence"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn lane_payload_offset(bytes: &[u8], kind: FullDirectoryKind) -> usize {
     let entry = HEADER_BYTES + kind.index() * DIRECTORY_BYTES;
     u32::from_le_bytes(

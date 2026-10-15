@@ -86,10 +86,10 @@ pub use crate::vocabulary::{
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
 pub use authority::{
-    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
-    FactAvailability, ImageProvenance, ImageProvenanceClaim, OccurrenceAuthorityColumns,
-    OccurrenceAuthorityFacts, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
-    UnrepresentedAuthorityOwner,
+    AuthorityFactFault, AuthorityFactPlane, DeclarationPublicationRole, EntityAuthorityColumns,
+    EntityAuthorityFacts, FactAvailability, ImageProvenance, ImageProvenanceClaim,
+    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, ParentageAuthority, SemanticScopeClaim,
+    SemanticScopeFacts, UnrepresentedAuthorityOwner,
 };
 pub use canonical_data::{
     CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
@@ -183,6 +183,8 @@ pub use reader::{
 /// Increment this when the compiler's complete semantic output projection
 /// changes without changing the source-language compiler or its toolchain.
 pub const SEMANTIC_IR_PROJECTION_VERSION: u16 = 3;
+/// Go publication ownership changes its output/cache contract independently.
+pub const GO_DECLARATION_PUBLICATION_PROJECTION_VERSION: u16 = 4;
 pub use segment_boundary_policy::{
     CanonicalSemanticPlaneBoundaryFamilyVerifier, SemanticPlaneSegmentBoundaryAlgorithm,
     SemanticPlaneSegmentBoundaryPolicy,
@@ -220,9 +222,9 @@ pub use semantic_data_view::{
     SemanticDataEntityRoot, SemanticDataView,
 };
 pub use semantic_discovery::{
-    AvailabilityCensus, EntityAuthorityCensus, LanguageExtensionCensus, ParentageCensus,
-    SemanticDiscoveryError, SemanticDiscoveryReference, SemanticImageCensus,
-    SemanticImageDiscovery,
+    AvailabilityCensus, DeclarationPublicationCensus, EntityAuthorityCensus,
+    LanguageExtensionCensus, ParentageCensus, SemanticDiscoveryError, SemanticDiscoveryReference,
+    SemanticImageCensus, SemanticImageDiscovery,
 };
 pub use semantic_extension_section::{
     ExtensionSectionInput, ExtensionSectionPlane, ExtensionSectionSource,

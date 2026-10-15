@@ -2,6 +2,7 @@
 
 use core::mem::MaybeUninit;
 
+use crate::application::DocumentationSession;
 use crate::publication::{OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalOrderKey, LexicalRow,
@@ -60,6 +61,8 @@ pub fn preflight_semantic(
 }
 
 /// Builds exact and lexical segments directly from the complete semantic reader.
+/// Exact coordinate lookup retains every canonical entity, including supporting
+/// rows. Lexical declaration search admits only the image's owned declarations.
 #[allow(
     clippy::result_large_err,
     reason = "cold segment failures retain exact borrowed rows and typed derivation causes"
@@ -102,8 +105,15 @@ pub fn build_semantic<'opened: 'output, 'semantic: 'output, 'output>(
     let exact =
         ExactSegment::new(exact_rows.into_shared()).map_err(|cause| BuildError::Exact { cause })?;
 
+    let session = DocumentationSession::new(&artifact.semantic_image);
     let lexical_entities = entities
         .iter()
+        .filter(|entity| {
+            artifact
+                .semantic_image
+                .entity(entity.entity)
+                .is_some_and(|entity| session.owns_declaration(&entity))
+        })
         .filter_map(|entity| entity.name.named_bytes().map(|name| (entity, name)))
         .collect::<Vec<_>>();
     let mut lexical_rows = initialize(
@@ -209,10 +219,13 @@ struct SemanticRequired {
 impl SemanticRequired {
     fn from_artifact(artifact: &OpenedSemanticArtifact<'_, '_>) -> Self {
         let entities = artifact.semantic_image.canonical_entities();
+        let session = DocumentationSession::new(&artifact.semantic_image);
         Self {
             entities: entities.len(),
             lexical_rows: entities
-                .filter(|entity| matches!(entity.name, ItemName::Named(_)))
+                .filter(|entity| {
+                    session.owns_declaration(entity) && matches!(entity.name, ItemName::Named(_))
+                })
                 .count(),
         }
     }

@@ -764,6 +764,7 @@ fn hash_semantic_image_facts(
 }
 
 fn hash_authority(value: EntityAuthorityFacts, hasher: &mut StableHasher) {
+    (value.publication as u8).hash(hasher);
     match value.parentage {
         ParentageAuthority::Unavailable => 0_u8.hash(hasher),
         ParentageAuthority::Root => 1_u8.hash(hasher),
@@ -2664,6 +2665,7 @@ fn authority_facts(ir: &Ir, id: EntityId) -> Option<EntityAuthorityFacts> {
     let columns = ir.entity_authority_columns();
     let index = id.index();
     Some(EntityAuthorityFacts {
+        publication: *columns.publication.get(index)?,
         parentage: *columns.parentage.get(index)?,
         source: *columns.source.get(index)?,
         source_file: *columns.source_file.get(index)?,
@@ -2939,6 +2941,7 @@ fn hash_authority_facts(value: Option<EntityAuthorityFacts>, hasher: &mut Stable
         return;
     };
     1_u8.hash(hasher);
+    (value.publication as u8).hash(hasher);
     match value.parentage {
         ParentageAuthority::Unavailable => 0_u8.hash(hasher),
         ParentageAuthority::Root => 1_u8.hash(hasher),

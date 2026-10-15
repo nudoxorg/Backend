@@ -614,7 +614,7 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         let layout = self.layout();
         let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
         if layout.schema != SCHEMA_CARRIER_BINDINGS
-            && (layout.schema != SCHEMA_TYPED_NAMES || ranges.count == 0)
+            && (layout.schema < SCHEMA_TYPED_NAMES || ranges.count == 0)
         {
             return Some(SignatureCarrierBindingsObservation::Unavailable);
         }

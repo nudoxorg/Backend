@@ -156,7 +156,7 @@ pub(super) fn directory(bytes: &[u8]) -> Result<FullImageLayout, FullSemanticIma
 }
 
 pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSemanticImageFault> {
-    if layout.schema == SCHEMA_TYPED_NAMES {
+    if layout.schema >= SCHEMA_TYPED_NAMES {
         let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
         if roles.count == 0 && roles.length != 0 {
             return Err(FullSemanticImageFault::SignatureCarrierRoleLength {
@@ -185,7 +185,7 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
     if matches!(
         layout.schema,
         SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS
-    ) || (layout.schema == SCHEMA_TYPED_NAMES
+    ) || (layout.schema >= SCHEMA_TYPED_NAMES
         && layout.entry(FullDirectoryKind::SignatureCarrierRoles).count != 0)
     {
         let entity_count = layout.entry(FullDirectoryKind::Entities).count;
@@ -212,14 +212,17 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
         }
     } else if !matches!(
         layout.schema,
-        SCHEMA_LEGACY | SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+        SCHEMA_LEGACY | SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
     ) {
         return Err(FullSemanticImageFault::Schema {
             expected: SCHEMA_CARRIER_BINDINGS,
             observed: layout.schema,
         });
     }
-    if matches!(layout.schema, SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES) {
+    if matches!(
+        layout.schema,
+        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
+    ) {
         fixed(
             layout,
             FullDirectoryKind::SignatureCarrierBindingRanges,

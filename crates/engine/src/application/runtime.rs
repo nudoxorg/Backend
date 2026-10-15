@@ -1506,7 +1506,9 @@ fn update_string_list_identity(identity: &mut blake3::Hasher, values: &[Box<str>
 fn compiler_environment_identity(profile: LanguageProfile) -> [u8; 32] {
     compiler_environment_identity_for_projection(
         profile,
-        backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION,
+        if matches!(profile, LanguageProfile::Go(_)) {
+            backend_semantic::ir::GO_DECLARATION_PUBLICATION_PROJECTION_VERSION
+        } else { backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION },
     )
 }
 
@@ -5808,6 +5810,33 @@ mod portable_recipe_tests {
         assert_ne!(first, reordered);
         assert_ne!(first, changed);
         assert_ne!(first, changed_pyrefly);
+    }
+
+    #[test]
+    fn publication_projection_epoch_changes_go_without_invalidating_other_languages() {
+        let go = LanguageProfile::Go(GoVersion::Go125);
+        let python = LanguageProfile::Python(PythonVersion::Python314);
+        assert_ne!(
+            compiler_environment_identity(go),
+            compiler_environment_identity_for_projection(
+                go,
+                backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION
+            )
+        );
+        assert_eq!(
+            compiler_environment_identity(python),
+            compiler_environment_identity_for_projection(
+                python,
+                backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION
+            )
+        );
+        assert_eq!(
+            compiler_environment_identity(go),
+            compiler_environment_identity_for_projection(
+                go,
+                backend_semantic::ir::GO_DECLARATION_PUBLICATION_PROJECTION_VERSION
+            )
+        );
     }
 
     #[test]
