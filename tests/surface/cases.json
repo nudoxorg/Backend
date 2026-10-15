@@ -220,6 +220,358 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "python-cachetools",
+      "project_env": "NUDOX_SURFACE_PYTHON_CACHETOOLS",
+      "upstream": "pypi:cachetools@7.2.0",
+      "languages": [
+        "python"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "TTLCache": "src/cachetools/__init__.py",
+        "cached": "src/cachetools/__init__.py"
+      },
+      "cli": [
+        [
+          "search",
+          "TTLCache"
+        ],
+        [
+          "search",
+          "cached"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "TTLCache",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "cached",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "python-tomli",
+      "project_env": "NUDOX_SURFACE_PYTHON_TOMLI",
+      "upstream": "pypi:tomli@2.2.1",
+      "languages": [
+        "python"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "loads": "src/tomli/_parser.py",
+        "TOMLDecodeError": "src/tomli/_parser.py"
+      },
+      "cli": [
+        [
+          "search",
+          "loads"
+        ],
+        [
+          "search",
+          "TOMLDecodeError"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "loads",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "TOMLDecodeError",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "python-itsdangerous",
+      "project_env": "NUDOX_SURFACE_PYTHON_ITSDANGEROUS",
+      "upstream": "pypi:itsdangerous@2.2.0",
+      "languages": [
+        "python"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "URLSafeSerializer": "src/itsdangerous/url_safe.py",
+        "Signer": "src/itsdangerous/signer.py"
+      },
+      "cli": [
+        [
+          "search",
+          "URLSafeSerializer"
+        ],
+        [
+          "search",
+          "Signer"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "URLSafeSerializer",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Signer",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "rust-itoa",
+      "project_env": "NUDOX_SURFACE_RUST_ITOA",
+      "upstream": "cargo:itoa@1.0.14",
+      "languages": [
+        "rust"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Buffer": "src/lib.rs",
+        "format": "src/lib.rs"
+      },
+      "cli": [
+        [
+          "search",
+          "Buffer"
+        ],
+        [
+          "search",
+          "format"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Buffer",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "format",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ],
+      "gui": {
+        "project_name": "itoa",
+        "query": "Buffer",
+        "result_filename": "lib.rs",
+        "visible_source": [
+          "pub struct Buffer",
+          "MaybeUninit"
+        ]
+      }
+    },
+    {
+      "name": "rust-ryu",
+      "project_env": "NUDOX_SURFACE_RUST_RYU",
+      "upstream": "cargo:ryu@1.0.18",
+      "languages": [
+        "rust"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Buffer": "src/buffer/mod.rs",
+        "format_finite": "src/buffer/mod.rs"
+      },
+      "cli": [
+        [
+          "search",
+          "Buffer"
+        ],
+        [
+          "search",
+          "format_finite"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Buffer",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "format_finite",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "go-uuid",
+      "project_env": "NUDOX_SURFACE_GO_UUID",
+      "upstream": "golang:github.com/google/uuid@v1.6.0",
+      "languages": [
+        "go"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "NewString": "version4.go",
+        "ParseBytes": "uuid.go"
+      },
+      "cli": [
+        [
+          "search",
+          "NewString"
+        ],
+        [
+          "search",
+          "ParseBytes"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "NewString",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "ParseBytes",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "go-sync",
+      "project_env": "NUDOX_SURFACE_GO_SYNC",
+      "upstream": "golang:golang.org/x/sync@v0.11.0",
+      "languages": [
+        "go"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Weighted": "semaphore/semaphore.go",
+        "DoChan": "singleflight/singleflight.go"
+      },
+      "cli": [
+        [
+          "search",
+          "Weighted"
+        ],
+        [
+          "search",
+          "DoChan"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Weighted",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "DoChan",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

@@ -464,3 +464,43 @@ They are not a claim of authored declarations or exhaustive Digest coverage.
 Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
 snapshots retain every prior performance baseline and tolerance. Rust measured
 20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.
+
+## Real-project expansion candidate (W2.3/W2.4)
+
+The catalog now proposes ten whole pinned upstream projects: existing xxhash,
+Blinker and percent-encoding, plus the seven below. Native execution, reviewed
+snapshots and performance calibration are required before this expansion merges.
+New cases must fail when their snapshot is absent; CI cannot accept its own output.
+TypeScript expansion is deferred while #259's product bug is open.
+
+| Project | Existing archive pin | Independent source checks / selection reason |
+|---|---|---|
+| cachetools | PyPI7.2.0 | TTLCache and cached in src/cachetools/__init__.py: inheritance, cache policies and decorators. |
+| tomli | PyPI2.2.1 | loads and TOMLDecodeError in src/tomli/_parser.py: parser functions, exceptions and typed inputs. |
+| itsdangerous | PyPI2.2.0 | URLSafeSerializer and Signer in separate source modules: class hierarchies and module boundaries. |
+| itoa | Cargo1.0.14 | Buffer and format in src/lib.rs: public types, methods and integer formatting. |
+| ryu | Cargo1.0.18 | Buffer and format_finite in src/buffer/mod.rs: module layout and floating-point formatting. |
+| uuid | Go1.6.0 | NewString in version4.go and ParseBytes in uuid.go: exported declarations across files. |
+| x/sync | Go0.11.0 | Weighted in semaphore/semaphore.go and DoChan in singleflight/singleflight.go: packages and concurrent APIs. |
+
+Archives and byte hashes come from .config/nix/corpus-pins.json; fetchers preserve
+the complete original project. Required manifests/source files are checked while
+unpacking. Archive LICENSE files remain with each project, including itoa/ryu's
+multiple license files. No generated module is inserted to make an old upstream
+archive appear compatible. The initial Go errors candidate was rejected because
+its archive lacks go.mod; x/sync replaces it.
+
+The itoa case also proposes one GUI content proof on Linux. The same indexed
+owner and published desktop binary open the real project; actual X11 keyboard
+input searches Buffer and opens its code page. Native window pixels are captured
+and read by pinned English OCR. The observer requires the project name and
+original-source text `pub struct Buffer` and `MaybeUninit`, then a clean Quit.
+A typed search query alone cannot pass. The current window PNG/text remain under
+/tmp/nudox-surface/rust-itoa/gui; CI emits its source/artifact-bound image digest.
+No in-memory fixture renderer or extra product build is used.
+
+GUI wall time, process CPU and peak RSS are recorded separately from the owner;
+existing tolerance ratios/floors also apply to the GUI measurements. OCR/Xvfb
+observer cost is outside those product process metrics. Linux native execution
+and screenshot review are pending; parsing/unit admission controls alone do not
+prove the GUI works.

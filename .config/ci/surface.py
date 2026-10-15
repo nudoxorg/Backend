@@ -928,6 +928,14 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"]["seconds"].update(
                 run_live_contracts(owner, project, case["live_contracts"], published_root)
             )
+        if case.get("gui"):
+            from gui_contract import run_gui
+            answer, usage, evidence = run_gui(owner, project, case["gui"])
+            record["answers"]["gui"] = answer
+            record["performance"]["seconds"].update(usage.pop("seconds"))
+            record["performance"].update(usage)
+            with OUTPUT_LOCK:
+                print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
         record["performance"].update(owner.usage())
     finally:
         try:
@@ -949,9 +957,10 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
     for name, old in baseline.get("seconds", {}).items():
         if name in measured["seconds"]:
             check("seconds", f"seconds[{name}]", old, measured["seconds"][name])
-    for metric in ("peak_rss_kib", "cpu_seconds"):
+    for metric in ("peak_rss_kib", "cpu_seconds", "gui_peak_rss_kib", "gui_cpu_seconds"):
         if metric in baseline and metric in measured:
-            check(metric, metric, baseline[metric], measured[metric])
+            policy = metric.removeprefix("gui_")
+            check(policy, metric, baseline[metric], measured[metric])
     return found
 
 
