@@ -268,6 +268,25 @@ impl PublicationWork {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn cleanup_inventory(
+        &self,
+    ) -> Option<(
+        Vec<backend_extension_turso::CandidateAttempt>,
+        backend_library::IndexJobOutcome,
+    )> {
+        match &self.preparation {
+            Preparation::Cleanup { plan, outcome } => {
+                Some((plan.attempts.clone(), outcome.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn base_root(&self) -> backend_version::WorkspaceRoot {
+        self.base.root()
+    }
+
     pub(super) fn admit_workspace(
         &mut self,
         workspace: Result<std::path::PathBuf, BuiltinModelError>,
@@ -284,7 +303,7 @@ impl PublicationWork {
         }
     }
 
-    fn is_cleanup(&self) -> bool {
+    pub(super) fn is_cleanup(&self) -> bool {
         matches!(self.preparation, Preparation::Cleanup { .. })
     }
 
@@ -991,7 +1010,10 @@ impl PublicationWork {
     }
 
     pub(super) fn can_cancel(&self) -> bool {
-        !self.settlement_only && !self.grant_accepted && matches!(self.head, Head::Writer(_))
+        !self.is_cleanup()
+            && !self.settlement_only
+            && !self.grant_accepted
+            && matches!(self.head, Head::Writer(_))
     }
 
     pub(super) fn cancellation_won(&self) -> bool {
@@ -1118,10 +1140,10 @@ fn select_head(
 
 impl PublicationWorker {
     pub(super) fn spawn(
-        work: Box<PublicationWork>,
+        #[allow(unused_mut)] mut work: Box<PublicationWork>,
     ) -> Result<Self, (Box<PublicationWork>, std::io::Error)> {
         #[cfg(test)]
-        if work.test_spawn_refusal {
+        if std::mem::take(&mut work.test_spawn_refusal) {
             return Err((
                 work,
                 std::io::Error::other("injected original worker thread startup refusal"),

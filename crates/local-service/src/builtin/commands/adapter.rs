@@ -361,6 +361,8 @@ pub(in crate::builtin) struct CommandAdapter {
     source_test_hook: Option<index_publication_worker::TestHook>,
     #[cfg(test)]
     source_worker_start_refusal: bool,
+    #[cfg(test)]
+    cleanup_worker_start_refusal: bool,
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
@@ -838,6 +840,8 @@ impl CommandAdapter {
             source_test_hook: None,
             #[cfg(test)]
             source_worker_start_refusal: false,
+            #[cfg(test)]
+            cleanup_worker_start_refusal: false,
             waiting: std::collections::VecDeque::new(),
             queued_writer_blocked: None,
             abandoned_replies: BTreeSet::new(),
@@ -2620,11 +2624,6 @@ impl CommandAdapter {
                 (empty(), Preparation::Cleanup { plan, outcome })
             }
         };
-        let workspace = self
-            .product_state
-            .workspace_path()
-            .map(Path::to_path_buf)
-            .map_err(BuiltinModelError);
         let base = daemon.engine().daemon().owner().snapshot();
         let mut work = Box::new(PublicationWork::new(
             None,
@@ -2649,32 +2648,7 @@ impl CommandAdapter {
                 Arc::clone(&indexing.cancelled)
             },
         ));
-        let reserved =
-            (|| -> Result<(), BuiltinModelError> {
-                work.admit_workspace(workspace)?;
-                work.projection = Some(self.sql_projection.reserve_writer().map_err(|e| {
-                    BuiltinModelError(format!("capture admitted SQL read snapshot: {e}"))
-                })?);
-                work.journal = Some(self.index_operations.detach_publication_writer().map_err(
-                    |e| BuiltinModelError(format!("reserve keyed receipt writer: {e}")),
-                )?);
-                work.semantic = Some(self.semantic_authority.detach_index_writer(base.root())?);
-                work.head = index_publication_worker::Head::Writer(
-                    daemon
-                        .engine_mut()
-                        .daemon_mut()
-                        .reserve_read_head_writer()
-                        .map_err(|e| {
-                            BuiltinModelError(format!("reserve coherent read-head writer: {e}"))
-                        })?,
-                );
-                work.image_rows = std::mem::take(&mut self.image_rows);
-                work.generations = std::mem::take(&mut self.generations);
-                work.residences_reserved = true;
-                self.semantic_authority
-                    .install_image_loader(&mut self.generations);
-                Ok(())
-            })();
+        let reserved = self.reserve_index_phase_writers(daemon, &mut work);
         #[cfg(test)]
         {
             work.test_hook = if preparing_source {
@@ -2682,15 +2656,20 @@ impl CommandAdapter {
             } else {
                 self.publication_test_hook.take()
             };
-            work.test_spawn_refusal =
-                preparing_source && std::mem::take(&mut self.source_worker_start_refusal);
+            work.test_spawn_refusal = (preparing_source
+                && std::mem::take(&mut self.source_worker_start_refusal))
+                || (cleanup_phase && std::mem::take(&mut self.cleanup_worker_start_refusal));
         }
         let (worker, completion) = match reserved {
             Err(error) => (
                 None,
                 Some(Completion {
+                    disposition: if work.is_cleanup() {
+                        Disposition::Pending(error)
+                    } else {
+                        Disposition::Unselected(error)
+                    },
                     work,
-                    disposition: Disposition::Unselected(error),
                 }),
             ),
             Ok(()) => match PublicationWorker::spawn(work) {
@@ -2698,15 +2677,74 @@ impl CommandAdapter {
                 Err((work, error)) => (
                     None,
                     Some(Completion {
+                        disposition: if work.is_cleanup() {
+                            // This is the original frozen cleanup, not a new
+                            // failure. Retain its attempts/outcome and all
+                            // reserved capabilities for bounded explicit retry.
+                            Disposition::Pending(BuiltinModelError(format!(
+                                "start index cleanup worker: {error}"
+                            )))
+                        } else {
+                            Disposition::Unselected(BuiltinModelError(format!(
+                                "start index publication worker: {error}"
+                            )))
+                        },
                         work,
-                        disposition: Disposition::Unselected(BuiltinModelError(format!(
-                            "start index publication worker: {error}"
-                        ))),
                     }),
                 ),
             },
         };
         indexing.work = Self::owned_publication_state(preparing_source, worker, completion, None);
+        Ok(())
+    }
+
+    fn reserve_index_phase_writers(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        work: &mut index_publication_worker::PublicationWork,
+    ) -> Result<(), BuiltinModelError> {
+        work.admit_workspace(
+            self.product_state
+                .workspace_path()
+                .map(Path::to_path_buf)
+                .map_err(BuiltinModelError),
+        )?;
+        if work.projection.is_none() {
+            work.projection = Some(self.sql_projection.reserve_writer().map_err(|e| {
+                BuiltinModelError(format!("capture admitted SQL read snapshot: {e}"))
+            })?);
+        }
+        if work.journal.is_none() {
+            work.journal = Some(
+                self.index_operations
+                    .detach_publication_writer()
+                    .map_err(|e| BuiltinModelError(format!("reserve keyed receipt writer: {e}")))?,
+            );
+        }
+        if work.semantic.is_none() {
+            work.semantic = Some(
+                self.semantic_authority
+                    .detach_index_writer(work.base_root())?,
+            );
+        }
+        if matches!(work.head, index_publication_worker::Head::Moving) {
+            work.head = index_publication_worker::Head::Writer(
+                daemon
+                    .engine_mut()
+                    .daemon_mut()
+                    .reserve_read_head_writer()
+                    .map_err(|e| {
+                        BuiltinModelError(format!("reserve coherent read-head writer: {e}"))
+                    })?,
+            );
+        }
+        if !work.residences_reserved {
+            work.image_rows = std::mem::take(&mut self.image_rows);
+            work.generations = std::mem::take(&mut self.generations);
+            work.residences_reserved = true;
+            self.semantic_authority
+                .install_image_loader(&mut self.generations);
+        }
         Ok(())
     }
 
@@ -3351,6 +3389,35 @@ impl CommandAdapter {
                                         return self.finish_deferred_poll(daemon, ready);
                                     }
                                     Err(work) => done.work = work,
+                                }
+                            }
+                            if worker.is_none() && done.work.is_cleanup() {
+                                if self
+                                    .reserve_index_phase_writers(daemon, &mut done.work)
+                                    .is_err()
+                                {
+                                    indexing.work = Self::owned_publication_state(
+                                        preparing_source,
+                                        None,
+                                        Some(done),
+                                        Some(self.journal_readiness.retry_token()),
+                                    );
+                                    self.indexing = Some(indexing);
+                                    return self.finish_deferred_poll(daemon, ready);
+                                }
+                                match index_publication_worker::PublicationWorker::spawn(done.work)
+                                {
+                                    Ok(started) => {
+                                        indexing.work = Self::owned_publication_state(
+                                            preparing_source,
+                                            Some(started),
+                                            None,
+                                            None,
+                                        );
+                                        self.indexing = Some(indexing);
+                                        return self.finish_deferred_poll(daemon, ready);
+                                    }
+                                    Err((work, _)) => done.work = work,
                                 }
                             }
                             indexing.work = Self::owned_publication_state(

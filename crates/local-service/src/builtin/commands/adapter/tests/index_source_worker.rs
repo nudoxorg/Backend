@@ -556,3 +556,119 @@ fn completed_profile_frontier_validation_stays_off_the_real_lease_control_loop()
     wire.release();
     wire.wait_terminal();
 }
+
+#[test]
+fn cleanup_start_refusal_retains_exact_attempts_and_cancelled_outcome_for_explicit_retry() {
+    let mut wire = SourceWire::start(TestStage::AfterGrant, false);
+    wire.wait_at_source();
+    {
+        let mut commands = wire.commands.lock().expect("original adapter");
+        commands.cleanup_worker_start_refusal = true;
+        commands.journal_readiness.close();
+    }
+    Session::connect(&wire.endpoint)
+        .expect("sibling cancel")
+        .surface(backend_library::SurfaceCommand::IndexCancel {
+            ticket: wire.ticket.clone(),
+        })
+        .expect("cancel after source grant");
+    wire.release();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let inventory = loop {
+        let commands = wire.commands.lock().expect("same adapter observer");
+        let inventory = commands.indexing.as_ref().and_then(|job| match &job.work {
+            IndexJobWork::PublicationWorker {
+                worker: None,
+                completion: Some(done),
+                blocked: Some(_),
+            } if matches!(
+                done.disposition,
+                index_publication_worker::Disposition::Pending(_)
+            ) =>
+            {
+                done.work.cleanup_inventory()
+            }
+            _ => None,
+        });
+        if let Some(inventory) = inventory {
+            break inventory;
+        }
+        drop(commands);
+        assert!(Instant::now() < deadline, "retain refused cleanup startup");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(
+        !inventory.0.is_empty(),
+        "real unselected profile attempt must survive startup refusal"
+    );
+    assert!(matches!(
+        inventory.1,
+        backend_library::IndexJobOutcome::Cancelled
+    ));
+    let mut client = LocalSubscriptionTransport::connect_with_timeouts(
+        &wire.endpoint,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect("independent client during retained cleanup");
+    let mut observed = client
+        .acquire_publications(Arc::new(wire.old_view.clone()), wire.cursor, &|| false)
+        .expect("admit coherent source capture during retained cleanup");
+    for _ in 0..4 {
+        client
+            .resume_publications(&mut observed, &|| false)
+            .expect("quiet poll without retry");
+        client
+            .renew_publications(&mut observed)
+            .expect("renew without cleanup retry");
+    }
+    {
+        let commands = wire.commands.lock().expect("unchanged original plan");
+        let job = commands.indexing.as_ref().expect("cleanup still pending");
+        let IndexJobWork::PublicationWorker {
+            worker: None,
+            completion: Some(done),
+            ..
+        } = &job.work
+        else {
+            panic!("ordinary polls cannot reschedule refused cleanup");
+        };
+        assert_eq!(done.work.cleanup_inventory(), Some(inventory.clone()));
+    }
+    Session::connect(&wire.endpoint)
+        .expect("explicit retry session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStatus {
+            operation_key: wire.operation,
+        })
+        .expect("bounded explicit retry of original cleanup");
+    wire.wait_terminal();
+    let commands = wire.commands.lock().expect("original writers returned");
+    assert!(matches!(
+        commands.index_terminals.back().expect("terminal").outcome,
+        backend_library::IndexJobOutcome::Cancelled
+    ));
+    assert!(!commands.index_operations.publication_writer_reserved());
+    for attempt in inventory.0 {
+        assert!(
+            commands
+                .semantic_authority
+                .recover_candidate_attempt(&attempt.recovery_claim())
+                .is_err(),
+            "exact cancelled attempt cannot remain pending or reopen"
+        );
+    }
+    let Some(JournalEntry::Retained(entry)) = commands
+        .index_operations
+        .entry(wire.operation)
+        .expect("receipt")
+    else {
+        panic!("retained exact receipt");
+    };
+    assert!(matches!(
+        entry.state,
+        StoredOperationState::Failed {
+            reason: backend_library::IndexOperationFailureReason::Cancelled,
+            ..
+        }
+    ));
+}
