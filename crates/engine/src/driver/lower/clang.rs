@@ -4226,7 +4226,7 @@ mod tests {
     /// parameters and distinct canonical identities for overloads.
     #[test]
     fn function_templates_preserve_signature_carriers_and_overloads() -> Result<(), TestError> {
-        let source = b"template<class T> void consume(T value) {}\ntemplate<class T> T echo(T value) { return value; }\ntemplate<class T> void choose(T value) {}\ntemplate<class T> void choose(T* value) {}\n";
+        let source = b"template<class T> void consume(T value) {}\ntemplate<class T> T echo(T value) { return value; }\ntemplate<typename T> static void generic_bool_ops_test(const T& obj) {}\ntemplate<class T> void choose(T value) {}\ntemplate<class T> void choose(T* value) {}\n";
         let profile = LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23);
         let bytes = lower_with_profile(profile, source)?;
         let view = FragmentView::validate(&bytes)?;
@@ -4259,6 +4259,25 @@ mod tests {
             return Err(TestError::Missing("echo template parameter T"));
         }
 
+        // This is the exact signature shape in the pinned pugixml 1.14
+        // tests/helpers.hpp helper: one const lvalue-reference parameter and
+        // a void result. Its carrier must preserve both wrappers around T.
+        let generic = entity_of(&view, b"generic_bool_ops_test", EntityKind::Function)?;
+        let generic_row = row_for_entity(&view, generic)?;
+        if generic_row.record.tag != SemanticTypeTag::FunctionPointer
+            || generic_row.record.children.length != 1
+            || generic_row.record.payload1 != 0
+            || !entity_rows(&view).contains(&(&b"obj"[..], EntityKind::Parameter))
+        {
+            return Err(TestError::Entity {
+                ordinal: generic.index(),
+            });
+        }
+        let generic_extension = clang_extension(&view, generic.index())?;
+        if pooled_type_parameter(&view, generic_extension.templates)? != b"T" {
+            return Err(TestError::Missing("generic helper template parameter T"));
+        }
+
         let owned = owned_ir_with_profile(profile, source)?;
         let function_ids: Vec<_> = owned
             .items()
@@ -4282,6 +4301,63 @@ mod tests {
             || bindings[0].position != 0
         {
             return Err(TestError::Missing("consume parameter slot binding"));
+        }
+
+        let generic_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"generic_bool_ops_test"
+                    && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .collect();
+        let [generic_owner] = generic_owners.as_slice() else {
+            return Err(TestError::Missing("unique generic helper template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(generic_owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("generic helper signature bindings")),
+        };
+        if bindings.len() != 1
+            || bindings[0].owner != generic_owner.id()
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+        {
+            return Err(TestError::Missing("generic helper single parameter binding"));
+        }
+        let rows = type_facts(&view)?;
+        let reference = row_for_entity(&view, bindings[0].carrier)?.record;
+        if reference.tag != SemanticTypeTag::Primitive
+            || reference.payload0 != super::SHAPE_CXX_LVALUE_REFERENCE
+            || reference.children.length != 1
+        {
+            return Err(TestError::Missing("generic helper lvalue-reference parameter"));
+        }
+        let reference_children = local_type_children(&view, reference)?;
+        let [qualified_id] = reference_children.as_slice() else {
+            return Err(TestError::Missing("generic helper reference target"));
+        };
+        let qualified = rows
+            .get(qualified_id.index())
+            .ok_or(TestError::Missing("generic helper qualified target row"))?
+            .record;
+        if qualified.tag != SemanticTypeTag::CQualified
+            || qualified.payload0 != 1
+            || qualified.children.length != 1
+        {
+            return Err(TestError::Missing("generic helper const-qualified T"));
+        }
+        let qualified_children = local_type_children(&view, qualified)?;
+        let [type_var_id] = qualified_children.as_slice() else {
+            return Err(TestError::Missing("generic helper const target"));
+        };
+        let type_var = rows
+            .get(type_var_id.index())
+            .ok_or(TestError::Missing("generic helper TypeVar row"))?
+            .record;
+        if type_var.tag != SemanticTypeTag::TypeVar || type_var.text != Some(&b"T"[..]) {
+            return Err(TestError::Missing("generic helper parameter TypeVar T"));
         }
 
         let echo_owners: Vec<_> = owned
