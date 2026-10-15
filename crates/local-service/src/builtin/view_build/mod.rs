@@ -2916,7 +2916,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 caller_id,
                 callee_id,
                 backend_library::SemanticLinkKind::Calls,
-            ));
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic));
         }
         Ok(relations
             .into_iter()
@@ -3079,12 +3079,12 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 left_worker,
                 left_target,
                 backend_library::SemanticLinkKind::Calls,
-            ),
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
             backend_engine::GraphRelation::new(
                 right_worker,
                 right_target,
                 backend_library::SemanticLinkKind::Calls,
-            ),
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
         ]);
         let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
             .map_err(|error| error.to_string())?;
@@ -3120,7 +3120,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                     projected.mapped(caller).ok_or("exact caller")?,
                     projected.mapped(callee).ok_or("exact target")?,
                     backend_library::SemanticLinkKind::Calls,
-                ))
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic))
             })
             .collect::<Result<BTreeSet<_>, String>>()?;
         assert_eq!(complete, expected);
@@ -3134,7 +3134,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                     caller,
                     target,
                     backend_library::SemanticLinkKind::Calls
-                )]
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic)]
             );
         }
         // Even a lone semantic-shaped worker row cannot distinguish the
@@ -3193,7 +3193,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 caller,
                 target,
                 backend_library::SemanticLinkKind::Calls,
-            );
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic);
             assert_eq!(outgoing, vec![edge.clone()]);
             assert_eq!(incoming, vec![edge]);
             let label = view.row_ref(target).ok_or("target row")?.label.as_str();
@@ -3293,7 +3293,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                     worker,
                     target,
                     backend_library::SemanticLinkKind::Calls
-                )],
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic)],
                 "each stored worker must own only its own excerpt's outgoing call"
             );
         }

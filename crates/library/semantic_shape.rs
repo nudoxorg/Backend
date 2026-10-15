@@ -1827,7 +1827,7 @@ mod tests {
             .remove("source_epoch");
         assert!(serde_json::from_value::<SemanticShapeReadRequest>(missing).is_err());
         let mut wrong = value.clone();
-        wrong["source_epoch"]["source_relation_root"] = serde_json::json!([7u8; 32]);
+        wrong["source_epoch"]["source_relation_root"] = serde_json::to_value([7u8; 32]).expect("wrong source root");
         assert!(serde_json::from_value::<SemanticShapeReadRequest>(wrong).is_err());
         let source: SemanticVersionRecord =
             serde_json::from_value(value["source"].clone()).expect("complete inline source");
@@ -1849,7 +1849,7 @@ mod tests {
             }
         );
         let mut rebind = serde_json::to_value(read).expect("wire selector");
-        rebind["source_epoch"]["semantic_relation_root"] = serde_json::json!([35u8; 32]);
+        rebind["source_epoch"]["semantic_relation_root"] = serde_json::to_value([35u8; 32]).expect("rebound semantic root");
         assert!(serde_json::from_value::<SemanticShapeReadRequest>(rebind).is_err());
         // A caller may parse mutated raw guards, but cannot obtain the owner
         // capability required by native history lookup and reconstruction.
