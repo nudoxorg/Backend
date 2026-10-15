@@ -1043,8 +1043,13 @@ pub struct CompilerDiagnosticFacts {
     pub python_configuration: Option<PythonConfigurationRefusalFacts>,
     /// Exact TypeScript authority cause; native bytes and paths remain local.
     pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
+    /// Where a native TypeScript program stopped, for a program execution stop.
+    pub typescript_stop_site: Option<super::TypeScriptStopSite>,
     /// Bounded compiler-package limits and API capability facts, without paths.
     pub typescript_admission: Option<super::TypeScriptCompilerAdmissionDetail>,
+    /// Bounded, sanitized host cause text (project-relative paths only) for a
+    /// TypeScript host failure; never native process output.
+    pub typescript_cause: Option<super::TypeScriptFailureCause>,
     /// Exact Go dependency-admission cause; native bytes and paths remain local.
     pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
@@ -1231,7 +1236,9 @@ impl CompilerDiagnostic {
             python_failure: None,
             python_configuration: None,
             typescript_failure: None,
+            typescript_stop_site: None,
             typescript_admission: None,
+            typescript_cause: None,
             go_failure: None,
             bytes: output,
         })))
@@ -1246,7 +1253,9 @@ impl CompilerDiagnostic {
             self.0.python_configuration = None;
         }
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.go_failure = None;
         self
     }
@@ -1257,7 +1266,9 @@ impl CompilerDiagnostic {
         self.0.python_configuration = Some(facts);
         self.0.python_failure = Some(PythonAuthorityFailureKind::ConfigurationRefused);
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.go_failure = None;
         self
     }
@@ -1269,10 +1280,27 @@ impl CompilerDiagnostic {
         failure: super::TypeScriptAuthorityFailureKind,
     ) -> Self {
         self.0.typescript_failure = Some(failure);
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self
+    }
+
+    /// Records where a native TypeScript program stopped. Meaningful only after
+    /// [`Self::with_typescript_failure`] named a program execution stop.
+    #[must_use]
+    pub fn with_typescript_stop_site(mut self, site: super::TypeScriptStopSite) -> Self {
+        if self
+            .0
+            .typescript_failure
+            .is_some_and(super::TypeScriptAuthorityFailureKind::is_program_execution_failure)
+            && site.is_valid()
+        {
+            self.0.typescript_stop_site = Some(site);
+        }
         self
     }
 
@@ -1284,9 +1312,22 @@ impl CompilerDiagnostic {
     ) -> Self {
         self.0.typescript_failure = Some(detail.failure_kind());
         self.0.typescript_admission = Some(detail);
+        self.0.typescript_stop_site = None;
+        self.0.typescript_cause = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self
+    }
+
+    /// Adds sanitized host cause text to an already retained plain TypeScript
+    /// failure kind. It is ignored unless that kind is present without admission
+    /// facts, so the text can never contradict a closed cause.
+    #[must_use]
+    pub fn with_typescript_cause(mut self, cause: super::TypeScriptFailureCause) -> Self {
+        if self.0.typescript_failure.is_some() && self.0.typescript_admission.is_none() {
+            self.0.typescript_cause = Some(cause);
+        }
         self
     }
 
@@ -1297,7 +1338,9 @@ impl CompilerDiagnostic {
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self
     }
 

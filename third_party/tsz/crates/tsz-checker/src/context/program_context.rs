@@ -190,6 +190,9 @@ impl Default for ProgramContext {
 /// Mutable construction is private; sharing starts only after all tables exist.
 pub struct SealedProgramGlobalIndexes {
     tables: ProgramContext,
+    /// Whole-program answers derived once from the same binders; see
+    /// [`SharedProgramFacts`].
+    facts: Arc<super::SharedProgramFacts>,
 }
 
 impl SealedProgramGlobalIndexes {
@@ -204,7 +207,8 @@ impl SealedProgramGlobalIndexes {
         tables.all_arenas = all_arenas;
         tables.skeleton_declared_modules = declared_modules;
         tables.build_global_index_tables();
-        Self { tables }
+        let facts = super::SharedProgramFacts::from_binders(&tables.all_binders);
+        Self { tables, facts }
     }
 
     /// Borrow the sealed maps into a new worker before the original setters.
@@ -244,6 +248,7 @@ impl SealedProgramGlobalIndexes {
             .clone_from(&tables.skeleton_expando_index);
         ctx.set_all_arenas(Arc::clone(&tables.all_arenas));
         ctx.set_all_binders(Arc::clone(&tables.all_binders));
+        ctx.shared_program_facts = Some(Arc::clone(&self.facts));
     }
 }
 

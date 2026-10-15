@@ -16,12 +16,14 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     // The stock query selects package-level consts and vars without tagging
     // them a definition, so they were extracted and then dropped. They are
     // anchored at `source_file` here: a function-local `var` is not an
-    // outline entry. Interface methods are `method_elem` in this grammar.
+    // outline entry. Interface methods are `method_elem` in this grammar, and
+    // an alias (`type A = B`) is a `type_alias`, which the stock query skips.
     let tags = format!(
         "{}\n{}",
         tree_sitter_go::TAGS_QUERY,
         r"
 (field_declaration name: (field_identifier) @name) @definition.field
+(type_alias name: (type_identifier) @name) @definition.type
 (method_elem name: (field_identifier) @name) @definition.method
 (source_file (const_declaration (const_spec name: (identifier) @name) @definition.constant))
 (source_file (var_declaration (var_spec name: (identifier) @name) @definition.variable))
@@ -29,7 +31,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Go,
-        b"tree-sitter-go-0.25.0/tags-v3",
+        b"tree-sitter-go-0.25.0/tags-v4-struct-interface-kinds",
         vec![GrammarVariant::new(
             &["go"],
             tree_sitter_go::LANGUAGE.into(),

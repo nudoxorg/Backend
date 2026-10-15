@@ -1979,7 +1979,9 @@ impl PackageCompilerFailure {
     }
 
     /// Package-relative request source bound into the compiler terminal. For a
-    /// complete TypeScript program refusal, this is request context, not a hot file.
+    /// complete TypeScript program refusal, this is request context, not a hot file;
+    /// the file and phase that actually stopped, when observed, are
+    /// [`Self::typescript_stop_site`].
     #[must_use]
     pub fn relative_path(&self) -> &str {
         self.relative_path.as_str()
@@ -1994,6 +1996,24 @@ impl PackageCompilerFailure {
             PackageCompilerFailureCause::Authority { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. }
             | PackageCompilerFailureCause::AuthorityAdmission { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. } => kind.is_program_execution_failure(),
             _ => false,
+        }
+    }
+
+    /// Where a native TypeScript program stopped, when this refusal was a program
+    /// execution stop that observed a boundary. Unlike [`Self::relative_path`], this
+    /// is the file and phase that actually consumed the budget or deadline.
+    #[must_use]
+    pub fn typescript_stop_site(&self) -> Option<&crate::interface::TypeScriptStopSite> {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
+            } => facts.typescript_stop_site.as_ref(),
+            _ => None,
         }
     }
 
@@ -2169,21 +2189,14 @@ impl PackageCompilerFailure {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
         }
         if let PackageCompilerFailureCause::Authority {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         }
         | PackageCompilerFailureCause::AuthorityAdmission {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         } = &self.cause
+            && (facts.typescript_admission.is_some() || facts.typescript_cause.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2569,6 +2582,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
@@ -2578,14 +2592,18 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
     } = cause
     {
-        return match typescript_admission {
-            Some(detail) => sanitize_package_compiler_detail(&detail.detail(), false),
-            None => sanitize_package_compiler_detail(failure.detail(), false),
+        return match (typescript_admission, typescript_cause) {
+            (Some(detail), _) => sanitize_package_compiler_detail(&detail.detail(), false),
+            (None, Some(cause)) => {
+                sanitize_package_compiler_detail(&cause.detail_for(*failure), false)
+            }
+            (None, None) => sanitize_package_compiler_detail(failure.detail(), false),
         };
     }
     let prefix = match cause {
@@ -2722,11 +2740,23 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         && facts.typescript_admission.as_ref().is_none_or(|detail| {
             facts.typescript_failure == Some(detail.failure_kind())
         })
+        && (facts.typescript_cause.is_none()
+            || (facts.typescript_failure.is_some() && facts.typescript_admission.is_none()))
+        && facts.typescript_stop_site.as_ref().is_none_or(|site| {
+            site.is_valid()
+                && facts.typescript_failure.is_some_and(
+                    crate::interface::TypeScriptAuthorityFailureKind::is_program_execution_failure,
+                )
+        })
 }
 
 #[cfg(test)]
 #[path = "surface/typescript_admission_tests.rs"]
 mod typescript_admission_tests;
+
+#[cfg(test)]
+#[path = "surface/typescript_cause_tests.rs"]
+mod typescript_cause_tests;
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
     !value.is_empty()
@@ -6690,6 +6720,88 @@ mod tests {
                 "unknown closed TS causes refused"
             );
         }
+    }
+
+    #[test]
+    fn typescript_stop_site_names_the_stopped_file_and_phase_not_the_request_source() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+            TypeScriptAuthorityFailureKind as F, TypeScriptStopPhase, TypeScriptStopSite,
+        };
+        let terminal = |kind: F, site: TypeScriptStopSite| CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        b"export const x = 1",
+                    ),
+                    byte_len: 18,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"native", 6, false).map(|value| {
+                    value
+                        .with_typescript_failure(kind)
+                        .with_typescript_stop_site(site)
+                }),
+            },
+        };
+        let site = TypeScriptStopSite::new(
+            Some(TypeScriptStopPhase::FileCheck),
+            Some("node_modules/@angular/common/types/chunk.d.ts"),
+            248_342_005,
+            248_342_016,
+        );
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "playwright.config.ts",
+            &terminal(F::NativeProjectCheckWorkBudgetExhausted, site.clone()),
+        )
+        .expect("closed projection")
+        .expect("authority refusal");
+        assert!(failure.is_typescript_program_execution_failure());
+        assert_eq!(failure.relative_path(), "playwright.config.ts");
+        assert_eq!(failure.typescript_stop_site(), Some(&site));
+        let encoded = failure.encode_bounded_json().expect("bounded wire form");
+        let reopened =
+            PackageCompilerFailure::decode_bounded_json(&encoded).expect("strict cold reader");
+        assert_eq!(reopened.typescript_stop_site(), Some(&site));
+        assert_eq!(reopened, failure);
+
+        // A stop site on a failure that is not a program execution stop is not retained.
+        let unrelated = PackageCompilerFailure::from_package_terminal(
+            "eslint.config.mjs",
+            &terminal(F::CheckerExit, site.clone()),
+        )
+        .expect("closed projection")
+        .expect("authority refusal");
+        assert_eq!(unrelated.typescript_stop_site(), None);
+
+        // A forged, unsafe, or contradictory site is refused at the cold boundary.
+        let mut json: serde_json::Value = serde_json::from_slice(&encoded).expect("control JSON");
+        for forged in [
+            serde_json::json!({"file": "/etc/passwd", "work_charged": 1, "work_allowance": 2}),
+            serde_json::json!({"file": "a/../b.ts", "work_charged": 1, "work_allowance": 2}),
+            serde_json::json!({"work_charged": 3, "work_allowance": 2}),
+            serde_json::json!({"work_charged": 1, "work_allowance": 2, "invented": true}),
+        ] {
+            json["cause"]["fault"]["diagnostic"]["typescript_stop_site"] = forged;
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err()
+            );
+        }
+        // Unsafe retained paths are dropped when the site is built.
+        for unsafe_path in ["/abs/x.ts", "a\\b.ts", "a/../b.ts", "a//b.ts", "tab\t.ts", ""] {
+            let site = TypeScriptStopSite::new(None, Some(unsafe_path), 1, 2);
+            assert_eq!(site.file, None, "{unsafe_path:?}");
+        }
+        let long = "a/".repeat(TypeScriptStopSite::MAX_FILE_BYTES);
+        assert_eq!(TypeScriptStopSite::new(None, Some(&long), 1, 2).file, None);
     }
 
     #[test]

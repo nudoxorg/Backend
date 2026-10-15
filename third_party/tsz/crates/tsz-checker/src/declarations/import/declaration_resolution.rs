@@ -426,10 +426,11 @@ impl<'a> CheckerState<'a> {
                                         }
                                     }
                                 } else {
-                                    for binder in binders.iter() {
-                                        if let Some(exports) =
-                                            self.ctx.module_exports_for_module(binder, module_name)
-                                            && let Some(target_sym_id) = exports.get(export_name)
+                                    for (binder, exports) in self
+                                        .ctx
+                                        .module_exports_for_each_binder(binders, module_name)
+                                    {
+                                        if let Some(target_sym_id) = exports.get(export_name)
                                             && let Some(target_sym) =
                                                 binder.symbols.get(target_sym_id)
                                         {

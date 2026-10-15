@@ -286,6 +286,45 @@ impl<'a> CheckerContext<'a> {
             .or_else(|| self.current_library_symbol_and_arena(symbol))
     }
 
+    /// Position, in `lib_contexts`, of the first library whose retained binder is the
+    /// allocation at `binder_ptr`.
+    ///
+    /// Every lookup of a library symbol's owner used to walk and charge all library
+    /// contexts (one per `lib.*.d.ts`), once per symbol resolved. The positions depend
+    /// only on the shared `lib_contexts` allocation, so each worker thread indexes the
+    /// set it is using once and reuses that index for every context that shares it.
+    fn lib_context_position_of_binder_ptr(&self, binder_ptr: usize) -> Option<usize> {
+        type PositionIndex = FxHashMap<usize, usize>;
+        thread_local! {
+            // A `Weak` pins the indexed allocation's address without keeping the libraries
+            // alive: no other library set can be allocated at that address while the index
+            // is cached, so address equality identifies exactly the set that was indexed.
+            static LIB_BINDER_POSITIONS: std::cell::RefCell<Option<(std::sync::Weak<Vec<LibContext>>, Arc<PositionIndex>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let index = LIB_BINDER_POSITIONS.with(|cached| {
+            let mut cached = cached.borrow_mut();
+            if let Some((libs, index)) = cached.as_ref()
+                && std::ptr::eq(libs.as_ptr(), Arc::as_ptr(&self.lib_contexts))
+            {
+                return Arc::clone(index);
+            }
+            let mut index = PositionIndex::default();
+            for (position, lib) in self.lib_contexts.iter().enumerate() {
+                // The first library wins, exactly as a front-to-back scan would pick it.
+                index.entry(Arc::as_ptr(&lib.binder) as usize).or_insert(position);
+            }
+            let index = Arc::new(index);
+            *cached = Some((Arc::downgrade(&self.lib_contexts), Arc::clone(&index)));
+            index
+        });
+        index.get(&binder_ptr).copied()
+    }
+
+    fn lib_context_position_of_binder(&self, binder: &BinderState) -> Option<usize> {
+        self.lib_context_position_of_binder_ptr(std::ptr::from_ref(binder) as usize)
+    }
+
     fn current_library_symbol_and_arena(
         &self,
         symbol: SymbolId,
@@ -293,6 +332,15 @@ impl<'a> CheckerContext<'a> {
         // Lib delegation clears both program owner maps and enters this
         // retained binder's LOCAL id space. Both pointers must match; a
         // same-id symbol in another binder or arena is not ownership proof.
+        self.types.execution_checkpoint(1).ok()?;
+        // Only a retained library binder can own the symbol; any other binder (every
+        // project file's) is rejected by one probe instead of a scan of all libraries.
+        let position = self.lib_context_position_of_binder(self.binder)?;
+        let lib = &self.lib_contexts[position];
+        if std::ptr::eq(lib.arena.as_ref(), self.arena) {
+            return Some((lib.binder.get_symbol(symbol)?, lib.arena.as_ref()));
+        }
+        // The same binder retained under another arena: find the library that has both.
         for lib in self.lib_contexts.iter() {
             self.types.execution_checkpoint(1).ok()?;
             if std::ptr::eq(lib.binder.as_ref(), self.binder)
@@ -311,13 +359,10 @@ impl<'a> CheckerContext<'a> {
         // This is the existing lib-MERGED -> retained lib-LOCAL identity;
         // pointer equality proves the owning binder, not a spelling match.
         let &(binder_ptr, local_id) = self.binder.lib_symbol_reverse_remap.get(&symbol)?;
-        for lib in self.lib_contexts.iter() {
-            self.types.execution_checkpoint(1).ok()?;
-            if Arc::as_ptr(&lib.binder) as usize == binder_ptr {
-                return Some((lib.binder.get_symbol(local_id)?, lib.arena.as_ref()));
-            }
-        }
-        None
+        self.types.execution_checkpoint(1).ok()?;
+        let position = self.lib_context_position_of_binder_ptr(binder_ptr)?;
+        let lib = &self.lib_contexts[position];
+        Some((lib.binder.get_symbol(local_id)?, lib.arena.as_ref()))
     }
 
     /// Resolve a `SymbolId` to a *stable* owning file index for overlay writes.
@@ -746,6 +791,7 @@ impl<'a> CheckerContext<'a> {
         self.program_module_exports = parent.program_module_exports.clone();
         self.program_cross_file_node_symbols = parent.program_cross_file_node_symbols.clone();
         self.program_alias_partners = parent.program_alias_partners.clone();
+        self.shared_program_facts = parent.shared_program_facts.clone();
         self.global_symbol_file_index = parent.global_symbol_file_index.clone();
         self.resolved_module_paths = parent.resolved_module_paths.clone();
         self.project_module_resolution_outcomes = parent.project_module_resolution_outcomes.clone();
@@ -1035,6 +1081,9 @@ impl<'a> CheckerContext<'a> {
         &mut self,
         outcomes: Arc<crate::context::ResolvedModuleRequestOutcomeMap>,
     ) {
+        // Local consensus entries are answers from the previously installed map.
+        // Replacing it must not retain either positive or negative old answers.
+        self.project_module_consensus_memo.get_mut().clear();
         self.project_module_resolution_outcomes = Some(outcomes);
         // Compiler-owned negatives are part of the configured program's
         // diagnostics. The standalone checker's optional unresolved-import
@@ -1651,6 +1700,34 @@ mod tests {
     use tsz_solver::TypeId;
     use tsz_solver::construction::TypeInterner;
     use tsz_solver::def::{DefinitionInfo, DefinitionStore};
+
+    #[test]
+    fn replacing_project_outcomes_recomputes_cached_file_consensus() {
+        let arena = NodeArena::new();
+        let binder = BinderState::new();
+        let types = TypeInterner::new();
+        let mut ctx = CheckerContext::new_with_shared_def_store(
+            &arena,
+            &binder,
+            &types,
+            "test.ts".to_owned(),
+            CheckerOptions::default(),
+            Arc::new(DefinitionStore::new()),
+        );
+        let key = (0, "./target".to_owned(), None, crate::context::ResolutionRequestKind::EsmImport);
+        let mut first = crate::context::ResolvedModuleRequestOutcomeMap::default();
+        first.insert(key.clone(), crate::context::ResolvedModuleRequestOutcome::File(1));
+        ctx.set_project_module_resolution_outcomes(Arc::new(first));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), Some(1));
+        // An explicit empty map must erase the cached positive answer.
+        ctx.set_project_module_resolution_outcomes(Arc::new(Default::default()));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), None);
+        // A cached negative must not hide the replacement map's target either.
+        let mut replacement = crate::context::ResolvedModuleRequestOutcomeMap::default();
+        replacement.insert(key, crate::context::ResolvedModuleRequestOutcome::File(2));
+        ctx.set_project_module_resolution_outcomes(Arc::new(replacement));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), Some(2));
+    }
 
     fn empty_cache() -> TypeCache {
         TypeCache {
