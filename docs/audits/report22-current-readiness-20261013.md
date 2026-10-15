@@ -1,5 +1,65 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-15, 02:28 UTC
+
+**The new native MCP run completed: 256 of 257 tests passed. The GUI journey still stopped before indexing, because its observer incorrectly required an expanded shelf after deliberately collapsing it.** Both actual failed runs are preserved. Neither is current canonical, a matched application trio, a working installed release or fresh-project acceptance.
+
+### Source delivered and independently checked
+
+Root fetched and reviewed coworker [PR 280](https://dev.nudox.org/git/Nudox/Backend/pulls/280), retaining directory invalidation timestamps through failed/interrupted cached builds and enabling default Cargo fingerprint diagnostics. Root independently ran **16 Python controls, zero skipped**, and the Nu parser accepted `t1.nu`. This is helper validation, not a T1/native build.
+
+Root personally merged [PR 291](https://dev.nudox.org/git/Nudox/Backend/pulls/291) into canonical `ece992f7c0a5a48be40ae54f25b912087fdc379b`, tree `c5a6b9bc2f57d87df1046911b7b86c126681a404`. Linux bootstrap now reuses an intact verified same-release installation before downloading its package archive. Changed releases still download; corruption refuses; a truncated update preserves the active pointer and marker. Root read the full implementation/test diff and independently ran **25/25 filesystem/archive controls**. Three new cases are a subset of that total, not three additional tests. Network bodies and startup/glibc subprocesses were substituted. Channel/library/Linux-manifest downloads are still required. Frozen release assets, the published installer and the activated installation are unchanged.
+
+Two additional concrete repairs are published as source checkpoints:
+
+- [PR 290](https://dev.nudox.org/git/Nudox/Backend/pulls/290), `eb2494c331fca68fcde4e2c8959a7a6e7a50a348`, is stacked on PR 276. Structured-query emission still consumed compact declarations while its planner consumed complete authenticated facts. Names-only retention lost prose/signatures; a truncated same-line child prefix could name an omitted parent and cause corpus admission to fail. The consumer now streams the existing complete-facts visitor and verifies its count. Two source-present regressions parse real TypeScript, commit/reopen storage and check the full IDs, prose, signatures and exact parent edges. **Native tests remain UNRUN.** This does not prove every graph route was affected.
+- [PR 293](https://dev.nudox.org/git/Nudox/Backend/pulls/293), `4087580c74317da1f60862fa3ff476069bacaf51`, fixes a public typed-error inconsistency: the outer occurrence ordinal was always zero while the nested fault retained the real row. A crate-private indexed admission result now carries the position from the shared validation loop; public admission and existing wire/Display behavior remain compatible. Root rejected the first version's redundant enum re-matching/panic branch. The final tree adds no second validation pass or allocation. A row-1 regression is present; rustfmt/diff checks passed; **Rust compilation and that regression remain UNRUN**.
+
+### Actual MCP compilation and complete native result
+
+The executed source is isolated child `c1e0be2fd860cd30a550a76bd652cd3c04595ac6`, tree `db67b5bfb69a2f7ce824e2024e64ad6594ac338e`. It is not the combined Python/TypeScript candidate. A locked, two-job MCP library compile completed in **17.92 seconds**, zero errors and **881 warnings**, producing a new 168,720,616-byte ELF, SHA-256 `984867d6a5c54786bc1a56c5677b84396e420a5fd341abca9b1d8617e82c8f55`. The complete outer compile phase succeeded under its unchanged 512-MiB bound; measured net growth was 178,534,632 bytes.
+
+A separate Cargo-free phase executed the exact ELF: **257 listed, 257 distinct terminal statuses, 256 passed, one failed, zero ignored/filtered, 108.47 seconds**, serial. Five focused repetitions produced four passes and the same failure; they are not added to the unique total. Root independently checked every raw stream, inventory/status union, full source postimages, artifact identity, actual scope limits, ECHILD, cgroup deletion and custody closure before permit release. The failing phase exited 1 without a capacity stop; growth was 5,562,368 bytes under its unchanged 128-MiB bound.
+
+The minimum-graph CLI-advice regression now passes. The remaining failure is a **new test assumption**, not an established product refusal: `record_budget_pages.rs:575` requires the original 450-repeat graph child to refuse, but the actual whole response fits at **12,686 bytes and 6,207 tokens**. Earlier source review incorrectly treated that pressure as irreducible. Execution disproved the assumption.
+
+Root reviewed and published one-file successor `552cacaad511b4bfbc368a7d91dc39d5a28c09e1` into [PR 227](https://dev.nudox.org/git/Nudox/Backend/pulls/227), published head `af1b7a2720b33938c49c5346032784c159679e18`, exact tree `83f97192a5dfa0aebf03b38be8a34879bfd9755c`. It retains complete copied-call replay of the original accepted 450-repeat catalog and the existing positive cases. A separate refusal fixture derives its pressure from the unchanged 49,152-byte bound: its complete summary JSON alone is 49,155 bytes. Both real minimum frontiers, six route/exposure refusals, graph centre/child behavior, whole summaries, all twelve search/resolve and thirteen graph coordinates and unchanged issued limits remain covered. **This successor is native-UNRUN at this timestamp.** No production response limit or test name was removed.
+
+Luna attributed all 881 actual warnings: 878 first-party and three bundled TSZ; 639 missing-docs, 167 unused qualifications, 56 dead-code, 17 unused imports and two unused variables. The three fewer qualifications than b52 map exactly to its two changed test files. No new warning fingerprints or blanket suppressions were introduced. This is not Clippy or a warning count for the converged source.
+
+### GUI28: real pixels expose an observer blind spot
+
+The normal frozen `3183000a7788d20c2d4bef362a68869a24500cac`/af7 application actually ran on ILO, app PID 926246, under a fresh canonical v6 guard and real managed slot3 permit. The old source and ELF cannot validate PR 272's repaired pixels. The phase closed with child exit 1, no capacity stop, reaped scope and released permit.
+
+Root independently verified **107 captured files, the 109-member archive including its two sidecars, all 28 PNG hashes/dimensions and their certified witnesses**, and personally viewed every original image:
+
+- At 200% text, actual Home scrolling reveals the privacy footer; Settings scrolling reveals the Motion row. The first enlarged transition frame still shows the known left drawer sliver; the later rail settles.
+- The actual Reduced and Full selection frames paint the corresponding settings. Frames named `bounds-moved-reduced` and `bounds-restored-reduced` instead show **System** selected; their names do not establish Reduced-mode boundary coverage.
+- Ask focuses its input and Escape dismisses it. Four shelf-transition samples remain sparse images, not continuous animation validation.
+- The final 1,380×880 image is ordinary onboarding Home, with a visible Add-a-folder button and the deliberately collapsed 41-pixel shelf rail. The observer's unconditional `Library … 0 packages` AX requirement fails because that expanded-shelf label is correctly absent. That assertion stopped the journey before Add; it is not evidence of blank pixels or unsafe input.
+
+The capture sequence has a **3.367-second uncaptured lead-in before certification**. Its later 500-ms/one-second targets are not launch-to-first-paint timings. Excalidraw Add, asynchronous publication, search, graph/history, cancellation and restart remain **UNRUN** in this phase. Per-file owner journal captures are not a consistent SQLite backup.
+
+Root required an Add-first observer redesign: real project work precedes independent geometry/settings checks; presentation failures accumulate without losing their failed status; source/PID/window/focus/unique-control and authority guards remain fatal. The unsealed source-only proposal also makes Home readiness shelf-aware and corrects misleading mode labels. It has not been rerun.
+
+### Capacity recovered without sacrificing the warm closure
+
+Root independently verified a recoverable off-host archive and the exact retirement of **691 obsolete native `.rlib`/`.rmeta` files**, preserving every nonmember, the 1,598-file warm closure, 1,516 current libraries, 109 output directories and the current/historical ELF bindings. An initial attempt refused a live process reference before unlinking; that process later departed naturally. Both failed and successful journals remain intact. No foreign workload was stopped.
+
+The archive is 1,534,765,602 bytes, SHA-256 `bd78e25d5150deee3808c9325a22380729ff556902d786e6f17da93c13576831`. Removed inode allocation/conservative charge is **6,259,769,344 bytes**; this is not a proven marginal volume-available delta. Current native retirement carry is **25,501,591,168 bytes**; separate GUI carry remains **13,772,189,176 bytes**. Original floors, measured CI reserve, full active physical forecasts and 80/36/116-GiB ceilings remain unchanged. Recovery is not product acceptance.
+
+A clean private converged candidate, `0cb39ce501cd5cd3937eb7ca75ff43998d964cb3`, tree `5513ff861b9c619b1586c646fad2286f74cab686`, combines PR 290, the catalog test successor, current canonical, CLI recovery and the typed ordinal repair. Root inspected the two CLI conflict resolutions: later command/passive-mode behavior stays intact and the older branch's extra privacy/executable assertions are retained. A proposed locked/offline three-package `cargo check --tests` has a separate fail-closed one-GiB forecast, not an automatic expansion or a promise of completion. **Metadata/check/build/tests and a matched CLI/MCP/locald trio remain UNRUN on this candidate.**
+
+Evidence root: `/Users/mileswirht/.cache/nudox/mcp-current-triage/current-canonical-lock-repair-20261014`. Important independent receipts:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `c1-native-cold-retirement-final07/compile-results01/root-independent-compile-verification.json` | `71327b574437f2133385db6f917ad851d6c0dbb96dfd8fac3026f91568f7d748` |
+| `c1-native-test128-final08/test-results01/root-independent-full257-verification.json` | `12f2f33cc03ff6d9a2fad34089b46296dec415dc2f2975acd939042b15d4dba1` |
+| `cold-mcp-closure-audit-20261015-01/cold-mcp-archive-20261015-01/root-independent-retirement-verification.json` | `4d00637a5c772eb8bf568d227dcf96b76fbf263db5ce4c16c7a70a78eb2402c1` |
+
+The GUI receipt is separately at `/Users/mileswirht/Downloads/nudox-active-20261013/gui-execution-inputs/gui28-review08-actual-evidence01/root-independent-actual-verification.json`, SHA-256 `dfb342441b734a16c079af976d3b741d2e1d60f5407bce165f3db6682fa61570`. The user's sole uncommitted Nix edit remains SHA-256 `93e10e14d6aaf80c35f554e719e10cb9a1fa63e8b573e53309fed42f8184ab18`. Broad fresh-project TypeScript/Python/Go/Rust coverage, configured useful semantic search, current native GUI, public installer activation, Mac/Homebrew and investor delivery remain open. No production-readiness or release promotion occurred.
+
 ## Follow-up: 2026-10-14, 23:39 UTC
 
 **The repaired MCP child and real GUI28 journey remain UNRUN.** Their new admissions both stopped before staging, a source transition, a managed permit, a native scope or an application PID. The last executed MCP suite remains b52's 255 passed/two failed; GUI27 remains failed. Installer activation, matched CLI/MCP/locald binaries, configured semantic search and fresh-project acceptance have not advanced.
