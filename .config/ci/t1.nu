@@ -70,7 +70,13 @@ def main []: nothing -> nothing {
     let built = if $capacity {
         ci-step "t1" "build cli, mcp, desktop, locald" {||
             # Keep this lane conservative regardless of ambient shell settings.
-            with-env {CARGO_BUILD_JOBS: "2"} {
+            # Cached CI must explain an unexpected rebuild. This does not
+            # change compiler flags or freshness decisions; Cargo emits the
+            # first invalidating dependency instead of a bare Compiling line.
+            let fingerprint_log = ($env.CARGO_LOG? | default (
+                if ($cache | is-not-empty) { "cargo::core::compiler::fingerprint=info" } else { "" }
+            ))
+            with-env {CARGO_BUILD_JOBS: "2", CARGO_LOG: $fingerprint_log} {
                 run-bounded 30min $cargo "build" "--locked" "--jobs" "2" ...$build_args
             }
         }
