@@ -574,6 +574,202 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "c-rxi-map",
+      "project_env": "NUDOX_SURFACE_C_RXI_MAP",
+      "upstream": "rxi-map",
+      "languages": [
+        "c"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "map_deinit_": "src/map.c",
+        "map_get_": "src/map.c"
+      },
+      "cli": [
+        [
+          "search",
+          "map_deinit_"
+        ],
+        [
+          "search",
+          "map_get_"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "map_deinit_",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "map_get_",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "cpp-pugixml",
+      "project_env": "NUDOX_SURFACE_CPP_PUGIXML",
+      "upstream": "pugixml",
+      "languages": [
+        "cpp"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "xml_document": "src/pugixml.hpp",
+        "xml_parse_result": "src/pugixml.hpp"
+      },
+      "cli": [
+        [
+          "search",
+          "xml_document"
+        ],
+        [
+          "search",
+          "xml_parse_result"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "xml_document",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "xml_parse_result",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "java-jsr305",
+      "project_env": "NUDOX_SURFACE_JAVA_JSR305",
+      "upstream": "maven:com.google.code.findbugs:jsr305@3.0.2",
+      "languages": [
+        "java"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Nonnull": "javax/annotation/Nonnull.java",
+        "Nullable": "javax/annotation/Nullable.java"
+      },
+      "cli": [
+        [
+          "search",
+          "Nonnull"
+        ],
+        [
+          "search",
+          "Nullable"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Nonnull",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Nullable",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "csharp-tinyioc",
+      "project_env": "NUDOX_SURFACE_CSHARP_TINYIOC",
+      "upstream": "nuget:tinyioc@1.3.0",
+      "languages": [
+        "csharp"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "TinyIoCContainer": "Content/TinyIoC.cs",
+        "TinyIoCResolutionException": "Content/TinyIoC.cs"
+      },
+      "cli": [
+        [
+          "search",
+          "TinyIoCContainer"
+        ],
+        [
+          "search",
+          "TinyIoCResolutionException"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "TinyIoCContainer",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "TinyIoCResolutionException",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

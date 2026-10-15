@@ -358,6 +358,12 @@ let
           (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu-vendor;
       NUDOX_SURFACE_GO_UUID = toString (import ./surface-corpus.nix { inherit pkgs; }).go-uuid;
       NUDOX_SURFACE_GO_SYNC = toString (import ./surface-corpus.nix { inherit pkgs; }).go-sync;
+      NUDOX_SURFACE_C_RXI_MAP = toString (import ./surface-corpus.nix { inherit pkgs; }).c-rxi-map;
+      NUDOX_SURFACE_CPP_PUGIXML = toString (import ./surface-corpus.nix { inherit pkgs; }).cpp-pugixml;
+      NUDOX_SURFACE_JAVA_JSR305 = toString (import ./surface-corpus.nix { inherit pkgs; }).java-jsr305;
+      NUDOX_SURFACE_CSHARP_TINYIOC =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).csharp-tinyioc;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
       COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
       NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";

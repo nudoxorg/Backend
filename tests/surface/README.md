@@ -492,9 +492,9 @@ its archive lacks go.mod; x/sync replaces it.
 
 The tomli case also proposes one GUI content proof on Linux. The same indexed
 owner and published desktop binary open the real project; actual X11 keyboard
-input searches Buffer and opens its code page. Native window pixels are captured
+input searches TOMLDecodeError and opens its code page. Native window pixels are captured
 and read by pinned English OCR. The observer requires the project name and
-original-source text `pub struct Buffer` and `MaybeUninit`, then a clean Quit.
+original-source text `class TOMLDecodeError` and `ValueError`, then a clean Quit.
 A typed search query alone cannot pass. The current window PNG/text remain under
 /tmp/nudox-surface/python-tomli/gui; CI emits its source/artifact-bound image digest.
 No in-memory fixture renderer or extra product build is used.
@@ -519,3 +519,12 @@ Rust cases retain offline owner policy. Their original Cargo.lock checksums feed
 Nix importCargoLock; per-case writable Cargo homes point to immutable vendored
 sources outside the unchanged upstream project. This supplies pinned dependencies
 without permitting network fallback or editing project source/lockfiles.
+
+
+Four further whole published-source candidates cover C (rxi/map), C++ (pugixml),
+Java (JSR305 sources jar) and C# (TinyIoC source NuGet). All reuse fixed corpus
+pins and preserve complete published archives; original declarations/files were
+inspected and native Nix unpack checks pass. These bring the candidate catalog
+to14 real projects across7 languages; TypeScript remains last. Native answer
+review, snapshots and performance calibration are still required for these four.
+A fetched source archive alone is not passing integration coverage.

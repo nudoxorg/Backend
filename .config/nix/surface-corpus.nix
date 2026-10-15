@@ -64,6 +64,19 @@ let
         file: "test -f \"$out\"/" + pkgs.lib.escapeShellArg file
       ) requiredFiles}
     '';
+  zipProject =
+    name: coordinate: requiredFiles:
+    let
+      selected = projectPin coordinate;
+      source = pkgs.fetchurl { inherit (selected) url hash; };
+    in
+    pkgs.runCommand "nudox-surface-${name}" { nativeBuildInputs = [ pkgs.unzip ]; } ''
+      mkdir "$out"
+      unzip -q ${source} -d "$out"
+      ${pkgs.lib.concatMapStringsSep "\n" (
+        file: "test -f \"$out\"/" + pkgs.lib.escapeShellArg file
+      ) requiredFiles}
+    '';
 in
 rec {
   rust-percent-encoding =
@@ -145,6 +158,22 @@ rec {
     "go.mod"
     "semaphore/semaphore.go"
     "singleflight/singleflight.go"
+  ];
+
+  c-rxi-map = tarProject "c-rxi-map-d6c355f" "rxi-map" [
+    "src/map.c"
+    "src/map.h"
+  ];
+  cpp-pugixml = tarProject "cpp-pugixml-1.14" "pugixml" [
+    "src/pugixml.cpp"
+    "src/pugixml.hpp"
+  ];
+  java-jsr305 = zipProject "java-jsr305-3.0.2" "maven:com.google.code.findbugs:jsr305@3.0.2" [
+    "javax/annotation/Nonnull.java"
+  ];
+  csharp-tinyioc = zipProject "csharp-tinyioc-1.3.0" "nuget:tinyioc@1.3.0" [
+    "TinyIoC.nuspec"
+    "Content/TinyIoC.cs"
   ];
 
 }
