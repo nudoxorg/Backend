@@ -9,7 +9,7 @@
     "failed": 72,
     "skipped": 134
   },
-  "coverage_limit": "Historical-source evidence; candidate must rerun. Wine cannot certify native Windows ACL semantics. Nineteen unclassified failures remain selected.",
+  "coverage_limit": "Historical72-case intake; fresh490495/92868fc11 ran550:531passed19failed187skipped. Eighteen newly explicit protected-DACL errors excluded; one cache capability failure still selected pending precise diagnostic. Wine does not certify native Windows ACL semantics.",
   "cases": [
     {
       "binary": "backend-cluster-transport::two_process",
@@ -146,22 +146,28 @@
     {
       "binary": "backend-store",
       "test": "closure::tests::large_registered_relation_closure_is_transitive_and_fails_closed",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "closure::tests::relation_node_cas_is_schema_parametric_and_reopens_children",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
@@ -634,162 +640,210 @@
     {
       "binary": "backend-store",
       "test": "tests::authorityless_publish_cannot_bypass_held_owner_lease",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::complete_corrupt_recognized_head_temp_is_rejected_and_retained",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::complete_head_checkpoint_corruption_is_rejected",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::completed_journal_faults_report_typed_sync_statuses",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::every_atomic_head_boundary_reopens_the_journal_selected_publication",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::every_interrupted_head_temp_prefix_is_scavenged_without_hiding_other_files",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::filesystem_complete_journal_corruption_is_rejected",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::filesystem_publication_reopens_and_rejects_torn_or_corrupt_objects",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::filesystem_typestate_reopens_and_rejects_interleaved_stale_publish",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::lazy_bulk_frontier_publishes_every_branch_child",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::lazy_closure_open_lookup_and_pages_are_bounded",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::publication_authority_serializes_head_writes_and_reports_pre_head_abort",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::reopen_scavenges_only_store_owned_immutable_temps",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::staged_workspace_missing_page_cannot_publish_or_repair_head",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::stored_extension_installs_auxiliary_children_before_membership_rebind",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store",
       "test": "tests::tree_cas_reopens_transitively_and_writes_one_edit_boundary",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
-      "panic_sites": []
+      "disposition": "exclude-wine-only",
+      "panic_sites": [],
+      "evidence_build": 490495,
+      "evidence_source": "92868fc114cd3eb2b876c79065459f613e86414a",
+      "reason": "Protected-DACL validation rejects Wine fixture before tested store operation; native admission unchanged."
     },
     {
       "binary": "backend-store::bounded_object_read",

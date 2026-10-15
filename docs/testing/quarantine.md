@@ -85,3 +85,9 @@ Nineteen cases lack precise captured causes and remain selected. Fixture helpers
 now print actual errors. Diagnose them on a fresh source-bound Wine run before
 further exclusion. This is not a new green result; no thresholds or admission
 checks are relaxed.
+
+Fresh build490495/92868fc11 ran550 cases:531passed,19failed,187skipped.
+Eighteen retained store failures now explicitly report the same protected-DACL
+rejection; their exact Wine-only filters have owner and November14 expiry.
+One cache fixture still returns an opaque None; expose the directory-capability
+error before deciding its disposition. No native-platform coverage is removed.

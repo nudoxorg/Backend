@@ -1027,7 +1027,9 @@ mod tests {
         }
 
         fn cache_with_recipe(&self, recipe: [u8; 32], dimensions: u32) -> EmbeddingCacheFile {
-            EmbeddingCacheFile::open_in_directory(&self.directory, recipe, dimensions)
+            let directory = DirectoryCapability::open_or_create_private(&self.directory)
+                .expect("open protected cache fixture directory capability");
+            EmbeddingCacheFile::open_directory(directory, recipe, dimensions)
                 .expect("open cache capability for protected cache fixture")
         }
     }
