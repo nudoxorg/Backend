@@ -112,6 +112,7 @@ pub struct CheckedNativeFrontier {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeClangCandidatePermit {
     project: [u8; 32],
+    selected_root: [u8; 32],
     profile: LanguageProfile,
     path: String,
     content: [u8; 32],
@@ -131,13 +132,23 @@ impl NativeClangCandidatePermit {
         self.profile
     }
 
+    /// Selected native-frontier root that issued this permit.
+    #[must_use]
+    pub const fn selected_root(&self) -> [u8; 32] {
+        self.selected_root
+    }
+
     pub(crate) fn admits(
         &self,
+        project: [u8; 32],
+        selected_root: [u8; 32],
         relative_path: &str,
         profile: LanguageProfile,
         bytes: &[u8],
     ) -> bool {
-        relative_path == self.path
+        project == self.project
+            && selected_root == self.selected_root
+            && relative_path == self.path
             && profile == self.profile
             && backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes()
                 == self.content
@@ -198,6 +209,7 @@ impl CheckedNativeFrontier {
         };
         Some(NativeClangCandidatePermit {
             project: self.project,
+            selected_root: self.root,
             profile: self.profile,
             path: path.to_owned(),
             content,
@@ -1107,5 +1119,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn native_clang_permit_rejects_wrong_project_root_profile_and_bytes() {
+        let project = [0x31; 32];
+        let root = [0x42; 32];
+        let profile = LanguageProfile::C(CStandard::C23);
+        let bytes = b"int x = 1;";
+        let frontier = CheckedNativeFrontier {
+            project,
+            profile,
+            root,
+            dispositions: vec![(
+                "src/x.c".to_owned(),
+                NativePathDisposition::ClangMalformed {
+                    content: backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                        bytes,
+                    )
+                    .to_bytes(),
+                    source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(bytes),
+                    byte_length: bytes.len() as u32,
+                    chunk_count: 1,
+                },
+            )],
+        };
+        let permit = frontier
+            .candidate_permit("src/x.c")
+            .expect("malformed permit");
+        assert!(permit.admits(project, root, "src/x.c", profile, bytes));
+        assert!(!permit.admits([0x32; 32], root, "src/x.c", profile, bytes));
+        assert!(!permit.admits(project, [0x43; 32], "src/x.c", profile, bytes));
+        assert!(!permit.admits(
+            project,
+            root,
+            "src/x.c",
+            LanguageProfile::C(CStandard::C17),
+            bytes
+        ));
+        assert!(!permit.admits(project, root, "src/x.c", profile, b"int x = 2;"));
     }
 }

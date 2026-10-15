@@ -51,6 +51,11 @@ fn add_extension_at(
     extension: LanguageExtensionInput<'_>,
     source: Option<SourceSpan>,
 ) -> crate::ir::EntityId {
+    let source_availability = if source.is_some() {
+        FactAvailability::Captured
+    } else {
+        FactAvailability::Unavailable
+    };
     let item = Item {
         name: ItemName::Named(builder.intern_atom(b"extension-owner").expect("owner atom")),
         kind: ItemKind::Function,
@@ -69,6 +74,8 @@ fn add_extension_at(
             Some(extension),
             EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
+                source: source_availability,
+                source_file: source_availability,
                 visibility: FactAvailability::Captured,
                 language_extension: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()

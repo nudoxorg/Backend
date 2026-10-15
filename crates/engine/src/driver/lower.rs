@@ -59,7 +59,7 @@ use provenance::{MemberSetCapture, Provenance, local_parent};
 /// 32,768 slots × 4-byte `u32` coordinate = 128 KiB; measured high-water 6,882 facts, and the clang authority mirror measures 32,768 declaration-lane rows for fmt's deferred-parameter traversal, so the coupled protocol geometry moves with it. Roll back to 16,384 if every target package stays below 8,192 facts.
 pub(super) const MAX_EMISSION_FACTS: usize = 32768;
 /// Worst-case bounded Clang name-span lane reservation (including `None`
-/// tags), charged independently from the declaration row-count ceiling.
+/// tags), bounded independently from the declaration row-count ceiling.
 const MAX_DECLARED_NAME_SPAN_BYTES: usize =
     MAX_EMISSION_FACTS * size_of::<Option<crate::driver::types::SourceSpanFact>>();
 const _: () = assert!(MAX_DECLARED_NAME_SPAN_BYTES <= 512 * 1024);
@@ -733,7 +733,7 @@ pub(super) struct FactSet<'source> {
     kinds: Box<[EntityKind]>,
     names: Box<[&'source [u8]]>,
     /// Optional exact Clang name-token spans. The extra allocation is
-    /// bounded and charged as `name_spans * size_of<Option<SourceSpanFact>>()`.
+    /// bounded to `name_spans * size_of<Option<SourceSpanFact>>()` bytes.
     name_spans: Box<[Option<crate::driver::types::SourceSpanFact>]>,
     anonymous_callables: Box<[Option<backend_semantic::ir::AnonymousCallableFamilyMultiplicity>]>,
     anonymous_callable_names: Box<[Option<u32>]>,

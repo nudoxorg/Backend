@@ -20,6 +20,8 @@ mod image_rows;
 mod java_enum_value_join;
 mod native_sites;
 #[cfg(test)]
+mod native_sites_tests;
+#[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
 mod py_static_field_join;

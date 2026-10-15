@@ -1498,19 +1498,27 @@ fn prepare_native_frontier_changes(
     Ok(changes)
 }
 
+#[derive(Clone, Debug, Default)]
+struct NativeCandidatePermits {
+    project: Option<[u8; 32]>,
+    selected_root: Option<[u8; 32]>,
+    by_profile: BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
+}
+
 fn native_candidate_permits(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     project: [u8; 32],
     records: &[ProductNativeFrontierRecord],
     candidate_profiles: &BTreeSet<LanguageProfile>,
-) -> Result<BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>, BuiltinModelError> {
+) -> Result<NativeCandidatePermits, BuiltinModelError> {
     if candidate_profiles.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(NativeCandidatePermits::default());
     }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = product_native_frontier_relation(&snapshot)
         .map_err(|error| BuiltinModelError(format!("open selected native frontier: {error}")))?
         .ok_or_else(|| BuiltinModelError("selected native frontier is missing".to_owned()))?;
+    let selected_root = *relation.root().as_bytes();
     let mut permits = BTreeMap::new();
     for profile in candidate_profiles {
         let paths = records
@@ -1535,6 +1543,11 @@ fn native_candidate_permits(
                 "native candidate profile frontier contains refused paths".to_owned(),
             ));
         }
+        if checked.selected_root() != selected_root {
+            return Err(BuiltinModelError(
+                "checked native frontier root differs from selected relation".to_owned(),
+            ));
+        }
         let profile_permits = checked
             .dispositions()
             .iter()
@@ -1551,7 +1564,11 @@ fn native_candidate_permits(
         }
         permits.insert(*profile, profile_permits.into_boxed_slice());
     }
-    Ok(permits)
+    Ok(NativeCandidatePermits {
+        project: Some(project),
+        selected_root: Some(selected_root),
+        by_profile: permits,
+    })
 }
 
 /// Reads back exactly the project and file rows selected by the current
@@ -2525,7 +2542,7 @@ fn prepare_deferred_compile(
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
     native_candidate_profiles: BTreeSet<LanguageProfile>,
-    native_candidate_permits: BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
+    native_candidate_permits: NativeCandidatePermits,
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
@@ -2591,7 +2608,14 @@ fn prepare_deferred_compile(
                     request,
                     context.source_root.to_path_buf(),
                     sources.into_boxed_slice(),
+                    native_candidate_permits.project.ok_or_else(|| {
+                        BuiltinModelError("native frontier project is missing".to_owned())
+                    })?,
+                    native_candidate_permits.selected_root.ok_or_else(|| {
+                        BuiltinModelError("selected native frontier root is missing".to_owned())
+                    })?,
                     native_candidate_permits
+                        .by_profile
                         .get(&profile)
                         .cloned()
                         .ok_or_else(|| {
@@ -3341,7 +3365,7 @@ fn compile_semantic_publications(
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
     native_candidate_profiles: &BTreeSet<LanguageProfile>,
-    native_candidate_permits: &BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
+    native_candidate_permits: &NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -3953,7 +3977,14 @@ fn compile_semantic_publications(
                         request,
                         context.source_root.to_path_buf(),
                         sources.into_boxed_slice(),
+                        native_candidate_permits.project.ok_or_else(|| {
+                            BuiltinModelError("native frontier project is missing".to_owned())
+                        })?,
+                        native_candidate_permits.selected_root.ok_or_else(|| {
+                            BuiltinModelError("selected native frontier root is missing".to_owned())
+                        })?,
                         native_candidate_permits
+                            .by_profile
                             .get(&profile)
                             .cloned()
                             .ok_or_else(|| {

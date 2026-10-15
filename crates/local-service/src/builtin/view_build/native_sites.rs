@@ -13,8 +13,10 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, Stage};
 use std::collections::{BTreeMap, BTreeSet};
 
-// Covers both temporary map nodes, their owned values, and the final index.
+// Covers per-candidate map/set entries and the final index. The fixed
+// reservation also covers minimum B-tree node allocations for sparse maps.
 const SITE_WORKING_BYTES: usize = 768;
+const SITE_WORKING_BASE_BYTES: usize = 4096;
 
 pub(super) struct NativeProjection<'source> {
     pub(super) source: &'source VerifiedNativeSource,
@@ -60,9 +62,15 @@ pub(super) fn prove_native_sites<'source>(
     max_sites: usize,
     max_working_bytes: usize,
 ) -> Result<NativeSites<'source>, BuiltinModelError> {
+    let source_bytes = source.bytes().len();
+    if source_bytes > max_working_bytes {
+        return Err(BuiltinModelError(
+            "native site source exceeds projection working budget".to_owned(),
+        ));
+    }
     let empty = || NativeSites {
         sites: BTreeMap::new(),
-        working_bytes: 0,
+        working_bytes: source_bytes,
     };
     if source.project() != project
         || !matches!(
@@ -97,12 +105,7 @@ pub(super) fn prove_native_sites<'source>(
     let mut identities = BTreeSet::new();
     let mut candidates = 0usize;
     let mut duplicates = BTreeSet::new();
-    let mut working_bytes = source.bytes().len();
-    if working_bytes > max_working_bytes {
-        return Err(BuiltinModelError(
-            "native site source exceeds projection working budget".to_owned(),
-        ));
-    }
+    let mut working_bytes = source_bytes;
     let session = DocumentationSession::new(image);
     for row in session.canonical_entities() {
         let row =
@@ -153,6 +156,16 @@ pub(super) fn prove_native_sites<'source>(
             .ok_or_else(|| {
                 BuiltinModelError("native site count exceeds projection capacity".to_owned())
             })?;
+        if candidates == 1 {
+            working_bytes = working_bytes
+                .checked_add(SITE_WORKING_BASE_BYTES)
+                .filter(|bytes| *bytes <= max_working_bytes)
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "native site maps exceed projection working budget".to_owned(),
+                    )
+                })?;
+        }
         working_bytes = working_bytes
             .checked_add(SITE_WORKING_BYTES)
             .filter(|bytes| *bytes <= max_working_bytes)
@@ -181,12 +194,33 @@ pub(super) fn prove_native_sites<'source>(
             )),
         );
     }
+    // Distinct but overlapping name spans are ambiguous too: matching a
+    // suffix inside another declaration's token is not independent evidence.
+    // Sorted intervals identify connected overlap groups in one pass.
+    let mut overlaps = BTreeSet::new();
+    let mut group_start = None;
+    let mut group_end = 0;
+    for &(start, end) in spans.keys() {
+        if start < group_end {
+            overlaps.insert((start, end));
+            if let Some(first) = group_start {
+                overlaps.insert(first);
+            }
+            group_end = group_end.max(end);
+        } else {
+            group_start = Some((start, end));
+            group_end = end;
+        }
+    }
     // Sorted byte positions permit a single source scan, including when the
     // semantic entity iterator uses a different canonical declaration order.
     let mut cursor = 0usize;
     let mut line = 1u32;
     let mut sites = BTreeMap::new();
-    for ((name_start, _), claim) in spans {
+    for ((name_start, name_end), claim) in spans {
+        if overlaps.contains(&(name_start, name_end)) {
+            continue;
+        }
         let Some((identity, mut site)) = claim else {
             continue;
         };

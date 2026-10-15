@@ -884,13 +884,35 @@ fn semantic_rows(
                 let native_source = if stale {
                     None
                 } else {
-                    sources
+                    if let Some((snapshot, frontier)) = sources
                         .source_snapshot
                         .as_ref()
                         .zip(checked_native_frontier.as_ref())
-                        .and_then(|(snapshot, frontier)| {
-                            snapshot.verified_native_source(frontier, &path).ok()
-                        })
+                    {
+                        // Refuse the owned source allocation before hydration,
+                        // including when image provenance later yields no sites.
+                        if let Ok(index) =
+                            frontier.dispositions().binary_search_by(|(candidate, _)| {
+                                candidate.as_str().cmp(path.as_str())
+                            })
+                        {
+                            if let backend_engine::builtin::NativePathDisposition::ClangMalformed {
+                                byte_length, ..
+                            } = &frontier.dispositions()[index].1
+                            {
+                                if usize::try_from(*byte_length)
+                                    .map_or(true, |length| length > remaining_bytes)
+                                {
+                                    return Err(BuiltinModelError(
+                                        "native source exceeds the rebuild byte bound".to_owned(),
+                                    ));
+                                }
+                            }
+                        }
+                        snapshot.verified_native_source(frontier, &path).ok()
+                    } else {
+                        None
+                    }
                 };
                 for image_index in image_indices {
                     let image = &opened[image_index];

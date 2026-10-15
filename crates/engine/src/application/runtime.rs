@@ -203,6 +203,8 @@ pub struct OwnedPackageSourceSet {
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
     admission: OwnedPackageSourceAdmission,
+    native_frontier_project: Option<[u8; 32]>,
+    native_frontier_root: Option<[u8; 32]>,
     native_clang_permits: Box<[NativeClangCandidatePermit]>,
 }
 
@@ -259,6 +261,8 @@ impl OwnedPackageSourceSet {
             sources,
             input_claim: None,
             admission: OwnedPackageSourceAdmission::Parsed,
+            native_frontier_project: None,
+            native_frontier_root: None,
             native_clang_permits: Box::new([]),
         })
     }
@@ -271,6 +275,8 @@ impl OwnedPackageSourceSet {
         request: PackageCompileRequest,
         package_root: PathBuf,
         sources: Box<[OwnedPackageSource]>,
+        selected_frontier_project: [u8; 32],
+        selected_frontier_root: [u8; 32],
         permits: Box<[NativeClangCandidatePermit]>,
     ) -> Result<Self, PackageSourceSetError> {
         if !matches!(
@@ -285,8 +291,11 @@ impl OwnedPackageSourceSet {
         if permits.is_empty()
             || permits.iter().any(|permit| {
                 permit.profile() != request.target.profile
+                    || permit.selected_root() != selected_frontier_root
                     || !sources.iter().any(|source| {
                         permit.admits(
+                            selected_frontier_project,
+                            selected_frontier_root,
                             &source.relative_path,
                             request.target.profile,
                             source.source_bytes(),
@@ -298,6 +307,8 @@ impl OwnedPackageSourceSet {
         }
         let mut admitted = Self::new(request, package_root, sources)?;
         admitted.admission = OwnedPackageSourceAdmission::NativeClangCandidate;
+        admitted.native_frontier_project = Some(selected_frontier_project);
+        admitted.native_frontier_root = Some(selected_frontier_root);
         admitted.native_clang_permits = permits;
         Ok(admitted)
     }
@@ -5265,11 +5276,20 @@ fn run_lane(
                             let package = match request.admission {
                                 OwnedPackageSourceAdmission::Parsed => package,
                                 OwnedPackageSourceAdmission::NativeClangCandidate => {
+                                    let selected_frontier_project = request
+                                        .native_frontier_project
+                                        .ok_or(PackageSourceSetError::NativeClangProfileMismatch)?;
+                                    let selected_frontier_root = request
+                                        .native_frontier_root
+                                        .ok_or(PackageSourceSetError::NativeClangProfileMismatch)?;
                                     if request.native_clang_permits.is_empty()
                                         || request.native_clang_permits.iter().any(|permit| {
                                             permit.profile() != request.request.target.profile
+                                                || permit.selected_root() != selected_frontier_root
                                                 || !request.sources.iter().any(|source| {
                                                     permit.admits(
+                                                        selected_frontier_project,
+                                                        selected_frontier_root,
                                                         &source.relative_path,
                                                         request.request.target.profile,
                                                         source.source_bytes(),
