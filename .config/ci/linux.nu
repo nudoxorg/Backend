@@ -92,6 +92,26 @@ def print-captured-failures []: nothing -> nothing {
 # Fetches the registry releases the desktop registry and journey tests expect
 # to find unpacked in the Cargo cache. Best effort: a failure here shows up
 # as those tests' own failures, with their own messages.
+def fetch-manifest-graph [manifest: string, --locked] {
+    # Manifest-only fetches resolve external roots. Give each one a disposable
+    # graph so it cannot evict the checkout's pooled compiler graph. Cargo still
+    # goes through the managed wrapper, which applies the ordinary host-capacity
+    # lease to this explicit role.
+    let build_dir = (mktemp --directory)
+    let arguments = if $locked {
+        ["fetch" "--locked" "--manifest-path" $manifest]
+    } else {
+        ["fetch" "--manifest-path" $manifest]
+    }
+    try {
+        with-env {CARGO_BUILD_BUILD_DIR: $build_dir} {
+            run-external "cargo" ...$arguments
+        }
+    } finally {
+        rm --recursive --force $build_dir
+    }
+}
+
 export def warm-registry-cache []: nothing -> nothing {
     # The Rust frontend's tests resolve this workspace itself offline, for
     # every platform: macOS- and Windows-only dependencies (accesskit_*)
@@ -102,7 +122,7 @@ export def warm-registry-cache []: nothing -> nothing {
         "frontends/rust/fixtures/toml_pin/Cargo.toml"
         "apps/desktop/tests/fixtures/browse_tree/Cargo.toml"
     ] {
-        run-external "cargo" "fetch" "--locked" "--manifest-path" $manifest
+        fetch-manifest-graph $manifest --locked
     }
     # Releases named by tests but pinned by no fixture lockfile.
     let scratch = (mktemp --directory)
@@ -110,7 +130,7 @@ export def warm-registry-cache []: nothing -> nothing {
     "" | save ($scratch | path join "src" "lib.rs")
     "[package]\nname = \"nudox-registry-cache-warmup\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\ntoml = \"=0.5.11\"\nanyhow = \"=1.0.104\"\n\n[workspace]\n"
     | save ($scratch | path join "Cargo.toml")
-    run-external "cargo" "fetch" "--manifest-path" ($scratch | path join "Cargo.toml")
+    fetch-manifest-graph ($scratch | path join "Cargo.toml")
     rm --recursive --force $scratch
     # The owner indexes each release as its own root under an offline
     # policy, which resolves that release's whole graph, dev-dependencies
@@ -133,14 +153,8 @@ export def warm-registry-cache []: nothing -> nothing {
         if $unpacked == null { continue }
         let copy = (mktemp --directory)
         cp --recursive ($unpacked | path join "*" | into glob) $copy
-        # The managed Cargo wrapper claims its build graph by workspace.
-        # Fetching this external copy must not reassign/erase Backend's warm
-        # pooled graph. Its explicit graph stays in the disposable copy; the
-        # wrapper still takes the normal shared host-capacity lease.
         try {
-            with-env {CARGO_BUILD_BUILD_DIR: ($copy | path join ".cargo-fetch-build")} {
-                run-external "cargo" "fetch" "--manifest-path" ($copy | path join "Cargo.toml")
-            }
+            fetch-manifest-graph ($copy | path join "Cargo.toml")
         } catch { print $"cache warm-up: could not fetch ($release)'s graph" }
         rm --recursive --force $copy
     }
