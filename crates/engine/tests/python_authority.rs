@@ -339,11 +339,15 @@ fn supplied_exact_definition_still_upgrades_only_its_target() -> Result<(), Test
         let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
         let (fragment, occurrences) = decoded_occurrences(&bytes)?;
         let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
-        let exact = occurrences.iter().any(|fact| {
-            fact.occurrence.confidence == OccurrenceConfidence::Oracle
-                && matches!(fact.occurrence.target,
-                    OccurrenceTarget::Local(local) if local.raw as usize == target_row)
-        });
+        let oracle_rows: Vec<_> = occurrences
+            .iter()
+            .filter(|fact| fact.occurrence.confidence == OccurrenceConfidence::Oracle)
+            .collect();
+        let exact = oracle_rows.len() == 1
+            && oracle_rows[0].occurrence.span.start == TARGET_CALL_SPAN.start
+            && oracle_rows[0].occurrence.span.end == TARGET_CALL_SPAN.end
+            && matches!(oracle_rows[0].occurrence.target,
+                OccurrenceTarget::Local(local) if local.raw as usize == target_row);
         if exact {
             Ok(())
         } else {
