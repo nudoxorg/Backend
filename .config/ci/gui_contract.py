@@ -108,8 +108,24 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                 time.sleep(1)
         else:
             raise RuntimeError(f'GUI did not show the real project: {last_error}')
-        command('xdotool', 'key', '--clearmodifiers', 'ctrl+k')
+        geometry = command('xdotool', 'getwindowgeometry', '--shell', window).stdout
+        width = re.search(r'^WIDTH=(\d+)$', geometry, re.MULTILINE)
+        if width is None or not 800 <= int(width.group(1)) <= 1600:
+            raise RuntimeError('GUI window geometry is outside the observed test viewport')
+        # Give the real Ask field native pointer focus. Merely focusing an X11
+        # top-level window does not focus GPUI's text input without a WM.
+        command('xdotool', 'mousemove', '--window', window, int(width.group(1)) // 2, 24, 'click', '1')
+        time.sleep(0.2)
         command('xdotool', 'type', '--clearmodifiers', '--delay', '30', '--', spec['query'])
+        input_deadline = min(deadline, time.monotonic() + 10)
+        while time.monotonic() < input_deadline:
+            try:
+                require_visible(pixels(), [spec['query']])
+                break
+            except RuntimeError:
+                time.sleep(0.2)
+        else:
+            raise RuntimeError('GUI Ask field did not display the typed query')
         # Wait for a real result, whose source filename is not the typed query.
         while time.monotonic() < deadline:
             try:

@@ -411,7 +411,7 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
         or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
         for p in profiles
     ):
-        raise RuntimeError("index setup: every fixture profile must publish complete native coverage")
+        raise RuntimeError("index setup: every fixture profile must publish complete native coverage; profiles=" + json.dumps(profiles, sort_keys=True)[:4096])
     root = terminal.get("detail", {}).get("view_root")
     if not isinstance(root, str) or not re.fullmatch(r"[0-9a-f]{64}", root):
         raise RuntimeError("index setup: missing exact published view root")

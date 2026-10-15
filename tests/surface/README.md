@@ -530,8 +530,18 @@ review, snapshots and performance calibration are still required for these four.
 A fetched source archive alone is not passing integration coverage.
 
 
-Native GUI observation490131 showed the admitted fixture as `project` (the
+Native GUI observation490171 showed the admitted fixture as `project` (the
 actual copied folder name), with281 declarations from4/4 source files. The
 observer now expects that real UI label, then still requires the distinct
 TOMLDecodeError result filename and original class/ValueError source text. The
 initial wrong-label timeout is retained as a harness failure, not a product pass.
+
+
+Native replay490240 proved itoa CLI/MCP after pinned offline dependency setup,
+but its snapshot is still a candidate. Ryu now passes Cargo resolution and fails
+source-scope admission for its bench; C map publishes but lacks authored source
+locations; pugixml partially publishes; JSR305 fails native authority startup;
+TinyIoC lacks complete-profile proof. These failures stay selected for diagnosis.
+GUI490240 showed an empty Ask field after window-only keyboard focus. The
+observer now clicks the actual Ask field and checks that text input arrived
+before checking results/source, preserving the original source-content proof.
