@@ -1028,7 +1028,7 @@ mod tests {
 
         fn cache_with_recipe(&self, recipe: [u8; 32], dimensions: u32) -> EmbeddingCacheFile {
             EmbeddingCacheFile::open_in_directory(&self.directory, recipe, dimensions)
-                .unwrap_or_else(|error| panic!("open cache capability: {error:?}"))
+                .expect("open cache capability for protected cache fixture")
         }
     }
 
