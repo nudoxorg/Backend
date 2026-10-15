@@ -194,10 +194,11 @@ in
   # Exercise the small bound used by the two backend buildRustPackage
   # products without evaluating or building either product derivation.
   cargo-build-job-cap =
-    pkgs.runCommand "nudox-cargo-build-job-cap" { nativeBuildInputs = [ pkgs.bash ]; } ''
-      ${pkgs.bash}/bin/bash ${../scripts/test-nix-cargo-jobs.sh} ${../scripts/nix-cargo-jobs.sh}
-      touch "$out"
-    '';
+    pkgs.runCommand "nudox-cargo-build-job-cap" { nativeBuildInputs = [ pkgs.bash ]; }
+      ''
+        ${pkgs.bash}/bin/bash ${../scripts/test-nix-cargo-jobs.sh} ${../scripts/nix-cargo-jobs.sh}
+        touch "$out"
+      '';
 
   # Guard the public `luna-tools` shell's actual Nix requisites. Checking
   # PATH alone would allow a wrapper to hide an accidental backend/GUI
