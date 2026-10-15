@@ -1315,6 +1315,9 @@ impl<P: Product> Server<P> {
     ) -> Result<Value, RpcError> {
         no_extra(arguments, &["coordinate", "limit", "cursor", "detail"])?;
         let coordinate = string(arguments, "coordinate")?.to_owned();
+        let coordinate =
+            backend_present::resolve_declaration(&mut self.product, &coordinate, "graph")
+                .map_err(|fault| RpcError::from_fault(&fault))?;
         let lifetime = self.semantic_lifetime()?;
         let budget = wire_admission::ResponseBudget::new(response_id);
         let mut effective = limit(arguments)?;
@@ -2986,7 +2989,8 @@ impl RpcError {
                 | FaultSlug::RequestMismatch
                 | FaultSlug::Freshness
                 | FaultSlug::IncoherentView => false,
-                FaultSlug::NotFound
+                FaultSlug::Ambiguous
+                | FaultSlug::NotFound
                 | FaultSlug::WrongBasis
                 | FaultSlug::InvalidQuery
                 | FaultSlug::QueryPreparation

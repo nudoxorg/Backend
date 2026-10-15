@@ -122,7 +122,7 @@ pub use coverage::{
 };
 pub use drive::{
     Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
-    probe_fault,
+    probe_fault, resolve_declaration,
 };
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,

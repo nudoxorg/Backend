@@ -569,7 +569,136 @@ fn accepted_view(heading: &str, path: &str, intent: IntentId) -> ProductView {
     )
 }
 
-fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
+/// Resolves a coordinate command's operand through the same admitted names
+/// projection used by `resolve`. Exact coordinates keep their native identity.
+/// A bounded page never certifies uniqueness while it has a continuation.
+///
+/// # Errors
+/// Returns an absent or ambiguous fault, or the existing native read failure.
+pub fn resolve_declaration(
+    engine: &mut dyn Engine,
+    text: &str,
+    command: &'static str,
+) -> Result<String, Fault> {
+    if text.starts_with('/')
+        || text.starts_with("pkg:")
+        || matches!(text.as_bytes(), [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
+    {
+        return Ok(text.to_owned());
+    }
+    let (qualifier, name) = text.rsplit_once("::").unwrap_or(("", text));
+    let (file, line) = qualifier
+        .rsplit_once(':')
+        .map_or((qualifier, None), |(file, line)| {
+            line.parse::<u32>()
+                .ok()
+                .map_or((qualifier, None), |line| (file, Some(line)))
+        });
+    let file_qualified = !file.is_empty()
+        && crate::language::Language::from_path(&crate::identity::PackagePath::new(file))
+            != crate::language::Language::Unknown;
+    let query = if file_qualified { name } else { text };
+    let snapshot = snapshot(
+        engine,
+        Probe::Names {
+            text: query,
+            limit: 64,
+        },
+        "resolve",
+    )?;
+    let mut exact = Vec::new();
+    let mut folded = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in snapshot.root.rows() {
+        let record = crate::record::Record::from_row(row);
+        let identity = record.identity();
+        if !matches!(
+            identity.shape(),
+            crate::identity::IdentityShape::Declaration | crate::identity::IdentityShape::Semantic
+        ) || record.kind() == Some(backend_library::DeclarationKind::Import)
+            || !seen.insert(row.id)
+        {
+            continue;
+        }
+        if file_qualified
+            && (!identity.path().is_some_and(|path| {
+                path.as_str()
+                    .strip_suffix(file)
+                    .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('/'))
+            }) || line.is_some_and(|line| {
+                identity.line().map(crate::identity::LineNumber::get) != Some(line)
+            }))
+        {
+            continue;
+        }
+        let actual = if query.contains("::") {
+            row.label
+                .rsplit_once("::")
+                .map_or(row.label.as_str(), |(_, name)| name)
+        } else {
+            identity.name()
+        };
+        let exact_name =
+            actual == query || (query.contains("::") && row.label.ends_with(&format!("::{query}")));
+        if exact_name {
+            exact.push(row.label.clone());
+        } else if actual.eq_ignore_ascii_case(query) {
+            folded.push(row.label.clone());
+        }
+    }
+    let matches = if exact.is_empty() { folded } else { exact };
+    match matches.as_slice() {
+        [only] if snapshot.next.is_none() => Ok(only.clone()),
+        [] if snapshot.next.is_none() => Err(Fault::new(
+            crate::fault::FaultSlug::NotFound,
+            Operand::Argument(text.to_owned()),
+            crate::fault::Cause::new(
+                crate::fault::CauseSlug::Absent,
+                "no declaration matches this name in the selected revision",
+            ),
+            Affordance::UseCommand {
+                name: "resolve",
+                args: Box::new([text.to_owned()]),
+            },
+        )),
+        _ => {
+            let retries = matches
+                .iter()
+                .take(8)
+                .map(|coordinate| {
+                    Affordance::UseCommand {
+                        name: command,
+                        args: Box::new([coordinate.clone()]),
+                    }
+                    .shell()
+                    .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let extent = if snapshot.next.is_some() {
+                "the bounded name page does not prove a unique declaration"
+            } else {
+                "several distinct declarations match this name"
+            };
+            Err(Fault::new(
+                crate::fault::FaultSlug::Ambiguous,
+                Operand::Argument(text.to_owned()),
+                crate::fault::Cause::new(
+                    crate::fault::CauseSlug::Unproven,
+                    format!("{extent}; use an exact coordinate: {retries}"),
+                ),
+                Affordance::UseCommand {
+                    name: "resolve",
+                    args: Box::new([text.to_owned()]),
+                },
+            ))
+        }
+    }
+}
+
+fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
+    let coordinate = resolve_declaration(engine, text, "show")?;
+    let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Document(coordinate))?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("document"));
@@ -587,7 +716,9 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
     ))
 }
 
-fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
+fn source(engine: &mut dyn Engine, text: &str) -> Result<Answer, Fault> {
+    let coordinate = resolve_declaration(engine, text, "source")?;
+    let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Source(coordinate))?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("source"));
@@ -601,7 +732,9 @@ fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
     Ok(Answer::Page(Box::new(page)))
 }
 
-fn neighbourhood(engine: &mut dyn Engine, at: &str, incoming: bool) -> Result<Answer, Fault> {
+fn neighbourhood(engine: &mut dyn Engine, text: &str, incoming: bool) -> Result<Answer, Fault> {
+    let at = resolve_declaration(engine, text, if incoming { "related" } else { "graph" })?;
+    let at = at.as_str();
     let reply = read(
         engine,
         if incoming {
@@ -641,11 +774,34 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {
+    let admit = |text: String| {
+        backend_library::ProductText::new(text.clone())
+            .map_err(|error| Fault::admission(error, Operand::Argument(text)))
+    };
+    let command = match command {
+        SurfaceCommand::References { target } => SurfaceCommand::References {
+            target: admit(resolve_declaration(engine, target.as_str(), "references")?)?,
+        },
+        SurfaceCommand::Read { locators } => {
+            let mut resolved = Vec::with_capacity(locators.len());
+            for locator in locators {
+                resolved.push(admit(resolve_declaration(
+                    engine,
+                    locator.as_str(),
+                    "read",
+                )?)?);
+            }
+            SurfaceCommand::Read {
+                locators: resolved.into_boxed_slice(),
+            }
+        }
+        other => other.clone(),
+    };
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
     Ok(Answer::Product(Box::new(
-        crate::product_view_for_owned_command(command, reply),
+        crate::product_view_for_owned_command(&command, reply),
     )))
 }
 
@@ -1442,5 +1598,119 @@ mod document_member_paging_controls {
                 "exact original owner cursor was forwarded"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod declaration_resolution_controls {
+    use super::*;
+    use backend_library::{
+        Basis, Cursor, DeclarationKind, Freshness, Frontier, RowId, SourceLocation, ViewRoot,
+        object_version, package_key, symbol_key, view_key, view_state_root,
+    };
+
+    struct Reader {
+        snapshot: ViewSnapshot,
+        calls: usize,
+    }
+    impl Engine for Reader {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            Ok(self.snapshot.root.basis().root)
+        }
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            Err(ClientError::Protocol("not a readiness control".to_owned()))
+        }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol("not a surface control".to_owned()))
+        }
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            assert!(matches!(probe, Probe::Names { .. }));
+            self.calls += 1;
+            Ok(ReplyDto::new(1, CommandReply::Names(self.snapshot.clone())))
+        }
+    }
+    fn reader(paths: &[(&str, u32, &str)], more: bool) -> Reader {
+        let basis = Basis::new(
+            view_state_root(&[]),
+            object_version(b"name resolution source control"),
+        );
+        let package = package_key("/workspace/go");
+        let rows = paths
+            .iter()
+            .map(|(path, line, name)| {
+                let label = format!("/workspace/go::{path}:{line}::{name}");
+                Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
+                    .with_kind(DeclarationKind::Function)
+                    .with_source(SourceLocation::new(path, *line).expect("captured site"))
+            })
+            .collect();
+        let root = ViewRoot::new_incomplete(
+            view_key(b"name control"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("control source rows");
+        let next = more.then(|| Cursor::for_view_root(&root));
+        Reader {
+            snapshot: ViewSnapshot {
+                root,
+                freshness: Freshness::Current,
+                next,
+                graph_relations: None,
+                rich_graph: None,
+            },
+            calls: 0,
+        }
+    }
+    #[test]
+    fn every_coordinate_command_uses_the_same_unique_name_resolution() {
+        for command in ["show", "source", "graph", "related", "references", "read"] {
+            let mut reader = reader(&[("api.go", 3, "Parse")], false);
+            assert_eq!(
+                resolve_declaration(&mut reader, "Parse", command).expect("unique native row"),
+                "/workspace/go::api.go:3::Parse"
+            );
+            assert_eq!(reader.calls, 1);
+        }
+    }
+    #[test]
+    fn a_distinct_test_or_example_declaration_is_never_silently_discarded() {
+        let mut reader = reader(
+            &[("api.go", 3, "Parse"), ("examples/api.go", 6, "Parse")],
+            false,
+        );
+        assert_eq!(
+            resolve_declaration(&mut reader, "Parse", "show")
+                .expect_err("two real declarations")
+                .slug(),
+            crate::FaultSlug::Ambiguous
+        );
+        assert_eq!(
+            resolve_declaration(&mut reader, "api.go:3::Parse", "show")
+                .expect("exact source qualifier"),
+            "/workspace/go::api.go:3::Parse"
+        );
+    }
+    #[test]
+    fn a_continuation_prevents_a_false_unique_result() {
+        let mut reader = reader(&[("api.go", 3, "Parse")], true);
+        assert_eq!(
+            resolve_declaration(&mut reader, "Parse", "show")
+                .expect_err("unseen rows may be distinct")
+                .slug(),
+            crate::FaultSlug::Ambiguous
+        );
+    }
+    #[test]
+    fn exact_coordinates_never_trigger_name_probes_or_rebind() {
+        let mut reader = reader(&[("api.go", 3, "Parse")], false);
+        let coordinate = "/workspace/go::semantic::exact-producer-identity::Parse";
+        assert_eq!(
+            resolve_declaration(&mut reader, coordinate, "show").expect("exact native operand"),
+            coordinate
+        );
+        assert_eq!(reader.calls, 0);
     }
 }

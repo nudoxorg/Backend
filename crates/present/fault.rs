@@ -31,6 +31,8 @@ use core::fmt;
 /// The closed failure classes a surface can render.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FaultSlug {
+    /// Several declarations match, or the admitted page cannot prove uniqueness.
+    Ambiguous,
     /// The requested package, symbol, or document does not exist.
     NotFound,
     /// The request was pinned to a revision the owner has moved past.
@@ -78,6 +80,7 @@ impl FaultSlug {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Ambiguous => "ambiguous",
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
