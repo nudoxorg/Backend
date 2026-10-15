@@ -20,6 +20,15 @@ pub const MAX_COMMAND_BODY: usize = 256 * 1024;
 /// local reply body allowance.
 pub const MAX_REPLY_BODY: usize = 4 * 1024 * 1024;
 
+/// Streams a reply into a fallibly allocated output buffer capped at 4 MiB.
+/// Catalog reply serialization borrows rows, text and certificates.
+///
+/// # Errors
+/// Distinguishes encoded-byte overflow from allocation, arithmetic and wire serialization faults.
+pub fn encode_reply_body_bounded(reply: &ReplyDto) -> Result<Vec<u8>, super::BoundedJsonError> {
+    super::bounded_json::bounded_json(reply, MAX_REPLY_BODY)
+}
+
 /// Deserializes one reply envelope after enforcing the shared encoded-body cap.
 ///
 /// All byte-oriented reply entry points use this before constructing JSON

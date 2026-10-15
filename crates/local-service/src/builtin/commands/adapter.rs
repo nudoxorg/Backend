@@ -67,6 +67,57 @@ fn new_index_owner_epoch() -> [u8; 16] {
 }
 
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
+
+/// Captured from the original pure command before dispatch consumes it.
+#[derive(Clone, Copy)]
+enum CatalogReplyRequest {
+    Names(backend_library::ViewRevision),
+    Search(backend_library::ViewRevision),
+    Graph(backend_library::ViewRevision),
+}
+impl CatalogReplyRequest {
+    fn from_command(command: &Command) -> Option<Self> {
+        match command {
+            Command::Name(query) => Some(Self::Names(query.basis())),
+            Command::Search(query) => Some(Self::Search(query.basis())),
+            Command::GraphPage { page, .. } => Some(Self::Graph(page.basis())),
+            _ => None,
+        }
+    }
+    const fn basis(self) -> backend_library::ViewRevision {
+        match self {
+            Self::Names(basis) | Self::Search(basis) | Self::Graph(basis) => basis,
+        }
+    }
+    fn successful_at_basis(
+        self,
+        reply: &backend_engine::ReplyDto,
+    ) -> Result<bool, BuiltinModelError> {
+        let snapshot = match (self, &reply.reply) {
+            (Self::Names(_), CommandReply::Names(snapshot))
+            | (Self::Search(_), CommandReply::Search(snapshot)) => snapshot,
+            (Self::Graph(_), CommandReply::ProjectionPage(page)) => {
+                if page.terminal == backend_library::PageTerminal::Cancelled {
+                    return Ok(false);
+                }
+                &page.snapshot
+            }
+            (_, CommandReply::Failed(_) | CommandReply::Error(_)) => return Ok(false),
+            _ => {
+                return Err(BuiltinModelError(
+                    "catalog reply changed its requested family".to_owned(),
+                ));
+            }
+        };
+        if !self.basis().matches(snapshot.root.basis().root) {
+            return Err(BuiltinModelError(
+                "catalog reply changed its exact requested revision".to_owned(),
+            ));
+        }
+        Ok(snapshot.freshness == backend_library::Freshness::Current)
+    }
+}
+
 type RegistryAcquisitionReceiver = std::sync::mpsc::Receiver<RegistryAcquisitionMessage>;
 
 enum RegistryAcquisitionMessage {
@@ -4406,12 +4457,7 @@ impl CommandAdapter {
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
-        let catalog_basis = match &request.command {
-            Command::Search(query) => Some(query.basis()),
-            Command::Name(query) => Some(query.basis()),
-            Command::GraphPage { page, .. } => Some(page.basis()),
-            _ => None,
-        };
+        let catalog = CatalogReplyRequest::from_command(&request.command);
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
@@ -4419,31 +4465,49 @@ impl CommandAdapter {
         } else {
             None
         };
-        let encoded = Self::encode(daemon, request_id, admitted, status)?;
-        Self::bound_catalog_reply(request_id, catalog_basis, encoded)
+        Self::encode_with_catalog(daemon, request_id, admitted, status, catalog)
     }
 
     fn bound_catalog_reply(
-        request_id: u64,
-        basis: Option<backend_library::ViewRevision>,
-        encoded: Vec<u8>,
+        catalog: Option<CatalogReplyRequest>,
+        reply: &backend_engine::ReplyDto,
     ) -> Result<Vec<u8>, BuiltinModelError> {
-        let Some(basis) = basis.filter(|_| encoded.len() > backend_library::MAX_REPLY_BODY) else {
-            return Ok(encoded);
+        let Some(catalog) = catalog else {
+            return backend_engine::encode_reply_dto(reply).map_err(BuiltinModelError);
         };
-        backend_engine::encode_reply_dto(&backend_engine::ReplyDto::new(
-            request_id,
-            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis }),
-        ))
-        .map_err(BuiltinModelError)
+        let successful = catalog.successful_at_basis(reply)?;
+        match backend_engine::encode_reply_dto_bounded(reply) {
+            Ok(bytes) => Ok(bytes),
+            Err(backend_library::BoundedJsonError::LimitExceeded { .. }) if successful => {
+                let refused = backend_engine::ReplyDto::new(
+                    reply.request_id,
+                    CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge {
+                        basis: catalog.basis(),
+                    }),
+                );
+                backend_engine::encode_reply_dto_bounded(&refused)
+                    .map_err(|error| BuiltinModelError(error.to_string()))
+            }
+            Err(error) => Err(BuiltinModelError(error.to_string())),
+        }
     }
 
     /// One admitted reply as the wire's reply DTO.
     fn encode(
         daemon: &ProductDaemon,
         request_id: u64,
+        admitted: AdmittedReply,
+        search_status: Option<backend_library::SemanticSearchStatus>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
+        Self::encode_with_catalog(daemon, request_id, admitted, search_status, None)
+    }
+
+    fn encode_with_catalog(
+        daemon: &ProductDaemon,
+        request_id: u64,
         (reply, certificate): AdmittedReply,
         search_status: Option<backend_library::SemanticSearchStatus>,
+        catalog: Option<CatalogReplyRequest>,
     ) -> Result<Vec<u8>, BuiltinModelError> {
         let mut reply = match reply {
             CommandReply::Health(root) => backend_engine::ReplyDto::health(
@@ -4459,7 +4523,7 @@ impl CommandAdapter {
         if let Some(certificate) = certificate {
             reply = reply.with_certificate(certificate);
         }
-        backend_engine::encode_reply_dto(&reply).map_err(BuiltinModelError)
+        Self::bound_catalog_reply(catalog, &reply)
     }
 
     /// Decodes and serves one local semantic range against a fresh Turso head.
@@ -5408,11 +5472,15 @@ impl CommandAdapter {
         }
         vec![(
             pending.ticket,
-            reply
-                .and_then(|reply| Self::encode(daemon, pending.request_id, reply, status))
-                .and_then(|encoded| {
-                    Self::bound_catalog_reply(pending.request_id, Some(query.basis()), encoded)
-                }),
+            reply.and_then(|reply| {
+                Self::encode_with_catalog(
+                    daemon,
+                    pending.request_id,
+                    reply,
+                    status,
+                    Some(CatalogReplyRequest::Search(query.basis())),
+                )
+            }),
         )]
     }
 
@@ -6619,9 +6687,9 @@ fn map_semantic_authority_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, CommandReply, Executed,
-        GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournalError, JournalEntry,
-        MAX_WAITING_COMMANDS, PreparedProductSelection, ProductDaemon,
+        ADD_TARGET_REQUIRED, AddTarget, CatalogReplyRequest, CommandAdapter, CommandReply,
+        Executed, GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournalError,
+        JournalEntry, MAX_WAITING_COMMANDS, PreparedProductSelection, ProductDaemon,
         ProductSemanticPublicationKey, ProfileWorker, ResidentCatalog, ResidentDependencies,
         StoredOperation, StoredOperationState, admitted_project_source_root,
         capture_terminalization_failed, classify_add_target, index_operation_failure,
@@ -6678,51 +6746,186 @@ mod tests {
         }
     }
 
+    fn catalog_reply_fixture(
+        text: &str,
+        family: u8,
+    ) -> (backend_library::Command, backend_library::ReplyDto) {
+        use backend_library::{
+            Cursor, Fragment, Frontier, Library, NameQuery, PageRequest, Query, QueryLimit, Row,
+            RowId, SymbolAddress, ViewRoot, symbol_key, view_key,
+        };
+        let empty = Library::new();
+        let basis = empty.view().basis();
+        let symbol = symbol_key("Thing");
+        let row = Row::new(RowId::Symbol(symbol), basis, "Thing")
+            .with_document(vec![Fragment::Text(text.to_owned())]);
+        let root = ViewRoot::new_incomplete(
+            view_key(b"bounded-encode-catalog"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+            vec![row],
+            empty.view().coverage().to_vec(),
+        )
+        .expect("incomplete source fixture");
+        let library = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+            .expect("real Library catalog");
+        let command = match family {
+            0 => backend_library::Command::Name(NameQuery::new(
+                "Thing",
+                library.revision_root(),
+                QueryLimit::default(),
+            )),
+            1 => backend_library::Command::Search(Query::new(
+                "Thing",
+                library.revision_root(),
+                QueryLimit::default(),
+            )),
+            _ => backend_library::Command::GraphPage {
+                symbol: SymbolAddress::canonical(symbol),
+                page: PageRequest::new(library.revision_root(), QueryLimit::default()),
+            },
+        };
+        let reply = backend_library::ReplyDto::new(
+            7,
+            library
+                .execute(command.clone())
+                .expect("actual catalog selection"),
+        );
+        (command, reply)
+    }
+
     #[test]
     fn catalog_reply_ceiling_is_typed_and_keeps_its_exact_requested_revision() {
-        let root = backend_library::view_state_root(&[]);
-        let basis = root.into();
-        let fitting = vec![0; backend_library::MAX_REPLY_BODY];
-        assert_eq!(
-            CommandAdapter::bound_catalog_reply(7, Some(basis), fitting.clone())
-                .expect("at ceiling"),
-            fitting
+        for family in 0..3 {
+            let (_, empty) = catalog_reply_fixture("", family);
+            let overhead = backend_engine::encode_reply_dto(&empty)
+                .expect("reference overhead")
+                .len();
+            for adjustment in [-1_isize, 0, 1] {
+                let length = backend_library::MAX_REPLY_BODY
+                    .checked_add_signed(adjustment)
+                    .expect("bounded length")
+                    - overhead;
+                let (command, reply) = catalog_reply_fixture(&"a".repeat(length), family);
+                let catalog =
+                    CatalogReplyRequest::from_command(&command).expect("pure catalog request");
+                let reference = backend_engine::encode_reply_dto(&reply)
+                    .expect("reference existing wire bytes");
+                assert_eq!(
+                    reference.len(),
+                    backend_library::MAX_REPLY_BODY
+                        .checked_add_signed(adjustment)
+                        .expect("expected bytes")
+                );
+                let encoded = CommandAdapter::bound_catalog_reply(Some(catalog), &reply)
+                    .expect("bounded response");
+                if adjustment <= 0 {
+                    assert_eq!(
+                        encoded, reference,
+                        "fitting complete catalog bytes remain exact"
+                    );
+                } else {
+                    let refused =
+                        backend_library::decode_reply_body(&encoded).expect("strict typed refusal");
+                    assert_eq!(refused.request_id, reply.request_id);
+                    assert_eq!(
+                        refused.reply,
+                        CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge {
+                            basis: catalog.basis()
+                        })
+                    );
+                    assert!(
+                        backend_library::admit_reply(
+                            &backend_library::CommandDto::new(7, command),
+                            &refused
+                        )
+                        .is_ok()
+                    );
+                    let foreign_root = backend_library::view_state_root(&[(
+                        "other".to_owned(),
+                        "root".to_owned(),
+                    )]);
+                    assert!(!catalog.basis().matches(foreign_root));
+                    let foreign = backend_library::CommandDto::new(
+                        7,
+                        backend_library::Command::Name(backend_library::NameQuery::new(
+                            "Thing",
+                            foreign_root,
+                            backend_library::QueryLimit::default(),
+                        )),
+                    );
+                    assert!(backend_library::admit_reply(&foreign, &refused).is_err());
+                    let unrelated =
+                        backend_library::CommandDto::new(7, backend_library::Command::Health);
+                    assert!(backend_library::admit_reply(&unrelated, &refused).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_encoder_does_not_relabel_wrong_basis_mutations_or_serializer_failures() {
+        let (command, reply) =
+            catalog_reply_fixture(&"\"\\\n".repeat(backend_library::MAX_REPLY_BODY / 2), 0);
+        let catalog = CatalogReplyRequest::from_command(&command).expect("catalog");
+        let wrong = CatalogReplyRequest::Names(backend_library::ViewRevision::from_bytes([3; 32]));
+        assert!(
+            CommandAdapter::bound_catalog_reply(Some(wrong), &reply).is_err(),
+            "wrong source is not a size refusal"
         );
-        let encoded = CommandAdapter::bound_catalog_reply(
-            7,
-            Some(basis),
-            vec![0; backend_library::MAX_REPLY_BODY + 1],
-        )
-        .expect("bounded refusal");
-        let reply = backend_library::decode_reply_body(&encoded).expect("strict typed refusal");
-        assert_eq!(reply.request_id, 7);
-        assert_eq!(
-            reply.reply,
-            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis })
+        let changed_family = CatalogReplyRequest::Search(catalog.basis());
+        assert!(CommandAdapter::bound_catalog_reply(Some(changed_family), &reply).is_err());
+        let mut stale = reply.clone();
+        if let CommandReply::Names(snapshot) = &mut stale.reply {
+            snapshot.freshness = backend_library::Freshness::Stale {
+                observed: backend_library::view_state_root(&[]),
+            };
+        }
+        assert!(
+            CommandAdapter::bound_catalog_reply(Some(catalog), &stale).is_err(),
+            "stale observation must not become a size retry"
         );
-        let command = backend_library::CommandDto::new(
+        let (graph_command, mut cancelled) =
+            catalog_reply_fixture(&"x".repeat(backend_library::MAX_REPLY_BODY), 2);
+        if let CommandReply::ProjectionPage(page) = &mut cancelled.reply {
+            page.terminal = backend_library::PageTerminal::Cancelled;
+        }
+        assert!(
+            CommandAdapter::bound_catalog_reply(
+                CatalogReplyRequest::from_command(&graph_command),
+                &cancelled
+            )
+            .is_err(),
+            "cancelled page must not become a size retry"
+        );
+        let invalid = reply.with_health_cursor(backend_library::Cursor::new());
+        assert!(
+            CommandAdapter::bound_catalog_reply(Some(catalog), &invalid).is_err(),
+            "serialization error is not a size refusal"
+        );
+        let failed = backend_library::ReplyDto::new(
             7,
-            backend_library::Command::Name(backend_library::NameQuery::new(
-                "Thing",
-                root,
-                backend_library::QueryLimit::default(),
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                "x".repeat(backend_library::MAX_REPLY_BODY),
             )),
         );
-        assert!(backend_library::admit_reply(&command, &reply).is_ok());
-        let foreign_root =
-            backend_library::view_state_root(&[("other".to_owned(), "root".to_owned())]);
-        assert_ne!(root, foreign_root);
-        let foreign = backend_library::CommandDto::new(
-            7,
-            backend_library::Command::Name(backend_library::NameQuery::new(
-                "Thing",
-                foreign_root,
-                backend_library::QueryLimit::default(),
-            )),
+        assert!(
+            CommandAdapter::bound_catalog_reply(Some(catalog), &failed).is_err(),
+            "an application failure must not become ReplyTooLarge"
         );
-        assert!(backend_library::admit_reply(&foreign, &reply).is_err());
-        let unrelated = backend_library::CommandDto::new(7, backend_library::Command::Health);
-        assert!(backend_library::admit_reply(&unrelated, &reply).is_err());
+        let mutation = backend_library::Command::Remove {
+            package: backend_library::package_key("mutation"),
+        };
+        let witness = CatalogReplyRequest::from_command(&mutation);
+        assert!(
+            witness.is_none(),
+            "mutations never receive catalog retry authority"
+        );
+        assert_eq!(
+            CommandAdapter::bound_catalog_reply(witness, &failed)
+                .expect("unchanged noncatalog route"),
+            backend_engine::encode_reply_dto(&failed).expect("existing mutation failure bytes")
+        );
     }
 
     #[test]

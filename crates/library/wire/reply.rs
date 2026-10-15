@@ -16,6 +16,8 @@ use super::reply_graph_query::{
 use super::reply_page::{
     PageTerminalWire, ProjectionPageWire, page_from_wire as projection_page_from_wire,
 };
+#[path = "reply_catalog.rs"]
+mod reply_catalog;
 #[path = "reply_semantic_shape.rs"]
 mod reply_semantic_shape;
 use super::{
@@ -227,6 +229,12 @@ impl Serialize for ReplyDto {
             return Err(serde::ser::Error::custom(
                 "semantic search status attached to a non-search reply",
             ));
+        }
+        if matches!(
+            &self.reply,
+            CommandReply::Names(_) | CommandReply::Search(_) | CommandReply::ProjectionPage(_)
+        ) {
+            return reply_catalog::serialize(self, serializer);
         }
         let reply = reply_to_wire(&self.reply).map_err(serde::ser::Error::custom)?;
         ReplyEnvelope {
