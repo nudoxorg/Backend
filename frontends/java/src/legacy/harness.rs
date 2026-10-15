@@ -789,6 +789,10 @@ impl HarnessError {
     /// Classifies failures that permit the caller to report an unavailable release.
     pub fn unavailable_cause(&self) -> Option<UnavailableCause> {
         match self {
+            // Missing dependencies are a strict javac compilation refusal too.
+            // Explicit release alternatives retain this exact typed failure;
+            // direct image callers still receive UnresolvedDependencies.
+            Self::UnresolvedDependencies { .. } => Some(UnavailableCause::Compilation),
             Self::Command {
                 command, status, ..
             } if command.contains("nudox.oracle.CompilerExtractor") => Some(match status.code() {
