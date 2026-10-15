@@ -1,11 +1,21 @@
-//! Authenticated read recovery; durable starts reconcile their saved key once.
+//! Authenticated read recovery; durable starts reconcile only their saved key.
 
 use backend_client::{
-    ClientError, IndexJournalDispatch, JournaledIndexStart, RequestContext, Session,
+    Backoff, ClientError, IndexJournalDispatch, JournaledIndexStart, RequestContext, Session,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
 use backend_runtime::WorkspacePaths;
-use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// First pause after the owner connection is lost; doubles up to the ceiling.
+const BACKOFF_FIRST: Duration = Duration::from_millis(25);
+/// Ceiling for dialing a replacement: a dying owner closes within a moment.
+const REPLACEMENT_BACKOFF_CEILING: Duration = Duration::from_millis(500);
+/// Ceiling while re-observing a saved key: a restarting owner may take longer.
+const REOBSERVE_BACKOFF_CEILING: Duration = Duration::from_secs(1);
+/// Cancellation and deadline are observed at least this often during a pause.
+const PAUSE_SLICE: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy)]
 pub(crate) enum RecoverableRead {
@@ -62,7 +72,7 @@ impl OwnerRecovery {
             .read_deadline(backend_runtime::COMMAND_STARTUP_TIMEOUT)?;
         let mut session = match Session::connect_with_context(endpoint, self.scope.clone()) {
             Ok(session) => session,
-            Err(error) if is_peer_loss(&error) => {
+            Err(error) if error.is_connection_lost() => {
                 self.used = true;
                 (self.connect)(self.scope.clone())?
             }
@@ -91,13 +101,12 @@ impl OwnerRecovery {
             }
         }
         session.set_request_context(Some(context.clone()))?;
-        let result = (|| match read(session) {
-            Err(error) if !self.used && is_peer_loss(&error) => {
-                self.replace(session, context.clone())?;
-                read(session)
+        let result = match read(session) {
+            Err(error) if error.is_connection_lost() => {
+                self.replace_and_repeat(session, &context, &mut read)
             }
             result => result,
-        })();
+        };
         let detached = session.set_request_context(None);
         context.finish();
         detached?;
@@ -169,7 +178,10 @@ impl OwnerRecovery {
         );
         let result = match (held_start, &command, result) {
             (Some(_), SurfaceCommand::IndexOperationStart { operation_key, .. }, Err(cause))
-                if !matches!(cause, ClientError::RequestCancelled(_) | ClientError::CommandFailed(_)) =>
+                if !matches!(
+                    cause,
+                    ClientError::RequestCancelled(_) | ClientError::CommandFailed(_)
+                ) =>
             {
                 Err(ClientError::IndexOperationDeliveryUnknown {
                     operation_key: *operation_key,
@@ -202,7 +214,7 @@ impl OwnerRecovery {
         if status_read && let Some(scope) = context {
             return self.reobserve_saved_operation(session, command, scope, error);
         }
-        if self.used || !is_peer_loss(&error) || !(durable_start || status_read) {
+        if !error.is_connection_lost() || !(durable_start || status_read) {
             return Err(
                 if !durable_start
                     && backend_library::command_spec(command.id()).mutation
@@ -226,11 +238,13 @@ impl OwnerRecovery {
                 "owner replacement requires the original command scope".to_owned(),
             )
         })?;
-        self.replace(session, scope)?;
-        if let Some(start) = held_start {
-            start.reconcile_after_reconnect(|command| session.surface(command))
-        } else {
-            session.surface(command)
+        match held_start {
+            Some(start) => self.replace_and_repeat(session, &scope, |session| {
+                start.reconcile_after_reconnect(|command| session.surface(command))
+            }),
+            None => {
+                self.replace_and_repeat(session, &scope, |session| session.surface(command.clone()))
+            }
         }
     }
 
@@ -244,25 +258,20 @@ impl OwnerRecovery {
         scope: &RequestContext,
         mut error: ClientError,
     ) -> Result<SurfaceReply, ClientError> {
+        let mut backoff = pacing(REOBSERVE_BACKOFF_CEILING);
         loop {
             scope.check()?;
-            if !is_peer_loss(&error) {
+            if !is_owner_gap(&error) {
                 return Err(error);
             }
-            // Pace repeated immediate peer loss without resetting the deadline;
-            // cancellation remains observable during the reconnect backoff.
-            for _ in 0..4 {
-                let remaining = scope.remaining_read_budget()?.ok_or_else(|| {
-                    ClientError::Protocol(
-                        "saved-key re-observation requires the original bounded scope".to_owned(),
-                    )
-                })?;
-                std::thread::sleep(remaining.min(std::time::Duration::from_millis(25)));
-            }
-            scope.check()?;
+            // Pace repeated loss without resetting the deadline; cancellation
+            // remains observable during the backoff. A frame-budget retirement
+            // pays only the first step, while an owner that is restarting
+            // backs off toward the ceiling until the original scope ends.
+            pause(&mut backoff, scope)?;
             match self.replace(session, scope.clone()) {
                 Ok(()) => {}
-                Err(next) if is_peer_loss(&next) => {
+                Err(next) if is_owner_gap(&next) => {
                     error = next;
                     continue;
                 }
@@ -271,6 +280,30 @@ impl OwnerRecovery {
             match session.surface(command.clone()) {
                 Ok(reply) => return Ok(reply),
                 Err(next) => error = next,
+            }
+        }
+    }
+
+    /// Replaces the connection and repeats an idempotent `attempt` on it,
+    /// again on a fresh connection each time the replacement is itself lost.
+    ///
+    /// A replacement can be the last connection a dying owner accepts: its
+    /// listener outlives the dial for a moment and then closes, so the first
+    /// request on it is lost too. That is not an answer. The attempt is a read
+    /// or a same-key reconciliation, which any number of repeats leaves
+    /// unchanged, and the loop ends at the request scope.
+    fn replace_and_repeat<T>(
+        &mut self,
+        session: &mut Session,
+        scope: &RequestContext,
+        mut attempt: impl FnMut(&mut Session) -> Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
+        let mut backoff = pacing(REPLACEMENT_BACKOFF_CEILING);
+        loop {
+            self.replace(session, scope.clone())?;
+            match attempt(session) {
+                Err(error) if error.is_connection_lost() => pause(&mut backoff, scope)?,
+                result => return result,
             }
         }
     }
@@ -319,20 +352,39 @@ impl Drop for OwnerRecovery {
     }
 }
 
-/// Peer teardown/absence, not a slow response or malformed authority/proof.
-fn is_peer_loss(error: &ClientError) -> bool {
-    matches!(
-        error,
-        ClientError::Disconnected(
-            ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::BrokenPipe
-                | ErrorKind::NotConnected
-                | ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionRefused
-                | ErrorKind::NotFound
-        )
-    )
+/// A gap in owner availability that a bounded wait can cross: the connection
+/// was lost, an owner candidate is still starting, or the live owner did not
+/// answer inside its read window. None of these says anything about a
+/// command's outcome, so a keyed status read (which changes nothing) may
+/// simply ask again on a fresh connection to the *existing* listener. A slow
+/// owner is never replaced: only an absent one is (`connect_replacement_with`).
+fn is_owner_gap(error: &ClientError) -> bool {
+    error.is_owner_gap()
+}
+
+fn pacing(ceiling: Duration) -> Backoff {
+    Backoff::new(BACKOFF_FIRST, ceiling)
+}
+
+/// Sleeps for the next step of `backoff`. The step never outlasts the scope's
+/// remaining budget, and cancellation and the deadline are observed
+/// throughout, so a pause can only end in `Ok` or in the scope's own terminal
+/// error.
+fn pause(backoff: &mut Backoff, scope: &RequestContext) -> Result<(), ClientError> {
+    let step = backoff.step();
+    let started = Instant::now();
+    loop {
+        let remaining = scope.remaining_read_budget()?.ok_or_else(|| {
+            ClientError::Protocol(
+                "owner replacement requires the original bounded request scope".to_owned(),
+            )
+        })?;
+        let left = step.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(remaining).min(PAUSE_SLICE));
+    }
 }
 
 fn connect_replacement(
@@ -341,60 +393,108 @@ fn connect_replacement(
     context: RequestContext,
     progress: Option<std::sync::mpsc::SyncSender<String>>,
 ) -> Result<Session, ClientError> {
+    connect_replacement_with(
+        &context,
+        paths.endpoint(),
+        |endpoint| Session::connect_with_context(endpoint, context.clone()),
+        || bootstrap_owner(paths, passive, &context, progress.as_ref()),
+    )
+}
+
+/// Reaches an authenticated owner, starting one only when none is present.
+///
+/// A killed owner leaves its socket file, and the kernel keeps a dying owner's
+/// listener open for a moment while it tears down: a dial can be accepted by
+/// it (even the raw readiness probe is) and then end in a reset or end of
+/// file, and only a later dial is refused. So every connection-lost outcome,
+/// at any of the three dials below, is a state to wait out and observe again,
+/// never a verdict. Only a dial that is *refused* (`is_owner_absent`) proves
+/// no owner is listening and so authorizes `bootstrap`. Slow or busy
+/// listeners (`TimedOut`/`WouldBlock`) are not lost connections: they remain
+/// the owner and never authorize another candidate. The loop ends at the
+/// request scope, which bounds every wait.
+fn connect_replacement_with(
+    context: &RequestContext,
+    endpoint: &Path,
+    mut dial: impl FnMut(&Path) -> Result<Session, ClientError>,
+    mut bootstrap: impl FnMut() -> Result<PathBuf, ClientError>,
+) -> Result<Session, ClientError> {
+    // The loop below is bounded only by this scope, so it must have one.
+    context.remaining_read_budget()?.ok_or_else(|| {
+        ClientError::Protocol(
+            "owner replacement requires the original bounded request scope".to_owned(),
+        )
+    })?;
+    let mut backoff = pacing(REPLACEMENT_BACKOFF_CEILING);
+    loop {
+        context.check()?;
+        // Authenticate the existing listener first. A healthy owner can retire
+        // a bounded connection while continuing its compile.
+        let outcome = match dial(endpoint) {
+            Ok(session) => return Ok(session),
+            Err(error) if error.is_owner_absent() => {
+                context.check()?;
+                bootstrap().and_then(|ready| dial(&ready))
+            }
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok(session) => return Ok(session),
+            Err(error) if error.is_connection_lost() => pause(&mut backoff, context)?,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Starts (or, when `passive`, only finds) the owner for an absent endpoint.
+fn bootstrap_owner(
+    paths: &WorkspacePaths,
+    passive: bool,
+    context: &RequestContext,
+    progress: Option<&std::sync::mpsc::SyncSender<String>>,
+) -> Result<PathBuf, ClientError> {
     context.check()?;
     let remaining = context.remaining_read_budget()?.ok_or_else(|| {
         ClientError::Protocol(
             "owner replacement requires the original bounded request scope".to_owned(),
         )
     })?;
-    // Authenticate the existing listener first. A healthy owner can retire
-    // a bounded connection while continuing its compile. Slow/busy listeners
-    // (WouldBlock/TimedOut) never authorize another owner candidate.
-    match Session::connect_with_context(paths.endpoint(), context.clone()) {
-        Ok(session) => return Ok(session),
-        Err(ClientError::Disconnected(ErrorKind::ConnectionRefused | ErrorKind::NotFound)) => {}
-        Err(error) => return Err(error),
+    if passive {
+        return backend_runtime::connect_existing_locald(paths)
+            .map_err(|error| ClientError::Startup(error.into()));
     }
-    let endpoint = if passive {
-        backend_runtime::connect_existing_locald(paths)
-            .map_err(|error| ClientError::Startup(error.into()))?
-    } else {
-        #[cfg(unix)]
-        {
-            match backend_runtime::start_locald_cancellable(
-                paths,
-                remaining.min(backend_runtime::COMMAND_STARTUP_TIMEOUT),
-                |phase| {
-                    if let Some(progress) = &progress {
-                        let _ = progress.try_send(format!("local startup: {}", phase.as_str()));
-                    }
-                },
-                || context.check().is_ok(),
-            )
-            .map_err(|error| ClientError::Startup(error.into()))?
-            {
-                backend_runtime::LocaldStartup::Ready(endpoint) => endpoint,
-                backend_runtime::LocaldStartup::Pending(pending) => {
-                    context.check()?;
-                    return Err(ClientError::Startup(
-                        backend_runtime::RuntimeError::StartupPending(pending).into(),
-                    ));
+    #[cfg(unix)]
+    {
+        match backend_runtime::start_locald_cancellable(
+            paths,
+            remaining.min(backend_runtime::COMMAND_STARTUP_TIMEOUT),
+            |phase| {
+                if let Some(progress) = progress {
+                    let _ = progress.try_send(format!("local startup: {}", phase.as_str()));
                 }
+            },
+            || context.check().is_ok(),
+        )
+        .map_err(|error| ClientError::Startup(error.into()))?
+        {
+            backend_runtime::LocaldStartup::Ready(endpoint) => Ok(endpoint),
+            backend_runtime::LocaldStartup::Pending(pending) => {
+                context.check()?;
+                Err(ClientError::Startup(
+                    backend_runtime::RuntimeError::StartupPending(pending).into(),
+                ))
             }
         }
-        #[cfg(not(unix))]
-        {
-            // Do not promise a cancellable bootstrap on a platform whose
-            // existing owner setup remains synchronous. Authenticate an
-            // already available replacement without launching another owner.
-            let _ = remaining;
-            let _ = progress;
-            backend_runtime::connect_existing_locald(paths)
-                .map_err(|error| ClientError::Startup(error.into()))?
-        }
-    };
-    context.check()?;
-    Session::connect_with_context(endpoint, context)
+    }
+    #[cfg(not(unix))]
+    {
+        // Do not promise a cancellable bootstrap on a platform whose
+        // existing owner setup remains synchronous. Authenticate an
+        // already available replacement without launching another owner.
+        let _ = (remaining, progress);
+        backend_runtime::connect_existing_locald(paths)
+            .map_err(|error| ClientError::Startup(error.into()))
+    }
 }
 
 #[cfg(all(test, unix))]

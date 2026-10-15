@@ -472,10 +472,8 @@ fn admit_projection_page(
 fn page_recipe(command: &Command) -> Option<Vec<u8>> {
     match command {
         Command::PackagePage(_) => Some(b"packages-page".to_vec()),
-        Command::OutlinePage { package, .. } => {
-            let mut recipe = b"outline-page-v2".to_vec();
-            recipe.extend_from_slice(package.as_bytes());
-            Some(recipe)
+        Command::OutlinePage { package, page } => {
+            Some(crate::catalog::outline_page_recipe(*package, page.limit()))
         }
         Command::GraphPage { symbol, .. } => {
             let mut recipe = b"graph-page".to_vec();

@@ -25,7 +25,7 @@
 
 use crate::assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, record_list,
-    shelf_from_snapshot,
+    shelf_from_snapshot, shelf_from_snapshot_with_health,
 };
 use crate::call::Request;
 use crate::fault::{Affordance, Fault, Operand};
@@ -314,11 +314,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::ResumeQuery { query, cursor } => {
             if !matches!(
                 query.as_ref(),
-                Request::Search { .. } | Request::Resolve { .. }
+                Request::Search { .. } | Request::Resolve { .. } | Request::OutlinePage { .. }
             ) {
                 return Err(Fault::usage(
                     "cursor",
-                    "only search and names have portable query continuations",
+                    "only search, names and bounded outlines have portable query continuations",
                 ));
             }
             let continuation = engine.prepare_query_continuation(cursor).map_err(|error| {
@@ -501,10 +501,16 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let CommandReply::Packages(snapshot) = reply.reply else {
         return Err(shape("packages"));
     };
-    Ok(Answer::Shelf(Box::new(shelf_from_snapshot(
-        &snapshot,
-        KeyTag::from_key(revision.as_bytes()),
-    ))))
+    let tag = KeyTag::from_key(revision.as_bytes());
+    // The packages reply carries the lane coverage of its revision but only
+    // package rows, so it cannot say how many rows the owner published. The
+    // health report can. Read it so `packages` and `status` print the same
+    // count; if it is unavailable or describes another revision, the shelf
+    // reports the count as unread rather than inventing one.
+    Ok(Answer::Shelf(Box::new(match engine.health() {
+        Ok(health) => shelf_from_snapshot_with_health(&snapshot, tag, &health),
+        Err(_) => shelf_from_snapshot(&snapshot, tag),
+    })))
 }
 
 /// Reads the whole engine state, without naming the caller's project.

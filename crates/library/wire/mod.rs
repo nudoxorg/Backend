@@ -72,7 +72,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 30 adds independent catalog delivery
-/// windows, authenticated predecessor spans, and a typed native reply ceiling.
-/// Persisted owner snapshots, certificates and compact events are unchanged.
-pub const DTO_VERSION: u16 = 30;
+/// Current matched-client transport cohort. Version 31 adds settled `Gapped`
+/// lane coverage and bounded compiler cause details. Version 30 catalog windows
+/// and predecessor spans remain strict; live peers must upgrade together.
+/// The view journal container stays version 3 and retains historical bytes.
+pub const DTO_VERSION: u16 = 31;

@@ -257,6 +257,10 @@ pub(super) fn encode_metadata(value: &ViewMetadata, out: &mut Vec<u8>) {
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
             }
+            Coverage::Gapped { lane } => {
+                out.push(3);
+                out.push(lane_tag(*lane));
+            }
             Coverage::Unavailable { lane, reason } => {
                 out.push(2);
                 out.push(match lane {
@@ -322,6 +326,10 @@ fn append_coverage(out: &mut Vec<u8>, coverage: &[Coverage]) {
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
             }
+            Coverage::Gapped { lane } => {
+                out.push(3);
+                out.push(lane_tag(*lane));
+            }
             Coverage::Unavailable { lane, reason } => {
                 out.push(2);
                 out.push(match lane {
@@ -370,3 +378,37 @@ pub(crate) fn view_identity_preimage(parts: &[&[u8]]) -> Vec<u8> {
 /// claim before deciding whether it is a key, version, root, or delta.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IdentityMarker<T>(PhantomData<fn() -> T>);
+
+#[cfg(test)]
+mod coverage_cohort_tests {
+    use super::*;
+
+    #[test]
+    fn settled_gaps_keep_every_historical_coverage_byte_and_use_a_new_tag() {
+        let mut old = Vec::new();
+        append_coverage(
+            &mut old,
+            &[
+                Coverage::Complete,
+                Coverage::Partial {
+                    lane: crate::Lane::Semantic,
+                    completed: 2,
+                    total: 7,
+                },
+                Coverage::Unavailable {
+                    lane: crate::Lane::Graph,
+                    reason: crate::Reason::Incomplete,
+                },
+            ],
+        );
+        assert_eq!(old, [0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 3, 0, 2, 0, 7, 2, 2, 4]);
+        let mut gap = Vec::new();
+        append_coverage(
+            &mut gap,
+            &[Coverage::Gapped {
+                lane: crate::Lane::Semantic,
+            }],
+        );
+        assert_eq!(gap, [0, 0, 0, 0, 0, 0, 0, 1, 3, 3]);
+    }
+}

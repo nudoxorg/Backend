@@ -830,7 +830,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[],
+        options: &[LIMIT, CURSOR],
         when: "Use to learn a package's shape before searching it, when you do not yet know what to search for.",
     },
     CommandGrammar {

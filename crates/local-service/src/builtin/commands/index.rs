@@ -636,6 +636,7 @@ pub(super) fn finish_index_scan(
             };
             if defer && owner_cluster.is_none() {
                 return prepare_deferred_compile(
+                    &daemon.engine().daemon().owner().snapshot(),
                     package,
                     &label,
                     project_key,
@@ -2139,6 +2140,7 @@ impl DeferredIndex {
 /// the in-place local route does (`compile_semantic_publications` with no
 /// compiler cluster), stopping short of the compile itself.
 fn prepare_deferred_compile(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     project_key: [u8; 32],
@@ -2163,6 +2165,8 @@ fn prepare_deferred_compile(
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
+    let structural_only =
+        take_structural_only_profiles(snapshot, context, observations, &mut by_profile)?;
     let mut profiles = Vec::with_capacity(by_profile.len());
     for (profile, sources) in by_profile {
         let mut attempt_for_error = None;
@@ -2278,7 +2282,7 @@ fn prepare_deferred_compile(
         expected_profiles,
         completed_profiles: 0,
         captures,
-        semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
+        semantic_changes: structural_only,
         capture_publications: Vec::with_capacity(expected_profiles),
         cargo_alias_observations: BTreeMap::new(),
         refused_profiles: BTreeMap::new(),
@@ -2831,6 +2835,150 @@ fn compiler_exact_witness_is_current_for_snapshot(
     })
 }
 
+/// Selects a missing incidental compiler without deleting its captured scope.
+/// Only a strict minority with no retained generation may stay structural.
+fn structural_only_profiles(
+    candidates: &BTreeSet<LanguageProfile>,
+    counts: &BTreeMap<LanguageProfile, u64>,
+    prior: &BTreeSet<LanguageProfile>,
+    absent: impl Fn(LanguageProfile) -> bool,
+    admitted: impl Fn(LanguageProfile) -> bool,
+) -> BTreeSet<LanguageProfile> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|profile| {
+            absent(*profile)
+                && !prior.contains(profile)
+                && counts.get(profile).is_some_and(|count| {
+                    counts.iter().any(|(other, larger)| {
+                        other != profile && admitted(*other) && larger > count
+                    })
+                })
+        })
+        .collect()
+}
+
+fn take_structural_only_profiles(
+    snapshot: &WorkspaceSnapshot,
+    context: &SemanticCompilationContext<'_>,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    sources: &mut BTreeMap<LanguageProfile, Vec<OwnedPackageSource>>,
+) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
+    use backend_engine::application::LocalCompilerCapabilityState as State;
+    let candidates = sources.keys().copied().collect::<BTreeSet<_>>();
+    let counts = observations
+        .iter()
+        .filter_map(|(profile, receipt)| match receipt.observation().value() {
+            backend_extension_turso::SourceObservationValue::KnownCount(count) => {
+                Some((*profile, *count))
+            }
+            _ => None,
+        })
+        .collect();
+    let capabilities = context.compiler.capabilities();
+    let mut prior = BTreeSet::new();
+    for profile in &candidates {
+        if selected_semantic_binding_for_snapshot(
+            snapshot,
+            context.package,
+            context.package_reference.as_str(),
+            context.coordinate,
+            *profile,
+        )?
+        .is_some()
+        {
+            prior.insert(*profile);
+        }
+    }
+    let skipped = structural_only_profiles(
+        &candidates,
+        &counts,
+        &prior,
+        |profile| {
+            let capability = capabilities.for_profile(profile);
+            capability.state() == State::Unavailable
+                && capability.setup_issue().is_some_and(|issue| {
+                    issue.failure == backend_library::interface::CompilerToolFailure::Missing
+                })
+        },
+        |profile| {
+            matches!(
+                capabilities.for_profile(profile).state(),
+                State::Ready | State::Deferred
+            )
+        },
+    );
+    let mut changes = Vec::with_capacity(skipped.len());
+    for profile in skipped {
+        let coordinate = super::super::compiler_scope::semantic_coordinate(
+            context.package,
+            profile,
+            context.coordinate,
+        )?;
+        let key = ProductSemanticPublicationKey::new(
+            context.package_reference.clone(),
+            coordinate,
+            profile,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+        // Keep the original Pending capture and exact source tuple. Completion
+        // turns this explicit unavailable selection into a terminal Toolchain
+        // gap; another successful profile makes the project ready (partial).
+        changes.push(BuiltinSemanticChange {
+            key,
+            after: Some(ProductSemanticPublicationRecord::Unavailable(
+                backend_engine::builtin::SemanticUnavailableReason::Toolchain,
+            )),
+        });
+        sources.remove(&profile);
+        eprintln!(
+            "locald: {} sources remain structurally readable; incidental compiler is not configured",
+            profile.language().name()
+        );
+    }
+    Ok(changes)
+}
+
+#[cfg(test)]
+mod structural_only_profile_tests {
+    use super::*;
+    use backend_semantic::vocabulary::{PythonVersion, TypeScriptSource};
+    const PYTHON: LanguageProfile = LanguageProfile::Python(PythonVersion::Python313);
+    const SCRIPT: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+
+    fn decide(
+        counts: &[(LanguageProfile, u64)],
+        absent: &[LanguageProfile],
+        prior: &[LanguageProfile],
+        broken: &[LanguageProfile],
+    ) -> BTreeSet<LanguageProfile> {
+        let counts = counts.iter().copied().collect::<BTreeMap<_, _>>();
+        structural_only_profiles(
+            &counts.keys().copied().collect(),
+            &counts,
+            &prior.iter().copied().collect(),
+            |profile| absent.contains(&profile),
+            |profile| !absent.contains(&profile) && !broken.contains(&profile),
+        )
+    }
+    #[test]
+    fn only_an_absent_minority_without_a_prior_generation_degrades() {
+        assert_eq!(
+            decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[], &[]),
+            BTreeSet::from([SCRIPT])
+        );
+        for counts in [[(PYTHON, 2), (SCRIPT, 2)], [(PYTHON, 2), (SCRIPT, 27)]] {
+            assert!(decide(&counts, &[SCRIPT], &[], &[]).is_empty());
+        }
+        assert!(decide(&[(SCRIPT, 2)], &[SCRIPT], &[], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[SCRIPT], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT, PYTHON], &[], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[], &[PYTHON]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[], &[], &[]).is_empty());
+    }
+}
+
 fn profiles_requiring_compilation(
     live: &BTreeSet<LanguageProfile>,
     lost: &BTreeSet<LanguageProfile>,
@@ -3044,7 +3192,11 @@ fn compile_semantic_publications_for_snapshot(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-    let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
+    let mut changes = if owner_cluster.is_none() {
+        take_structural_only_profiles(snapshot, context, observations, &mut by_profile)?
+    } else {
+        Vec::with_capacity(by_profile.len().saturating_mul(2))
+    };
     let mut completions = Vec::with_capacity(by_profile.len());
     let mut refused_profiles = BTreeMap::new();
     let mut cargo_alias_observations = Vec::new();

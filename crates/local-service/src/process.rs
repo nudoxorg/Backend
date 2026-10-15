@@ -1022,11 +1022,27 @@ impl ProcessConfig {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, ProcessError> {
         let runtime_policy_value = std::env::var_os(RUNTIME_POLICY_ENV);
         let compiler_environment_value = std::env::var_os(COMPILER_ENVIRONMENT_ENV);
-        Self::parse_with_environment_values(
+        let mut config = Self::parse_with_environment_values(
             args,
             runtime_policy_value.as_deref(),
             compiler_environment_value.as_deref(),
-        )
+        )?;
+        config.apply_connection_frame_budget(
+            std::env::var(backend_client::CONNECTION_FRAME_BUDGET_ENV)
+                .ok()
+                .as_deref(),
+        );
+        Ok(config)
+    }
+
+    /// Applies the hidden [`backend_client::CONNECTION_FRAME_BUDGET_ENV`] test
+    /// hook, which lowers the per-connection frame budget so connection
+    /// retirement can be exercised deterministically on real binaries. Only a
+    /// nonzero integer takes effect; anything else keeps the default.
+    fn apply_connection_frame_budget(&mut self, value: Option<&str>) {
+        if let Some(budget) = backend_client::parse_connection_frame_budget(value) {
+            self.listener.limits.max_frames_per_connection = budget;
+        }
     }
 
     #[cfg(test)]
@@ -1514,16 +1530,45 @@ pub fn run_with_owner<O: OwnerService + 'static>(
     owner: O,
     config: ProcessConfig,
 ) -> Result<RunReport, ProcessError> {
+    serve(owner, config, false)
+}
+
+/// Binds the listener and runs it to shutdown. `own_process` is for the
+/// daemon process itself: it routes SIGTERM and SIGINT to a graceful stop
+/// instead of leaving the default action to end the process mid-flight. An
+/// embedding host that keeps running afterwards must not claim its signals.
+fn serve<O: OwnerService + 'static>(
+    owner: O,
+    config: ProcessConfig,
+    own_process: bool,
+) -> Result<RunReport, ProcessError> {
     let service =
         LocaldService::new(owner, config.listener.limits).map_err(ProcessError::Protocol)?;
     let mut listener =
         UnixListenerService::bind(service, config.listener).map_err(ProcessError::Listener)?;
-    listener.run().map_err(ProcessError::Listener)
+    // Held until the run loop has returned and the listener has dropped, so a
+    // signal arriving during an orderly shutdown cannot force an exit that
+    // would skip unlinking the endpoint.
+    #[cfg(unix)]
+    let _termination = own_process
+        .then(|| {
+            crate::termination::install(
+                listener.shutdown_handle(),
+                crate::termination::TERMINATION_GRACE,
+            )
+            .ok()
+        })
+        .flatten();
+    #[cfg(not(unix))]
+    let _ = own_process;
+    let report = listener.run().map_err(ProcessError::Listener);
+    drop(listener);
+    report
 }
 
 /// Returns the process exit status for an already-composed owner service.
 pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -> ExitCode {
-    match run_with_owner(owner, config) {
+    match serve(owner, config, true) {
         Ok(_) => ExitCode::SUCCESS,
         Err(ProcessError::Help) => {
             print_help();
@@ -1749,6 +1794,30 @@ mod tests {
             None,
             value,
         )
+    }
+
+    #[test]
+    fn connection_frame_budget_hook_overrides_only_with_a_nonzero_integer() {
+        let base = || parse_config_with_compiler_environment_value(None).expect("config");
+        let default = base().listener.limits.max_frames_per_connection;
+        assert_eq!(default, backend_client::DEFAULT_CONNECTION_FRAME_BUDGET);
+        for (value, expected) in [
+            (Some("8"), 8),
+            (Some(" 16 "), 16),
+            (Some("0"), default),
+            (Some("-1"), default),
+            (Some("many"), default),
+            (Some(""), default),
+            (None, default),
+        ] {
+            let mut config = base();
+            config.apply_connection_frame_budget(value);
+            assert_eq!(
+                config.listener.limits.max_frames_per_connection, expected,
+                "{value:?}"
+            );
+            assert!(config.listener.validate().is_ok(), "{value:?}");
+        }
     }
 
     fn empty_compiler_environment_snapshot() -> ClosedLocalHostEnvironmentSnapshot {

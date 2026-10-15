@@ -8,13 +8,32 @@
 //! a single `~lanes` line:
 //!
 //! ```text
-//! ~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured
+//! ~lanes exact✓12 names✓12 graph◐3/7 semantic✓12
 //! ```
+//!
+//! A lane that finished and published readable rows while explicit source gaps
+//! remain (sources the configured compiler program excludes, or a profile that
+//! was refused while another published) renders `◐ partial`. It is a settled
+//! statement, unlike the moving `◐3/7` fraction of a lane still being built,
+//! and the two never share a word: `indexing` means work is running,
+//! `partial` means it finished and left gaps.
+//!
+//! The `semantic` lane is the *compiler's* coverage of the project. Optional
+//! vector search (embeddings) is a separate capability: a project whose compiler
+//! lane is complete and whose embeddings were never configured is a complete
+//! project, and its line says `semantic✓`, never `semantic✗`. The owner reports
+//! that one fact through the same lane entry (`Unavailable`, `Unconfigured`),
+//! which stays in the typed model for consumers that show it; this module reads
+//! it back out for the line: a lane unavailable for a reason outside its
+//! declared scope marks like a complete one and never reads as a failure.
+//! Per-query vector status rides separately, and is mentioned only when it
+//! failed.
 //!
 //! A lane that the reply never mentioned renders `·`: not covered, not
 //! failed, simply not observed. That distinction is the whole point — an empty
 //! complete result and an unavailable lane must never look the same.
 
+use crate::readiness::ReadinessState;
 use backend_library::{Coverage, Lane, Reason, SemanticSearchReason, SemanticSearchStatus};
 use core::fmt;
 use core::fmt::Write as _;
@@ -24,13 +43,16 @@ use core::fmt::Write as _;
 pub enum LaneState {
     /// The lane covered its declared source scope.
     Complete,
-    /// The lane completed a bounded portion of its scope.
+    /// The lane completed a bounded portion of its scope and is still moving.
     Partial {
         /// Completed shards.
         completed: LaneShards,
         /// Declared shards.
         total: LaneShards,
     },
+    /// The lane finished and published readable rows, with explicit source
+    /// gaps that waiting cannot close.
+    Gapped,
     /// The lane could not produce an authoritative result.
     Unavailable {
         /// Typed reason the lane produced nothing.
@@ -96,6 +118,13 @@ impl LaneCoverage {
         match self.state {
             LaneState::Complete => rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}")),
             LaneState::Partial { completed, total } => format!("◐{completed}/{total}"),
+            LaneState::Gapped => "◐ partial".to_owned(),
+            // A lane unavailable for a reason outside its declared scope (the
+            // optional vector feature was never configured) covered everything
+            // it was asked to: it marks like a complete lane, never as a ✗.
+            LaneState::Unavailable { reason } if reason.is_outside_declared_scope() => {
+                rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}"))
+            }
             LaneState::Unavailable { reason } => format!("✗ {}", reason_name(reason)),
             LaneState::Unobserved => "·".to_owned(),
         }
@@ -104,7 +133,10 @@ impl LaneCoverage {
     /// Returns whether this lane refused to answer.
     #[must_use]
     pub const fn is_unavailable(self) -> bool {
-        matches!(self.state, LaneState::Unavailable { .. })
+        match self.state {
+            LaneState::Unavailable { reason } => !reason.is_outside_declared_scope(),
+            _ => false,
+        }
     }
 }
 
@@ -192,8 +224,9 @@ impl CoverageLine {
                     reason: Reason::Unconfigured,
                 } => 0,
                 LaneState::Unobserved => 1,
-                LaneState::Partial { .. } => 2,
-                LaneState::Unavailable { .. } => 3,
+                LaneState::Gapped => 2,
+                LaneState::Partial { .. } => 3,
+                LaneState::Unavailable { .. } => 4,
             };
             let state = if gravity(earlier.state) >= gravity(later.state) {
                 earlier.state
@@ -240,9 +273,23 @@ impl CoverageLine {
     #[must_use]
     pub fn has_unavailable(&self) -> bool {
         self.lanes.iter().any(|lane| lane.is_unavailable())
-            || self
-                .semantic_search
-                .is_some_and(|status| !matches!(status, SemanticSearchStatus::Available))
+            || self.semantic_search.is_some_and(|status| {
+                !matches!(
+                    status,
+                    SemanticSearchStatus::Available
+                        | SemanticSearchStatus::Unavailable {
+                            reason: SemanticSearchReason::Unconfigured
+                        }
+                )
+            })
+    }
+
+    /// Returns whether this line has nothing to say: every lane covered its
+    /// declared scope and no per-query vector search failed. A response leads
+    /// with its lane statement only when it is not quiet.
+    #[must_use]
+    pub fn is_quiet(&self) -> bool {
+        self.state() == ReadinessState::Ready && !self.has_unavailable()
     }
 
     /// Returns whether any lane failed work it was asked to do.
@@ -255,7 +302,10 @@ impl CoverageLine {
     pub fn has_failed_lane(&self) -> bool {
         self.lanes.iter().any(|lane| match lane.state {
             LaneState::Unavailable { reason } => !reason.is_outside_declared_scope(),
-            LaneState::Complete | LaneState::Partial { .. } | LaneState::Unobserved => false,
+            LaneState::Complete
+            | LaneState::Partial { .. }
+            | LaneState::Gapped
+            | LaneState::Unobserved => false,
         }) || self.semantic_search.is_some_and(|status| match status {
             SemanticSearchStatus::Available => false,
             SemanticSearchStatus::Unavailable { reason } => {
@@ -274,7 +324,7 @@ impl CoverageLine {
         self.lanes.iter().all(|lane| match lane.state {
             LaneState::Complete => true,
             LaneState::Unavailable { reason } => reason.is_outside_declared_scope(),
-            LaneState::Partial { .. } | LaneState::Unobserved => false,
+            LaneState::Partial { .. } | LaneState::Gapped | LaneState::Unobserved => false,
         }) && self.semantic_search.is_none_or(|status| match status {
             SemanticSearchStatus::Available => true,
             SemanticSearchStatus::Unavailable { reason } => {
@@ -287,19 +337,43 @@ impl CoverageLine {
     /// Returns the single-word readiness summary.
     #[must_use]
     pub fn readiness(&self) -> &'static str {
+        self.state().name()
+    }
+
+    /// Returns the typed readiness every surface derives its word from.
+    ///
+    /// A failed lane outranks everything: nothing may read as ready or as
+    /// still indexing while a lane has refused work it was asked to do. A
+    /// moving fraction means work is running; a settled gap means it finished
+    /// and left explicit gaps, which stays usable and is never called failure.
+    #[must_use]
+    pub fn state(&self) -> ReadinessState {
         if self.has_failed_lane() {
-            "unavailable"
+            ReadinessState::Unavailable
         } else if self
             .lanes
             .iter()
             .any(|lane| matches!(lane.state, LaneState::Partial { .. }))
         {
-            "indexing"
+            ReadinessState::Indexing
+        } else if self
+            .lanes
+            .iter()
+            .any(|lane| matches!(lane.state, LaneState::Gapped))
+            && !self.has_unobserved_lane()
+        {
+            ReadinessState::Partial
         } else if self.is_complete() {
-            "ready"
+            ReadinessState::Ready
         } else {
-            "unknown"
+            ReadinessState::Unknown
         }
+    }
+
+    fn has_unobserved_lane(&self) -> bool {
+        self.lanes
+            .iter()
+            .any(|lane| matches!(lane.state, LaneState::Unobserved))
     }
 
     /// Renders the shared `~lanes` line.
@@ -310,7 +384,18 @@ impl CoverageLine {
         for lane in &self.lanes {
             let _ = write!(line, " {}{}", lane.name(), lane.mark(rows));
         }
-        if let Some(status) = self.semantic_search {
+        // Vector search is optional: it is mentioned only when it failed or
+        // went stale. Its setup instruction belongs to status, which says it
+        // once, not to every result.
+        if let Some(status) = self.semantic_search
+            && !matches!(
+                status,
+                SemanticSearchStatus::Available
+                    | SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::Unconfigured
+                    }
+            )
+        {
             let _ = write!(line, " semantic-search {}", semantic_search_name(status));
         }
         line
@@ -321,18 +406,10 @@ fn semantic_search_name(status: SemanticSearchStatus) -> String {
     match status {
         SemanticSearchStatus::Available => "available".to_owned(),
         SemanticSearchStatus::Unavailable { reason } => {
-            format!(
-                "unavailable ({}) — {}",
-                semantic_search_reason_name(reason),
-                reason.setup_instruction()
-            )
+            format!("unavailable ({})", semantic_search_reason_name(reason))
         }
         SemanticSearchStatus::Stale { reason } => {
-            format!(
-                "stale ({}) — {}",
-                semantic_search_reason_name(reason),
-                reason.setup_instruction()
-            )
+            format!("stale ({})", semantic_search_reason_name(reason))
         }
     }
 }
@@ -367,6 +444,7 @@ fn lane_state(coverage: &[Coverage], lane: Lane, complete: bool) -> LaneState {
                     total: LaneShards::new(total),
                 };
             }
+            Coverage::Gapped { lane: reported } if reported == lane => return LaneState::Gapped,
             Coverage::Unavailable {
                 lane: reported,
                 reason,
@@ -407,6 +485,45 @@ pub const fn reason_name(reason: Reason) -> &'static str {
 #[cfg(test)]
 mod page_tests {
     use super::*;
+
+    #[test]
+    fn optional_vectors_stay_typed_while_requested_compiler_refusal_stays_visible() {
+        let optional = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Unconfigured,
+                },
+            ],
+            Some(12),
+        )
+        .with_semantic_search_status(SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::Unconfigured,
+        });
+        assert!(optional.is_quiet());
+        assert!(matches!(
+            optional.lanes()[3].state(),
+            LaneState::Unavailable {
+                reason: Reason::Unconfigured
+            }
+        ));
+        assert!(!optional.render().contains("✗"));
+        assert!(!optional.render().contains("embedding-setup"));
+        let refused = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Incomplete,
+                },
+            ],
+            Some(12),
+        );
+        assert!(!refused.is_quiet());
+        assert!(refused.has_failed_lane());
+        assert!(refused.render().contains("semantic✗ incomplete"));
+    }
 
     #[test]
     fn semantic_search_failure_on_any_page_survives_page_combination() {
@@ -451,6 +568,48 @@ mod page_tests {
             !complete.across_pages(partial).is_complete(),
             "page order cannot fabricate completeness"
         );
+    }
+
+    #[test]
+    fn a_settled_gap_is_usable_partial_and_never_indexing_or_failed() {
+        let gapped = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Gapped {
+                    lane: Lane::Semantic,
+                },
+            ],
+            Some(161),
+        );
+        assert_eq!(
+            gapped.render(),
+            "~lanes exact✓161 names✓161 graph✓161 semantic◐ partial"
+        );
+        assert_eq!(gapped.readiness(), "partial");
+        assert!(!gapped.has_failed_lane(), "a settled gap is not a failure");
+        assert!(!gapped.is_complete(), "a settled gap is not complete");
+        assert!(!gapped.has_unavailable());
+        // The moving fraction and the settled gap never share a word.
+        let moving = CoverageLine::new(
+            &[
+                Coverage::Complete,
+                Coverage::Partial {
+                    lane: Lane::Semantic,
+                    completed: 0,
+                    total: 2,
+                },
+            ],
+            Some(161),
+        );
+        assert_eq!(moving.readiness(), "indexing");
+        assert!(moving.render().ends_with("semantic◐0/2"));
+        // A later page cannot launder the gap, and order cannot either.
+        let complete = CoverageLine::new(&[Coverage::Complete], Some(3));
+        for merged in [gapped.across_pages(complete), complete.across_pages(gapped)] {
+            assert_eq!(merged.readiness(), "partial");
+            assert!(!merged.is_complete());
+        }
+        assert_eq!(gapped.across_pages(moving).readiness(), "indexing");
     }
 
     #[test]

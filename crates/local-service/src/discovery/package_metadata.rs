@@ -80,6 +80,18 @@ pub(crate) struct FetchedPackageMetadata {
     result: Result<CachedObject, DiscoveryStoreError>,
 }
 
+/// Opt-in phase timing contains no endpoint URL, token, package, or body.
+/// The correlation ID permits queued owner work to be compared with network
+/// and parser time without putting diagnostics into MCP protocol output.
+fn trace_metadata(request_id: u64, phase: &str, elapsed: Duration, outcome: &str) {
+    if std::env::var_os("BACKEND_PACKAGE_METADATA_TRACE").is_some_and(|value| value == "1") {
+        eprintln!(
+            "locald package-metadata request={request_id} phase={phase} outcome={outcome} elapsed_us={}",
+            elapsed.as_micros()
+        );
+    }
+}
+
 impl PreparedPackageMetadata {
     pub(crate) fn fetch(self, cancelled: impl Fn() -> bool) -> FetchedPackageMetadata {
         let result = (|| {
@@ -90,30 +102,56 @@ impl PreparedPackageMetadata {
                 .cached
                 .as_ref()
                 .and_then(|cached| cached.etag.as_deref());
+            let fetch_started = Instant::now();
             let response = fetch_object(
                 &self.key.endpoint,
                 self.maximum,
                 || cancelled() || self.cancelled.load(Ordering::Acquire),
                 etag,
-            )?;
-            let (releases, complete, proof, etag) = match response {
-                ObjectResponse::Modified { bytes, etag } => {
-                    let proof = *blake3::hash(&bytes).as_bytes();
-                    let (releases, complete) =
-                        parse_object(self.ecosystem, &bytes, &self.name, &self.package)?;
-                    (releases, complete, proof, etag)
-                }
-                ObjectResponse::Unchanged => {
-                    let cached = self.cached.as_ref().ok_or(DiscoveryStoreError::Corrupt)?;
-                    (
-                        cached.releases.clone(),
-                        cached.complete,
-                        cached.proof,
-                        cached.etag.clone(),
-                    )
-                }
-                ObjectResponse::Missing { proof } => (Vec::new(), true, proof, None),
-            };
+            );
+            trace_metadata(
+                self.request_id,
+                "fetch",
+                fetch_started.elapsed(),
+                if response.is_ok() {
+                    "received"
+                } else {
+                    "failed"
+                },
+            );
+            let response = response?;
+            let parse_started = Instant::now();
+            let parsed = (|| {
+                Ok::<_, DiscoveryStoreError>(match response {
+                    ObjectResponse::Modified { bytes, etag } => {
+                        let proof = *blake3::hash(&bytes).as_bytes();
+                        let (releases, complete) =
+                            parse_object(self.ecosystem, &bytes, &self.name, &self.package)?;
+                        (releases, complete, proof, etag)
+                    }
+                    ObjectResponse::Unchanged => {
+                        let cached = self.cached.as_ref().ok_or(DiscoveryStoreError::Corrupt)?;
+                        (
+                            cached.releases.clone(),
+                            cached.complete,
+                            cached.proof,
+                            cached.etag.clone(),
+                        )
+                    }
+                    ObjectResponse::Missing { proof } => (Vec::new(), true, proof, None),
+                })
+            })();
+            trace_metadata(
+                self.request_id,
+                "parse",
+                parse_started.elapsed(),
+                if parsed.is_ok() {
+                    "admitted-shape"
+                } else {
+                    "failed"
+                },
+            );
+            let (releases, complete, proof, etag) = parsed?;
             if cancelled() || self.cancelled.load(Ordering::Acquire) {
                 return Err(DiscoveryStoreError::Cancelled);
             }
@@ -221,12 +259,6 @@ impl DiscoveryGateway {
             }
         };
         let source = discovery_source_identity(&point_endpoint);
-        if self.metadata_offline {
-            return Err(unavailable(
-                Some(source.id()),
-                "registry metadata requests are disabled in offline mode",
-            ));
-        }
         let key = ObjectKey {
             endpoint: url.clone(),
             parser: PARSER_IDENTITY,
@@ -293,8 +325,17 @@ impl DiscoveryGateway {
                     "the registry records this version without distribution files",
                 ))
             };
+            trace_metadata(request_id, "cache", Duration::ZERO, "hit");
             return PackageMetadataPreparation::Cached(observation);
         }
+        if self.metadata_offline {
+            trace_metadata(request_id, "cache", Duration::ZERO, "offline-miss");
+            return PackageMetadataPreparation::Cached(Some(unavailable(
+                Some(request.source.id()),
+                "registry metadata is offline and no current admitted cached observation is available",
+            )));
+        }
+        trace_metadata(request_id, "cache", Duration::ZERO, "miss");
         PackageMetadataPreparation::Fetch(request)
     }
 
@@ -325,7 +366,8 @@ impl DiscoveryGateway {
         } = fetched;
         let source = request.source;
         let selected = self.prepare_request(&request.package, owner_epoch, request.request_id);
-        if request.owner_epoch != owner_epoch
+        if self.metadata_offline
+            || request.owner_epoch != owner_epoch
             || selected.as_ref().map_or(true, |selected| {
                 selected.key != request.key
                     || selected.source != source
@@ -930,6 +972,50 @@ mod tests {
                 .any(|(_, fact)| fact.coordinate == package
                     && fact.metadata.yanked == DiscoveryFacet::Known(false))
         );
+    }
+
+    #[test]
+    fn offline_metadata_reuses_only_fresh_current_admitted_cache_without_network() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS)]);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        assert!(owner.observe_package(&package).is_none());
+        assert_eq!(server.join().expect("one fetch").len(), 1);
+        let revision = owner.store.observation_revision();
+        owner.metadata_offline = true;
+        assert!(matches!(
+            owner.prepare_package(&package, [1; 16], 2),
+            PackageMetadataPreparation::Cached(None)
+        ));
+        assert_eq!(
+            owner.store.observation_revision(),
+            revision,
+            "offline reuse commits no new observation"
+        );
+        let absent = PackageCoordinate::parse("pkg:pypi/absent@1.0").expect("package");
+        assert!(matches!(
+            owner.prepare_package(&absent, [1; 16], 3),
+            PackageMetadataPreparation::Cached(Some(
+                RegistryPackageDiscoveryObservation::Unavailable { .. }
+            ))
+        ));
+        Arc::get_mut(
+            owner
+                .package_metadata
+                .objects
+                .values_mut()
+                .next()
+                .expect("object"),
+        )
+        .expect("no queued witness")
+        .observed = Instant::now() - DISCOVERY_REFRESH_INTERVAL;
+        assert!(matches!(
+            owner.prepare_package(&package, [1; 16], 4),
+            PackageMetadataPreparation::Cached(Some(
+                RegistryPackageDiscoveryObservation::Unavailable { .. }
+            ))
+        ));
+        assert_eq!(owner.store.observation_revision(), revision);
     }
 
     #[test]

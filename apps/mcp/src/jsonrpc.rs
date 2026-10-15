@@ -90,6 +90,14 @@ pub(super) trait Product: Engine {
         context.as_ref().map_or(Ok(()), RequestContext::check)
     }
 
+    /// Request frames the owner will still accept on this connection, or
+    /// `None` when the product has no per-connection budget. The owner closes
+    /// a connection that has served its budget, so a call that must not be
+    /// replayed is only safe to write while this is not nearly exhausted.
+    fn connection_frames_remaining(&self) -> Option<usize> {
+        None
+    }
+
     /// Encodes an owner-issued continuation as a self-describing token.
     fn encode_continuation(
         &mut self,
@@ -240,6 +248,10 @@ impl Product for SessionProduct {
 
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         self.0.set_request_context(context)
+    }
+
+    fn connection_frames_remaining(&self) -> Option<usize> {
+        self.0.connection_frames_remaining()
     }
 
     fn encode_continuation(

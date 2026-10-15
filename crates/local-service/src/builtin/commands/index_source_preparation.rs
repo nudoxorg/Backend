@@ -483,6 +483,7 @@ impl SourceCompilePlan {
             self.cancellation.as_ref(),
         )?;
         prepare_deferred_compile(
+            snapshot,
             self.package,
             &self.label,
             self.project_key,

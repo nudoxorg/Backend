@@ -77,6 +77,9 @@ mod product;
 mod projection;
 #[cfg(test)]
 mod projection_tests;
+mod readiness;
+#[cfg(test)]
+mod readiness_agreement_tests;
 #[cfg(test)]
 mod readiness_tests;
 mod record;
@@ -88,6 +91,7 @@ mod signature;
 mod startup_recovery;
 mod status;
 mod token_count;
+mod words;
 
 pub use startup_recovery::{
     StartupRecoveryCommand, StartupRecoveryContext, StartupRecoveryMode, StartupRecoveryWorkspace,
@@ -95,7 +99,8 @@ pub use startup_recovery::{
 
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
-    record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
+    record_list, record_list_from_rows, shelf_from_root, shelf_from_root_with_facts,
+    shelf_from_snapshot, shelf_from_snapshot_with_health,
 };
 pub use browse::{
     AlertReading, InventoryReading, RoleReading, RowReading, TreeReading, TwiceReading, count,
@@ -148,10 +153,11 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, package_graph_markdown, product_view, product_view_for_command,
+    ProductView, index_stage_name, package_graph_markdown, product_view, product_view_for_command,
     product_view_for_owned_command,
 };
 pub use projection::{PageProjection, PageSection};
+pub use readiness::{PublishedFacts, ReadinessState};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,

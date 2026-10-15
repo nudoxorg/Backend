@@ -5,6 +5,7 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+mod backoff;
 #[cfg(any(unix, windows))]
 mod deferred_command;
 pub mod lease_contract;
@@ -13,6 +14,7 @@ pub mod monotonic;
 mod query_continuation;
 #[cfg(any(unix, windows))]
 mod query_preparation;
+pub use backoff::Backoff;
 #[cfg(any(unix, windows))]
 pub use query_preparation::QueryPreparationProgress;
 #[cfg(any(unix, windows))]
@@ -364,6 +366,81 @@ impl fmt::Display for ClientError {
     }
 }
 
+impl ClientError {
+    /// Returns whether no owner answered the dial: the endpoint refused the
+    /// connection or its socket file is gone.
+    ///
+    /// This is the one fact that justifies starting a replacement owner. A
+    /// dead daemon leaves its socket file behind, so an absent owner usually
+    /// shows up as a refused dial rather than a missing path. Slow or busy
+    /// listeners (`TimedOut`, `WouldBlock`) are deliberately not absent: a
+    /// live owner that is merely behind must never get a second candidate.
+    #[must_use]
+    pub fn is_owner_absent(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_owner_absent_kind(*kind))
+    }
+
+    /// Returns whether the peer tore the connection down or was never there:
+    /// reset, aborted, broken pipe, not connected, end of file, a closed peer
+    /// reported as invalid input, or an absent owner
+    /// ([`ClientError::is_owner_absent`]).
+    ///
+    /// Callers use it to decide that opening a fresh connection may help. It
+    /// is not proof that the owner is gone: a healthy owner retires a
+    /// connection that reached its frame budget, and a dying owner can still
+    /// complete a dial before its socket closes. It excludes slow-listener
+    /// timeouts and every protocol, authority or cancellation failure.
+    #[must_use]
+    pub fn is_connection_lost(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_connection_lost_kind(*kind))
+    }
+
+    /// Returns whether the owner is listening but did not answer inside the
+    /// read window: a request timed out (`TimedOut`, or `WouldBlock` where the
+    /// platform reports a socket read timeout that way).
+    ///
+    /// This is the opposite fact from [`ClientError::is_owner_absent`]. A slow
+    /// owner is a live owner, so it never authorizes starting another one; it
+    /// is not [`ClientError::is_connection_lost`] either, because nothing
+    /// proves the peer closed. A caller whose request is a read that can be
+    /// repeated may drop the connection, dial the *existing* listener again,
+    /// and ask again.
+    #[must_use]
+    pub fn is_owner_slow(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_owner_slow_kind(*kind))
+    }
+
+    /// Returns whether the owner is unavailable *for now* in a way an
+    /// idempotent read can simply outwait: the connection was lost, a live
+    /// owner did not answer in time, or an owner candidate is still starting.
+    ///
+    /// It says nothing about whether a command took effect, so only a read
+    /// that changes nothing (a poll, a pinned query, a keyed status read) may
+    /// act on it by asking again. It never authorizes starting an owner: that
+    /// takes [`ClientError::is_owner_absent`] alone.
+    #[must_use]
+    pub fn is_owner_gap(&self) -> bool {
+        self.is_connection_lost() || self.is_owner_slow() || self.is_owner_starting()
+    }
+
+    /// Returns whether an owner candidate is still starting, so no command was
+    /// submitted and the same bounded wait may be repeated.
+    #[must_use]
+    pub fn is_owner_starting(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(
+                self,
+                Self::Startup(failure) if failure.cause() == StartupFailureCause::OwnerPending
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+}
+
 impl From<backend_runtime::RuntimeError> for ClientError {
     fn from(error: backend_runtime::RuntimeError) -> Self {
         Self::Startup(error.into())
@@ -420,6 +497,28 @@ pub trait CommandTransport {
     /// socket or remote session should open a fresh authenticated session here.
     fn reconnect(&mut self) -> Result<(), ClientError> {
         Ok(())
+    }
+
+    /// Request frames the owner will still accept on the current connection,
+    /// or `None` for a transport with no per-connection frame budget.
+    fn frames_remaining(&self) -> Option<usize> {
+        None
+    }
+
+    /// Opens a fresh authenticated connection to the *same* endpoint within
+    /// `budget`, observing the caller's cancellation. It never starts an owner.
+    ///
+    /// Returns `Ok(false)` for a transport that has no connection to reopen.
+    ///
+    /// # Errors
+    /// Returns the dial or authentication failure of the replacement.
+    #[cfg(any(unix, windows))]
+    fn reconnect_within(
+        &mut self,
+        _budget: Duration,
+        _context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        Ok(false)
     }
 }
 
@@ -481,6 +580,12 @@ pub struct UnixCommandTransport {
     endpoint: Option<std::path::PathBuf>,
     connect_timeout: Duration,
     io_timeout: Duration,
+    /// Request frames written on the current connection. The owner retires a
+    /// connection after `frame_budget` frames, so these two say when the next
+    /// frame would be refused.
+    frames_sent: usize,
+    /// Frames the owner serves per connection ([`connection_frame_budget`]).
+    frame_budget: usize,
 }
 
 #[cfg(any(unix, windows))]
@@ -599,6 +704,8 @@ impl UnixCommandTransport {
             endpoint: Some(path.to_path_buf()),
             connect_timeout,
             io_timeout,
+            frames_sent: 0,
+            frame_budget: connection_frame_budget(),
         })
     }
 
@@ -614,6 +721,8 @@ impl UnixCommandTransport {
             endpoint: None,
             connect_timeout: LOCAL_CONNECT_TIMEOUT,
             io_timeout: CLIENT_REQUEST_TIMEOUT,
+            frames_sent: 0,
+            frame_budget: connection_frame_budget(),
         }
     }
 
@@ -652,6 +761,34 @@ impl UnixCommandTransport {
 impl CommandTransport for UnixCommandTransport {
     fn interrupt_handle(&self) -> Option<TransportInterrupt> {
         self.interrupt.clone()
+    }
+
+    fn frames_remaining(&self) -> Option<usize> {
+        Some(self.frame_budget.saturating_sub(self.frames_sent))
+    }
+
+    fn reconnect_within(
+        &mut self,
+        budget: Duration,
+        context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        let Some(endpoint) = self.endpoint.clone() else {
+            return Ok(false);
+        };
+        let replacement = Self::connect_with_context(
+            endpoint,
+            self.connect_timeout.min(budget),
+            self.io_timeout,
+            context,
+        )?;
+        // The replacement already bound its own interrupt to `context`, so it
+        // is adopted whole rather than retargeting the retired one.
+        self.stream = replacement.stream;
+        self.interrupt = replacement.interrupt;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
+        Ok(true)
     }
 
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
@@ -735,6 +872,7 @@ impl CommandTransport for UnixCommandTransport {
         self.stream = replacement.stream;
         self.peer = replacement.peer;
         self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
         Ok(())
     }
 }
@@ -943,6 +1081,19 @@ impl Session {
     #[must_use]
     pub fn endpoint(&self) -> &Path {
         &self.endpoint
+    }
+
+    /// Returns how many more request frames the owner will accept on this
+    /// connection, or `None` when the transport has no frame budget.
+    ///
+    /// The owner closes a connection once it has served its budget, whatever
+    /// the next frame is. A caller about to send a command that must not be
+    /// replayed should open a fresh connection first when this is small:
+    /// writing it to a connection the owner is about to retire leaves its
+    /// admission unknowable.
+    #[must_use]
+    pub fn connection_frames_remaining(&self) -> Option<usize> {
+        self.transport.frames_remaining()
     }
 
     /// Returns a connection interrupt for a caller's request lifetime.
@@ -1470,6 +1621,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_outline(package_key(coordinate), limit, continuation);
+        }
         let revision = self.revision()?;
         let package = package_key(coordinate);
         let certificate = revision.certificate.with_claim_once(WireClaim::Key {
@@ -2288,6 +2442,7 @@ impl Session {
                 | Command::Name(_)
                 | Command::GraphQuery(_)
                 | Command::GraphPage { .. }
+                | Command::OutlinePage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
         let remaining = remaining.map(|budget| budget.saturating_sub(started.elapsed()));
@@ -2536,9 +2691,11 @@ fn configure_timeout(
 /// reset on an already-open stream. This matters during a daemon restart:
 /// the endpoint can exist while no listener is bound for a short interval,
 /// and the reconnect policy must be allowed to retry that bounded race.
+/// A refused dial or a missing socket is `Disconnected` for exactly that
+/// reason; see [`ClientError::is_owner_absent`].
 #[cfg(any(unix, windows))]
 fn map_endpoint_connect_error(error: std::io::Error) -> ClientError {
-    if is_disconnect(error.kind()) || error.kind() == std::io::ErrorKind::NotFound {
+    if is_disconnect(error.kind()) || is_owner_absent_kind(error.kind()) {
         ClientError::Disconnected(error.kind())
     } else {
         ClientError::Io(error.to_string())
@@ -2561,13 +2718,13 @@ fn map_peer_authentication_error(
     let disconnected = |kind| ClientError::Disconnected(kind);
     match error {
         AuthenticationError::EndpointIo(kind)
-            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+            if is_disconnect(kind) || is_owner_absent_kind(kind) =>
         {
             disconnected(kind)
         }
         AuthenticationError::PeerAddress => disconnected(std::io::ErrorKind::ConnectionAborted),
         AuthenticationError::PeerCredentials(PeerCredentialError::Io(kind))
-            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+            if is_disconnect(kind) || is_owner_absent_kind(kind) =>
         {
             disconnected(kind)
         }
@@ -2582,6 +2739,40 @@ fn map_peer_authentication_error(
 /// handshake, send, and response read share this same absolute deadline.
 pub const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Request frames one local connection carries before the owner retires it.
+///
+/// The owner closes the connection after this many frames, whatever the next
+/// frame is, so a client that counts frames can open a fresh connection before
+/// writing a command whose admission it could not afterwards establish.
+pub const DEFAULT_CONNECTION_FRAME_BUDGET: usize = 256;
+
+/// Hidden test hook that lowers [`DEFAULT_CONNECTION_FRAME_BUDGET`] so
+/// connection retirement can be exercised deterministically on real binaries.
+/// The owner reads it when it builds its listener, and a client reads it to
+/// count against the same budget; both see it when they share an environment.
+pub const CONNECTION_FRAME_BUDGET_ENV: &str = "BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION";
+
+/// Parses the [`CONNECTION_FRAME_BUDGET_ENV`] value. Only a nonzero integer
+/// overrides the default; zero and malformed text leave it in force.
+#[must_use]
+pub fn parse_connection_frame_budget(value: Option<&str>) -> Option<usize> {
+    value?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|budget| *budget != 0)
+}
+
+/// Returns the per-connection frame budget this process counts against.
+#[must_use]
+pub fn connection_frame_budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        parse_connection_frame_budget(std::env::var(CONNECTION_FRAME_BUDGET_ENV).ok().as_deref())
+            .unwrap_or(DEFAULT_CONNECTION_FRAME_BUDGET)
+    })
+}
 
 /// Owner lease for durable writes that may synchronously compile or acquire a
 /// package before publishing their receipt.
@@ -2635,6 +2826,45 @@ const fn is_disconnect(kind: std::io::ErrorKind) -> bool {
             | std::io::ErrorKind::WouldBlock
             | std::io::ErrorKind::InvalidInput
     )
+}
+
+/// Dial outcomes that mean no listener is bound: a refused connection (the
+/// socket file outlives a killed daemon) or a missing socket file.
+///
+/// Kept apart from [`is_disconnect`] on purpose. `is_disconnect` classifies
+/// I/O on a stream that was open, where a refusal cannot occur and where a
+/// `Disconnected` command is reported as `MutationOutcomeUnknown`; a refused
+/// dial happens before any byte is sent.
+pub(crate) const fn is_owner_absent_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    )
+}
+
+/// Read-timeout outcomes: a socket read timeout surfaces as either kind
+/// depending on the platform. The owner is alive and did not answer in time.
+pub(crate) const fn is_owner_slow_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
+/// Every kind that is a peer teardown rather than a slow peer: stream loss
+/// plus an absent owner. `TimedOut` and `WouldBlock` are excluded because a
+/// listener that is merely slow or busy is still the owner.
+pub(crate) const fn is_connection_lost_kind(kind: std::io::ErrorKind) -> bool {
+    is_owner_absent_kind(kind)
+        || matches!(
+            kind,
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::InvalidInput
+        )
 }
 
 fn encode_request(request: &CommandDto) -> Result<Vec<u8>, ClientError> {
@@ -2728,6 +2958,137 @@ fn map_reply(error: ReplyAdmissionError) -> ClientError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A killed daemon leaves its socket file behind, so "no owner" is a
+    /// refused dial, not a missing path. This reproduces that exact state with
+    /// a bound-then-dropped listener (std never unlinks on drop).
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_listeners_refused_dial_is_an_absent_owner_and_a_lost_connection() {
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-refused-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        drop(std::os::unix::net::UnixListener::bind(&path).expect("bind then drop"));
+        assert!(path.exists(), "the dead listener's socket file remains");
+
+        let refused = Session::connect(&path)
+            .err()
+            .expect("a socket file with no listener refuses the dial");
+        assert_eq!(
+            refused,
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionRefused),
+            "a refused dial is retryable owner absence, not a plain I/O fault"
+        );
+        assert!(refused.is_owner_absent());
+        assert!(refused.is_connection_lost());
+
+        let with_context = Session::connect_with_context(&path, RequestContext::new())
+            .err()
+            .expect("the scoped dial reports the same absence");
+        assert!(with_context.is_owner_absent());
+
+        std::fs::remove_file(&path).expect("remove dead socket file");
+        let missing = Session::connect(&path)
+            .err()
+            .expect("no socket file at all");
+        assert!(missing.is_owner_absent(), "{missing}");
+    }
+
+    #[test]
+    fn connection_loss_is_one_closed_classification() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::ConnectionRefused, ErrorKind::NotFound] {
+            let error = ClientError::Disconnected(kind);
+            assert!(error.is_owner_absent(), "{kind:?}");
+            assert!(error.is_connection_lost(), "{kind:?} is also lost");
+        }
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+            ErrorKind::NotConnected,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::InvalidInput,
+        ] {
+            let error = ClientError::Disconnected(kind);
+            assert!(error.is_connection_lost(), "{kind:?}");
+            assert!(
+                !error.is_owner_absent(),
+                "{kind:?} is a live-peer teardown; it never proves the owner is gone"
+            );
+        }
+        // Slow or busy listeners are still the owner and never authorize a
+        // replacement; neither does any non-peer failure.
+        for kind in [ErrorKind::TimedOut, ErrorKind::WouldBlock] {
+            let error = ClientError::Disconnected(kind);
+            assert!(!error.is_connection_lost(), "{kind:?}");
+            assert!(!error.is_owner_absent(), "{kind:?}");
+            assert!(
+                error.is_owner_slow(),
+                "{kind:?} is a live owner that did not answer"
+            );
+        }
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            let error = ClientError::Disconnected(kind);
+            assert!(!error.is_connection_lost(), "{kind:?}");
+            assert!(!error.is_owner_absent(), "{kind:?}");
+            assert!(!error.is_owner_slow(), "{kind:?}");
+        }
+        for error in [
+            ClientError::Io("Connection refused (os error 111)".to_owned()),
+            ClientError::Protocol("proof".to_owned()),
+            ClientError::RemoteDeadlineExceeded,
+            ClientError::MutationOutcomeUnknown(ErrorKind::ConnectionReset),
+            ClientError::QueryPreparationDisconnected {
+                basis: backend_library::view_state_root(&[]).into(),
+                kind: ErrorKind::ConnectionReset,
+            },
+            ClientError::RequestCancelled(RequestCancellationReason::Explicit),
+        ] {
+            assert!(!error.is_connection_lost(), "{error}");
+            assert!(!error.is_owner_absent(), "{error}");
+            assert!(!error.is_owner_slow(), "{error}");
+            assert!(!error.is_owner_gap(), "{error}");
+        }
+        // An owner gap is what an idempotent read may outwait: lost, slow or
+        // starting; never a refusal of the request itself.
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+        ] {
+            assert!(ClientError::Disconnected(kind).is_owner_gap(), "{kind:?}");
+        }
+        assert!(!ClientError::Disconnected(ErrorKind::PermissionDenied).is_owner_gap());
+    }
+
+    /// A refusal only exists before a byte is sent. Frame-level I/O keeps its
+    /// own set, so a command in flight still reports an unknown outcome.
+    #[test]
+    fn a_refusal_is_not_a_frame_level_disconnect() {
+        assert!(!is_disconnect(std::io::ErrorKind::ConnectionRefused));
+        assert!(!is_disconnect(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            map_frame(LocalControlError::Io(std::io::ErrorKind::ConnectionRefused)),
+            ClientError::Io("local control I/O failed: ConnectionRefused".to_owned())
+        );
+        assert_eq!(
+            map_endpoint_connect_error(std::io::ErrorKind::ConnectionRefused.into()),
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionRefused)
+        );
+    }
 
     #[test]
     fn runtime_startup_conversion_preserves_typed_cause_and_original_diagnostic() {

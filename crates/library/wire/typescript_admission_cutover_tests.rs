@@ -9,7 +9,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() 
     assert_eq!(
         super::DTO_VERSION,
         31,
-        "populated TypeScript causes require a matched DTO31 or newer cohort"
+        "coverage and populated TypeScript causes require a matched DTO31 cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
         TypeScriptCompilerPackageRole::SelectedCompiler,

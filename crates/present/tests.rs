@@ -457,13 +457,13 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(
         thin.render(),
-        "~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured"
+        "~lanes exact✓12 names✓12 graph◐3/7 semantic✓12"
     );
     // The graph lane is still working, so that is what the reader is waiting
-    // on. The semantic lane is off in this deployment and is still shown as
-    // unavailable — it just is not the answer to "what is this owner doing".
+    // on. Optional vectors remain absent in the typed model but do not
+    // produce a failed semantic lane in the human statement.
     assert_eq!(thin.readiness(), "indexing");
-    assert!(thin.has_unavailable());
+    assert!(!thin.has_unavailable());
     assert!(!thin.has_failed_lane());
 
     // Every lane the deployment declared finished; one it never configured did
@@ -481,10 +481,10 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(
         unconfigured.render(),
-        "~lanes exact✓12 names✓12 graph✓12 semantic✗ unconfigured"
+        "~lanes exact✓12 names✓12 graph✓12 semantic✓12"
     );
     assert_eq!(unconfigured.readiness(), "ready");
-    assert!(unconfigured.has_unavailable());
+    assert!(!unconfigured.has_unavailable());
     assert!(!unconfigured.has_failed_lane());
 
     // A lane that was asked to answer and could not is a different statement
@@ -1071,7 +1071,7 @@ fn the_shelf_states_readiness_for_every_project() {
             ShelfEntry::new(
                 identity.clone(),
                 Readiness::Indexing {
-                    rows: RowCount::new(4),
+                    rows: Some(RowCount::new(4)),
                 },
             ),
             ShelfEntry::new(
