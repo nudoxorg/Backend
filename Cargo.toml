@@ -131,11 +131,6 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.backend-engine]
 opt-level = 2
-# Real C++ search preparation renders the admitted type/document planes.
-# Keep debug assertions and overflow checks; optimize their typed readers
-# like the surrounding engine/store/service hot path.
-[profile.dev.package.backend-semantic]
-opt-level = 2
 
 # backend-desktop's --lib test binary stopped linking on 2026-09-28:
 # `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
