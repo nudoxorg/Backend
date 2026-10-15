@@ -1373,6 +1373,9 @@ fn an_unpinned_read_repeats_on_a_further_replacement_when_the_first_is_also_lost
                 Ok(receipt_session(key))
             }
         });
+    // Initial authentication may already have replaced a refused stale socket.
+    // That does not spend the later read's original bounded recovery scope.
+    recovery.used = true;
     let reply = recovery
         .read(&mut original, RecoverableRead::Health, |session| {
             session.surface(SurfaceCommand::IndexOperationStatus { operation_key: key })

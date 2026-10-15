@@ -1,4 +1,4 @@
-//! Authenticated read recovery; durable starts reconcile their saved key once.
+//! Authenticated read recovery; durable starts reconcile only their saved key.
 
 use backend_client::{
     Backoff, ClientError, IndexJournalDispatch, JournaledIndexStart, RequestContext, Session,
@@ -102,7 +102,7 @@ impl OwnerRecovery {
         }
         session.set_request_context(Some(context.clone()))?;
         let result = match read(session) {
-            Err(error) if !self.used && error.is_connection_lost() => {
+            Err(error) if error.is_connection_lost() => {
                 self.replace_and_repeat(session, &context, &mut read)
             }
             result => result,
@@ -214,7 +214,7 @@ impl OwnerRecovery {
         if status_read && let Some(scope) = context {
             return self.reobserve_saved_operation(session, command, scope, error);
         }
-        if self.used || !error.is_connection_lost() || !(durable_start || status_read) {
+        if !error.is_connection_lost() || !(durable_start || status_read) {
             return Err(
                 if !durable_start
                     && backend_library::command_spec(command.id()).mutation
