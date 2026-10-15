@@ -4107,7 +4107,9 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                     source,
                     recipe: recipe.identity,
                 },
-                cause: CompilerCause::FragmentFailure(CompilerFragmentFailure::validate(cause)),
+                cause: CompilerCause::FragmentFailure(Box::new(CompilerFragmentFailure::validate(
+                    cause,
+                ))),
             })?;
         let compiled = CompiledFragment {
             source: artifact.source,
