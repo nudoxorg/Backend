@@ -249,28 +249,127 @@ mod tests {
             backend_client::Session::connect(bound.paths.endpoint()).expect("actual endpoint");
         session.revision().expect("actual owner revision");
         drop(session);
+        let root_deadline = std::time::Instant::now() + crate::runtime::wait::HUNG;
+        let initial_attachment = gate
+            .ready_epoch()
+            .expect("initial ready attachment");
+        let initial_request = RequestId::new(1);
+        let initial_basis = VersionedRoot::unserved();
         assert!(matches!(
             actor.try_submit(EngineRequest::Root {
                 project: None,
-                request: RequestId::new(1),
-                basis: VersionedRoot::unserved(),
+                request: initial_request,
+                basis: initial_basis,
                 cancel: CancellationToken::new()
             }),
             PushResult::Enqueued
         ));
-        let outcome = crate::runtime::wait::until_some(
-            "the pre-existing actor binds to the recovered workspace",
-            || {
-                actor
-                    .drain_events()
-                    .into_iter()
-                    .find(|event| event.request == RequestId::new(1))
-            },
-        );
+        let mut initial_event = None;
         assert!(
-            matches!(&outcome.result, Ok(EngineDto::Root { .. })),
-            "the recovered owner serves its root: {:?}",
-            outcome.result
+            crate::runtime::wait::poll(
+                root_deadline.saturating_duration_since(std::time::Instant::now()),
+                || {
+                    initial_event = actor
+                        .drain_events()
+                        .into_iter()
+                        .find(|event| event.request == initial_request);
+                    initial_event.is_some()
+                }
+            ),
+            "the initial Root request did not reach a terminal event before the shared deadline"
+        );
+        let initial_event = initial_event.expect("terminal initial Root event");
+        assert_eq!(initial_event.request, initial_request);
+        assert!(initial_event.basis.same_authority(initial_basis));
+        let (root_request, root_basis, root_result) = match initial_event.result {
+            Ok(result @ EngineDto::Root { .. }) => (initial_request, initial_basis, result),
+            Err(crate::runtime::actor::EngineFault::Superseded) => {
+                // The owner watcher handles this same transition by renewing
+                // the window on a fresh Ready attachment and calling
+                // UiRootEntity::refresh_root (runtime/owner.rs::watch).
+                // Mirror that recovery once, only after a complete publication
+                // is serving on the rotated attachment; never reuse the stale
+                // request or its unserved basis.
+                let mut recovered = None;
+                assert!(
+                    crate::runtime::wait::poll(
+                        root_deadline.saturating_duration_since(std::time::Instant::now()),
+                        || {
+                            let Some(attachment) = gate.ready_epoch() else {
+                                return false;
+                            };
+                            if attachment == initial_attachment {
+                                return false;
+                            }
+                            let OwnerState::Ready { key, .. } = gate.state() else {
+                                return false;
+                            };
+                            let Some((view, cursor)) = gate.publication(attachment) else {
+                                return false;
+                            };
+                            if cursor != key.revision()
+                                || view.root() != cursor.root()
+                                || !view.is_coherent()
+                                || view.capability().is_none()
+                                || gate.ready_epoch() != Some(attachment)
+                                || !matches!(gate.state(), OwnerState::Ready { key: current, .. } if current.same_authority(key))
+                            {
+                                return false;
+                            }
+                            recovered = Some(key);
+                            true
+                        }
+                    ),
+                    "the superseded Root request needs a complete current publication on a rotated attachment before retry"
+                );
+                let retry_basis = recovered.expect("certified rotated owner basis");
+                let retry_request = RequestId::from_authority(retry_basis, 2);
+                assert!(matches!(
+                    actor.try_submit(EngineRequest::Root {
+                        project: None,
+                        request: retry_request,
+                        basis: retry_basis,
+                        cancel: CancellationToken::new()
+                    }),
+                    PushResult::Enqueued
+                ));
+                let mut retry_event = None;
+                assert!(
+                    crate::runtime::wait::poll(
+                        root_deadline.saturating_duration_since(std::time::Instant::now()),
+                        || {
+                            retry_event = actor
+                                .drain_events()
+                                .into_iter()
+                                .find(|event| event.request == retry_request);
+                            retry_event.is_some()
+                        }
+                    ),
+                    "the one fresh Root retry did not reach a terminal event before the shared deadline"
+                );
+                let retry_event = retry_event.expect("terminal fresh Root event");
+                assert_eq!(retry_event.request, retry_request);
+                assert!(retry_event.basis.same_authority(retry_basis));
+                (
+                    retry_request,
+                    retry_basis,
+                    retry_event.result.unwrap_or_else(|fault| {
+                        panic!("the fresh Root retry must succeed after owner certification: {fault:?}")
+                    }),
+                )
+            }
+            other => panic!(
+                "the initial Root request failed before a recoverable owner rotation: {other:?}"
+            ),
+        };
+        assert!(matches!(
+            &root_result,
+            EngineDto::Root { request, basis, key, revision, .. }
+                if *request == root_request
+                    && basis.same_authority(root_basis)
+                    && key.revision() == *revision
+        ),
+            "only a successful Root for the submitted request and basis completes recovery: {root_result:?}"
         );
         let admitted = pool.submit(ReadJob {
             key: PageKey::Health,
