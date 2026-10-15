@@ -1,0 +1,843 @@
+{
+  "schema": 1,
+  "build": 484603,
+  "source_sha": "e2c295b3e5d970c3edcc406f0a9889e22234ac11",
+  "log_sha256": "878d473ac4c0db0381c310e20d59f1d325c2600a00eb1d6eee83a14c8475621d",
+  "observed": {
+    "run": 603,
+    "passed": 531,
+    "failed": 72,
+    "skipped": 134
+  },
+  "coverage_limit": "Historical-source evidence; candidate must rerun. Wine cannot certify native Windows ACL semantics. Nineteen unclassified failures remain selected.",
+  "cases": [
+    {
+      "binary": "backend-cluster-transport::two_process",
+      "test": "a_refused_remote_index_connection_closes_with_the_typed_code_and_reason",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/cluster-transport/tests/two_process.rs:587:49:"
+      ]
+    },
+    {
+      "binary": "backend-cluster-transport::two_process",
+      "test": "remote_index_capability_echo_works_from_an_independent_client_process",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/cluster-transport/tests/two_process.rs:587:49:"
+      ]
+    },
+    {
+      "binary": "backend-compile",
+      "test": "embedding_cache::tests::durable_actor_metadata_credit_survives_open_inventory_and_releases_on_exit",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/compile/src/embedding_cache.rs:1172:77:"
+      ]
+    },
+    {
+      "binary": "backend-compile",
+      "test": "embedding_cache::tests::mixed_hits_retain_only_actual_hit_owners_and_corruption_releases_attempts",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": [
+        "crates/compile/src/embedding_cache.rs:1031:18:"
+      ]
+    },
+    {
+      "binary": "backend-platform",
+      "test": "durable::tests::candidate_validation_creates_nothing_and_preserves_existing_private_state",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/platform/durable.rs:957:55:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::diagnostic_channel_does_not_create_a_missing_or_unrelated_file",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::duplicate_reporters_serialize_on_the_admitted_file",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::incomplete_terminal_record_is_never_reported_as_a_cause",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::original_startup_cause_is_private_bounded_and_removed_with_the_attempt",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::reporting_after_attempt_removal_does_not_recreate_the_path",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-runtime",
+      "test": "startup::tests::reporting_after_path_replacement_does_not_modify_the_replacement",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/runtime/src/lib.rs:2135:14:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "closure::tests::large_registered_relation_closure_is_transitive_and_fails_closed",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "closure::tests::relation_node_cas_is_schema_parametric_and_reopens_children",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::closure_composer::tests::bounded_path_copy_reports_peak_and_keeps_authenticated_work_bounded",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/closure_composer.rs:760:61:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::closure_composer::tests::low_metadata_budget_rejects_before_closure_publication",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/closure_composer.rs:760:61:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::adversarial_filename_order_is_frozen_once_and_counted",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::bucketed_sweep_reclaims_all_candidates_with_tiny_pages",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::candidate_index_write_crash_before_or_after_rename_recovers",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::cold_gc_fails_closed_for_missing_remote_relation_target_and_nonmember_claim",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::committed_sweep_cursor_resumes_without_revisiting_live_candidates",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::flat_compatibility_closure_is_rejected_by_production_mark_walk",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::interrupted_quarantine_is_restored_on_reopen",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::killed_reader_process_does_not_leave_a_stale_gc_pin_after_reopen",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::live_reader_pin_retains_object_until_released",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::long_lived_product_pin_blocks_the_exclusive_metadata_gc_barrier",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::malformed_mark_metadata_is_discarded_without_touching_objects",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::manifest_mark_continuation_bounds_one_page_per_work_item",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::mark_freeze_rename_faults_restart_without_losing_objects",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::missing_reachable_object_fails_closed_before_sweep",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::orphan_objects_are_reclaimed_and_roots_are_retained",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::relation_reference_continuation_is_paged_with_mark_credits",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::remote_allowlist_keeps_member_referenced_by_local_relation_after_cold_gc",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::remote_allowlist_rejects_nonmembers_and_empty_allowlist_keeps_every_payload",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::remote_residency_requires_scoped_verifier_and_keeps_unlisted_members",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::selected_head_collection_reclaims_old_generation",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::staged_direct_object_mark_pages_continue_at_the_existing_byte_limit",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::try_exclusive_metadata_gc_reports_reader_backpressure",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::unknown_files_are_retained",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::unreferenced_allowlisted_member_is_reclaimed_across_cold_gc_while_selected_pack_survives",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::gc::tests::verified_remote_member_reachable_from_selected_pack_stays_local",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/gc/tests.rs:35:51:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::nodes::relation::tests::dangling_relation_reference_is_a_miss",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/nodes/relation.rs:689:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::nodes::relation::tests::relation_reference_rejects_a_corrupt_or_wrong_hash_envelope",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/nodes/relation.rs:689:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::nodes::relation::tests::relation_reference_rejects_a_different_object_descriptor",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/nodes/relation.rs:689:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::nodes::relation::tests::relation_reference_rejects_an_oversized_object",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/nodes/relation.rs:689:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::borrowed_admission_rejects_corrupt_identity_envelope_schema_and_partial_file",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::borrowed_view_matches_the_owned_read_oracle",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::bounded_reader_checks_sparse_oversize_before_allocating",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::callback_error_and_panic_release_the_convenience_pin",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::callback_view_survives_path_replacement_and_gc_waits_for_the_callback",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::empty_and_maximum_bounded_payloads_are_admitted",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::existing_pin_is_reused_and_rejected_for_another_store",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "durable::objects::tests::opened_object_admission_uses_the_supplied_descriptor",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/src/durable/objects.rs:643:57:"
+      ]
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::authorityless_publish_cannot_bypass_held_owner_lease",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::complete_corrupt_recognized_head_temp_is_rejected_and_retained",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::complete_head_checkpoint_corruption_is_rejected",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::completed_journal_faults_report_typed_sync_statuses",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::every_atomic_head_boundary_reopens_the_journal_selected_publication",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::every_interrupted_head_temp_prefix_is_scavenged_without_hiding_other_files",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::filesystem_complete_journal_corruption_is_rejected",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::filesystem_publication_reopens_and_rejects_torn_or_corrupt_objects",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::filesystem_typestate_reopens_and_rejects_interleaved_stale_publish",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::lazy_bulk_frontier_publishes_every_branch_child",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::lazy_closure_open_lookup_and_pages_are_bounded",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::publication_authority_serializes_head_writes_and_reports_pre_head_abort",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::reopen_scavenges_only_store_owned_immutable_temps",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::staged_workspace_missing_page_cannot_publish_or_repair_head",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::stored_extension_installs_auxiliary_children_before_membership_rebind",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store",
+      "test": "tests::tree_cas_reopens_transitively_and_writes_one_edit_boundary",
+      "explicit_dacl": false,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "diagnose-before-exclusion",
+      "panic_sites": []
+    },
+    {
+      "binary": "backend-store::bounded_object_read",
+      "test": "closure_claim_opens_metadata_index_and_separates_membership_from_bytes",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/tests/bounded_object_read.rs:44:60:"
+      ]
+    },
+    {
+      "binary": "backend-store::bounded_object_read",
+      "test": "sixteen_mib_payload_copy_uses_bounded_working_memory",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/tests/bounded_object_read.rs:44:60:"
+      ]
+    },
+    {
+      "binary": "backend-store::bounded_object_read",
+      "test": "tampered_object_writes_no_unverified_payload_bytes",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/tests/bounded_object_read.rs:44:60:"
+      ]
+    },
+    {
+      "binary": "backend-store::bounded_object_read",
+      "test": "zero_byte_object_is_verified_and_copied_as_empty",
+      "explicit_dacl": true,
+      "owner": "NuDox Backend maintainers",
+      "reviewed": "2026-10-15",
+      "expires": "2026-11-14",
+      "disposition": "exclude-wine-only",
+      "panic_sites": [
+        "crates/store/tests/bounded_object_read.rs:44:60:"
+      ]
+    }
+  ]
+}
