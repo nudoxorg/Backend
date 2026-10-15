@@ -24,6 +24,7 @@ pub(crate) struct StaleWire {
 pub(crate) enum CoverageWire {
     Complete(EmptyWire),
     Partial(PartialWire),
+    Gapped(GappedWire),
     Unavailable(UnavailableWire),
 }
 
@@ -33,6 +34,12 @@ pub(crate) struct PartialWire {
     lane: String,
     completed: u16,
     total: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GappedWire {
+    lane: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +85,9 @@ pub(crate) fn coverage_to_wire(coverage: Coverage) -> CoverageWire {
             completed,
             total,
         }),
+        Coverage::Gapped { lane } => CoverageWire::Gapped(GappedWire {
+            lane: lane_name(lane).to_owned(),
+        }),
         Coverage::Unavailable { lane, reason } => CoverageWire::Unavailable(UnavailableWire {
             lane: lane_name(lane).to_owned(),
             reason: reason_name(reason).to_owned(),
@@ -94,6 +104,9 @@ pub(crate) fn coverage_from_wire(coverage: CoverageWire) -> Result<Coverage, Str
             total: value.total,
         },
         CoverageWire::Partial(_) => return Err("invalid partial coverage bounds".to_owned()),
+        CoverageWire::Gapped(value) => Coverage::Gapped {
+            lane: parse_lane(&value.lane)?,
+        },
         CoverageWire::Unavailable(value) => Coverage::Unavailable {
             lane: parse_lane(&value.lane)?,
             reason: match value.reason.as_str() {
@@ -149,5 +162,22 @@ mod tests {
             total: 7,
         };
         assert_eq!(coverage_from_wire(coverage_to_wire(coverage)), Ok(coverage));
+    }
+
+    #[test]
+    fn gapped_coverage_round_trips_every_lane_and_stays_distinct() {
+        for lane in [Lane::Exact, Lane::Names, Lane::Graph, Lane::Semantic] {
+            let coverage = Coverage::Gapped { lane };
+            assert_eq!(coverage_from_wire(coverage_to_wire(coverage)), Ok(coverage));
+        }
+        assert_ne!(
+            Coverage::Gapped {
+                lane: Lane::Semantic
+            },
+            Coverage::Unavailable {
+                lane: Lane::Semantic,
+                reason: Reason::Incomplete
+            }
+        );
     }
 }

@@ -1071,7 +1071,7 @@ fn the_shelf_states_readiness_for_every_project() {
             ShelfEntry::new(
                 identity.clone(),
                 Readiness::Indexing {
-                    rows: RowCount::new(4),
+                    rows: Some(RowCount::new(4)),
                 },
             ),
             ShelfEntry::new(

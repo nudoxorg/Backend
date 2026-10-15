@@ -869,7 +869,9 @@ fn relation_state_from_parts(
                 .first()
                 .copied()
                 .map_or(BackendCoverage::Partial, |value| match value {
-                    Coverage::Complete | Coverage::Partial { .. } => BackendCoverage::Partial,
+                    Coverage::Complete | Coverage::Partial { .. } | Coverage::Gapped { .. } => {
+                        BackendCoverage::Partial
+                    }
                     Coverage::Unavailable { .. } => BackendCoverage::Unavailable,
                 });
             match kind {
