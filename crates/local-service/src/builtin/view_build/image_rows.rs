@@ -437,7 +437,7 @@ fn projection_key(
     hasher.update(&[u8::from(sink.stale)]);
     if let Some(source) = sink.native_source {
         hasher.update(&[1]);
-        hasher.update(&source.source_identity().to_bytes());
+        hasher.update(source.source_identity().as_ref());
         hasher.update(&source.content_digest());
     } else {
         hasher.update(&[0]);
@@ -1814,6 +1814,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&kept],
+            None,
         )
         .expect("kept");
         let mut symbols = BTreeSet::new();
@@ -1827,6 +1828,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&edited],
+            None,
         )
         .expect("edited");
         let mut symbols = BTreeSet::new();
@@ -1840,6 +1842,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&kept],
+            None,
         )
         .expect("kept hit");
         assert_eq!(residence.misses(), 2);
@@ -1898,6 +1901,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&unobserved],
+            None,
         )
         .expect("unobserved projection");
         let first_worker = first
@@ -1918,6 +1922,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&observed],
+            None,
         )
         .expect("observed projection");
         assert_eq!(
@@ -1979,6 +1984,7 @@ mod tests {
                 usize::MAX,
                 &mut symbols,
                 &[&site],
+                None,
             )
             .expect("admit excerpt");
             assert_eq!(
@@ -2058,6 +2064,7 @@ mod tests {
                 budget,
                 &mut symbols,
                 &[],
+                None,
             )
             .map_err(|error| error.to_string());
             let mut symbols = BTreeSet::new();
@@ -2071,6 +2078,7 @@ mod tests {
                 budget,
                 &mut symbols,
                 &[],
+                None,
             )
             .map_err(|error| error.to_string());
             match (&direct, &miss, &hit) {
@@ -2120,6 +2128,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         );
         assert!(
             capacity
@@ -2144,6 +2153,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         );
         assert!(
             duplicate

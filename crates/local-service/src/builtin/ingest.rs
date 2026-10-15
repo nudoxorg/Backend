@@ -1895,10 +1895,9 @@ fn scan_project_with_configuration_policy_attempt(
                 .ok_or_else(|| "native candidate bytes were already consumed".to_owned())?;
             content.push((candidate.relative_path.clone(), bytes.into_vec()));
         }
-        native_frontier.extend(
-            build_native_frontier_records_with_content(project, profile, paths, content)
-                .map_err(|error| format!("build native Clang frontier: {error}"))?,
-        );
+        let records = build_native_frontier_records_with_content(project, profile, paths, content)
+            .map_err(|error| format!("build native Clang frontier: {error}"))?;
+        native_frontier.extend(records.into_iter().map(|(_, record)| record));
     }
     // Parser-unavailable C/C++ rows retain the ordinary zero content version.
     // Bind their exact byte identity through the separate native frontier so
