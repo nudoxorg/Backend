@@ -591,3 +591,15 @@ Its existing performance suffix is preserved byte for byte; the new14.86s index
 and5.37s NamedSignal search remain rejected against unchanged4.56s/.74s
 baselines. See reviews/2026-10-15-blinker-external-identities.json. This is a
 reviewed functional answer update, not performance acceptance or T2 green.
+
+### W2 Python image-identity refresh (2026-10-15, Linux40)
+
+On exact c36f478da, two fresh-owner rounds return identical Cachetools and
+ItsDangerous answers. Recursive comparison with the source-reviewed goldens
+changes only image revision/source-root; Cachetools also changes one external
+TTLCache image identity and its derived byte/token counts. Authored source
+locations, names, kinds, readiness, coverage and ordering remain identical.
+The answers-only refresh retains each existing performance suffix verbatim;
+current timing failures still fail. See
+`reviews/2026-10-15-coverage40-python-identities.json`. This is functional review,
+not accepted performance calibration or full T2 green.

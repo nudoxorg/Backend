@@ -1308,7 +1308,7 @@
             "readiness": "ready"
           }
         ],
-        "revision": "bd2796ce"
+        "revision": "869dba07"
       }
     },
     "cli search Signer": {
@@ -1392,7 +1392,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/signer.py:76 \u203a Signer"
+              "trail": "project › src/itsdangerous/signer.py:76 › Signer"
             },
             "kind": "struct",
             "language": "python",
@@ -1445,7 +1445,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1497,7 +1497,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1549,7 +1549,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1601,7 +1601,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1653,7 +1653,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1705,7 +1705,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a Signer"
+              "trail": "project › Signer"
             },
             "kind": "type",
             "language": "unknown",
@@ -1759,7 +1759,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_signer.py:24 \u203a signer"
+              "trail": "project › tests/test_itsdangerous/test_signer.py:24 › signer"
             },
             "kind": "function",
             "language": "python",
@@ -1811,7 +1811,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1863,7 +1863,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1915,7 +1915,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1967,7 +1967,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2019,7 +2019,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2071,7 +2071,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2123,7 +2123,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2175,7 +2175,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2227,7 +2227,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2279,7 +2279,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2331,7 +2331,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2383,7 +2383,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2435,7 +2435,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2487,7 +2487,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2539,7 +2539,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2591,7 +2591,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2643,7 +2643,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2737,7 +2737,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer"
+              "trail": "project › src/itsdangerous/url_safe.py:72 › URLSafeSerializer"
             },
             "kind": "struct",
             "language": "python",
@@ -2790,7 +2790,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a URLSafeSerializer"
+              "trail": "project › URLSafeSerializer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2842,7 +2842,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a URLSafeSerializer"
+              "trail": "project › URLSafeSerializer"
             },
             "kind": "type",
             "language": "unknown",
@@ -2896,7 +2896,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/url_safe.py:15 \u203a URLSafeSerializerMixin"
+              "trail": "project › src/itsdangerous/url_safe.py:15 › URLSafeSerializerMixin"
             },
             "kind": "struct",
             "language": "python",
@@ -2937,7 +2937,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `URLSafeSerializer` \u00b7 struct \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n\u2022 `URLSafeSerializer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n\u2022 `URLSafeSerializer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a78286a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `URLSafeSerializer` · struct · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n• `URLSafeSerializer` · type · unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n• `URLSafeSerializer` · type · unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a78286a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3021,7 +3021,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer"
+                    "trail": "project › src/itsdangerous/url_safe.py:72 › URLSafeSerializer"
                   },
                   "kind": "struct",
                   "language": "python",
@@ -3074,7 +3074,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a URLSafeSerializer"
+                    "trail": "project › URLSafeSerializer"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3126,7 +3126,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a URLSafeSerializer"
+                    "trail": "project › URLSafeSerializer"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3165,7 +3165,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `Signer` \u00b7 struct \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n\u2022 `Signer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n\u2022 `Signer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `Signer` · struct · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n• `Signer` · type · unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n• `Signer` · type · unknown\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3249,7 +3249,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/signer.py:76 \u203a Signer"
+                    "trail": "project › src/itsdangerous/signer.py:76 › Signer"
                   },
                   "kind": "struct",
                   "language": "python",
@@ -3302,7 +3302,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a Signer"
+                    "trail": "project › Signer"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3354,7 +3354,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a Signer"
+                    "trail": "project › Signer"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3390,7 +3390,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n\u25ab autodoc_preserve_defaults  `docs/conf.py:24 \u203a autodoc_preserve_defaults`\n\u25ab _int_to_bytes  `src/itsdangerous/encoding.py:45 \u203a _int_to_bytes`\n\u25ab html_context  `docs/conf.py:37 \u203a html_context`\n\u25a3 NoneAlgorithm  `src/itsdangerous/signer.py:31 \u203a NoneAlgorithm`\n  \u0192 get_signature  `src/itsdangerous/signer.py:36 \u203a get_signature`\n\u25ab html_favicon  `docs/conf.py:52 \u203a html_favicon`\n\u25ab html_theme  `docs/conf.py:35 \u203a html_theme`\n\u25ab autoclass_content  `docs/conf.py:21 \u203a autoclass_content`\n\u25a3 URLSafeSerializer  `src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer`\n\u25ab html_title  `docs/conf.py:54 \u203a html_title`\n\u25a3 URLSafeSerializerMixin  `src/itsdangerous/url_safe.py:15 \u203a URLSafeSerializerMixin`\n  \u0192 dump_payload  `src/itsdangerous/url_safe.py:55 \u203a dump_payload`\n  \u0192 load_payload  `src/itsdangerous/url_safe.py:23 \u203a load_payload`\n\u25a3 TimedSerializer  `src/itsdangerous/timed.py:170 \u203a TimedSerializer`\n  \u0192 loads  `src/itsdangerous/timed.py:185 \u203a loads`\n  \u0192 iter_unsigners  `src/itsdangerous/timed.py:177 \u203a iter_unsigners`\n  \u0192 loads_unsafe  `src/itsdangerous/timed.py:222 \u203a loads_unsafe`\n\u25a3 BadHeader  `src/itsdangerous/exc.py:66 \u203a BadHeader`\n  \u0192 __init__  `src/itsdangerous/exc.py:74 \u203a __init__`\n\u25ab html_show_sourcelink  `docs/conf.py:55 \u203a html_show_sourcelink`\n\u25ab html_theme_options  `docs/conf.py:36 \u203a html_theme_options`\n\u0192 is_text_serializer  `src/itsdangerous/serializer.py:35 \u203a is_text_serializer`\n\u25a3 URLSafeTimedSerializer  `src/itsdangerous/url_safe.py:79 \u203a URLSafeTimedSerializer`\n\u25ab intersphinx_mapping  `docs/conf.py:29 \u203a intersphinx_mapping`\n\u25a3 _CompactJSON  `src/itsdangerous/_json.py:7 \u203a _CompactJSON`\n  \u0192 loads  `src/itsdangerous/_json.py:11 \u203a loads`\n  \u0192 dumps  `src/itsdangerous/_json.py:15 \u203a dumps`\n\u25ab project  `docs/conf.py:6 \u203a project`\n\u25ab singlehtml_sidebars  `docs/conf.py:50 \u203a singlehtml_sidebars`\n\u25ab html_logo  `docs/conf.py:53 \u203a html_logo`\n\u25a3 Signer  `src/itsdangerous/signer.py:76 \u203a Signer`\n  \u0192 __init__  `src/itsdangerous/signer.py:129 \u203a __init__`\n  \u0192 unsign  `src/itsdangerous/signer.py:244 \u203a unsign`\n  \u0192 validate  `src/itsdangerous/signer.py:258 \u203a validate`\n  \u0192 derive_key  `src/itsdangerous/signer.py:182 \u203a derive_key`\n  \u0192 get_signature  `src/itsdangerous/signer.py:215 \u203a get_signature`\n  \u0192 verify_signature  `src/itsdangerous/signer.py:227 \u203a verify_signature`\n  \u0192 sign  `src/itsdangerous/signer.py:222 \u203a sign`\n\u25a3 HMACAlgorithm  `src/itsdangerous/signer.py:48 \u203a HMACAlgorithm`\n  \u0192 get_signature  `src/itsdangerous/signer.py:62 \u203a get_signature`\n  \u0192 __init__  `src/itsdangerous/signer.py:56 \u203a __init__`\n\u25ab autodoc_typehints  `docs/conf.py:23 \u203a autodoc_typehints`\n\u25a3 _PDataSerializer  `src/itsdangerous/serializer.py:26 \u203a _PDataSerializer`\n  \u0192 dumps  `src/itsdangerous/serializer.py:31 \u203a dumps`\n  \u0192 loads  `src/itsdangerous/serializer.py:27 \u203a loads`\n\u25a3 Serializer  `src/itsdangerous/serializer.py:42 \u203a Serializer`\n  \u0192 __init__  `src/itsdangerous/serializer.py:110 \u203a __init__`\n  \u0192 __init__  `src/itsdangerous/serializer.py:177 \u203a __init__`\n  \u0192 dumps  `src/itsdangerous/serializer.py:311 \u203a dumps`\n  \u0192 load_unsafe  `src/itsdangerous/serializer.py:399 \u203a load_unsafe`\n  \u0192 _loads_unsafe_impl  `src/itsdangerous/serializer.py:369 \u203a _loads_unsafe_impl`\n  \u0192 __init__  `src/itsdangerous/serializer.py:142 \u203a __init__`\n  \u0192 loads  `src/itsdangerous/serializer.py:330 \u203a loads`\n  \u0192 load  `src/itsdangerous/serializer.py:347 \u203a load`\n  \u0192 __init__  `src/itsdangerous/serializer.py:126 \u203a __init__`\n  \u0192 __init__  `src/itsdangerous/serializer.py:161 \u203a __init__`\n  \u0192 dump_payload  `src/itsdangerous/serializer.py:273 \u203a dump_payload`\n  \u0192 load_payload  `src/itsdangerous/serializer.py:245 \u203a load_payload`\n  \u0192 make_signer  `src/itsdangerous/serializer.py:280 \u203a make_signer`\n  \u0192 dump  `src/itsdangerous/serializer.py:324 \u203a dump`\n  \u0192 loads_unsafe  `src/itsdangerous/serializer.py:351 \u203a loads_unsafe`\n  \u0192 __init__  `src/itsdangerous/serializer.py:192 \u203a __init__`\n  \u0192 iter_unsigners  `src/itsdangerous/serializer.py:289 \u203a iter_unsigners`\n\u25a3 BadTimeSignature  `src/itsdangerous/exc.py:36 \u203a BadTimeSignature`\n  \u0192 __init__  `src/itsdangerous/exc.py:41 \u203a __init__`\n\u25a3 BadSignature  `src/itsdangerous/exc.py:22 \u203a BadSignature`\n  \u0192 __init__  `src/itsdangerous/exc.py:25 \u203a __init__`\n\u25ab html_sidebars  `docs/conf.py:46 \u203a html_sidebars`\n\u25ab autodoc_member_order  `docs/conf.py:22 \u203a autodoc_member_order`\n\u0192 want_bytes  `src/itsdangerous/encoding.py:11 \u203a want_bytes`\n\u0192 int_to_bytes  `src/itsdangerous/encoding.py:49 \u203a int_to_bytes`\n\u0192 base64_encode  `src/itsdangerous/encoding.py:20 \u203a base64_encode`\n\u0192 _make_keys_list  `src/itsdangerous/signer.py:67 \u203a _make_keys_list`\n\u0192 __getattr__  `src/itsdangerous/__init__.py:24 \u203a __getattr__`\n\u25a3 BadData  `src/itsdangerous/exc.py:7 \u203a BadData`\n  \u0192 __init__  `src/itsdangerous/exc.py:14 \u203a __init__`\n  \u0192 __str__  `src/itsdangerous/exc.py:18 \u203a __str__`\n\u25a3 SignatureExpired  `src/itsdangerous/exc.py:60 \u203a SignatureExpired`\n\u25a3 BadPayload  `src/itsdangerous/exc.py:92 \u203a BadPayload`\n  \u0192 __init__  `src/itsdangerous/exc.py:101 \u203a __init__`\n\u25ab copyright  `docs/conf.py:7 \u203a copyright`\n\u0192 bytes_to_int  `src/itsdangerous/encoding.py:53 \u203a bytes_to_int`\n\u25ab extlinks  `docs/conf.py:25 \u203a extlinks`\n\u0192 _lazy_sha1  `src/itsdangerous/signer.py:40 \u203a _lazy_sha1`\n\u25ab extensions  `docs/conf.py:14 \u203a extensions`\n\u25ab default_role  `docs/conf.py:13 \u203a default_role`\n\u0192 base64_decode  `src/itsdangerous/encoding.py:28 \u203a base64_decode`\n\u25a3 TimestampSigner  `src/itsdangerous/timed.py:22 \u203a TimestampSigner`\n  \u0192 unsign  `src/itsdangerous/timed.py:57 \u203a unsign`\n  \u0192 get_timestamp  `src/itsdangerous/timed.py:29 \u203a get_timestamp`\n  \u0192 unsign  `src/itsdangerous/timed.py:72 \u203a unsign`\n  \u0192 sign  `src/itsdangerous/timed.py:45 \u203a sign`\n  \u0192 timestamp_to_datetime  `src/itsdangerous/timed.py:35 \u203a timestamp_to_datetime`\n  \u0192 validate  `src/itsdangerous/timed.py:160 \u203a validate`\n  \u0192 unsign  `src/itsdangerous/timed.py:65 \u203a unsign`\n\u25ab author  `docs/conf.py:8 \u203a author`\n\u25a3 SigningAlgorithm  `src/itsdangerous/signer.py:15 \u203a SigningAlgorithm`\n  \u0192 verify_signature  `src/itsdangerous/signer.py:24 \u203a verify_signature`\n  \u0192 get_signature  `src/itsdangerous/signer.py:20 \u203a get_signature`\n\u25ab html_static_path  `docs/conf.py:51 \u203a html_static_path`\n100 declaration(s) \u00b7 truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n▫ autodoc_preserve_defaults  `docs/conf.py:24 › autodoc_preserve_defaults`\n▫ _int_to_bytes  `src/itsdangerous/encoding.py:45 › _int_to_bytes`\n▫ html_context  `docs/conf.py:37 › html_context`\n▣ NoneAlgorithm  `src/itsdangerous/signer.py:31 › NoneAlgorithm`\n  ƒ get_signature  `src/itsdangerous/signer.py:36 › get_signature`\n▫ html_favicon  `docs/conf.py:52 › html_favicon`\n▫ html_theme  `docs/conf.py:35 › html_theme`\n▫ autoclass_content  `docs/conf.py:21 › autoclass_content`\n▣ URLSafeSerializer  `src/itsdangerous/url_safe.py:72 › URLSafeSerializer`\n▫ html_title  `docs/conf.py:54 › html_title`\n▣ URLSafeSerializerMixin  `src/itsdangerous/url_safe.py:15 › URLSafeSerializerMixin`\n  ƒ dump_payload  `src/itsdangerous/url_safe.py:55 › dump_payload`\n  ƒ load_payload  `src/itsdangerous/url_safe.py:23 › load_payload`\n▣ TimedSerializer  `src/itsdangerous/timed.py:170 › TimedSerializer`\n  ƒ loads  `src/itsdangerous/timed.py:185 › loads`\n  ƒ iter_unsigners  `src/itsdangerous/timed.py:177 › iter_unsigners`\n  ƒ loads_unsafe  `src/itsdangerous/timed.py:222 › loads_unsafe`\n▣ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n▫ html_show_sourcelink  `docs/conf.py:55 › html_show_sourcelink`\n▫ html_theme_options  `docs/conf.py:36 › html_theme_options`\nƒ is_text_serializer  `src/itsdangerous/serializer.py:35 › is_text_serializer`\n▣ URLSafeTimedSerializer  `src/itsdangerous/url_safe.py:79 › URLSafeTimedSerializer`\n▫ intersphinx_mapping  `docs/conf.py:29 › intersphinx_mapping`\n▣ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:11 › loads`\n  ƒ dumps  `src/itsdangerous/_json.py:15 › dumps`\n▫ project  `docs/conf.py:6 › project`\n▫ singlehtml_sidebars  `docs/conf.py:50 › singlehtml_sidebars`\n▫ html_logo  `docs/conf.py:53 › html_logo`\n▣ Signer  `src/itsdangerous/signer.py:76 › Signer`\n  ƒ __init__  `src/itsdangerous/signer.py:129 › __init__`\n  ƒ unsign  `src/itsdangerous/signer.py:244 › unsign`\n  ƒ validate  `src/itsdangerous/signer.py:258 › validate`\n  ƒ derive_key  `src/itsdangerous/signer.py:182 › derive_key`\n  ƒ get_signature  `src/itsdangerous/signer.py:215 › get_signature`\n  ƒ verify_signature  `src/itsdangerous/signer.py:227 › verify_signature`\n  ƒ sign  `src/itsdangerous/signer.py:222 › sign`\n▣ HMACAlgorithm  `src/itsdangerous/signer.py:48 › HMACAlgorithm`\n  ƒ get_signature  `src/itsdangerous/signer.py:62 › get_signature`\n  ƒ __init__  `src/itsdangerous/signer.py:56 › __init__`\n▫ autodoc_typehints  `docs/conf.py:23 › autodoc_typehints`\n▣ _PDataSerializer  `src/itsdangerous/serializer.py:26 › _PDataSerializer`\n  ƒ dumps  `src/itsdangerous/serializer.py:31 › dumps`\n  ƒ loads  `src/itsdangerous/serializer.py:27 › loads`\n▣ Serializer  `src/itsdangerous/serializer.py:42 › Serializer`\n  ƒ __init__  `src/itsdangerous/serializer.py:110 › __init__`\n  ƒ __init__  `src/itsdangerous/serializer.py:177 › __init__`\n  ƒ dumps  `src/itsdangerous/serializer.py:311 › dumps`\n  ƒ load_unsafe  `src/itsdangerous/serializer.py:399 › load_unsafe`\n  ƒ _loads_unsafe_impl  `src/itsdangerous/serializer.py:369 › _loads_unsafe_impl`\n  ƒ __init__  `src/itsdangerous/serializer.py:142 › __init__`\n  ƒ loads  `src/itsdangerous/serializer.py:330 › loads`\n  ƒ load  `src/itsdangerous/serializer.py:347 › load`\n  ƒ __init__  `src/itsdangerous/serializer.py:126 › __init__`\n  ƒ __init__  `src/itsdangerous/serializer.py:161 › __init__`\n  ƒ dump_payload  `src/itsdangerous/serializer.py:273 › dump_payload`\n  ƒ load_payload  `src/itsdangerous/serializer.py:245 › load_payload`\n  ƒ make_signer  `src/itsdangerous/serializer.py:280 › make_signer`\n  ƒ dump  `src/itsdangerous/serializer.py:324 › dump`\n  ƒ loads_unsafe  `src/itsdangerous/serializer.py:351 › loads_unsafe`\n  ƒ __init__  `src/itsdangerous/serializer.py:192 › __init__`\n  ƒ iter_unsigners  `src/itsdangerous/serializer.py:289 › iter_unsigners`\n▣ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n▣ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n▫ html_sidebars  `docs/conf.py:46 › html_sidebars`\n▫ autodoc_member_order  `docs/conf.py:22 › autodoc_member_order`\nƒ want_bytes  `src/itsdangerous/encoding.py:11 › want_bytes`\nƒ int_to_bytes  `src/itsdangerous/encoding.py:49 › int_to_bytes`\nƒ base64_encode  `src/itsdangerous/encoding.py:20 › base64_encode`\nƒ _make_keys_list  `src/itsdangerous/signer.py:67 › _make_keys_list`\nƒ __getattr__  `src/itsdangerous/__init__.py:24 › __getattr__`\n▣ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n  ƒ __str__  `src/itsdangerous/exc.py:18 › __str__`\n▣ SignatureExpired  `src/itsdangerous/exc.py:60 › SignatureExpired`\n▣ BadPayload  `src/itsdangerous/exc.py:92 › BadPayload`\n  ƒ __init__  `src/itsdangerous/exc.py:101 › __init__`\n▫ copyright  `docs/conf.py:7 › copyright`\nƒ bytes_to_int  `src/itsdangerous/encoding.py:53 › bytes_to_int`\n▫ extlinks  `docs/conf.py:25 › extlinks`\nƒ _lazy_sha1  `src/itsdangerous/signer.py:40 › _lazy_sha1`\n▫ extensions  `docs/conf.py:14 › extensions`\n▫ default_role  `docs/conf.py:13 › default_role`\nƒ base64_decode  `src/itsdangerous/encoding.py:28 › base64_decode`\n▣ TimestampSigner  `src/itsdangerous/timed.py:22 › TimestampSigner`\n  ƒ unsign  `src/itsdangerous/timed.py:57 › unsign`\n  ƒ get_timestamp  `src/itsdangerous/timed.py:29 › get_timestamp`\n  ƒ unsign  `src/itsdangerous/timed.py:72 › unsign`\n  ƒ sign  `src/itsdangerous/timed.py:45 › sign`\n  ƒ timestamp_to_datetime  `src/itsdangerous/timed.py:35 › timestamp_to_datetime`\n  ƒ validate  `src/itsdangerous/timed.py:160 › validate`\n  ƒ unsign  `src/itsdangerous/timed.py:65 › unsign`\n▫ author  `docs/conf.py:8 › author`\n▣ SigningAlgorithm  `src/itsdangerous/signer.py:15 › SigningAlgorithm`\n  ƒ verify_signature  `src/itsdangerous/signer.py:24 › verify_signature`\n  ƒ get_signature  `src/itsdangerous/signer.py:20 › get_signature`\n▫ html_static_path  `docs/conf.py:51 › html_static_path`\n100 declaration(s) · truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3442,7 +3442,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "bd2796ceb6c939a98606d0d5f16e229d94b491c6d0b51aa7c84a6e7b47acc04f"
+                "source_root": "869dba075d1567c9cd586153437fcdbe73dc52fd54dd125f31482e3613367217"
               },
               "roots": [
                 {

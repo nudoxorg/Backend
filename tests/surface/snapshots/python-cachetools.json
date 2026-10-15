@@ -1330,7 +1330,7 @@
             "readiness": "ready"
           }
         ],
-        "revision": "2ce04eaf"
+        "revision": "fa293232"
       }
     },
     "cli search TTLCache": {
@@ -1338,9 +1338,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3694,
+          "bytes": 3699,
           "bytesPerToken": 4,
-          "estimatedTokens": 924
+          "estimatedTokens": 925
         },
         "coverage": [
           {
@@ -1413,7 +1413,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
+              "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
             },
             "kind": "struct",
             "language": "python",
@@ -1468,7 +1468,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
+              "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
             },
             "kind": "struct",
             "language": "python",
@@ -1520,7 +1520,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "kind": "type",
             "language": "unknown",
@@ -1572,7 +1572,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "kind": "type",
             "language": "unknown",
@@ -1626,7 +1626,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_ttl.py:28 \u203a TTLCacheTest"
+              "trail": "project › tests/test_ttl.py:28 › TTLCacheTest"
             },
             "kind": "struct",
             "language": "python",
@@ -1635,7 +1635,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:7361e237f30e4e8cca5a36fa4afe4014e70b749a10b542f4d79c6877bebef777::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:d4b6d764e490a1b623ba7b918974dc927026ae074ecbdef265507b417bd9e365::TTLCache",
               "name": "TTLCache",
               "segments": [
                 "TTLCache"
@@ -1643,42 +1643,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  115,
-                  97,
-                  226,
-                  55,
-                  243,
-                  14,
-                  78,
-                  140,
-                  202,
-                  90,
-                  54,
-                  250,
-                  74,
-                  254,
-                  64,
-                  20,
-                  231,
-                  11,
-                  116,
-                  154,
-                  16,
-                  181,
-                  66,
-                  244,
+                  212,
+                  182,
                   215,
-                  156,
-                  104,
-                  119,
-                  190,
-                  190,
-                  247,
-                  119
+                  100,
+                  228,
+                  144,
+                  161,
+                  182,
+                  35,
+                  186,
+                  123,
+                  145,
+                  137,
+                  116,
+                  220,
+                  146,
+                  112,
+                  38,
+                  174,
+                  7,
+                  78,
+                  203,
+                  222,
+                  242,
+                  101,
+                  80,
+                  123,
+                  65,
+                  123,
+                  217,
+                  227,
+                  101
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "language": "unknown",
             "score": 4294967290,
@@ -1772,7 +1772,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
+              "trail": "project › src/cachetools/__init__.py:738 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -1827,7 +1827,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:186 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -1881,7 +1881,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:177 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -1935,7 +1935,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:169 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:169 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -1987,7 +1987,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a cached"
+              "trail": "project › cached"
             },
             "kind": "type",
             "language": "unknown",
@@ -2039,7 +2039,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a cached"
+              "trail": "project › cached"
             },
             "kind": "type",
             "language": "unknown",
@@ -2093,7 +2093,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:10 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:10 › Cached"
             },
             "kind": "struct",
             "language": "python",
@@ -2147,7 +2147,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_classmethod.py:9 \u203a Cached"
+              "trail": "project › tests/test_classmethod.py:9 › Cached"
             },
             "kind": "struct",
             "language": "python",
@@ -2201,7 +2201,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:504 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:504 › Cached"
             },
             "kind": "struct",
             "language": "python",
@@ -2255,7 +2255,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:496 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:496 › Cached"
             },
             "kind": "struct",
             "language": "python",
@@ -2309,7 +2309,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:153 \u203a _cached_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:153 › _cached_wrapper"
             },
             "kind": "struct",
             "language": "python",
@@ -2363,7 +2363,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:165 \u203a _cached_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:165 › _cached_wrapper_info"
             },
             "kind": "struct",
             "language": "python",
@@ -2417,7 +2417,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_classmethod.py:40 \u203a CachedClassMethodTest"
+              "trail": "project › tests/test_classmethod.py:40 › CachedClassMethodTest"
             },
             "kind": "struct",
             "language": "python",
@@ -2471,7 +2471,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:195 \u203a _cachedmethod_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper"
             },
             "kind": "struct",
             "language": "python",
@@ -2525,7 +2525,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:211 \u203a _cachedmethod_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info"
             },
             "kind": "struct",
             "language": "python",
@@ -2579,7 +2579,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/keys.py:64 \u203a typedmethodkey"
+              "trail": "project › src/cachetools/keys.py:64 › typedmethodkey"
             },
             "kind": "function",
             "language": "python",
@@ -2634,7 +2634,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/keys.py:46 \u203a methodkey"
+              "trail": "project › src/cachetools/keys.py:46 › methodkey"
             },
             "kind": "function",
             "language": "python",
@@ -2689,7 +2689,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:218 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:218 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2743,7 +2743,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:237 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:237 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2797,7 +2797,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:769 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.py:769 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2852,7 +2852,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:226 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:226 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2906,7 +2906,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:86 \u203a test_cached_locked"
+              "trail": "project › tests/test_threading.py:86 › test_cached_locked"
             },
             "kind": "function",
             "language": "python",
@@ -2960,7 +2960,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:54 \u203a test_cached_stampede"
+              "trail": "project › tests/test_threading.py:54 › test_cached_stampede"
             },
             "kind": "function",
             "language": "python",
@@ -3014,7 +3014,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:104 \u203a test_cachedmethod_locked"
+              "trail": "project › tests/test_threading.py:104 › test_cachedmethod_locked"
             },
             "kind": "function",
             "language": "python",
@@ -3068,7 +3068,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:70 \u203a test_cachedmethod_stampede"
+              "trail": "project › tests/test_threading.py:70 › test_cachedmethod_stampede"
             },
             "kind": "function",
             "language": "python",
@@ -3108,7 +3108,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `TTLCache` \u00b7 struct \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 struct \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `TTLCache` · struct · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · struct · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · type · unknown\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3192,7 +3192,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
+                    "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
                   },
                   "kind": "struct",
                   "language": "python",
@@ -3247,7 +3247,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
+                    "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
                   },
                   "kind": "struct",
                   "language": "python",
@@ -3299,7 +3299,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a TTLCache"
+                    "trail": "project › TTLCache"
                   },
                   "kind": "type",
                   "language": "unknown",
@@ -3338,7 +3338,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -3422,7 +3422,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.py:738 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3477,7 +3477,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.pyi:186 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3531,7 +3531,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.pyi:177 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3567,7 +3567,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n\u25a3 LFUCache  `src/cachetools/__init__.py:203 \u203a LFUCache`\n  \u0192 __init__  `src/cachetools/__init__.py:219 \u203a __init__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:231 \u203a __setitem__`\n  \u0192 popitem  `src/cachetools/__init__.py:253 \u203a popitem`\n  \u0192 clear  `src/cachetools/__init__.py:262 \u203a clear`\n  \u0192 __delitem__  `src/cachetools/__init__.py:246 \u203a __delitem__`\n  \u25a3 _Link  `src/cachetools/__init__.py:206 \u203a _Link`\n    \u0192 unlink  `src/cachetools/__init__.py:213 \u203a unlink`\n    \u0192 __init__  `src/cachetools/__init__.py:209 \u203a __init__`\n\u0192 cached  `src/cachetools/__init__.py:738 \u203a cached`\n\u25a3 _TimedCache  `src/cachetools/__init__.py:373 \u203a _TimedCache`\n  \u0192 expire  `src/cachetools/__init__.py:447 \u203a expire`\n  \u25a3 _Timer  `src/cachetools/__init__.py:376 \u203a _Timer`\n    \u0192 __exit__  `src/cachetools/__init__.py:395 \u203a __exit__`\n    \u0192 __init__  `src/cachetools/__init__.py:377 \u203a __init__`\n    \u0192 __call__  `src/cachetools/__init__.py:381 \u203a __call__`\n    \u0192 __getattr__  `src/cachetools/__init__.py:401 \u203a __getattr__`\n    \u0192 __reduce__  `src/cachetools/__init__.py:398 \u203a __reduce__`\n  \u0192 setdefault  `src/cachetools/__init__.py:437 \u203a setdefault`\n  \u0192 __init__  `src/cachetools/__init__.py:404 \u203a __init__`\n  \u0192 get  `src/cachetools/__init__.py:429 \u203a get`\n  \u0192 __len__  `src/cachetools/__init__.py:413 \u203a __len__`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:304 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:305 \u203a Wrapper`\n\u25a3 LRUCache  `src/cachetools/__init__.py:287 \u203a LRUCache`\n  \u0192 __init__  `src/cachetools/__init__.py:290 \u203a __init__`\n  \u0192 __touch  `src/cachetools/__init__.py:321 \u203a __touch`\n  \u0192 __setitem__  `src/cachetools/__init__.py:300 \u203a __setitem__`\n\u25a3 LRUCache  `src/cachetools/__init__.pyi:64 \u203a LRUCache`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:344 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:345 \u203a Wrapper`\n\u25a3 TLRUCache  `src/cachetools/__init__.py:592 \u203a TLRUCache`\n  \u0192 clear  `src/cachetools/__init__.py:712 \u203a clear`\n  \u0192 __iter__  `src/cachetools/__init__.py:662 \u203a __iter__`\n  \u0192 __init__  `src/cachetools/__init__.py:609 \u203a __init__`\n  \u0192 __delitem  `src/cachetools/__init__.py:722 \u203a __delitem`\n  \u0192 __delitem__  `src/cachetools/__init__.py:653 \u203a __delitem__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:635 \u203a __setitem__`\n  \u25a3 _Item  `src/cachetools/__init__.py:598 \u203a _Item`\n    \u0192 __lt__  `src/cachetools/__init__.py:606 \u203a __lt__`\n    \u0192 __init__  `src/cachetools/__init__.py:601 \u203a __init__`\n\u25a3 _DefaultSize  `src/cachetools/__init__.py:27 \u203a _DefaultSize`\n  \u0192 __setitem__  `src/cachetools/__init__.py:35 \u203a __setitem__`\n  \u0192 pop  `src/cachetools/__init__.py:38 \u203a pop`\n\u25a3 RRCache  `src/cachetools/__init__.py:329 \u203a RRCache`\n  \u0192 __setitem__  `src/cachetools/__init__.py:343 \u203a __setitem__`\n  \u0192 popitem  `src/cachetools/__init__.py:358 \u203a popitem`\n  \u0192 clear  `src/cachetools/__init__.py:367 \u203a clear`\n\u25a3 _HashedTuple  `src/cachetools/keys.py:6 \u203a _HashedTuple`\n\u25a3 FIFOCache  `src/cachetools/__init__.py:171 \u203a FIFOCache`\n  \u0192 __delitem__  `src/cachetools/__init__.py:185 \u203a __delitem__`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:197 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:198 \u203a Wrapper`\n\u25a3 LFUCache  `src/cachetools/__init__.pyi:63 \u203a LFUCache`\n\u25a3 _DescriptorBase  `src/cachetools/_cachedmethod.py:66 \u203a _DescriptorBase`\n\u25a3 _cached_wrapper  `src/cachetools/__init__.pyi:153 \u203a _cached_wrapper`\n\u25a3 TLRUCache  `src/cachetools/__init__.pyi:115 \u203a TLRUCache`\n\u25a3 TTLCache  `src/cachetools/__init__.pyi:94 \u203a TTLCache`\n\u25a3 Cache  `src/cachetools/__init__.pyi:40 \u203a Cache`\n\u25a3 _TimedCache  `src/cachetools/__init__.pyi:76 \u203a _TimedCache`\n  \u25a3 _Timer  `src/cachetools/__init__.pyi:84 \u203a _Timer`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:378 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:379 \u203a Wrapper`\n\u25a3 _cached_wrapper_info  `src/cachetools/__init__.pyi:165 \u203a _cached_wrapper_info`\n\u25a3 FIFOCache  `src/cachetools/__init__.pyi:62 \u203a FIFOCache`\n\u25a3 _cachedmethod_wrapper_info  `src/cachetools/__init__.pyi:211 \u203a _cachedmethod_wrapper_info`\n\u25a3 TTLCache  `src/cachetools/__init__.py:451 \u203a TTLCache`\n  \u0192 __iter__  `src/cachetools/__init__.py:519 \u203a __iter__`\n  \u0192 __setstate__  `src/cachetools/__init__.py:529 \u203a __setstate__`\n  \u0192 __init__  `src/cachetools/__init__.py:470 \u203a __init__`\n  \u0192 __contains__  `src/cachetools/__init__.py:477 \u203a __contains__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:497 \u203a __setitem__`\n  \u0192 __getlink  `src/cachetools/__init__.py:586 \u203a __getlink`\n  \u25a3 _Link  `src/cachetools/__init__.py:454 \u203a _Link`\n    \u0192 __init__  `src/cachetools/__init__.py:457 \u203a __init__`\n    \u0192 unlink  `src/cachetools/__init__.py:464 \u203a unlink`\n\u25a3 _cachetools_cache_wrapper  `src/cachetools/func.pyi:13 \u203a _cachetools_cache_wrapper`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:237 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:238 \u203a Wrapper`\n\u25a3 _WrapperBase  `src/cachetools/_cachedmethod.py:30 \u203a _WrapperBase`\n\u25a3 _UnboundTTLCache  `src/cachetools/func.py:13 \u203a _UnboundTTLCache`\n\u25a3 _CacheInfo  `src/cachetools/__init__.pyi:136 \u203a _CacheInfo`\n\u25a3 _AbstractCondition  `src/cachetools/__init__.pyi:143 \u203a _AbstractCondition`\n\u25a3 Cache  `src/cachetools/__init__.py:45 \u203a Cache`\n  \u0192 getsizeof  `src/cachetools/__init__.py:166 \u203a getsizeof`\n  \u0192 setdefault  `src/cachetools/__init__.py:137 \u203a setdefault`\n  \u0192 __getitem__  `src/cachetools/__init__.py:71 \u203a __getitem__`\n  \u0192 __iter__  `src/cachetools/__init__.py:109 \u203a __iter__`\n  \u0192 __repr__  `src/cachetools/__init__.py:63 \u203a __repr__`\n  \u0192 get  `src/cachetools/__init__.py:121 \u203a get`\n  \u0192 __setitem__  `src/cachetools/__init__.py:77 \u203a __setitem__`\n  \u0192 __contains__  `src/cachetools/__init__.py:103 \u203a __contains__`\n  \u0192 pop  `src/cachetools/__init__.py:127 \u203a pop`\n  \u0192 __init__  `src/cachetools/__init__.py:52 \u203a __init__`\n  \u0192 __missing__  `src/cachetools/__init__.py:106 \u203a __missing__`\n\u25a3 Descriptor  `src/cachetools/_cachedmethod.py:149 \u203a Descriptor`\n  \u25a3 Wrapper  `src/cachetools/_cachedmethod.py:150 \u203a Wrapper`\n\u25a3 RRCache  `src/cachetools/__init__.pyi:66 \u203a RRCache`\n\u25a3 _DeprecatedDescriptorBase  `src/cachetools/_cachedmethod.py:123 \u203a _DeprecatedDescriptorBase`\n\u25a3 _cachedmethod_wrapper  `src/cachetools/__init__.pyi:195 \u203a _cachedmethod_wrapper`\n100 declaration(s) \u00b7 truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-cachetools/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n▣ LFUCache  `src/cachetools/__init__.py:203 › LFUCache`\n  ƒ __init__  `src/cachetools/__init__.py:219 › __init__`\n  ƒ __setitem__  `src/cachetools/__init__.py:231 › __setitem__`\n  ƒ popitem  `src/cachetools/__init__.py:253 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:262 › clear`\n  ƒ __delitem__  `src/cachetools/__init__.py:246 › __delitem__`\n  ▣ _Link  `src/cachetools/__init__.py:206 › _Link`\n    ƒ unlink  `src/cachetools/__init__.py:213 › unlink`\n    ƒ __init__  `src/cachetools/__init__.py:209 › __init__`\nƒ cached  `src/cachetools/__init__.py:738 › cached`\n▣ _TimedCache  `src/cachetools/__init__.py:373 › _TimedCache`\n  ƒ expire  `src/cachetools/__init__.py:447 › expire`\n  ▣ _Timer  `src/cachetools/__init__.py:376 › _Timer`\n    ƒ __exit__  `src/cachetools/__init__.py:395 › __exit__`\n    ƒ __init__  `src/cachetools/__init__.py:377 › __init__`\n    ƒ __call__  `src/cachetools/__init__.py:381 › __call__`\n    ƒ __getattr__  `src/cachetools/__init__.py:401 › __getattr__`\n    ƒ __reduce__  `src/cachetools/__init__.py:398 › __reduce__`\n  ƒ setdefault  `src/cachetools/__init__.py:437 › setdefault`\n  ƒ __init__  `src/cachetools/__init__.py:404 › __init__`\n  ƒ get  `src/cachetools/__init__.py:429 › get`\n  ƒ __len__  `src/cachetools/__init__.py:413 › __len__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:304 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:305 › Wrapper`\n▣ LRUCache  `src/cachetools/__init__.py:287 › LRUCache`\n  ƒ __init__  `src/cachetools/__init__.py:290 › __init__`\n  ƒ __touch  `src/cachetools/__init__.py:321 › __touch`\n  ƒ __setitem__  `src/cachetools/__init__.py:300 › __setitem__`\n▣ LRUCache  `src/cachetools/__init__.pyi:64 › LRUCache`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:344 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:345 › Wrapper`\n▣ TLRUCache  `src/cachetools/__init__.py:592 › TLRUCache`\n  ƒ clear  `src/cachetools/__init__.py:712 › clear`\n  ƒ __iter__  `src/cachetools/__init__.py:662 › __iter__`\n  ƒ __init__  `src/cachetools/__init__.py:609 › __init__`\n  ƒ __delitem  `src/cachetools/__init__.py:722 › __delitem`\n  ƒ __delitem__  `src/cachetools/__init__.py:653 › __delitem__`\n  ƒ __setitem__  `src/cachetools/__init__.py:635 › __setitem__`\n  ▣ _Item  `src/cachetools/__init__.py:598 › _Item`\n    ƒ __lt__  `src/cachetools/__init__.py:606 › __lt__`\n    ƒ __init__  `src/cachetools/__init__.py:601 › __init__`\n▣ _DefaultSize  `src/cachetools/__init__.py:27 › _DefaultSize`\n  ƒ __setitem__  `src/cachetools/__init__.py:35 › __setitem__`\n  ƒ pop  `src/cachetools/__init__.py:38 › pop`\n▣ RRCache  `src/cachetools/__init__.py:329 › RRCache`\n  ƒ __setitem__  `src/cachetools/__init__.py:343 › __setitem__`\n  ƒ popitem  `src/cachetools/__init__.py:358 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:367 › clear`\n▣ _HashedTuple  `src/cachetools/keys.py:6 › _HashedTuple`\n▣ FIFOCache  `src/cachetools/__init__.py:171 › FIFOCache`\n  ƒ __delitem__  `src/cachetools/__init__.py:185 › __delitem__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:197 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:198 › Wrapper`\n▣ LFUCache  `src/cachetools/__init__.pyi:63 › LFUCache`\n▣ _DescriptorBase  `src/cachetools/_cachedmethod.py:66 › _DescriptorBase`\n▣ _cached_wrapper  `src/cachetools/__init__.pyi:153 › _cached_wrapper`\n▣ TLRUCache  `src/cachetools/__init__.pyi:115 › TLRUCache`\n▣ TTLCache  `src/cachetools/__init__.pyi:94 › TTLCache`\n▣ Cache  `src/cachetools/__init__.pyi:40 › Cache`\n▣ _TimedCache  `src/cachetools/__init__.pyi:76 › _TimedCache`\n  ▣ _Timer  `src/cachetools/__init__.pyi:84 › _Timer`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:378 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:379 › Wrapper`\n▣ _cached_wrapper_info  `src/cachetools/__init__.pyi:165 › _cached_wrapper_info`\n▣ FIFOCache  `src/cachetools/__init__.pyi:62 › FIFOCache`\n▣ _cachedmethod_wrapper_info  `src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info`\n▣ TTLCache  `src/cachetools/__init__.py:451 › TTLCache`\n  ƒ __iter__  `src/cachetools/__init__.py:519 › __iter__`\n  ƒ __setstate__  `src/cachetools/__init__.py:529 › __setstate__`\n  ƒ __init__  `src/cachetools/__init__.py:470 › __init__`\n  ƒ __contains__  `src/cachetools/__init__.py:477 › __contains__`\n  ƒ __setitem__  `src/cachetools/__init__.py:497 › __setitem__`\n  ƒ __getlink  `src/cachetools/__init__.py:586 › __getlink`\n  ▣ _Link  `src/cachetools/__init__.py:454 › _Link`\n    ƒ __init__  `src/cachetools/__init__.py:457 › __init__`\n    ƒ unlink  `src/cachetools/__init__.py:464 › unlink`\n▣ _cachetools_cache_wrapper  `src/cachetools/func.pyi:13 › _cachetools_cache_wrapper`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:237 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:238 › Wrapper`\n▣ _WrapperBase  `src/cachetools/_cachedmethod.py:30 › _WrapperBase`\n▣ _UnboundTTLCache  `src/cachetools/func.py:13 › _UnboundTTLCache`\n▣ _CacheInfo  `src/cachetools/__init__.pyi:136 › _CacheInfo`\n▣ _AbstractCondition  `src/cachetools/__init__.pyi:143 › _AbstractCondition`\n▣ Cache  `src/cachetools/__init__.py:45 › Cache`\n  ƒ getsizeof  `src/cachetools/__init__.py:166 › getsizeof`\n  ƒ setdefault  `src/cachetools/__init__.py:137 › setdefault`\n  ƒ __getitem__  `src/cachetools/__init__.py:71 › __getitem__`\n  ƒ __iter__  `src/cachetools/__init__.py:109 › __iter__`\n  ƒ __repr__  `src/cachetools/__init__.py:63 › __repr__`\n  ƒ get  `src/cachetools/__init__.py:121 › get`\n  ƒ __setitem__  `src/cachetools/__init__.py:77 › __setitem__`\n  ƒ __contains__  `src/cachetools/__init__.py:103 › __contains__`\n  ƒ pop  `src/cachetools/__init__.py:127 › pop`\n  ƒ __init__  `src/cachetools/__init__.py:52 › __init__`\n  ƒ __missing__  `src/cachetools/__init__.py:106 › __missing__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:149 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:150 › Wrapper`\n▣ RRCache  `src/cachetools/__init__.pyi:66 › RRCache`\n▣ _DeprecatedDescriptorBase  `src/cachetools/_cachedmethod.py:123 › _DeprecatedDescriptorBase`\n▣ _cachedmethod_wrapper  `src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper`\n100 declaration(s) · truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-cachetools/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3619,7 +3619,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "2ce04eaf2ddac863d6d1c8035b5a9782a18710507d4cdc5b5ff097180d268b31"
+                "source_root": "fa293232e9bb3257707813709b77129e029e1197e151e3c1df2c6b71194e9a8f"
               },
               "roots": [
                 {
