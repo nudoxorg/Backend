@@ -434,41 +434,10 @@ impl<'facts> PreparedFragment<'facts> {
             }
         }
         if let Some(lane) = occurrences {
-            lane.admit(u32::from(entity_count))
-                .map_err(|fault| {
-                    let ordinal = match &fault {
-                        crate::ir::semantic_facts::OccurrenceFault::Owner { ordinal, .. }
-                        | crate::ir::semantic_facts::OccurrenceFault::TargetTag { ordinal, .. }
-                        | crate::ir::semantic_facts::OccurrenceFault::LocalTarget {
-                            ordinal, ..
-                        }
-                        | crate::ir::semantic_facts::OccurrenceFault::OriginTag {
-                            ordinal, ..
-                        }
-                        | crate::ir::semantic_facts::OccurrenceFault::ReferenceKind {
-                            ordinal, ..
-                        }
-                        | crate::ir::semantic_facts::OccurrenceFault::Confidence {
-                            ordinal, ..
-                        }
-                        | crate::ir::semantic_facts::OccurrenceFault::Span { ordinal, .. }
-                        | crate::ir::semantic_facts::OccurrenceFault::KindCell { ordinal, .. }
-                        | crate::ir::semantic_facts::OccurrenceFault::EmptyPath { ordinal }
-                        | crate::ir::semantic_facts::OccurrenceFault::Truncated {
-                            ordinal, ..
-                        }
-                        | crate::ir::semantic_facts::OccurrenceFault::LegacyStableTarget {
-                            ordinal, ..
-                        } => *ordinal,
-                        crate::ir::semantic_facts::OccurrenceFault::TrailingBytes { .. }
-                        | crate::ir::semantic_facts::OccurrenceFault::Authority(_) => {
-                            unreachable!("occurrence lane admission faults identify a row")
-                        }
-                    };
-                    PrepareError::OccurrenceLane {
-                        ordinal,
-                        fault: crate::ir::semantic_facts::occurrence_view_fault(fault),
-                    }
+            lane.admit_indexed(u32::from(entity_count))
+                .map_err(|(ordinal, fault)| PrepareError::OccurrenceLane {
+                    ordinal,
+                    fault: crate::ir::semantic_facts::occurrence_view_fault(fault),
                 })?;
         }
         let type_fact_counts = if let Some(lane) = type_facts {
