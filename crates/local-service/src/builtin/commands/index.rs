@@ -375,7 +375,7 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
         work.project_key,
         &work.reusable,
         &work.cancellation,
-        work.interpreter.as_ref(),
+        work.interpreter.as_deref(),
     )
     .map_err(|error| {
         if work.cancellation.load(Ordering::Acquire) {

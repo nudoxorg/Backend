@@ -468,4 +468,27 @@ mod tests {
         foreign[0].history_commit[0] ^= 1;
         assert!(admitted.reconstruct(foreign.into_boxed_slice()).is_err());
     }
+
+    #[test]
+    fn published_source_proof_rejects_a_cross_family_selection_profile() {
+        let mut record = capture();
+        let crate::SemanticHistoryPublicationStatus::Published { proof, .. } =
+            &mut record.history_status
+        else {
+            panic!("actual published capture");
+        };
+        let original = proof.selection.profile;
+        let foreign =
+            crate::SemanticLanguageProfile::from_name("python").expect("closed Python profile");
+        assert_ne!(
+            original, foreign,
+            "fixture uses a different compiler family"
+        );
+        proof.selection.profile = foreign;
+        assert_eq!(
+            record.admit(),
+            Err(crate::ProductAdmissionError::SemanticVersionShape),
+            "a captured source proof cannot be rebound to another language family"
+        );
+    }
 }

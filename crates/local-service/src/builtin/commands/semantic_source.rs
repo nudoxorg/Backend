@@ -187,7 +187,7 @@ fn reconstruct(
         let stamp = commit.selected_stamp();
         let captured = &proof.selection;
         if stamp.namespace() != &captured.namespace
-            || stamp.profile().to_bytes() != captured.profile.to_bytes()
+            || <[u8; 2]>::from(stamp.profile()) != captured.profile.to_bytes()
             || stamp.source_coordinate() != &captured.source_coordinate
             || stamp.selection_revision() != captured.selection_revision
             || stamp.selected_root() != &captured.selected_root
