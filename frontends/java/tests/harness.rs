@@ -411,6 +411,88 @@ fn sibling_resolution_uses_discovered_maven_roots() -> TestResult {
 }
 
 #[test]
+fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations() -> TestResult {
+    let (jdk, harness) = authority()?;
+    let root = scratch_root(harness, "captured-sourcepath")?;
+    let selected = b"package captured; public final class Selected { public Helper helper() { return new Helper(); } }";
+    let captured_helper = b"package captured; public final class Helper {}";
+    let selected_sources = [JavaSource {
+        name: Path::new("captured/Selected.java"),
+        bytes: selected,
+    }];
+    let captured_dependencies = [JavaSource {
+        name: Path::new("captured/Helper.java"),
+        bytes: captured_helper,
+    }];
+    let request = HarnessRequest {
+        sources: &selected_sources,
+        classpath: &[],
+        release: JavaRelease::Java21,
+    };
+
+    // The live sibling has invalid bytes. Successful compilation proves javac saw the captured
+    // dependency staged by the harness rather than consulting this package-root file.
+    write_source(
+        &root,
+        "captured/Helper.java",
+        b"package captured; this is not a class declaration",
+    )?;
+    let mut output = Vec::new();
+    harness.image_with_captured_sourcepath(jdk, request, &captured_dependencies, &mut output)?;
+    let image = JavaAuthorityImage::open(&output)?;
+    let names = image
+        .image
+        .declarations()
+        .map(|declaration| declaration.name.bytes)
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| *name == b"Selected"));
+    assert!(!names.iter().any(|name| *name == b"Helper"));
+
+    let modular_dependencies = [
+        JavaSource {
+            name: Path::new("module-info.java"),
+            bytes: b"module captured.fixture { exports captured; }",
+        },
+        JavaSource {
+            name: Path::new("captured/Helper.java"),
+            bytes: captured_helper,
+        },
+    ];
+    harness.image_with_captured_sourcepath(jdk, request, &modular_dependencies, &mut output)?;
+    let image = JavaAuthorityImage::open(&output)?;
+    let names = image
+        .image
+        .declarations()
+        .map(|declaration| declaration.name.bytes)
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| *name == b"Selected"));
+    assert!(!names.iter().any(|name| *name == b"Helper"));
+
+    // A valid file present only on disk is not admitted as a dependency and must not resolve.
+    write_source(
+        &root,
+        "captured/Helper.java",
+        b"package captured; public final class Helper {}",
+    )?;
+    let error = harness
+        .image_with_captured_sourcepath(jdk, request, &[], &mut output)
+        .expect_err("an uncaptured live sibling must not enter javac's source path");
+    assert_eq!(
+        error.unavailable_cause(),
+        Some(UnavailableCause::Compilation)
+    );
+    let HarnessError::Command { stderr, .. } = error else {
+        panic!("expected a compiler refusal, got {error}");
+    };
+    assert!(
+        stderr.contains("Helper"),
+        "diagnostic should identify the unresolved type: {stderr}"
+    );
+    assert!(output.is_empty());
+    Ok(())
+}
+
+#[test]
 fn newer_record_fails_java8_explicitly_without_upgrade() -> TestResult {
     let (jdk, harness) = authority()?;
     let source = b"package legacy;\n\npublic record Point(int x, int y) {}\n";

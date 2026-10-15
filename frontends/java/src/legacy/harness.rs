@@ -363,8 +363,42 @@ impl Harness {
         corpus: Option<&Path>,
         output: &mut Vec<u8>,
     ) -> Result<(), HarnessError> {
+        self.image_with_sourcepath_and_corpus(toolchain, request, &[], sourcepath, corpus, output)
+    }
+
+    /// Writes the selected sources and exact captured dependency bytes into an isolated run tree.
+    /// Captured dependencies are visible to javac through that tree's source path, but are not
+    /// explicit compiler inputs and therefore cannot contribute declarations to the selected
+    /// source's authority image.
+    pub fn image_with_captured_sourcepath(
+        &self,
+        toolchain: &JdkToolchain<'_>,
+        request: HarnessRequest<'_>,
+        captured_sourcepath: &[JavaSource<'_>],
+        output: &mut Vec<u8>,
+    ) -> Result<(), HarnessError> {
+        self.image_with_sourcepath_and_corpus(
+            toolchain,
+            request,
+            captured_sourcepath,
+            &[],
+            None,
+            output,
+        )
+    }
+
+    fn image_with_sourcepath_and_corpus(
+        &self,
+        toolchain: &JdkToolchain<'_>,
+        request: HarnessRequest<'_>,
+        captured_sourcepath: &[JavaSource<'_>],
+        sourcepath: &[&Path],
+        corpus: Option<&Path>,
+        output: &mut Vec<u8>,
+    ) -> Result<(), HarnessError> {
         output.clear();
         let first = request.sources.first().ok_or(HarnessError::NoSources)?;
+        validate_unique_staged_sources(request.sources, captured_sourcepath)?;
         let discovered =
             super::sourcepath::merged_source_roots(sourcepath, corpus).map_err(|source| {
                 HarnessError::Io {
@@ -381,7 +415,6 @@ impl Harness {
             source,
         })?;
         for source in request.sources {
-            validate_name(source.name)?;
             let path = run.join(source.name);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| HarnessError::Io {
@@ -389,21 +422,34 @@ impl Harness {
                     source,
                 })?;
             }
-            let source_path = path;
-            fs::write(&source_path, source.bytes).map_err(|error| HarnessError::Io {
-                path: source_path,
-                source: error,
-            })?;
+            fs::write(&path, source.bytes).map_err(|source| HarnessError::Io { path, source })?;
+        }
+        for source in captured_sourcepath {
+            let path = run.join(source.name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|source| HarnessError::Io {
+                    path: parent.to_owned(),
+                    source,
+                })?;
+            }
+            fs::write(&path, source.bytes).map_err(|source| HarnessError::Io { path, source })?;
         }
         let image = run.join("authority.image");
         let mut cp = vec![self.doclet_classes.clone()];
         cp.extend(request.classpath.iter().copied().map(Path::to_owned));
         let classpath = env::join_paths(cp).map_err(|source| HarnessError::Classpath { source })?;
-        let plan = module_plan(request.release, request.sources, &discovered, corpus, &run)
-            .map_err(|source| HarnessError::Io {
-                path: run.clone(),
-                source,
-            })?;
+        let plan = module_plan(
+            request.release,
+            request.sources,
+            captured_sourcepath,
+            &discovered,
+            corpus,
+            &run,
+        )
+        .map_err(|source| HarnessError::Io {
+            path: run.clone(),
+            source,
+        })?;
         let attempt = |entries: Option<&[(String, PathBuf)]>| -> Result<Vec<u8>, HarnessError> {
             let mut command = Command::new(toolchain.executable("java"));
             command
@@ -556,6 +602,7 @@ impl Drop for Harness {
 fn module_plan(
     release: crate::legacy::JavaRelease,
     sources: &[JavaSource<'_>],
+    captured_sourcepath: &[JavaSource<'_>],
     discovered: &[PathBuf],
     corpus: Option<&Path>,
     run: &Path,
@@ -565,6 +612,7 @@ fn module_plan(
     }
     let target = sources
         .iter()
+        .chain(captured_sourcepath)
         .find(|source| source.name == Path::new("module-info.java"))
         .and_then(|source| super::sourcepath::parse_module_name(source.bytes));
     let modular = target.is_some()
@@ -623,6 +671,33 @@ fn validate_name(path: &Path) -> Result<(), HarnessError> {
         });
     }
     Ok(())
+}
+
+fn validate_unique_staged_sources(
+    explicit: &[JavaSource<'_>],
+    captured_sourcepath: &[JavaSource<'_>],
+) -> Result<(), HarnessError> {
+    let mut names = std::collections::BTreeSet::new();
+    for source in explicit.iter().chain(captured_sourcepath) {
+        validate_name(source.name)?;
+        let key = source_name_key(source.name);
+        if !names.insert(key) {
+            return Err(HarnessError::DuplicateSourceName {
+                path: source.name.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn source_name_key(path: &Path) -> PathBuf {
+    let mut key = PathBuf::new();
+    for component in path.components() {
+        if let Component::Normal(part) = component {
+            key.push(part);
+        }
+    }
+    key
 }
 
 /// `Some` when every `error:` line is a missing package or a symbol that
@@ -738,6 +813,12 @@ pub enum HarnessError {
     #[error("invalid relative Java source name: {path:?}")]
     InvalidSourceName {
         /// The rejected caller-provided source name.
+        path: PathBuf,
+    },
+    /// Two staged sources use the same relative path and would shadow each other.
+    #[error("duplicate relative Java source name: {path:?}")]
+    DuplicateSourceName {
+        /// The path shared by multiple staged sources.
         path: PathBuf,
     },
     /// Classpath paths could not be represented for this platform.
@@ -914,7 +995,7 @@ mod plan_tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{JavaSource, module_plan};
+    use super::{HarnessError, JavaSource, module_plan, validate_unique_staged_sources};
     use crate::legacy::JavaRelease;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -967,6 +1048,7 @@ mod plan_tests {
             JavaRelease::Java21,
             &[source(Path::new("demo/App.java"), b"package demo;\n")],
             &[],
+            &[],
             Some(corpus.path()),
             corpus.path(),
         )
@@ -985,11 +1067,36 @@ mod plan_tests {
                 source(Path::new("module-info.java"), module_info),
             ],
             &[],
+            &[],
             Some(corpus.path()),
             corpus.path(),
         )
         .expect("plan for release 8");
         assert!(plan.is_none(), "release 8 predates the module system");
+    }
+
+    #[test]
+    fn captured_module_descriptor_plans_the_staged_target_module() {
+        let root = TempDir::new("captured-module");
+        let target = [source(Path::new("demo/App.java"), b"package demo;\n")];
+        let dependencies = [source(
+            Path::new("module-info.java"),
+            b"module org.target { }\n",
+        )];
+        let plan = module_plan(
+            JavaRelease::Java21,
+            &target,
+            &dependencies,
+            &[],
+            None,
+            root.path(),
+        )
+        .expect("plan captured module descriptor")
+        .expect("captured descriptor engages module mode");
+        assert_eq!(
+            plan,
+            vec![(String::from("org.target"), root.path().to_path_buf())]
+        );
     }
 
     #[test]
@@ -1017,6 +1124,7 @@ mod plan_tests {
                 source(Path::new("demo/App.java"), b"package demo;\n"),
                 source(Path::new("module-info.java"), module_info),
             ],
+            &[],
             &[],
             Some(corpus.path()),
             corpus.path(),
@@ -1046,6 +1154,7 @@ mod plan_tests {
             JavaRelease::Java21,
             &[source(Path::new("module-info.java"), module_info)],
             &[],
+            &[],
             Some(corpus.path()),
             corpus.path(),
         )
@@ -1072,6 +1181,7 @@ mod plan_tests {
         let plan = module_plan(
             JavaRelease::Java21,
             &[source(Path::new("demo/App.java"), b"package demo;\n")],
+            &[],
             &[fs::canonicalize(&target_root)?],
             Some(corpus.path()),
             corpus.path(),
@@ -1082,5 +1192,38 @@ mod plan_tests {
             "with no nameable target and no corpus modules there is nothing to map, so the default path stays: {plan:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn staged_source_names_reject_aliases_escapes_and_explicit_collisions() {
+        let aliased = [
+            source(Path::new("pkg/Selected.java"), b"class Selected {}"),
+            source(Path::new("./pkg/Selected.java"), b"class Selected {}"),
+        ];
+        assert!(matches!(
+            validate_unique_staged_sources(&aliased, &[]),
+            Err(HarnessError::DuplicateSourceName { .. })
+        ));
+
+        for invalid in [
+            Path::new("/pkg/Helper.java"),
+            Path::new("../pkg/Helper.java"),
+        ] {
+            let source = [source(invalid, b"class Helper {}")];
+            assert!(matches!(
+                validate_unique_staged_sources(&source, &[]),
+                Err(HarnessError::InvalidSourceName { .. })
+            ));
+        }
+
+        let explicit = [source(Path::new("pkg/Helper.java"), b"class Helper {}")];
+        let captured = [source(
+            Path::new("./pkg/Helper.java"),
+            b"class Helper { int captured; }",
+        )];
+        assert!(matches!(
+            validate_unique_staged_sources(&explicit, &captured),
+            Err(HarnessError::DuplicateSourceName { .. })
+        ));
     }
 }
