@@ -11396,7 +11396,6 @@ mod lane_tests {
 
     fn native_tsz_project_with_resolutions(
         files: &[(&str, &str)],
-        program_diagnostics: Vec::new(),
         module_resolutions: &[TszProjectModuleResolution],
     ) -> Result<TszProjectAuthority, LaneError> {
         let mut checker = TszCheckerOptions::default();
