@@ -112,6 +112,21 @@ pub(super) trait Product: Engine {
         ))
     }
 
+    /// Reads at most the native delivery capacity under unchanged issued credit.
+    fn graph_page_window(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() {
+            return Err(ClientError::Protocol(
+                "product does not expose graph delivery windows".to_owned(),
+            ));
+        }
+        self.graph_page(coordinate, window.issued().get(), continuation)
+    }
+
     fn graph_query(
         &mut self,
         input: AdmittedGraphQueryInput,
@@ -192,6 +207,25 @@ impl Engine for SessionProduct {
         }
     }
 
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        match probe {
+            Probe::Search { text, limit } if limit == window.issued().get() => {
+                self.0.search_page_window(text, window, continuation)
+            }
+            Probe::Names { text, limit } if limit == window.issued().get() => {
+                self.0.names_page_window(text, window, continuation)
+            }
+            _ => Err(ClientError::Protocol(
+                "catalog window changed query family/credit".to_owned(),
+            )),
+        }
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         backend_client::surface_with_index_journal(&self.1, command, |command| {
             self.0.surface(command)
@@ -230,6 +264,15 @@ impl Product for SessionProduct {
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         self.0.graph_page(&coordinate, limit, continuation)
+    }
+
+    fn graph_page_window(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0.graph_page_window(&coordinate, window, continuation)
     }
 
     fn graph_query(
@@ -1263,21 +1306,49 @@ impl<P: Product> Server<P> {
         let lifetime = self.semantic_lifetime()?;
         let budget = wire_admission::ResponseBudget::new(response_id);
         let mut effective = limit(arguments)?;
+        let mut delivery = effective;
         let mut arguments = arguments.clone();
         let mut pinned = None;
+        let mut pinned_revision = None;
         loop {
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            let window = record_pages::query_window(effective, delivery)?;
+            self.reimport_catalog_cursor(&arguments, detail, invocation, continuation)?;
             lifetime
                 .check()
                 .map_err(semantic_pages::semantic_client_error)?;
             let reply = self
                 .product
-                .graph_page(coordinate.clone(), effective, continuation)
-                .map_err(|error| {
-                    RpcError::from_fault(&backend_present::probe_fault(
+                .graph_page_window(coordinate.clone(), window, continuation);
+            lifetime
+                .check()
+                .map_err(semantic_pages::semantic_client_error)?;
+            let reply = match reply {
+                Err(ClientError::ResponseTooLarge { basis: Some(basis) }) => {
+                    record_pages::pin_revision(&mut pinned_revision, basis)?;
+                    if record_pages::shrink_window(
+                        continuation.is_some(),
+                        &mut effective,
+                        &mut delivery,
+                        &mut arguments,
+                    ) {
+                        continue;
+                    }
+                    return Err(RpcError::from_fault(&backend_present::probe_fault(
+                        &ClientError::ResponseTooLarge { basis: Some(basis) },
+                        Probe::Graph(&coordinate),
+                    )));
+                }
+                Err(error) => {
+                    return Err(RpcError::from_fault(&backend_present::probe_fault(
                         &error,
                         Probe::Graph(&coordinate),
-                    ))
-                })?;
+                    )));
+                }
+                Ok(reply) => reply,
+            };
             let page = match reply.reply {
                 backend_library::CommandReply::ProjectionPage(page) => page,
                 backend_library::CommandReply::Failed(failure) => {
@@ -1301,6 +1372,7 @@ impl<P: Product> Server<P> {
             let basis = records
                 .page_basis()
                 .ok_or_else(|| RpcError::tool("graph page omits native scope"))?;
+            record_pages::pin_revision(&mut pinned_revision, basis.0.root.into())?;
             if pinned.is_some_and(|expected| expected != basis) {
                 return Err(RpcError::tool(
                     "graph source changed while selecting a bounded page; restart discovery explicitly",
@@ -1328,13 +1400,13 @@ impl<P: Product> Server<P> {
             match result {
                 Ok(result) => return Ok(result),
                 Err(error)
-                    if continuation.is_none()
-                        && effective > 1
-                        && semantic_pages::oversized(&error) =>
-                {
-                    effective = effective.div_ceil(2);
-                    arguments.insert("limit".to_owned(), json!(effective));
-                }
+                    if semantic_pages::oversized(&error)
+                        && record_pages::shrink_window(
+                            continuation.is_some(),
+                            &mut effective,
+                            &mut delivery,
+                            &mut arguments,
+                        ) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -2170,7 +2242,8 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
         return false;
     }
     if let Some(encoded) = owner.strip_prefix("pc1-") {
-        return encoded.len() == backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+        return (encoded.len() == backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+            || encoded.len() == backend_library::CURSOR_WINDOW_QUERY_BYTES.saturating_mul(2))
             && encoded
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));

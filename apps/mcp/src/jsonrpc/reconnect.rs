@@ -171,6 +171,21 @@ impl<E: Endpoint> Reconnecting<E> {
                 }
                 Err(error)
             }
+            Err(ClientError::ResponseFrameTooLarge { basis }) => {
+                // Header-only overflow leaves unread bytes on this exact lease.
+                // Preserve continuation authority, but retry only after the
+                // caller re-imports its signed input on a fresh connection.
+                if let Some(previous) = self.product.take() {
+                    self.endpoint.retire(previous);
+                }
+                if repeatable == Repeatable::No {
+                    Err(ClientError::MutationOutcomeUnknown(
+                        std::io::ErrorKind::InvalidData,
+                    ))
+                } else {
+                    Err(ClientError::ResponseTooLarge { basis })
+                }
+            }
             Err(error @ ClientError::QueryPreparationDisconnected { .. }) => {
                 // Keep the original pinned read's failure. A later explicit
                 // request can connect, but this call cannot acquire a new
@@ -223,14 +238,20 @@ impl<E: Endpoint> Reconnecting<E> {
                             Err(ClientError::Disconnected(_)
                                 | ClientError::RequestCancelled(_)
                                 | ClientError::RemoteDeadlineExceeded
-                                | ClientError::QueryPreparationDisconnected { .. })
+                                | ClientError::QueryPreparationDisconnected { .. }
+                                | ClientError::ResponseFrameTooLarge { .. })
                         ) {
                             self.endpoint.retire(replacement);
                             self.product = None;
                         } else {
                             self.product = Some(replacement);
                         }
-                        result
+                        match result {
+                            Err(ClientError::ResponseFrameTooLarge { basis }) => {
+                                Err(ClientError::ResponseTooLarge { basis })
+                            }
+                            result => result,
+                        }
                     }
                     Repeatable::No => {
                         self.product = Some(replacement);
@@ -344,6 +365,22 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
         })
     }
 
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        if matches!(&probe, Probe::Search { .. })
+            && let Some(context) = &self.request_context
+        {
+            context.begin_default_search(backend_client::CLIENT_REQUEST_TIMEOUT)?;
+        }
+        self.attempt(probe_is_repeatable(&probe), |product| {
+            product.probe_page_window(probe, continuation, window)
+        })
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         let repeatable = surface_is_repeatable(&command);
         self.attempt(repeatable, |product| product.surface(command.clone()))
@@ -400,6 +437,17 @@ impl<E: Endpoint> Product for Reconnecting<E> {
     ) -> Result<ReplyDto, ClientError> {
         self.attempt(Repeatable::Yes, |product| {
             product.graph_page(coordinate.clone(), limit, continuation)
+        })
+    }
+
+    fn graph_page_window(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.graph_page_window(coordinate.clone(), window, continuation)
         })
     }
 
@@ -849,6 +897,30 @@ mod tests {
         );
         product.health().expect("later explicit call may reconnect");
         assert_eq!(product.endpoint.connects, 2);
+    }
+
+    #[test]
+    fn incomplete_oversized_frame_retires_without_replay_and_preserves_mutation_ambiguity() {
+        for repeatable in [Repeatable::Yes, Repeatable::No] {
+            let (mut product, _) = idle_out();
+            let basis = Some(view_state_root(&[]).into());
+            let mut calls = 0;
+            let result: Result<(), ClientError> = product.attempt(repeatable, |_| {
+                calls += 1;
+                Err(ClientError::ResponseFrameTooLarge { basis })
+            });
+            assert_eq!(calls, 1, "the caller must re-import before retrying");
+            assert!(product.product.is_none(), "poisoned lease retired");
+            assert_eq!(product.endpoint.connects, 0);
+            assert_eq!(
+                result,
+                Err(if repeatable == Repeatable::Yes {
+                    ClientError::ResponseTooLarge { basis }
+                } else {
+                    ClientError::MutationOutcomeUnknown(std::io::ErrorKind::InvalidData)
+                })
+            );
+        }
     }
 
     /// A reconnect must hand the retired lease to its endpoint. The real

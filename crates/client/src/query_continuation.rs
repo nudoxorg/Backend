@@ -55,7 +55,7 @@ fn scope(certificate: &WireCertificate) -> Result<&WireClaim, ClientError> {
     Ok(claim)
 }
 
-fn basis(command: &Command) -> Option<backend_library::ViewRevision> {
+pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> {
     match command {
         Command::Search(query) => Some(query.basis()),
         Command::Name(query) => Some(query.basis()),
@@ -339,11 +339,22 @@ impl Session {
         }
         let recipe = match &imported.command {
             Command::Search(query) => {
-                backend_library::QueryPageRecipe::search(revision.root, query)
+                backend_library::QueryPageRecipe::search_predecessor(revision.root, query)
+                    .ok_or_else(|| {
+                        ClientError::Protocol("query predecessor changed window credit".to_owned())
+                    })?
             }
-            Command::Name(query) => backend_library::QueryPageRecipe::names(revision.root, query),
-            Command::GraphPage { symbol, .. } => {
-                backend_library::QueryPageRecipe::graph(revision.root, *symbol)
+            Command::Name(query) => {
+                backend_library::QueryPageRecipe::names_predecessor(revision.root, query)
+                    .ok_or_else(|| {
+                        ClientError::Protocol("query predecessor changed window credit".to_owned())
+                    })?
+            }
+            Command::GraphPage { symbol, page } => {
+                backend_library::QueryPageRecipe::graph_predecessor(revision.root, *symbol, *page)
+                    .ok_or_else(|| {
+                    ClientError::Protocol("graph predecessor changed window credit".to_owned())
+                })?
             }
             _ => {
                 return Err(ClientError::Protocol(
@@ -383,6 +394,16 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.resume_prepared_graph_window(symbol, limit, continuation, None)
+    }
+
+    pub(super) fn resume_prepared_graph_window(
+        &mut self,
+        symbol: SymbolAddress,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        window: Option<backend_library::QueryWindow>,
+    ) -> Result<ReplyDto, ClientError> {
         let request = self
             .prepared_query
             .take()
@@ -402,7 +423,21 @@ impl Session {
             ));
         }
         let certificate = request.certificate().cloned();
-        self.send_success(request.command, certificate)
+        let command = match (request.command, window) {
+            (Command::GraphPage { symbol, page }, Some(window)) => Command::GraphPage {
+                symbol,
+                page: page.with_window(window).ok_or_else(|| {
+                    ClientError::Protocol("graph delivery changed issued ceiling".to_owned())
+                })?,
+            },
+            (command, None) => command,
+            _ => {
+                return Err(ClientError::Protocol(
+                    "graph delivery request changed family".to_owned(),
+                ));
+            }
+        };
+        self.send_success(command, certificate)
     }
 
     pub(super) fn resume_prepared_query(
@@ -422,6 +457,18 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
         remaining: Option<Duration>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.resume_prepared_query_window(family, text, limit, continuation, remaining, None)
+    }
+
+    pub(super) fn resume_prepared_query_window(
+        &mut self,
+        family: &str,
+        text: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        remaining: Option<Duration>,
+        window: Option<backend_library::QueryWindow>,
     ) -> Result<ReplyDto, ClientError> {
         let started = std::time::Instant::now();
         let request = self
@@ -447,8 +494,26 @@ impl Session {
             ));
         }
         let certificate = request.certificate().cloned();
+        let command = match (request.command, window) {
+            (Command::Search(query), Some(window)) => {
+                Command::Search(query.with_window(window).ok_or_else(|| {
+                    ClientError::Protocol("search delivery changed issued ceiling".to_owned())
+                })?)
+            }
+            (Command::Name(query), Some(window)) => {
+                Command::Name(query.with_window(window).ok_or_else(|| {
+                    ClientError::Protocol("name delivery changed issued ceiling".to_owned())
+                })?)
+            }
+            (command, None) => command,
+            _ => {
+                return Err(ClientError::Protocol(
+                    "delivery request changed family".to_owned(),
+                ));
+            }
+        };
         self.send_success_with_budget(
-            request.command,
+            command,
             certificate,
             remaining.map(|budget| budget.saturating_sub(started.elapsed())),
         )

@@ -115,7 +115,10 @@ pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
     reason_name,
 };
-pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, probe_fault};
+pub use drive::{
+    Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
+    probe_fault,
+};
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
     IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,

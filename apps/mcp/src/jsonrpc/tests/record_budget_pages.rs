@@ -750,6 +750,7 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 let mut seen = std::collections::BTreeSet::new();
                 let mut pages = 0;
                 let mut previous_limit = None;
+                let mut continued_shrinks = 0;
                 loop {
                     let prior_reads = server.product.page_limits.len();
                     let response = encoded_stdio_reply(
@@ -767,11 +768,28 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                     assert_context_bounded(&response);
                     assert_eq!(response["result"]["isError"], false, "{response}");
                     if let Some(limit) = previous_limit {
-                        assert_eq!(
-                            &server.product.page_limits[prior_reads..],
-                            &[u16::try_from(limit).expect("issued native bound")],
-                            "a resumed frontier is read once at its unchanged issued limit"
+                        let attempts = &server.product.page_windows[prior_reads..];
+                        assert!(!attempts.is_empty());
+                        assert!(
+                            attempts
+                                .iter()
+                                .all(|window| u64::from(window.issued().get()) == limit),
+                            "every retry retains the issued query credit"
                         );
+                        assert!(
+                            attempts
+                                .windows(2)
+                                .all(|pair| pair[1].delivery() < pair[0].delivery()),
+                            "only delivery shrinks at this identical input frontier"
+                        );
+                        let inputs = &server.product.catalog_frontiers[prior_reads..];
+                        assert!(
+                            inputs
+                                .iter()
+                                .all(|input| input.is_some() && *input == inputs[0]),
+                            "every attempt retries the exact admitted input, never an attempted successor"
+                        );
+                        continued_shrinks += attempts.len() - 1;
                     } else {
                         assert_eq!(server.product.page_limits.first(), Some(&12));
                         assert!(
@@ -836,7 +854,7 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                             .page_limits
                             .last()
                             .expect("successful native page read"),
-                        "the emitted continuation copies the exact successful native read limit"
+                        "the emitted continuation copies immutable issued credit"
                     );
                     assert!(
                         effective < 12,
@@ -870,6 +888,12 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 }
                 assert!(pages > 1);
                 assert_eq!(seen.len(), expected_count);
+                if tool == "backend.graph" && repetitions == 450 && !dense_centre {
+                    assert!(
+                        continued_shrinks > 0,
+                        "the unchanged thin-centre regression must exercise smaller delivery after a cursor was issued"
+                    );
+                }
                 if tool == "backend.graph" {
                     assert!(
                         seen.contains(MODULE),
@@ -1045,5 +1069,82 @@ fn budget_rereads_cannot_cross_query_scope_or_reset_a_cancelled_lifetime() {
         );
         assert_eq!(server.product.graph_query_calls, 0);
         assert!(server.product.page_limits.is_empty());
+    }
+}
+
+#[test]
+fn typed_native_reply_ceiling_retries_the_same_frontier_without_changing_issued_arguments() {
+    // The byte-ceiling signal is injected at the transport boundary; successful
+    // rows/cursors come from the real Library. This is no native cap-size proof.
+    for tool in ["backend.search", "backend.resolve", "backend.graph"] {
+        for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
+            let mut server = ready(Fake {
+                page_catalog: Some(wide_catalog(12, 1, false)),
+                catalog_delivery_ceiling: Some(1),
+                ..Fake::default()
+            });
+            let arguments = if tool == "backend.graph" {
+                json!({"coordinate":MODULE,"limit":4,"detail":"full"})
+            } else {
+                json!({"query":"Session","limit":4,"detail":"full"})
+            };
+            let mut call = exposure.expose_call(json!({"name":tool,"arguments":arguments}));
+            let mut seen = std::collections::BTreeSet::new();
+            let mut pages = 0;
+            loop {
+                let start = server.product.page_windows.len();
+                let response = encoded_stdio_reply(
+                    server
+                        .handle_value(
+                            json!({"jsonrpc":"2.0","id":73,"method":"tools/call","params":call}),
+                            None,
+                        )
+                        .expect("correlated response"),
+                );
+                assert_context_bounded(&response);
+                assert_eq!(response["result"]["isError"], false, "{response}");
+                let attempts = &server.product.page_windows[start..];
+                assert!(attempts.iter().all(|window| window.issued().get() == 4));
+                if pages > 0 {
+                    assert_eq!(
+                        attempts
+                            .iter()
+                            .map(|window| window.delivery().get())
+                            .collect::<Vec<_>>(),
+                        [4, 2, 1]
+                    );
+                    let frontiers = &server.product.catalog_frontiers[start..];
+                    assert!(
+                        frontiers
+                            .iter()
+                            .all(|cursor| cursor.is_some() && *cursor == frontiers[0])
+                    );
+                }
+                let structured = &response["result"]["structuredContent"];
+                for row in structured["records"].as_array().expect("whole native rows") {
+                    assert!(
+                        seen.insert(
+                            row["identity"]["coordinate"]
+                                .as_str()
+                                .expect("coordinate")
+                                .to_owned()
+                        )
+                    );
+                }
+                pages += 1;
+                if !structured["more"].as_bool().expect("native terminal") {
+                    break;
+                }
+                call = structured["continuation_call"].clone();
+                let selected = if exposure == McpExposure::RegisteredCall {
+                    &call["arguments"]
+                } else {
+                    &call
+                };
+                assert_eq!(selected["arguments"]["limit"], 4);
+            }
+            assert_eq!(seen.len(), 12 + usize::from(tool == "backend.graph"));
+            assert!(pages > 1);
+        }
     }
 }

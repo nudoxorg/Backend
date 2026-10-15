@@ -422,7 +422,7 @@ impl RevisionReceipt {
 }
 
 /// Bounded result count.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct QueryLimit(u16);
 
 impl QueryLimit {
@@ -458,7 +458,7 @@ pub struct Query {
     /// Search/name text.
     pub(crate) text: String,
     /// Maximum rows in this page.
-    pub(crate) limit: QueryLimit,
+    pub(crate) window: crate::QueryWindow,
     /// Exact source root accepted by the caller.
     pub(crate) basis: ViewRevision,
     /// Cursor for the next bounded page.
@@ -476,7 +476,7 @@ impl Query {
         let basis = basis.into();
         Self {
             text: text.into(),
-            limit,
+            window: crate::QueryWindow::fixed(limit),
             basis,
             cursor: None,
             read_manifest: None,
@@ -495,10 +495,26 @@ impl Query {
         self.basis
     }
 
+    /// Returns issued credit and this read's independently bounded delivery.
+    #[must_use]
+    pub const fn window(&self) -> crate::QueryWindow {
+        self.window
+    }
+
+    /// Uses a validated native delivery window at the same issued ceiling.
+    #[must_use]
+    pub fn with_window(mut self, window: crate::QueryWindow) -> Option<Self> {
+        if window.issued() != self.window.issued() {
+            return None;
+        }
+        self.window = window;
+        Some(self)
+    }
+
     /// Returns the bounded page size.
     #[must_use]
     pub const fn limit(&self) -> QueryLimit {
-        self.limit
+        self.window.issued()
     }
 
     /// Returns the optional continuation cursor.
@@ -813,7 +829,7 @@ pub struct NameQuery {
     /// Canonical name text or prefix.
     pub(crate) text: String,
     /// Maximum rows returned.
-    pub(crate) limit: QueryLimit,
+    pub(crate) window: crate::QueryWindow,
     /// Source root expected by the caller.
     pub(crate) basis: ViewRevision,
     /// Optional continuation cursor.
@@ -829,7 +845,7 @@ impl NameQuery {
     pub fn new(text: impl Into<String>, basis: impl Into<ViewRevision>, limit: QueryLimit) -> Self {
         Self {
             text: text.into(),
-            limit,
+            window: crate::QueryWindow::fixed(limit),
             basis: basis.into(),
             cursor: None,
             read_manifest: None,
@@ -864,10 +880,26 @@ impl NameQuery {
         }
     }
 
+    /// Returns issued credit and this read's independently bounded delivery.
+    #[must_use]
+    pub const fn window(&self) -> crate::QueryWindow {
+        self.window
+    }
+
+    /// Uses a validated native delivery window at the same issued ceiling.
+    #[must_use]
+    pub fn with_window(mut self, window: crate::QueryWindow) -> Option<Self> {
+        if window.issued() != self.window.issued() {
+            return None;
+        }
+        self.window = window;
+        Some(self)
+    }
+
     /// Returns the bounded page size.
     #[must_use]
     pub const fn limit(&self) -> QueryLimit {
-        self.limit
+        self.window.issued()
     }
 
     /// Returns the exact source basis.
@@ -945,7 +977,7 @@ impl PageContinuation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageRequest {
     basis: ViewRevision,
-    limit: QueryLimit,
+    window: crate::QueryWindow,
     continuation: Option<PageContinuation>,
 }
 
@@ -955,7 +987,7 @@ impl PageRequest {
     pub fn new(basis: impl Into<ViewRevision>, limit: QueryLimit) -> Self {
         Self {
             basis: basis.into(),
-            limit,
+            window: crate::QueryWindow::fixed(limit),
             continuation: None,
         }
     }
@@ -973,10 +1005,26 @@ impl PageRequest {
         self.basis
     }
 
+    /// Returns issued credit and this read's independently bounded delivery.
+    #[must_use]
+    pub const fn window(&self) -> crate::QueryWindow {
+        self.window
+    }
+
+    /// Uses a validated native delivery window at the same issued ceiling.
+    #[must_use]
+    pub fn with_window(mut self, window: crate::QueryWindow) -> Option<Self> {
+        if window.issued() != self.window.issued() {
+            return None;
+        }
+        self.window = window;
+        Some(self)
+    }
+
     /// Returns the bounded page size.
     #[must_use]
     pub const fn limit(self) -> QueryLimit {
-        self.limit
+        self.window.issued()
     }
 
     /// Returns the opaque continuation, when resuming.
@@ -1273,6 +1321,11 @@ pub enum CommandFailure {
         /// Current preparation state; no query result is implied.
         state: QueryPreparationState,
     },
+    /// A complete catalog page exceeded the native reply ceiling at this exact revision.
+    ReplyTooLarge {
+        /// Immutable requested revision; delivery may shrink without changing it.
+        basis: ViewRevision,
+    },
     /// Useful profiles committed, with all unavailable profiles explicitly retained.
     PartiallyPublished(crate::IndexJobPartialPublication),
     /// Adding a package reached an exact compact-fragment compiler refusal.
@@ -1321,6 +1374,9 @@ impl core::fmt::Display for CommandFailure {
                 "query corpus is {}; retry the same query against the current view",
                 state.as_str()
             ),
+            Self::ReplyTooLarge { .. } => {
+                formatter.write_str("complete catalog page exceeds the native reply ceiling")
+            }
             Self::PartiallyPublished(partial) => write!(
                 formatter,
                 "partially published {}: {} profiles remain unavailable at workspace sequence {}",

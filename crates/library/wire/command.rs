@@ -11,6 +11,8 @@ use crate::{
 use backend_version::ProducerObservationVerifier;
 use serde::{Deserialize, Serialize};
 
+#[path = "command/binary_certificate.rs"]
+mod binary_certificate;
 #[path = "command/cursor_wire.rs"]
 mod cursor_wire;
 #[path = "command/graph_query_wire.rs"]
@@ -21,8 +23,6 @@ mod page_wire;
 mod read_manifest_wire;
 #[path = "command/semantic_shape_wire.rs"]
 mod semantic_shape_wire;
-#[path = "command/binary_certificate.rs"]
-mod binary_certificate;
 pub use binary_certificate::{
     encode_binary_certificate_command, expand_binary_certificate_command,
 };
@@ -546,7 +546,11 @@ pub(crate) fn ensure_version(version: u16, kind: &str) -> Result<(), String> {
     ensure_version_against(version, kind, DTO_VERSION)
 }
 
-pub(super) fn ensure_version_against(version: u16, kind: &str, supported: u16) -> Result<(), String> {
+pub(super) fn ensure_version_against(
+    version: u16,
+    kind: &str,
+    supported: u16,
+) -> Result<(), String> {
     if version == supported {
         Ok(())
     } else {
@@ -680,6 +684,8 @@ pub(crate) struct SymbolAddressWire {
 struct NameQueryWire {
     text: String,
     limit: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<QueryWindowWire>,
     basis: String,
     cursor: Option<CursorWire>,
     read_manifest: Option<ReadManifestWire>,
@@ -690,6 +696,8 @@ struct NameQueryWire {
 struct QueryWire {
     text: String,
     limit: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<QueryWindowWire>,
     basis: String,
     cursor: Option<CursorWire>,
     read_manifest: Option<ReadManifestWire>,
@@ -706,6 +714,40 @@ pub(crate) struct CursorWire {
     root: String,
     sequence: u64,
     query_offset: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    query_window: Option<QueryWindowWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QueryWindowWire {
+    version: u8,
+    issued: u16,
+    delivery: u16,
+}
+
+fn window_to_wire(window: crate::QueryWindow) -> Option<QueryWindowWire> {
+    window.is_windowed().then_some(QueryWindowWire {
+        version: 1,
+        issued: window.issued().get(),
+        delivery: window.delivery().get(),
+    })
+}
+
+fn window_from_wire(
+    value: Option<&QueryWindowWire>,
+    issued: crate::QueryLimit,
+) -> Result<crate::QueryWindow, String> {
+    let Some(value) = value else {
+        return Ok(crate::QueryWindow::fixed(issued));
+    };
+    if value.version != 1 || value.issued != issued.get() {
+        return Err("unsupported query window or changed issued ceiling".to_owned());
+    }
+    let delivery = crate::QueryLimit::new(value.delivery)
+        .ok_or_else(|| "invalid delivery bound".to_owned())?;
+    crate::QueryWindow::new(issued, delivery)
+        .ok_or_else(|| "delivery exceeds issued ceiling".to_owned())
 }
 
 impl CursorWire {
@@ -1006,6 +1048,7 @@ fn name_query_to_wire(query: &NameQuery) -> NameQueryWire {
     NameQueryWire {
         text: query.text().to_owned(),
         limit: query.limit().get(),
+        window: window_to_wire(query.window()),
         basis: encode_id(query.basis().as_bytes()),
         cursor: query.cursor().map(cursor_to_wire),
         read_manifest: query.read_manifest().map(read_manifest_to_wire),
@@ -1019,7 +1062,7 @@ fn name_query_from_wire(
     let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid query limit".to_owned())?;
     Ok(NameQuery {
         text: value.text,
-        limit,
+        window: window_from_wire(value.window.as_ref(), limit)?,
         basis: revision_from_wire(certificate, &value.basis)?,
         cursor: value
             .cursor
@@ -1038,6 +1081,7 @@ fn query_to_wire(query: &Query) -> QueryWire {
     QueryWire {
         text: query.text().to_owned(),
         limit: query.limit().get(),
+        window: window_to_wire(query.window()),
         basis: encode_id(query.basis().as_bytes()),
         cursor: query.cursor().map(cursor_to_wire),
         read_manifest: query.read_manifest().map(read_manifest_to_wire),
@@ -1048,7 +1092,7 @@ fn query_from_wire(value: QueryWire, certificate: &WireCertificate) -> Result<Qu
     let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid query limit".to_owned())?;
     Ok(Query {
         text: value.text,
-        limit,
+        window: window_from_wire(value.window.as_ref(), limit)?,
         basis: revision_from_wire(certificate, &value.basis)?,
         cursor: value
             .cursor

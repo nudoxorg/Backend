@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct PageRequestWire {
     pub(crate) basis: String,
     pub(crate) limit: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) window: Option<super::QueryWindowWire>,
     pub(crate) continuation: Option<CursorWire>,
 }
 
@@ -31,6 +33,7 @@ pub(crate) fn page_request_to_wire(page: PageRequest) -> PageRequestWire {
     PageRequestWire {
         basis: encode_id(page.basis().as_bytes()),
         limit: page.limit().get(),
+        window: super::window_to_wire(page.window()),
         continuation: page
             .continuation()
             .map(|continuation| cursor_to_wire(continuation.cursor())),
@@ -42,7 +45,10 @@ pub(crate) fn page_request_from_wire(
     certificate: &WireCertificate,
 ) -> Result<PageRequest, String> {
     let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid page limit".to_owned())?;
-    let mut page = PageRequest::new(revision_from_wire(certificate, &value.basis)?, limit);
+    let window = super::window_from_wire(value.window.as_ref(), limit)?;
+    let mut page = PageRequest::new(revision_from_wire(certificate, &value.basis)?, limit)
+        .with_window(window)
+        .ok_or_else(|| "query window changed issued ceiling".to_owned())?;
     if let Some(cursor) = value.continuation {
         page = page.with_continuation(PageContinuation::from_cursor(cursor_from_wire(
             &cursor,

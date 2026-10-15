@@ -178,6 +178,22 @@ pub trait Engine {
         self.probe(probe)
     }
 
+    /// Reads a native catalog window without changing its issued query credit.
+    /// Unsupported engines reject the new contract rather than resizing a cursor.
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() {
+            return Err(ClientError::Protocol(
+                "engine does not expose native catalog delivery windows".to_owned(),
+            ));
+        }
+        self.probe_page(probe, continuation)
+    }
+
     /// Re-admits an imported query proof against the current authenticated owner.
     fn prepare_query_continuation(
         &mut self,
@@ -362,6 +378,38 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::Outline(path) => outline(engine, path),
         Request::OutlinePage { .. } => answer_paged(engine, request, None),
         Request::Surface(command) => surface(engine, command),
+    }
+}
+
+/// Projects an already admitted native search/name reply without another read.
+/// Surfaces can retain typed response-ceiling errors before this projection.
+///
+/// # Errors
+/// Returns the existing search/name projection fault for a changed reply shape or failed command.
+pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
+    match request {
+        Request::Search { text, .. } => {
+            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
+            let list = record_list(text, &snapshot);
+            let list = if let Some(status) = semantic_search {
+                list.with_semantic_search_status(status)
+            } else {
+                list
+            };
+            let list = if list.is_empty() {
+                list.with_empty_reason("no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword")
+            } else {
+                list
+            };
+            Ok(Answer::Records(Box::new(list)))
+        }
+        Request::Resolve { text, .. } => {
+            let CommandReply::Names(snapshot) = reply.reply else {
+                return Err(shape("resolve"));
+            };
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        _ => Err(shape("catalog window request")),
     }
 }
 

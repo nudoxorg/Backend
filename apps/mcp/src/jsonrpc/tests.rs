@@ -646,10 +646,144 @@ struct Fake {
     catalog_cursors: BTreeMap<String, (PageContinuation, ViewStateRoot)>,
     /// Actual page bounds admitted by the catalog adapter.
     page_limits: Vec<u16>,
+    /// Native delivery windows, including every rejected frontier attempt.
+    page_windows: Vec<backend_library::QueryWindow>,
+    catalog_frontiers: Vec<Option<PageContinuation>>,
+    /// Injected transport control; real native selection runs after delivery fits.
+    catalog_delivery_ceiling: Option<u16>,
     /// Exact document coordinates passed back by a text-preview consumer.
     document_coordinates: Vec<String>,
     /// Bind the default document fixture to the requested display coordinate.
     document_matches_request: bool,
+}
+
+impl Fake {
+    fn catalog_probe(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: Option<backend_library::QueryWindow>,
+    ) -> Result<ReplyDto, ClientError> {
+        if matches!(probe, Probe::OutlinePage { .. }) && !self.page_limits.is_empty() {
+            if let Some(replacement) = self.outline_source_after_first_page.take() {
+                self.page_catalog = Some(replacement);
+            }
+        }
+        let Some(catalog) = &self.page_catalog else {
+            if continuation.is_some() {
+                return Err(ClientError::StaleCursor);
+            }
+            return self.probe(probe);
+        };
+        if let Probe::OutlinePage { path, limit } = probe {
+            self.page_limits.push(limit);
+            let request = backend_library::PageRequest::new(
+                catalog.revision_root(),
+                backend_library::QueryLimit::new(limit).expect("bounded outline"),
+            );
+            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+            let page = catalog
+                .outline_page(package_key(path), request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
+        let (text, limit, names) = match probe {
+            Probe::Search { text, limit } => (text, limit, false),
+            Probe::Names { text, limit } => (text, limit, true),
+            _ => return self.probe(probe),
+        };
+        self.page_limits.push(limit);
+        let credit = backend_library::QueryLimit::new(limit).expect("admitted limit");
+        let window = window.unwrap_or(backend_library::QueryWindow::fixed(credit));
+        self.page_windows.push(window);
+        self.catalog_frontiers.push(continuation);
+        if continuation.is_some()
+            && self
+                .catalog_delivery_ceiling
+                .is_some_and(|ceiling| window.delivery().get() > ceiling)
+        {
+            return Err(ClientError::ResponseTooLarge {
+                basis: Some(catalog.revision_root().into()),
+            });
+        }
+        let reply = if names {
+            let mut query = backend_library::NameQuery::new(text, catalog.revision_root(), credit)
+                .with_window(window)
+                .expect("name delivery preserves credit");
+            if let Some(cursor) = continuation {
+                query = query.with_cursor(cursor.cursor());
+            }
+            catalog.names(&query).map(CommandReply::Names)
+        } else {
+            let mut query = backend_library::Query::new(text, catalog.revision_root(), credit)
+                .with_window(window)
+                .expect("search delivery preserves credit");
+            if let Some(cursor) = continuation {
+                query = query.with_cursor(cursor.cursor());
+            }
+            selected_search_page(catalog, &query).map(CommandReply::Search)
+        }
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(ReplyDto::new(1, reply))
+    }
+
+    fn catalog_graph_page(
+        &mut self,
+        coordinate: String,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        window: Option<backend_library::QueryWindow>,
+    ) -> Result<ReplyDto, ClientError> {
+        if let Some(failure) = &self.graph_failure {
+            return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone())));
+        }
+
+        self.adapter_boundary = Some("graph_page");
+        if let Some(error) = self.adapter_error.take() {
+            return Err(error);
+        }
+        if let Some(catalog) = &self.page_catalog {
+            self.page_limits.push(limit);
+            let mut request = backend_library::PageRequest::new(
+                catalog.revision_root(),
+                backend_library::QueryLimit::new(limit).expect("admitted limit"),
+            );
+            let window = window.unwrap_or(backend_library::QueryWindow::fixed(request.limit()));
+            self.page_windows.push(window);
+            self.catalog_frontiers.push(continuation);
+            if continuation.is_some()
+                && self
+                    .catalog_delivery_ceiling
+                    .is_some_and(|ceiling| window.delivery().get() > ceiling)
+            {
+                return Err(ClientError::ResponseTooLarge {
+                    basis: Some(catalog.revision_root().into()),
+                });
+            }
+            request = request
+                .with_window(window)
+                .expect("graph delivery preserves credit");
+            if let Some(cursor) = continuation {
+                request = request.with_continuation(cursor);
+            }
+            let page = catalog
+                .graph_page(symbol_key(&coordinate), request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
+        if coordinate == MISSING {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::NotFound,
+            ));
+        }
+        Ok(ReplyDto::new(
+            1,
+            CommandReply::ProjectionPage(ProjectionPage {
+                snapshot: snapshot(vec![declaration_row()]),
+                terminal: PageTerminal::Complete,
+            }),
+        ))
+    }
 }
 
 fn basis() -> Basis {
@@ -897,51 +1031,16 @@ impl Engine for Fake {
         probe: Probe<'_>,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        if matches!(probe, Probe::OutlinePage { .. }) && !self.page_limits.is_empty() {
-            if let Some(replacement) = self.outline_source_after_first_page.take() {
-                self.page_catalog = Some(replacement);
-            }
-        }
-        let Some(catalog) = &self.page_catalog else {
-            if continuation.is_some() {
-                return Err(ClientError::StaleCursor);
-            }
-            return self.probe(probe);
-        };
-        if let Probe::OutlinePage { path, limit } = probe {
-            self.page_limits.push(limit);
-            let request = backend_library::PageRequest::new(
-                catalog.revision_root(),
-                backend_library::QueryLimit::new(limit).expect("bounded outline"),
-            );
-            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
-            let page = catalog
-                .outline_page(package_key(path), request)
-                .map_err(|error| ClientError::Protocol(error.to_string()))?;
-            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
-        }
-        let (text, limit, names) = match probe {
-            Probe::Search { text, limit } => (text, limit, false),
-            Probe::Names { text, limit } => (text, limit, true),
-            _ => return self.probe(probe),
-        };
-        self.page_limits.push(limit);
-        let credit = backend_library::QueryLimit::new(limit).expect("admitted limit");
-        let reply = if names {
-            let mut query = backend_library::NameQuery::new(text, catalog.revision_root(), credit);
-            if let Some(cursor) = continuation {
-                query = query.with_cursor(cursor.cursor());
-            }
-            catalog.names(&query).map(CommandReply::Names)
-        } else {
-            let mut query = backend_library::Query::new(text, catalog.revision_root(), credit);
-            if let Some(cursor) = continuation {
-                query = query.with_cursor(cursor.cursor());
-            }
-            selected_search_page(catalog, &query).map(CommandReply::Search)
-        }
-        .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        Ok(ReplyDto::new(1, reply))
+        self.catalog_probe(probe, continuation, None)
+    }
+
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        self.catalog_probe(probe, continuation, Some(window))
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
@@ -1118,40 +1217,21 @@ impl Product for Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        if let Some(failure) = &self.graph_failure {
-            return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone())));
-        }
+        self.catalog_graph_page(coordinate, limit, continuation, None)
+    }
 
-        self.adapter_boundary = Some("graph_page");
-        if let Some(error) = self.adapter_error.take() {
-            return Err(error);
-        }
-        if let Some(catalog) = &self.page_catalog {
-            self.page_limits.push(limit);
-            let mut request = backend_library::PageRequest::new(
-                catalog.revision_root(),
-                backend_library::QueryLimit::new(limit).expect("admitted limit"),
-            );
-            if let Some(cursor) = continuation {
-                request = request.with_continuation(cursor);
-            }
-            let page = catalog
-                .graph_page(symbol_key(&coordinate), request)
-                .map_err(|error| ClientError::Protocol(error.to_string()))?;
-            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
-        }
-        if coordinate == MISSING {
-            return Err(ClientError::CommandFailed(
-                backend_library::CommandFailure::NotFound,
-            ));
-        }
-        Ok(ReplyDto::new(
-            1,
-            CommandReply::ProjectionPage(ProjectionPage {
-                snapshot: snapshot(vec![declaration_row()]),
-                terminal: PageTerminal::Complete,
-            }),
-        ))
+    fn graph_page_window(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.catalog_graph_page(
+            coordinate,
+            window.issued().get(),
+            continuation,
+            Some(window),
+        )
     }
 
     fn decode_continuation(
@@ -7925,6 +8005,18 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
                 return Err(ClientError::RequestCancelled(reason));
             }
             self.inner.probe(probe)
+        }
+        fn probe_page_window(
+            &mut self,
+            probe: Probe<'_>,
+            continuation: Option<PageContinuation>,
+            window: backend_library::QueryWindow,
+        ) -> Result<ReplyDto, ClientError> {
+            if matches!(probe, Probe::Search { .. }) {
+                self.probe(probe)
+            } else {
+                self.inner.probe_page_window(probe, continuation, window)
+            }
         }
         fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
             self.inner.surface(command)

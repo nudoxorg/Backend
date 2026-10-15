@@ -4080,6 +4080,12 @@ impl CommandAdapter {
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
+        let catalog_basis = match &request.command {
+            Command::Search(query) => Some(query.basis()),
+            Command::Name(query) => Some(query.basis()),
+            Command::GraphPage { page, .. } => Some(page.basis()),
+            _ => None,
+        };
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
@@ -4087,7 +4093,23 @@ impl CommandAdapter {
         } else {
             None
         };
-        Self::encode(daemon, request_id, admitted, status)
+        let encoded = Self::encode(daemon, request_id, admitted, status)?;
+        Self::bound_catalog_reply(request_id, catalog_basis, encoded)
+    }
+
+    fn bound_catalog_reply(
+        request_id: u64,
+        basis: Option<backend_library::ViewRevision>,
+        encoded: Vec<u8>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
+        let Some(basis) = basis.filter(|_| encoded.len() > backend_library::MAX_REPLY_BODY) else {
+            return Ok(encoded);
+        };
+        backend_engine::encode_reply_dto(&backend_engine::ReplyDto::new(
+            request_id,
+            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis }),
+        ))
+        .map_err(BuiltinModelError)
     }
 
     /// One admitted reply as the wire's reply DTO.
@@ -5060,7 +5082,11 @@ impl CommandAdapter {
         }
         vec![(
             pending.ticket,
-            reply.and_then(|reply| Self::encode(daemon, pending.request_id, reply, status)),
+            reply
+                .and_then(|reply| Self::encode(daemon, pending.request_id, reply, status))
+                .and_then(|encoded| {
+                    Self::bound_catalog_reply(pending.request_id, Some(query.basis()), encoded)
+                }),
         )]
     }
 
@@ -6324,6 +6350,50 @@ mod tests {
                 .expect("bounded refusal detail"),
             failure,
         }
+    }
+
+    #[test]
+    fn catalog_reply_ceiling_is_typed_and_keeps_its_exact_requested_revision() {
+        let root = backend_library::view_state_root(&[]);
+        let basis = root.into();
+        let fitting = vec![0; backend_library::MAX_REPLY_BODY];
+        assert_eq!(
+            CommandAdapter::bound_catalog_reply(7, Some(basis), fitting.clone())
+                .expect("at ceiling"),
+            fitting
+        );
+        let encoded = CommandAdapter::bound_catalog_reply(
+            7,
+            Some(basis),
+            vec![0; backend_library::MAX_REPLY_BODY + 1],
+        )
+        .expect("bounded refusal");
+        let reply = backend_library::decode_reply_body(&encoded).expect("strict typed refusal");
+        assert_eq!(reply.request_id, 7);
+        assert_eq!(
+            reply.reply,
+            CommandReply::Failed(backend_library::CommandFailure::ReplyTooLarge { basis })
+        );
+        let command = backend_library::CommandDto::new(
+            7,
+            backend_library::Command::Name(backend_library::NameQuery::new(
+                "Thing",
+                root,
+                backend_library::QueryLimit::default(),
+            )),
+        );
+        assert!(backend_library::admit_reply(&command, &reply).is_ok());
+        let foreign = backend_library::CommandDto::new(
+            7,
+            backend_library::Command::Name(backend_library::NameQuery::new(
+                "Thing",
+                backend_library::ViewStateRoot::from_bytes([3; 32]),
+                backend_library::QueryLimit::default(),
+            )),
+        );
+        assert!(backend_library::admit_reply(&foreign, &reply).is_err());
+        let unrelated = backend_library::CommandDto::new(7, backend_library::Command::Health);
+        assert!(backend_library::admit_reply(&unrelated, &reply).is_err());
     }
 
     #[test]

@@ -823,6 +823,8 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         | ClientError::Io(_)
         | ClientError::Startup(_)
         | ClientError::Transport(_)
+        | ClientError::ResponseTooLarge { .. }
+        | ClientError::ResponseFrameTooLarge { .. }
         | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
         ClientError::BasisMismatch { .. }
         | ClientError::FreshnessMismatch

@@ -244,6 +244,17 @@ pub enum ClientError {
     Protocol(String),
     /// A bounded transport allocation was rejected.
     Transport(ReplicationError),
+    /// A native reply exceeded its byte/allocation ceiling after request admission.
+    /// Pure windowed reads may reduce delivery; request/proof overflow is distinct.
+    ResponseTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
+    /// Only the reply frame header was consumed. The transport is unusable.
+    ResponseFrameTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
     /// The application service rejected an admitted command.
     CommandFailed(CommandFailure),
     /// A successful view reply was not coherent.
@@ -319,6 +330,11 @@ impl fmt::Display for ClientError {
             Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
+            Self::ResponseTooLarge { .. } => {
+                formatter.write_str("native reply exceeds its bounded byte/allocation ceiling")
+            }
+            Self::ResponseFrameTooLarge { .. } => formatter
+                .write_str("native reply frame exceeds its ceiling; the connection was retired"),
             Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
             Self::IncoherentView => formatter.write_str("daemon returned an incoherent view"),
             Self::BasisMismatch { .. } => {
@@ -967,7 +983,9 @@ impl Session {
         let encoded = token
             .strip_prefix("pc1-")
             .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
-        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2) {
+        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+            && encoded.len() != backend_library::CURSOR_WINDOW_QUERY_BYTES.saturating_mul(2)
+        {
             return Err(ClientError::Protocol(
                 "malformed continuation token".to_owned(),
             ));
@@ -1196,6 +1214,55 @@ impl Session {
         })
     }
 
+    /// Reads a complete native catalog window under unchanged issued credit.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn search_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        self.with_default_search_wait(|this| {
+            let deadline = query_preparation::QueryReadDeadline::new(
+                CLIENT_REQUEST_TIMEOUT,
+                this.search_wait_scope
+                    .as_ref()
+                    .or(this.request_context.as_ref()),
+            )?;
+            if this.prepared_query.is_some() {
+                return this.resume_prepared_query_window(
+                    "Search",
+                    text,
+                    window.issued().get(),
+                    continuation,
+                    Some(deadline.remaining()?),
+                    Some(window),
+                );
+            }
+            let revision = this.revision_with_budget(deadline.remaining()?)?;
+            let query = Query::new(text, revision.root, window.issued())
+                .with_window(window)
+                .ok_or_else(|| ClientError::Protocol("search window changed credit".to_owned()))?;
+            let query = if let Some(cursor) = continuation {
+                query.with_cursor(cursor.cursor())
+            } else {
+                query
+            };
+            this.send_success_with_budget(
+                Command::Search(query),
+                Some(this.page_certificate(revision.certificate, continuation)),
+                Some(deadline.remaining()?),
+            )
+        })
+    }
+
     fn with_default_search_wait<T>(
         &mut self,
         call: impl FnOnce(&mut Self) -> Result<T, ClientError>,
@@ -1276,6 +1343,46 @@ impl Session {
         let query = match continuation {
             Some(cursor) => query.with_cursor(cursor.cursor()),
             None => query,
+        };
+        self.send_success(
+            Command::Name(query),
+            Some(self.page_certificate(revision.certificate, continuation)),
+        )
+    }
+
+    /// Reads a complete name window, independently bounding this delivery.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn names_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_query_window(
+                "Name",
+                text,
+                window.issued().get(),
+                continuation,
+                None,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let query = NameQuery::new(text, revision.root, window.issued())
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("name window changed credit".to_owned()))?;
+        let query = if let Some(cursor) = continuation {
+            query.with_cursor(cursor.cursor())
+        } else {
+            query
         };
         self.send_success(
             Command::Name(query),
@@ -1466,6 +1573,48 @@ impl Session {
             value: coordinate.to_owned(),
         });
         let page = page_request(revision.root, limit, continuation)?;
+        self.send_success(
+            Command::GraphPage {
+                symbol: SymbolAddress::canonical(symbol),
+                page,
+            },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
+    /// Reads a plain graph window from the exact admitted input frontier.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn graph_page_window(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_graph_window(
+                SymbolAddress::canonical(symbol_key(coordinate)),
+                window.issued().get(),
+                continuation,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let symbol = symbol_key(coordinate);
+        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+            value: coordinate.to_owned(),
+        });
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
         self.send_success(
             Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
@@ -2296,6 +2445,11 @@ fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {
 
 fn require_command_success(reply: ReplyDto) -> Result<ReplyDto, ClientError> {
     match &reply.reply {
+        CommandReply::Failed(CommandFailure::ReplyTooLarge { basis }) => {
+            Err(ClientError::ResponseTooLarge {
+                basis: Some(*basis),
+            })
+        }
         CommandReply::Failed(failure) => Err(ClientError::CommandFailed(failure.clone())),
         // `Error` remains decodable for peers using the pre-typed reply schema.
         CommandReply::Error(message) => Err(ClientError::Protocol(message.clone())),
@@ -2493,7 +2647,10 @@ fn write_body(writer: &mut impl Write, body: &[u8]) -> Result<(), ClientError> {
 }
 
 fn read_body(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
-    read_frame(reader, limits()).map_err(map_frame)
+    read_frame(reader, limits()).map_err(|error| match error {
+        LocalControlError::FrameTooLarge => ClientError::ResponseFrameTooLarge { basis: None },
+        other => map_frame(other),
+    })
 }
 
 /// Admits one bounded command.
@@ -2530,12 +2687,16 @@ pub fn admit_reply_with_capability(
 ) -> Result<ReplyDto, ClientError> {
     backend_library::admit_reply_with_capability(request, &reply, capability).map_err(map_reply)?;
     if backend_library::reply_memory_bound(&reply) > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     let encoded =
         serde_json::to_vec(&reply).map_err(|error| ClientError::Protocol(error.to_string()))?;
     if encoded.len() > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     Ok(reply)
 }

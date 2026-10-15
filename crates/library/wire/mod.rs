@@ -70,7 +70,7 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. The combined version-29 cutover adds typed
-/// TypeScript compiler admission details and native semantic source pages/epochs.
-/// Persisted view rows, certificates and compact events are unchanged.
-pub const DTO_VERSION: u16 = 29;
+/// Current transport DTO version. Version 30 adds independent catalog delivery
+/// windows, authenticated predecessor spans, and a typed native reply ceiling.
+/// Persisted owner snapshots, certificates and compact events are unchanged.
+pub const DTO_VERSION: u16 = 30;

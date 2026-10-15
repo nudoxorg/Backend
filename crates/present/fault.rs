@@ -990,6 +990,12 @@ impl Fault {
                 fault.query_preparation = Some((*basis, *state));
                 return fault;
             }
+            CommandFailure::ReplyTooLarge { .. } => (
+                FaultSlug::Transport,
+                CauseSlug::Oversized,
+                "a complete catalog page exceeds the native reply ceiling".to_owned(),
+                Affordance::None,
+            ),
             CommandFailure::PartiallyPublished(partial) => {
                 return Self::partial_publication(partial, operand);
             }
@@ -1079,11 +1085,7 @@ impl Fault {
             operand,
             Cause::new(
                 CauseSlug::Refused,
-                format!(
-                    "{}: {phase}/{}; {explanation}",
-                    scope,
-                    failure.kind_tag(),
-                ),
+                format!("{}: {phase}/{}; {explanation}", scope, failure.kind_tag(),),
             ),
             Affordance::None,
         );
@@ -1197,6 +1199,10 @@ impl Fault {
                 CauseSlug::Unproven,
                 format!("a frame, DTO, or identity proof failed admission: {detail}"),
                 Affordance::None,
+            ),
+            ClientError::ResponseTooLarge { .. } | ClientError::ResponseFrameTooLarge { .. } => (
+                FaultSlug::Transport, CauseSlug::Oversized,
+                "the native reply exceeds its bounded byte/allocation ceiling".to_owned(), Affordance::None,
             ),
             ClientError::Transport(detail) => (
                 FaultSlug::Transport,

@@ -42,6 +42,8 @@ mod package_graph;
 mod package_graph_page;
 mod progress;
 mod python_project;
+mod query_window;
+pub use query_window::{QueryPosition, QueryWindow};
 pub use python_project::{
     PYTHON_PROJECT_EXTRACTION_POLICY, PythonDependencyDeclaration, PythonMetadataEvidence,
     PythonMetadataFact, PythonProjectMetadata,
@@ -158,7 +160,7 @@ pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,
 };
 pub use cursor::{
-    CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, Cursor, CursorError, CursorEvent,
+    CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, CURSOR_WINDOW_QUERY_BYTES, Cursor, CursorError, CursorEvent,
     CursorRead, CursorResetReason, CursorSub,
 };
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
