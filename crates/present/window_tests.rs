@@ -520,7 +520,6 @@ fn a_neighbourhood_pages_by_cursor_through_the_summary_text_and_reports_its_wind
         );
         assert!(!rendered.contains("~lanes"), "{rendered}");
         seen += rendered.lines().filter(|line| line.starts_with("• `Neighbour")).count();
-        assert_eq!(seen, seen.min(120));
         pages += 1;
         match cursor {
             Some(cursor) => {

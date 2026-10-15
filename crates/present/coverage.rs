@@ -294,10 +294,11 @@ impl CoverageLine {
 
     /// Returns whether any lane failed work it was asked to do.
     ///
-    /// A lane the deployment never configured is unavailable without having
-    /// failed. It is still rendered `✗ unconfigured` on the `~lanes` line, and
-    /// [`Self::has_unavailable`] still reports it; it just does not make the
-    /// one-word summary claim that something went wrong.
+    /// A lane the deployment never configured has no declared scope to cover,
+    /// so it has not failed. The typed state still says `Unavailable` with its
+    /// exact reason for a consumer that shows it, but the `~lanes` line marks
+    /// it like a complete lane and neither [`Self::has_unavailable`] nor the
+    /// one-word summary claims that something went wrong.
     #[must_use]
     pub fn has_failed_lane(&self) -> bool {
         self.lanes.iter().any(|lane| match lane.state {

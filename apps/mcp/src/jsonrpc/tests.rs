@@ -3673,8 +3673,10 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
             let full_bytes = serde_json::to_vec(&response)
                 .expect("complete source response")
                 .len();
+            // Standard carries the source twice (text and typed), each copy cut
+            // to its budget; summary carries neither.
             assert!(
-                full_bytes > summary_bytes + SourceExcerpt::MAX_BYTES,
+                full_bytes > summary_bytes + 2 * 1024,
                 "combined response must remove both source copies at summary"
             );
             let full = &response["result"];
@@ -3701,10 +3703,16 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
                 .map(|line| line.as_str().expect("source text"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert_eq!(
-                retained_lines,
-                body[..SourceExcerpt::MAX_BYTES].trim_end_matches('\n')
-            );
+            let retained = body[..SourceExcerpt::MAX_BYTES].trim_end_matches('\n');
+            if level == Some("standard") {
+                // Standard detail cuts the retained excerpt to its own smaller
+                // budget and says how many lines it left out.
+                assert!(retained.starts_with(&retained_lines));
+                assert!(retained_lines.len() < retained.len());
+                assert!(full["structuredContent"]["source"]["omitted_lines"].is_u64());
+            } else {
+                assert_eq!(retained_lines, retained);
+            }
             assert!(text_of(full).contains("MCP_SOURCE_SENTINEL_λ"));
             assert!(text_of(full).contains("source continues past the retained bound"));
             assert!(text_of(full).contains("Lights the beacon."));
@@ -4685,7 +4693,6 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         "backend.package_profile",
         "backend.package_source_membership",
         "backend.package_versions",
-        "backend.related",
         "backend.semantic_shapes",
         "backend.semantic_versions",
     ] {
