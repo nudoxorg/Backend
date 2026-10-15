@@ -4388,6 +4388,10 @@ mod tests {
             .ok_or(TestError::Missing("generic helper TypeVar row"))?
             .record;
         if type_var.tag != SemanticTypeTag::TypeVar || type_var.text != Some(&b"T"[..]) {
+            eprintln!(
+                "generic helper TypeVar: tag={:?}, text={:?}",
+                type_var.tag, type_var.text
+            );
             return Err(TestError::Missing("generic helper parameter TypeVar T"));
         }
 
