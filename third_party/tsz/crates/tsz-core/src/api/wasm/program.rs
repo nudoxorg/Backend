@@ -168,9 +168,9 @@ impl WasmProgram {
     ///
     /// Returns a JSON object with diagnostics per file.
     #[wasm_bindgen(js_name = checkAll)]
-    pub fn check_all(&mut self) -> String {
+    pub fn check_all(&mut self) -> Result<String, JsValue> {
         if self.files.is_empty() && self.lib_files.is_empty() {
-            return r#"{"files":[],"stats":{"totalFiles":0,"totalDiagnostics":0}}"#.to_string();
+            return Ok(r#"{"files":[],"stats":{"totalFiles":0,"totalDiagnostics":0}}"#.to_string());
         }
 
         // Reuse cached output when the program hasn't been mutated since the
@@ -181,7 +181,7 @@ impl WasmProgram {
         // form (e.g. JSON for display PLUS codes for comparison) paid for
         // the entire pipeline twice or three times per program revision.
         if let Some(cached) = self.check_all_cache.as_ref() {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
         // Load lib files for binding
@@ -216,7 +216,8 @@ impl WasmProgram {
 
         // Type check all files in parallel
         let checker_options = self.compiler_options.to_checker_options();
-        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects);
+        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
 
         // Build JSON result.
         //
@@ -284,20 +285,20 @@ impl WasmProgram {
 
         let serialized = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
         self.check_all_cache = Some(serialized.clone());
-        serialized
+        Ok(serialized)
     }
 
     /// Get diagnostic codes for all files (for conformance testing).
     ///
     /// Returns a JSON object mapping file names to arrays of error codes.
     #[wasm_bindgen(js_name = getDiagnosticCodes)]
-    pub fn get_diagnostic_codes(&mut self) -> String {
+    pub fn get_diagnostic_codes(&mut self) -> Result<String, JsValue> {
         if self.files.is_empty() && self.lib_files.is_empty() {
-            return "{}".to_string();
+            return Ok("{}".to_string());
         }
 
         if let Some(cached) = self.diagnostic_codes_cache.as_ref() {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
         // Load lib files for binding (enables global symbol resolution: console, Array, etc.)
@@ -328,7 +329,8 @@ impl WasmProgram {
         // Merge and check
         let merged = merge_bind_results(bind_results);
         let checker_options = self.compiler_options.to_checker_options();
-        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects);
+        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
 
         // Add check diagnostic codes
         for file_result in &check_result.file_results {
@@ -343,7 +345,7 @@ impl WasmProgram {
 
         let serialized = serde_json::to_string(&file_codes).unwrap_or_else(|_| "{}".to_string());
         self.diagnostic_codes_cache = Some(serialized.clone());
-        serialized
+        Ok(serialized)
     }
 
     /// Get all diagnostic codes as a flat array (for simple conformance comparison).
@@ -351,13 +353,13 @@ impl WasmProgram {
     /// This combines all parse and check diagnostics from all files into a single
     /// array of error codes, which can be compared against tsc output.
     #[wasm_bindgen(js_name = getAllDiagnosticCodes)]
-    pub fn get_all_diagnostic_codes(&mut self) -> Vec<u32> {
+    pub fn get_all_diagnostic_codes(&mut self) -> Result<Vec<u32>, JsValue> {
         if self.files.is_empty() && self.lib_files.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         if let Some(cached) = self.all_diagnostic_codes_cache.as_ref() {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
         // Load lib files for binding (enables global symbol resolution: console, Array, etc.)
@@ -389,7 +391,8 @@ impl WasmProgram {
         // Merge and check
         let merged = merge_bind_results(bind_results);
         let checker_options = self.compiler_options.to_checker_options();
-        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects);
+        let check_result = check_files_parallel(&merged, &checker_options, &lib_file_objects)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
 
         // Add all check diagnostic codes
         for file_result in &check_result.file_results {
@@ -402,6 +405,6 @@ impl WasmProgram {
         self.merged = Some(merged);
 
         self.all_diagnostic_codes_cache = Some(all_codes.clone());
-        all_codes
+        Ok(all_codes)
     }
 }

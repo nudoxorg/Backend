@@ -823,7 +823,7 @@ interface HTMLTrackElement extends HTMLElement {
         ..CheckerOptions::default()
     };
 
-    let result = check_files_parallel(&program, &options, &lib_files);
+    let result = check_files_parallel(&program, &options, &lib_files).unwrap();
     let lib_dom_diagnostics = result
         .file_results
         .iter()
@@ -858,7 +858,7 @@ fn affected_lib_interface_names_empty_skips_lib_interface_pass() {
         "module-only user files should not schedule lib interface validation"
     );
 
-    let result = check_files_parallel(&program, &CheckerOptions::default(), &lib_files);
+    let result = check_files_parallel(&program, &CheckerOptions::default(), &lib_files).unwrap();
     let lib_result = result
         .file_results
         .iter()
@@ -986,7 +986,7 @@ const y = x.get("a");
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let consumer = result
         .file_results
@@ -1036,7 +1036,7 @@ let y: number = x.n;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1103,7 +1103,7 @@ foo.ns.b;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1170,7 +1170,7 @@ fn test_check_files_parallel_preserves_same_file_namespace_exports() {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1236,7 +1236,7 @@ const y: OriginalB = x;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let a_file = result
         .file_results
@@ -1330,7 +1330,7 @@ const direct: ParsedType = ParsedType.string;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let types_file = result
         .file_results
@@ -1397,7 +1397,7 @@ const text: string = outputValue;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let all_diags: Vec<_> = result
         .file_results
@@ -1629,7 +1629,7 @@ declare function consume(issue: ZodIssueOptionalMessage): void;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let target_diags: Vec<_> = result
         .file_results
@@ -1694,7 +1694,7 @@ namespace N1 {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file_result = result
         .file_results

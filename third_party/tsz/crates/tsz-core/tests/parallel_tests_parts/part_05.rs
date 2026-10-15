@@ -645,7 +645,7 @@ const p: string = Alpha.x;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -709,7 +709,7 @@ function run(configuration: server.IConfiguration) {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let consumer = result
         .file_results
@@ -919,7 +919,7 @@ export const unset = Symbol.for('@ts-pattern/unset');
         strict: true,
         ..CheckerOptions::default()
     };
-    let result = check_files_parallel(&program, &options, &lib_files);
+    let result = check_files_parallel(&program, &options, &lib_files).unwrap();
     let consumer_2339: Vec<_> = result
         .file_results
         .iter()

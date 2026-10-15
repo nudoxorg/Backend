@@ -49,6 +49,11 @@ Every source path/type directive requires its own explicit outcome, unless the
 resolved checker policy enables `noResolve`. Missing, extra, duplicate or invalid
 rows refuse admission. Prepared images and query sessions also validate reference
 coverage before accepting an immutable program map, including raw caller maps.
+Public one-shot file/function checking and statistics APIs now return typed
+resolution failures as well. The WASM bindings propagate them as JavaScript
+errors without changing successful return values. Legacy outcome setters defer
+mandatory coverage until checking receives its `noResolve` policy; the native
+options-aware setter performs full admission immediately.
 
 Source-free configuration diagnostics still need their own retained compiler
 channel: missing configured `types` entries remain explicit admission refusals,

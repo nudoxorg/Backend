@@ -46,7 +46,7 @@ fn validate_project_virtual_path_with_poll<E: From<ProjectModuleResolutionError>
 fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
     program: &MergedProgram,
     resolutions: &[ProjectModuleResolution],
-    no_resolve: bool,
+    reference_policy: Option<bool>,
     mut poll: impl FnMut(u64) -> std::result::Result<(), E>,
     validate_path: impl Fn(
         &str,
@@ -151,7 +151,7 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
         }
     }
 
-    validate_project_reference_outcomes_with_poll(program, no_resolve, &outcomes, &mut poll)?;
+    validate_project_reference_outcomes_with_poll(program, reference_policy, &outcomes, &mut poll)?;
     poll(0)?;
     Ok(outcomes)
 }
@@ -161,14 +161,15 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
 /// reject extra rows. This also protects sessions opened from raw program maps.
 fn validate_project_reference_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
     program: &MergedProgram,
-    no_resolve: bool,
+    reference_policy: Option<bool>,
     outcomes: &crate::checker::context::ResolvedModuleRequestOutcomeMap,
     mut poll: impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), E> {
     use crate::checker::context::{
         ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
     };
-    if no_resolve {
+    let require_coverage = reference_policy == Some(false);
+    if !require_coverage {
         let mut has_reference = false;
         for key in outcomes.keys() {
             poll(1)?;
@@ -227,7 +228,7 @@ fn validate_project_reference_outcomes_with_poll<E: From<ProjectModuleResolution
                         *target < program.files.len()
                     }
                     Some(ResolvedModuleRequestOutcome::Unresolved) => true,
-                    None => no_resolve,
+                    None => !require_coverage,
                     Some(ResolvedModuleRequestOutcome::External { .. }) => false,
                 };
                 if !valid {
@@ -266,9 +267,9 @@ impl MergedProgram {
         resolutions: &[ProjectModuleResolution],
         checkpoint: &dyn tsz_common::ExecutionCheckpoint,
     ) -> Result<(), ProjectProgramCheckError> {
-        self.set_project_module_resolutions_for_checker_options(
+        self.set_project_module_resolutions_with_reference_policy(
             resolutions,
-            &CheckerOptions::default(),
+            None,
             Some(checkpoint),
         )
     }
@@ -279,6 +280,19 @@ impl MergedProgram {
         &mut self,
         resolutions: &[ProjectModuleResolution],
         checker: &CheckerOptions,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), ProjectProgramCheckError> {
+        self.set_project_module_resolutions_with_reference_policy(
+            resolutions,
+            Some(checker.no_resolve),
+            checkpoint,
+        )
+    }
+
+    fn set_project_module_resolutions_with_reference_policy(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+        reference_policy: Option<bool>,
         checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
     ) -> Result<(), ProjectProgramCheckError> {
         self.project_module_resolution_outcomes = None;
@@ -294,7 +308,7 @@ impl MergedProgram {
         let outcomes = build_project_module_resolution_outcomes_with_poll(
             self,
             resolutions,
-            checker.no_resolve,
+            reference_policy,
             |work| {
                 scope
                     .map_or(Ok(()), |scope| scope.checkpoint(work))

@@ -508,6 +508,10 @@ impl MergedProgram {
     /// importer and in-program target paths must match files in this exact
     /// merged program; the checker records `External` and `Unresolved`
     /// outcomes as authoritative negatives for filename-based resolution.
+    /// This legacy setter validates submitted rows, but defers mandatory source
+    /// reference coverage until a typed checking API receives checker options.
+    /// Use `set_project_module_resolutions_for_checker_options` when those
+    /// options are already resolved and immediate coverage admission is needed.
     pub fn set_project_module_resolutions(
         &mut self,
         resolutions: &[ProjectModuleResolution],
