@@ -623,10 +623,9 @@ mod tests {
     }
 
     fn settle_transition(cx: &mut gpui::VisualTestContext) {
+        cx.background_executor
+            .advance_clock(SIDEBAR_TRANSITION_DURATION);
         cx.update(|window, cx| {
-            window
-                .background_executor
-                .advance_clock(SIDEBAR_TRANSITION_DURATION);
             window.simulate_next_frame(cx);
             window.refresh();
             window.draw(cx).clear(cx);
@@ -736,10 +735,9 @@ mod tests {
                 cx.notify();
             });
             draw(cx);
+            cx.background_executor
+                .advance_clock(SIDEBAR_TRANSITION_DURATION / 2);
             cx.update(|window, cx| {
-                window
-                    .background_executor
-                    .advance_clock(SIDEBAR_TRANSITION_DURATION / 2);
                 window.simulate_next_frame(cx);
                 window.refresh();
                 window.draw(cx).clear(cx);
