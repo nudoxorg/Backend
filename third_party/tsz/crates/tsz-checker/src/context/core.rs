@@ -1081,6 +1081,9 @@ impl<'a> CheckerContext<'a> {
         &mut self,
         outcomes: Arc<crate::context::ResolvedModuleRequestOutcomeMap>,
     ) {
+        // Local consensus entries are answers from the previously installed map.
+        // Replacing it must not retain either positive or negative old answers.
+        self.project_module_consensus_memo.get_mut().clear();
         self.project_module_resolution_outcomes = Some(outcomes);
         // Compiler-owned negatives are part of the configured program's
         // diagnostics. The standalone checker's optional unresolved-import
@@ -1697,6 +1700,34 @@ mod tests {
     use tsz_solver::TypeId;
     use tsz_solver::construction::TypeInterner;
     use tsz_solver::def::{DefinitionInfo, DefinitionStore};
+
+    #[test]
+    fn replacing_project_outcomes_recomputes_cached_file_consensus() {
+        let arena = NodeArena::new();
+        let binder = BinderState::new();
+        let types = TypeInterner::new();
+        let mut ctx = CheckerContext::new_with_shared_def_store(
+            &arena,
+            &binder,
+            &types,
+            "test.ts".to_owned(),
+            CheckerOptions::default(),
+            Arc::new(DefinitionStore::new()),
+        );
+        let key = (0, "./target".to_owned(), None, crate::context::ResolutionRequestKind::EsmImport);
+        let mut first = crate::context::ResolvedModuleRequestOutcomeMap::default();
+        first.insert(key.clone(), crate::context::ResolvedModuleRequestOutcome::File(1));
+        ctx.set_project_module_resolution_outcomes(Arc::new(first));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), Some(1));
+        // An explicit empty map must erase the cached positive answer.
+        ctx.set_project_module_resolution_outcomes(Arc::new(Default::default()));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), None);
+        // A cached negative must not hide the replacement map's target either.
+        let mut replacement = crate::context::ResolvedModuleRequestOutcomeMap::default();
+        replacement.insert(key, crate::context::ResolvedModuleRequestOutcome::File(2));
+        ctx.set_project_module_resolution_outcomes(Arc::new(replacement));
+        assert_eq!(ctx.project_module_file_target(0, "./target"), Some(2));
+    }
 
     fn empty_cache() -> TypeCache {
         TypeCache {

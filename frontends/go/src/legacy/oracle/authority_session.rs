@@ -75,10 +75,12 @@ impl ConfiguredGoOracle {
         cancelled: Option<&'run AtomicBool>,
     ) -> Result<GoPackageAuthoritySession<'run>, OracleError> {
         check_go_cancellation(cancelled)?;
-        if sources.len() > MAX_PLANNED_SOURCES
+        if sources.is_empty()
+            || sources.len() > MAX_PLANNED_SOURCES
             || sources.iter().collect::<BTreeSet<_>>().len() != sources.len()
             || sources.iter().any(|source| source.strip_prefix(package_root).ok().is_none_or(|relative| {
-                relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+                relative.as_os_str().is_empty()
+                    || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
             }))
         {
             return Err(OracleError::Decode {
