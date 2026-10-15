@@ -8,6 +8,47 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class ProjectCopyLifecycleTests(unittest.TestCase):
+    def test_readonly_pinned_source_stays_unchanged_and_copied_case_can_be_removed(self):
+        import tempfile, shutil, stat
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pin"
+            source.mkdir()
+            (source / "src").mkdir()
+            (source / "src/lib.py").write_text("class Example: pass\n")
+            (source / "src").chmod(0o555)
+            source.chmod(0o555)
+            copied = root / "case"
+            try:
+                shutil.copytree(source, copied)
+                surface.make_case_directories_writable(copied)
+                self.assertTrue(copied.stat().st_mode & stat.S_IWUSR)
+                self.assertTrue((copied / "src").stat().st_mode & stat.S_IWUSR)
+                self.assertEqual((copied / "src/lib.py").read_text(), "class Example: pass\n")
+                shutil.rmtree(copied)
+                self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o555)
+                self.assertEqual(stat.S_IMODE((source / "src").stat().st_mode), 0o555)
+            finally:
+                source.chmod(0o700)
+                (source / "src").chmod(0o700)
+
+    def test_directory_links_cannot_change_permissions_outside_owned_case(self):
+        import tempfile, stat
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = root / "external"
+            external.mkdir(mode=0o500)
+            case = root / "case"
+            case.mkdir()
+            (case / "link").symlink_to(external, target_is_directory=True)
+            surface.make_case_directories_writable(case)
+            self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o500)
+            with self.assertRaisesRegex(RuntimeError, "owned directories"):
+                surface.make_case_directories_writable(case / "link")
+            external.chmod(0o700)
+
+
 class OwnerLifecycleTests(unittest.TestCase):
     def exercise(self, startup_failure=False):
         import tempfile

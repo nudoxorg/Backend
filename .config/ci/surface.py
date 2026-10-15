@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -877,9 +878,24 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
             raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
 
 
+def make_case_directories_writable(root: Path) -> None:
+    """Only our copied directories need write permission for a repeat run.
+
+    Nix source directories are read-only. copytree preserves those modes;
+    do not change the pinned source or follow a link out of the case tree.
+    """
+    for directory, _, _ in os.walk(root, followlinks=False):
+        path = Path(directory)
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError("surface case cleanup requires owned directories")
+        path.chmod(stat.S_IMODE(metadata.st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
+        make_case_directories_writable(case_root)
         shutil.rmtree(case_root)
     case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
@@ -890,6 +906,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(source, project)
     else:
         shutil.copytree(ROOT / case["project"], project)
+    make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
     cargo_vendor = None
     if "cargo_vendor_env" in case:
