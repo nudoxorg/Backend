@@ -133,7 +133,15 @@ export def warm-registry-cache []: nothing -> nothing {
         if $unpacked == null { continue }
         let copy = (mktemp --directory)
         cp --recursive ($unpacked | path join "*" | into glob) $copy
-        try { run-external "cargo" "fetch" "--manifest-path" ($copy | path join "Cargo.toml") } catch { print $"cache warm-up: could not fetch ($release)'s graph" }
+        # The managed Cargo wrapper claims its build graph by workspace.
+        # Fetching this external copy must not reassign/erase Backend's warm
+        # pooled graph. Its explicit graph stays in the disposable copy; the
+        # wrapper still takes the normal shared host-capacity lease.
+        try {
+            with-env {CARGO_BUILD_BUILD_DIR: ($copy | path join ".cargo-fetch-build")} {
+                run-external "cargo" "fetch" "--manifest-path" ($copy | path join "Cargo.toml")
+            }
+        } catch { print $"cache warm-up: could not fetch ($release)'s graph" }
         rm --recursive --force $copy
     }
 }

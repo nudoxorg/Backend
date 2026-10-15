@@ -386,6 +386,13 @@ struct Row<'source> {
     span: ByteSpan,
     /// The row's Rust extension facts as pushed, before macros attach.
     extension: RustFacts,
+    /// HIR module that directly contains an expanded module-scope item.
+    /// Macro expansion spans often collapse sibling module bodies onto one
+    /// call-site range, so source-span containment cannot recover this owner.
+    expanded_parent_module: Option<ra_ap_hir::Module>,
+    /// Exact HIR module represented by a module declaration row, used to
+    /// resolve expanded children back to their semantic module owner.
+    declared_module: Option<ra_ap_hir::Module>,
     /// True for the synthetic crate-root file owner pushed only to host
     /// orphan module-level imports. Parentage ignores these rows so every
     /// real declaration stays a root when nothing else strictly contains it;
@@ -2227,11 +2234,18 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts
             .attach_source_span(ordinal, span)
             .map_err(|fault| parentage_fault(ordinal, declaration.name.len(), fault))?;
+        let expanded_parent_module = self.expanded_module_parent(declaration);
+        let declared_module = match &declaration.definition {
+            RustDefinition::Module(module) => Some(*module),
+            _ => None,
+        };
         self.rows.push(Row {
             ordinal,
             name: self.name_of(declaration)?,
             span: declaration.span,
             extension,
+            expanded_parent_module,
+            declared_module,
             file_owner: false,
         });
         match &declaration.definition {
@@ -2435,6 +2449,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             name: CRATE_FILE_OWNER_NAME,
             span,
             extension,
+            expanded_parent_module: None,
+            declared_module: None,
             file_owner: true,
         });
         Ok(())
@@ -2447,12 +2463,25 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// their emitters; anonymous hosted rows keep their honest unavailable
     /// state until a use-site owner exists.
     fn emit_parentage(&mut self) -> Result<(), RustAuthorityError> {
+        let mut module_rows = std::collections::HashMap::new();
+        for row in &self.rows {
+            if let Some(module) = row.declared_module {
+                module_rows.entry(module).or_insert(row.ordinal);
+            }
+        }
         for index in 0..self.rows.len() {
-            let (ordinal, span, name_len) = {
+            let (ordinal, span, name_len, expanded_parent_module) = {
                 let row = &self.rows[index];
-                (row.ordinal, row.span, row.name.len())
+                (
+                    row.ordinal,
+                    row.span,
+                    row.name.len(),
+                    row.expanded_parent_module,
+                )
             };
-            match self.enclosing_row(span, ordinal) {
+            let semantic_module_parent =
+                expanded_parent_module.and_then(|module| module_rows.get(&module).copied());
+            match semantic_module_parent.or_else(|| self.enclosing_row(span, ordinal)) {
                 Some(parent) => self
                     .facts
                     .attach_parent(ordinal, parent)
@@ -2464,6 +2493,21 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             }
         }
         Ok(())
+    }
+
+    /// Returns the HIR containing module only when an expanded declaration is
+    /// directly in module scope. Items nested under functions, traits, or impls
+    /// continue to use their existing lexical/source ownership rules.
+    fn expanded_module_parent(&self, declaration: &Decl<'source>) -> Option<ra_ap_hir::Module> {
+        if !declaration.expanded || !expanded_item_is_module_scoped(&declaration.syntax) {
+            return None;
+        }
+        match &declaration.definition {
+            RustDefinition::Implementation(implementation) => {
+                Some(implementation.module(self.database))
+            }
+            definition => module_def(definition)?.module(self.database),
+        }
     }
 
     /// HIR owns the complete field list of a struct or union. Capture it only
@@ -3904,6 +3948,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span: self.authority.span(reexport.item.syntax())?,
                 extension,
+                expanded_parent_module: None,
+                declared_module: None,
                 file_owner: false,
             });
         }
@@ -4266,6 +4312,17 @@ fn module_def(definition: &RustDefinition) -> Option<ra_ap_hir::ModuleDef> {
         RustDefinition::Constant(constant) => Some(ra_ap_hir::ModuleDef::from(*constant)),
         RustDefinition::Static(static_) => Some(ra_ap_hir::ModuleDef::from(*static_)),
     }
+}
+
+/// Whether a macro-expanded item is directly contained by a module scope.
+/// The nearest enclosing Rust item must be a module or absent (the crate
+/// root); methods and nested items keep their narrower lexical owner.
+fn expanded_item_is_module_scoped(syntax: &SyntaxNode) -> bool {
+    syntax
+        .ancestors()
+        .skip(1)
+        .find_map(ast::Item::cast)
+        .is_none_or(|parent| ast::Module::cast(parent.syntax().clone()).is_some())
 }
 
 /// Categorizes one resolved path reference: imports, type positions, calls,
