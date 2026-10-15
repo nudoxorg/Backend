@@ -153,7 +153,7 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, package_graph_markdown, product_view, product_view_for_command,
+    ProductView, index_stage_name, package_graph_markdown, product_view, product_view_for_command,
     product_view_for_owned_command,
 };
 pub use projection::{PageProjection, PageSection};

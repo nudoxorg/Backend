@@ -1554,7 +1554,6 @@ fn serve<O: OwnerService + 'static>(
         .then(|| {
             crate::termination::install(
                 listener.shutdown_handle(),
-                listener.path().to_path_buf(),
                 crate::termination::TERMINATION_GRACE,
             )
             .ok()

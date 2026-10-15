@@ -14,11 +14,12 @@
 //! be handled and is covered on the client side by owner-absence detection.
 //!
 //! A shutdown that does not finish is never allowed to outlast the signal: a
-//! second signal, or [`TERMINATION_GRACE`] after the first, unlinks the
-//! endpoint and exits immediately, which is what the default action did.
+//! second signal, or [`TERMINATION_GRACE`] after the first, exits immediately.
+//! Forced exit leaves its stale socket for authenticated absent-owner recovery;
+//! it must not unlink an endpoint while the old owner still holds its locks.
 
 #[cfg(unix)]
-pub(crate) use unix::{TerminationGuard, install};
+pub(crate) use unix::install;
 
 /// How long a requested shutdown may take before the process exits anyway.
 #[cfg(unix)]
@@ -28,7 +29,6 @@ pub(crate) const TERMINATION_GRACE: std::time::Duration = std::time::Duration::f
 mod unix {
     use crate::listener::ListenerShutdown;
     use std::io;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
@@ -56,7 +56,6 @@ mod unix {
     /// created; the caller keeps running with the default actions.
     pub(crate) fn install(
         shutdown: ListenerShutdown,
-        endpoint: PathBuf,
         grace: Duration,
     ) -> io::Result<TerminationGuard> {
         let finished = Arc::new(AtomicBool::new(false));
@@ -106,9 +105,9 @@ mod unix {
                     if !forced {
                         return;
                     }
-                    // The orderly path did not finish in time. Leave nothing
-                    // behind that a client could mistake for a live owner.
-                    let _ = std::fs::remove_file(&endpoint);
+                    // Do not advertise endpoint absence before this process
+                    // releases its workspace locks. Exit closes every handle;
+                    // a refused dial then authorizes bounded owner recovery.
                     std::process::exit(128 + first.as_raw_value());
                 });
             })?;
@@ -145,6 +144,28 @@ mod tests {
     /// must then unlink the endpoint, exactly as an idle retirement does.
     #[test]
     fn sigterm_stops_the_run_loop_and_unlinks_the_endpoint() {
+        const CHILD: &str = "BACKEND_LOCALD_SIGTERM_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "termination::tests::sigterm_stops_the_run_loop_and_unlinks_the_endpoint",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated signal control");
+            assert!(
+                output.status.success(),
+                "signal subprocess failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "the signal fixture must actually run"
+            );
+            return;
+        }
         let path = std::path::PathBuf::from(format!(
             "/tmp/backend-termination-{}-{}.sock",
             std::process::id(),
@@ -159,13 +180,12 @@ mod tests {
         let mut listener = UnixListenerService::bind(service, config).expect("bind");
         let guard = install(
             listener.shutdown_handle(),
-            path.clone(),
             std::time::Duration::from_secs(60),
         )
         .expect("install handlers");
         assert!(path.exists(), "the endpoint is bound while serving");
-        // Another test thread would also receive a process-directed signal,
-        // so raise it on this process only after the handler is registered.
+        // Only the isolated fixture process receives this signal; the parent
+        // test harness and concurrently running controls keep their handlers.
         rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
             .expect("raise SIGTERM");
         let report = listener.run().expect("run loop ends on its stop request");
