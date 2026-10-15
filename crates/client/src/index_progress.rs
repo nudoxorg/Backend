@@ -19,6 +19,11 @@ pub const MAX_INDEX_PROGRESS_WAIT_MILLIS: u64 = 10_000;
 /// Caller observation ceiling for a durable operation, separate from owner work.
 pub const MAX_INDEX_OPERATION_WAIT: Duration = crate::CLIENT_MUTATION_TIMEOUT;
 const PROBE_INTERVAL: Duration = Duration::from_millis(500);
+/// Minimum distance between the starts of two consecutive reads of one wait.
+/// A fast-changing operation answers every conditional read at once, and each
+/// read spends a frame of the owner's per-connection budget, so an operation
+/// that changes continuously must not turn the wait into a busy loop.
+const MIN_READ_SPACING: Duration = Duration::from_millis(100);
 const CANCELLATION_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Commitment to the complete admitted active status, including its owner
@@ -308,6 +313,7 @@ fn wait_operation_with_clock(
         )),
         _ => None,
     };
+    let mut last_read_started: Option<Duration> = None;
     loop {
         progress(&observation);
         let status = match &observation {
@@ -354,6 +360,20 @@ fn wait_operation_with_clock(
                 MAX_INDEX_PROGRESS_WAIT_MILLIS
             },
         )?;
+        // Space the reads, not just the unchanged ones: this is after the
+        // terminal checks above, so a finished operation is never delayed.
+        if let Some(previous) = last_read_started {
+            let since = clock.elapsed().saturating_sub(previous);
+            if let Some(gap) = MIN_READ_SPACING.checked_sub(since)
+                && let Err(error) = clock.wait(gap, context)
+            {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Client(error),
+                });
+            }
+        }
+        last_read_started = Some(clock.elapsed());
         // Install no new deadline: the caller must retain one absolute wait
         // scope, including all conditional probes and replacement connections.
         let result = read_with_clock(&query, context, &mut observe, clock);
@@ -580,6 +600,72 @@ mod tests {
         );
         assert_eq!(progress.last(), Some(expected));
         assert!(progress.iter().all(|observation| matches!(observation, IndexOperationObservation::Known(actual) if actual.operation_key == status.operation_key && actual.request_digest == status.request_digest)));
+    }
+
+    /// Every conditional read of a fast-changing operation answers at once,
+    /// and each read spends a frame of the owner's per-connection budget. The
+    /// wait therefore starts consecutive reads at least the minimum spacing
+    /// apart, and never delays the terminal reply it is waiting for.
+    #[test]
+    fn a_fast_changing_operation_cannot_burn_frames_faster_than_the_minimum_spacing() {
+        let status = active();
+        let terminal: SurfaceReply = serde_json::from_value(waveform()["runs"][2]["reply"].clone())
+            .expect("retained exact refusal");
+        let IndexOperationState::Active { ticket, stage } = status.state.clone() else {
+            panic!("active fixture");
+        };
+        let stages = [
+            IndexJobStage::Acquiring,
+            IndexJobStage::Staging,
+            IndexJobStage::Scanning,
+            IndexJobStage::Compiling,
+            IndexJobStage::Publishing,
+        ];
+        let now = Rc::new(Cell::new(Duration::ZERO));
+        let started = Rc::new(std::cell::RefCell::new(Vec::<Duration>::new()));
+        let mut previous = stage;
+        let mut reads = 0usize;
+        let result = wait_operation_with_clock(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |_| {
+                started.borrow_mut().push(now.get());
+                reads += 1;
+                if reads > 8 {
+                    return Ok(terminal.clone());
+                }
+                // A different stage from the previous observation each time.
+                let next = stages
+                    .into_iter()
+                    .find(|candidate| *candidate != previous)
+                    .expect("another stage");
+                previous = next;
+                let mut changed = status.clone();
+                changed.state = IndexOperationState::Active {
+                    ticket: ticket.clone(),
+                    stage: next,
+                };
+                Ok(keyed_reply(changed))
+            },
+            |_| {},
+            &mut Clock::new(now.clone()),
+        )
+        .expect("admitted wait");
+        assert!(matches!(result, IndexOperationWaitResult::Terminal(_)));
+        let started = started.borrow();
+        assert_eq!(started.len(), 9);
+        for pair in started.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= MIN_READ_SPACING,
+                "reads began {:?} apart",
+                pair[1] - pair[0]
+            );
+        }
+        assert_eq!(
+            now.get(),
+            MIN_READ_SPACING * 8,
+            "exactly the spacing, no extra delay once the reply is terminal"
+        );
     }
 
     #[test]

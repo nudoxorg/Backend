@@ -2416,3 +2416,292 @@ fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_
         Some(delivery_window(4, 1))
     );
 }
+
+// ---------------------------------------------------------------------------
+// A preparing read outlives its connection: the owner retires a connection
+// after its frame budget, and a long preparation is exactly what spends it.
+// ---------------------------------------------------------------------------
+
+/// Wraps the real-owner preparing transport with the owner's per-connection
+/// frame budget. A frame past the budget meets a closed peer, as on the real
+/// listener, and a reopened connection starts a fresh budget.
+struct RetiringPreparing {
+    inner: PreparingTransport,
+    cap: usize,
+    used: usize,
+    advertise: bool,
+    /// Frames that reached a retired peer.
+    lost: Arc<std::sync::atomic::AtomicUsize>,
+    /// Outcomes of successive reopen attempts; an empty script reopens.
+    reopen: std::collections::VecDeque<Result<bool, ClientError>>,
+    reopened: Arc<std::sync::atomic::AtomicUsize>,
+    /// Frames seen so far, across connections.
+    seen: usize,
+    /// The frame with this 1-based ordinal meets this error once, whatever
+    /// the budget.
+    fail_once: Option<(usize, ClientError)>,
+}
+impl RetiringPreparing {
+    fn gate(&mut self) -> Result<(), ClientError> {
+        self.seen += 1;
+        if self
+            .fail_once
+            .as_ref()
+            .is_some_and(|(at, _)| *at == self.seen)
+        {
+            return Err(self
+                .fail_once
+                .take()
+                .map(|(_, error)| error)
+                .expect("scripted"));
+        }
+        if self.used >= self.cap {
+            self.lost.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(ClientError::Disconnected(std::io::ErrorKind::BrokenPipe));
+        }
+        self.used += 1;
+        Ok(())
+    }
+}
+impl CommandTransport for RetiringPreparing {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        self.gate()?;
+        self.inner.request(request)
+    }
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        self.gate()?;
+        self.inner.request_with_budget(request, remaining)
+    }
+    fn frames_remaining(&self) -> Option<usize> {
+        self.advertise.then(|| self.cap - self.used)
+    }
+    fn reconnect_within(
+        &mut self,
+        _budget: Duration,
+        _context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        self.reopened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.reopen.pop_front().unwrap_or(Ok(true)) {
+            Ok(true) => {
+                self.used = 0;
+                Ok(true)
+            }
+            other => other,
+        }
+    }
+}
+
+struct RetiringRun {
+    session: Session,
+    sent: Arc<Mutex<Vec<CommandDto>>>,
+    lost: Arc<std::sync::atomic::AtomicUsize>,
+    reopened: Arc<std::sync::atomic::AtomicUsize>,
+}
+fn retiring_session(
+    library: &Arc<Mutex<Library>>,
+    preparing: usize,
+    cap: usize,
+    advertise: bool,
+    reopen: Vec<Result<bool, ClientError>>,
+    fail_once: Option<(usize, ClientError)>,
+) -> RetiringRun {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let lost = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let session = Session::from_transport(
+        "/private/retiring-owner.sock",
+        RetiringPreparing {
+            inner: PreparingTransport {
+                inner: Transport {
+                    owner: Arc::clone(library),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    graph_ids: None,
+                },
+                states: std::iter::repeat_n(
+                    backend_library::QueryPreparationState::Preparing,
+                    preparing,
+                )
+                .collect(),
+                repeat: false,
+                fault: None,
+                sent: Arc::clone(&sent),
+                budgets: Arc::new(Mutex::new(Vec::new())),
+            },
+            cap,
+            used: 0,
+            advertise,
+            lost: Arc::clone(&lost),
+            reopen: reopen.into(),
+            reopened: Arc::clone(&reopened),
+            seen: 0,
+            fail_once,
+        },
+    );
+    RetiringRun {
+        session,
+        sent,
+        lost,
+        reopened,
+    }
+}
+fn searches(sent: &Arc<Mutex<Vec<CommandDto>>>) -> Vec<CommandDto> {
+    sent.lock()
+        .expect("sent")
+        .iter()
+        .filter(|request| matches!(request.command, Command::Search(_)))
+        .cloned()
+        .collect()
+}
+
+/// The reported failure: a search preparing for ~27 s polled 256 times,
+/// reached the owner's frame budget, and ended `broken pipe` with the read
+/// "not restarted". The same pinned request is asked again on a fresh
+/// connection, unchanged, and the search returns real rows.
+#[test]
+fn a_preparing_search_survives_the_owner_retiring_its_connection() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    // Revision selection plus four preparing polls and the ready answer need
+    // six frames; the budget is three, so the connection is retired mid-wait.
+    let mut run = retiring_session(&library, 4, 3, false, vec![], None);
+    let reply = run
+        .session
+        .search("Thing", 3)
+        .expect("the retirement is survived, not reported");
+    let CommandReply::Search(page) = reply.reply else {
+        panic!("real rows, not a failure")
+    };
+    assert_eq!(page.root.row_count(), 3);
+    let lost = run.lost.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(lost >= 1, "the budget really was exhausted: {lost}");
+    assert_eq!(
+        run.reopened.load(std::sync::atomic::Ordering::Relaxed),
+        lost,
+        "every lost frame was answered by exactly one reopen"
+    );
+    let reads = searches(&run.sent);
+    assert_eq!(reads.len(), 5, "four preparing answers, then the rows");
+    for pair in reads.windows(2) {
+        assert_eq!(pair[0].command, pair[1].command, "same pinned query");
+        assert_eq!(pair[0].certificate(), pair[1].certificate());
+    }
+    assert_eq!(
+        run.sent
+            .lock()
+            .expect("sent")
+            .iter()
+            .filter(|request| matches!(request.command, Command::Revision))
+            .count(),
+        1,
+        "the revision is never refreshed"
+    );
+}
+
+/// With the budget known the connection is replaced before it is spent, so no
+/// poll is ever written to a retired peer.
+#[test]
+fn a_known_frame_budget_replaces_the_connection_before_a_poll_is_lost() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let mut run = retiring_session(&library, 4, 3, true, vec![], None);
+    run.session
+        .search("Thing", 3)
+        .expect("the search completes across proactive reopens");
+    assert_eq!(run.lost.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(run.reopened.load(std::sync::atomic::Ordering::Relaxed) >= 1);
+    assert_eq!(searches(&run.sent).len(), 5);
+}
+
+/// Polls are paced with a growing wait, not a fixed 100 ms: five preparing
+/// answers cost at least 100 + 200 + 400 + 500 + 500 ms, where the fixed pace
+/// would have spent 500 ms and five times the frames per second.
+#[test]
+fn preparation_polls_back_off_instead_of_burning_frames() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let mut run = retiring_session(&library, 5, 100, false, vec![], None);
+    let started = std::time::Instant::now();
+    run.session.search("Thing", 3).expect("search");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1700),
+        "poll cadence grows toward its ceiling: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A read timeout is a live owner that did not answer; the same pinned read is
+/// asked again on a fresh connection to the same listener.
+#[test]
+fn a_slow_owner_during_preparation_is_asked_again_on_a_fresh_connection() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    // Frame 1 is the revision read; frame 2 is the first pinned poll.
+    let mut run = retiring_session(
+        &library,
+        1,
+        100,
+        false,
+        vec![],
+        Some((2, ClientError::Disconnected(std::io::ErrorKind::WouldBlock))),
+    );
+    let reply = run
+        .session
+        .search("Thing", 3)
+        .expect("a timed-out poll is asked again, not reported");
+    assert!(matches!(reply.reply, CommandReply::Search(_)));
+    assert_eq!(run.reopened.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        searches(&run.sent).len(),
+        2,
+        "the poll that timed out never reached the owner"
+    );
+}
+
+/// A replacement that is lost too (a dying owner's last accept) is waited out;
+/// no owner at all, or a transport that cannot reopen, keeps the original loss.
+#[test]
+fn reopening_waits_out_lost_replacements_and_keeps_the_loss_when_nothing_answers() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let reset = || ClientError::Disconnected(std::io::ErrorKind::ConnectionReset);
+    let mut run = retiring_session(
+        &library,
+        1,
+        2,
+        false,
+        vec![Err(reset()), Err(reset()), Ok(true)],
+        None,
+    );
+    run.session
+        .search("Thing", 3)
+        .expect("lost replacements are retried within the deadline");
+    assert!(run.reopened.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+
+    for reopen in [
+        Err(ClientError::Disconnected(
+            std::io::ErrorKind::ConnectionRefused,
+        )),
+        Ok(false),
+    ] {
+        let mut run = retiring_session(&library, 3, 1, false, vec![reopen], None);
+        let error = run
+            .session
+            .search("Thing", 3)
+            .expect_err("nothing to ask again");
+        assert!(
+            matches!(
+                error,
+                ClientError::QueryPreparationDisconnected {
+                    kind: std::io::ErrorKind::BrokenPipe,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            run.reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "one attempt, no spin"
+        );
+    }
+}
