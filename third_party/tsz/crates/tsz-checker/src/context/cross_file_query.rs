@@ -49,6 +49,7 @@ impl<'a> CheckerContext<'a> {
         if let Some(facts) = self
             .shared_program_facts
             .as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
         {
             return facts.has_module_augmentations()
                 || !self.binder.module_augmentations.is_empty()
@@ -72,7 +73,8 @@ impl<'a> CheckerContext<'a> {
         if !self.binder.global_augmentations.is_empty() {
             return true;
         }
-        if let Some(facts) = self.shared_program_facts.as_ref() {
+        if let Some(facts) = self.shared_program_facts.as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders))) {
             return facts.has_global_augmentations();
         }
         self.all_binders.as_ref().is_some_and(|binders| {

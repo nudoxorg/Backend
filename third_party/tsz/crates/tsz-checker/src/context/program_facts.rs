@@ -20,6 +20,7 @@ use super::{ProjectModuleConsensus, ResolvedModuleRequestOutcomeMap};
 /// Program-wide answers that depend only on the sealed binders and the exact
 /// compiler-owned module-resolution outcome map of one program.
 pub struct SharedProgramFacts {
+    binders: Weak<Vec<Arc<BinderState>>>,
     has_module_augmentations: bool,
     has_global_augmentations: bool,
     /// Names that any binder declares as an ambient module or augments. A re-export
@@ -36,7 +37,7 @@ pub struct SharedProgramFacts {
 impl SharedProgramFacts {
     /// Derives the program-wide facts from every binder, once.
     #[must_use]
-    pub fn from_binders(binders: &[Arc<BinderState>]) -> Arc<Self> {
+    pub fn from_binders(binders: &Arc<Vec<Arc<BinderState>>>) -> Arc<Self> {
         let mut has_module_augmentations = false;
         let mut has_global_augmentations = false;
         let mut ambient_module_names: FxHashSet<String> = FxHashSet::default();
@@ -44,7 +45,7 @@ impl SharedProgramFacts {
         // set once instead of once per binder.
         let mut seen_declared: FxHashSet<usize> = FxHashSet::default();
         let mut seen_augmentations: FxHashSet<usize> = FxHashSet::default();
-        for binder in binders {
+        for binder in binders.iter() {
             if !binder.module_augmentations.is_empty()
                 || !binder.augmentation_target_modules.is_empty()
             {
@@ -61,12 +62,19 @@ impl SharedProgramFacts {
             }
         }
         Arc::new(Self {
+            binders: Arc::downgrade(binders),
             has_module_augmentations,
             has_global_augmentations,
             ambient_module_names,
             consensus_outcomes: RwLock::new(None),
             consensus: RwLock::new(FxHashMap::default()),
         })
+    }
+
+    /// Only the exact sealed binder allocation can use these derived answers.
+    #[must_use]
+    pub fn accepts_binders(&self, binders: &Arc<Vec<Arc<BinderState>>>) -> bool {
+        std::ptr::eq(self.binders.as_ptr(), Arc::as_ptr(binders))
     }
 
     /// Whether any binder of the program registers a module augmentation or an
@@ -156,11 +164,14 @@ mod tests {
     #[test]
     fn facts_union_every_binder_once() {
         let plain = Arc::new(BinderState::new());
-        let facts = SharedProgramFacts::from_binders(&[
+        let binders = Arc::new(vec![
             Arc::clone(&plain),
             binder_declaring(&["ambient-a"]),
             binder_declaring(&["ambient-b", "ambient-a"]),
         ]);
+        let facts = SharedProgramFacts::from_binders(&binders);
+        assert!(facts.accepts_binders(&binders));
+        assert!(!facts.accepts_binders(&Arc::new(binders.as_ref().clone())));
         assert!(facts.is_ambient_module_name("ambient-a"));
         assert!(facts.is_ambient_module_name("ambient-b"));
         assert!(!facts.is_ambient_module_name("./a.ts"));
@@ -171,7 +182,7 @@ mod tests {
         let mut augmentations = rustc_hash::FxHashMap::default();
         augmentations.insert("vue".to_owned(), Vec::new());
         augmenting.module_augmentations = Arc::new(augmentations);
-        let facts = SharedProgramFacts::from_binders(&[plain, Arc::new(augmenting)]);
+        let facts = SharedProgramFacts::from_binders(&Arc::new(vec![plain, Arc::new(augmenting)]));
         assert!(facts.has_module_augmentations());
         assert!(facts.is_ambient_module_name("vue"), "an augmented module name is ambient");
         assert!(!facts.has_global_augmentations());
@@ -179,7 +190,7 @@ mod tests {
 
     #[test]
     fn consensus_memo_is_shared_and_bound_to_one_outcome_map() {
-        let facts = SharedProgramFacts::from_binders(&[]);
+        let facts = SharedProgramFacts::from_binders(&Arc::new(Vec::new()));
         let original = Arc::new(ResolvedModuleRequestOutcomeMap::default());
         let foreign = Arc::new(ResolvedModuleRequestOutcomeMap::default());
         assert_eq!(facts.consensus_get(&original, 0, "./a"), None, "nothing computed yet");

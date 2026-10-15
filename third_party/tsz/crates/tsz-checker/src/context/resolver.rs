@@ -548,6 +548,7 @@ impl<'a> CheckerContext<'a> {
         if let Some(facts) = self
             .shared_program_facts
             .as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
         {
             self.types.execution_checkpoint(1).ok()?;
             return Some(facts.is_ambient_module_name(owner));
@@ -1215,6 +1216,7 @@ impl<'a> CheckerContext<'a> {
         let shared = self
             .shared_program_facts
             .as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
             .map(|facts| (facts, outcomes));
         if let Some((facts, outcomes_id)) = shared {
             if let Some(hit) = facts.consensus_get(outcomes_id, source_file_idx, specifier) {

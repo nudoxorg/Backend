@@ -314,8 +314,8 @@ impl ExecutionCheckpoint for FileWorkSlice<'_> {
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
         // A later cancellation or deadline remains authoritative even after
         // this independent slice has already spent its own allowance.
-        self.parent.checkpoint(0)?;
         if self.is_exhausted() {
+            self.parent.checkpoint(0)?;
             return Err(ProjectExecutionStop::WorkBudgetExhausted);
         }
         if work_units == 0 {
