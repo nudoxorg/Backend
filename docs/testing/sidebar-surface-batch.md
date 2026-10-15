@@ -40,4 +40,12 @@ isolation or the transition scheduler's repeated-hide, cancellation, and stale-r
 laws. Those obligations stay covered by the retained tests until separately replaced
 with stronger public-rendered journeys.
 
+For review-batch accounting, [the 150-body cohort ledger](triage/sidebar-surface-batch-150.json)
+contains the nine rewritten Sidebar source bodies plus 141 individually reviewed `keep`
+bodies from this same `gpui_ce_components` crate. Those 141 rows reuse their exact
+source/body hashes and substantive reasons from the frozen 63c2 audit; they remain
+unchanged. The cohort therefore has zero test deletions, one pending replacement test,
+and a source-body net change of minus eight. The 243-body audit total is crate-wide
+review context, not this batch's deletion count.
+
 No performance baseline, tolerance, or runtime guard changes are part of this batch.
