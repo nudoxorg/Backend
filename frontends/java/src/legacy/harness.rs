@@ -438,6 +438,7 @@ impl Harness {
         let mut cp = vec![self.doclet_classes.clone()];
         cp.extend(request.classpath.iter().copied().map(Path::to_owned));
         let classpath = env::join_paths(cp).map_err(|source| HarnessError::Classpath { source })?;
+        let captured_roots = staged_java_source_roots(request.sources, captured_sourcepath, &run);
         let plan = module_plan(
             request.release,
             request.sources,
@@ -464,8 +465,8 @@ impl Harness {
             // rejects `--source-path` together with `--module-source-path`,
             // and a named compilation resolves everything required through
             // the module source path entries below. The target module's
-            // entry points at the run directory, which holds the explicit
-            // sources in their package layout.
+            // entry points at its private staged source root, which holds
+            // the explicit sources in their package layout.
             match entries {
                 Some(entries) => {
                     for (name, path) in entries {
@@ -483,9 +484,14 @@ impl Harness {
                     // not contain the staged copies). For unnamed-module
                     // packages the extra entry is benign: it carries the
                     // same files.
-                    let mut roots: Vec<&Path> =
-                        Vec::with_capacity(sourcepath.len().saturating_add(1));
+                    let mut roots: Vec<&Path> = Vec::with_capacity(
+                        sourcepath
+                            .len()
+                            .saturating_add(captured_roots.len())
+                            .saturating_add(1),
+                    );
                     roots.push(&run);
+                    roots.extend(captured_roots.iter().map(PathBuf::as_path));
                     roots.extend(discovered.iter().map(PathBuf::as_path));
                     let joined = env::join_paths(&roots)
                         .map_err(|source| HarnessError::Classpath { source })?;
@@ -610,11 +616,19 @@ fn module_plan(
     if release == crate::legacy::JavaRelease::Java8 {
         return Ok(None);
     }
-    let target = sources
-        .iter()
-        .chain(captured_sourcepath)
-        .find(|source| source.name == Path::new("module-info.java"))
-        .and_then(|source| super::sourcepath::parse_module_name(source.bytes));
+    let selected_root = sources
+        .first()
+        .map(|source| java_source_layout_root(source.name).unwrap_or_default())
+        .unwrap_or_default();
+    let module_descriptor = sources.iter().chain(captured_sourcepath).find(|source| {
+        source.name.file_name() == Some(std::ffi::OsStr::new("module-info.java"))
+            && java_source_layout_root(source.name).unwrap_or_default() == selected_root
+    });
+    let target =
+        module_descriptor.and_then(|source| super::sourcepath::parse_module_name(source.bytes));
+    let target_root = module_descriptor
+        .map(|_| run.join(selected_root))
+        .unwrap_or_else(|| run.to_path_buf());
     let modular = target.is_some()
         || discovered
             .iter()
@@ -624,7 +638,7 @@ fn module_plan(
     }
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     if let Some(name) = target.as_ref() {
-        entries.push((name.clone(), run.to_path_buf()));
+        entries.push((name.clone(), target_root));
     }
     for module in super::sourcepath::corpus_module_roots(corpus)? {
         if target.as_ref() == Some(&module.name)
@@ -638,6 +652,42 @@ fn module_plan(
         return Ok(None);
     }
     Ok(Some(entries))
+}
+
+fn staged_java_source_roots(
+    sources: &[JavaSource<'_>],
+    captured_sourcepath: &[JavaSource<'_>],
+    run: &Path,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for source in sources.iter().chain(captured_sourcepath) {
+        if let Some(root) = java_source_layout_root(source.name) {
+            let root = run.join(root);
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+}
+
+fn java_source_layout_root(source: &Path) -> Option<PathBuf> {
+    let components = source.components().collect::<Vec<_>>();
+    components
+        .windows(3)
+        .enumerate()
+        .find_map(|(index, window)| {
+            (window[0].as_os_str() == "src"
+                && matches!(window[1].as_os_str().to_str(), Some("main" | "test"))
+                && window[2].as_os_str() == "java")
+                .then(|| {
+                    let mut root = PathBuf::new();
+                    for component in &components[..=index + 2] {
+                        root.push(component.as_os_str());
+                    }
+                    root
+                })
+        })
 }
 
 fn source_digest() -> [u8; 32] {
@@ -995,7 +1045,10 @@ mod plan_tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{HarnessError, JavaSource, module_plan, validate_unique_staged_sources};
+    use super::{
+        HarnessError, JavaSource, java_source_layout_root, module_plan, staged_java_source_roots,
+        validate_unique_staged_sources,
+    };
     use crate::legacy::JavaRelease;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1225,5 +1278,26 @@ mod plan_tests {
             validate_unique_staged_sources(&explicit, &captured),
             Err(HarnessError::DuplicateSourceName { .. })
         ));
+    }
+
+    #[test]
+    fn maven_java_layout_adds_only_private_staged_source_roots() {
+        let explicit = [source(
+            Path::new("src/main/java/javax/annotation/CheckForNull.java"),
+            b"package javax.annotation; public @interface CheckForNull {}",
+        )];
+        let captured = [source(
+            Path::new("src/main/java/javax/annotation/Nonnull.java"),
+            b"package javax.annotation; public @interface Nonnull {}",
+        )];
+        assert_eq!(
+            java_source_layout_root(explicit[0].name),
+            Some(PathBuf::from("src/main/java"))
+        );
+        let run = Path::new("/private/run");
+        assert_eq!(
+            staged_java_source_roots(&explicit, &captured, run),
+            vec![run.join("src/main/java")]
+        );
     }
 }

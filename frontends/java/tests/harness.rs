@@ -413,82 +413,109 @@ fn sibling_resolution_uses_discovered_maven_roots() -> TestResult {
 #[test]
 fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations() -> TestResult {
     let (jdk, harness) = authority()?;
-    let root = scratch_root(harness, "captured-sourcepath")?;
-    let selected = b"package captured; public final class Selected { public Helper helper() { return new Helper(); } }";
-    let captured_helper = b"package captured; public final class Helper {}";
-    let selected_sources = [JavaSource {
-        name: Path::new("captured/Selected.java"),
-        bytes: selected,
-    }];
-    let captured_dependencies = [JavaSource {
-        name: Path::new("captured/Helper.java"),
-        bytes: captured_helper,
-    }];
-    let request = HarnessRequest {
-        sources: &selected_sources,
-        classpath: &[],
-        release: JavaRelease::Java21,
-    };
-
-    // The live sibling has invalid bytes. Successful compilation proves javac saw the captured
-    // dependency staged by the harness rather than consulting this package-root file.
-    write_source(
-        &root,
-        "captured/Helper.java",
-        b"package captured; this is not a class declaration",
-    )?;
-    let mut output = Vec::new();
-    harness.image_with_captured_sourcepath(jdk, request, &captured_dependencies, &mut output)?;
-    let image = JavaAuthorityImage::open(&output)?;
-    let names = image
-        .image
-        .declarations()
-        .map(|declaration| declaration.name.bytes)
-        .collect::<Vec<_>>();
-    assert!(names.iter().any(|name| *name == b"Selected"));
-    assert!(!names.iter().any(|name| *name == b"Helper"));
-
-    let modular_dependencies = [
-        JavaSource {
-            name: Path::new("module-info.java"),
-            bytes: b"module captured.fixture { exports captured; }",
-        },
-        JavaSource {
-            name: Path::new("captured/Helper.java"),
+    let selected = b"package javax.annotation; public final class CheckForNull { public Nonnull helper() { return new Nonnull(); } }";
+    let captured_helper = b"package javax.annotation; public final class Nonnull {}";
+    for (index, prefix) in ["", "src/main/java"].into_iter().enumerate() {
+        let root = scratch_root(
+            harness,
+            if prefix.is_empty() {
+                "captured-sourcepath-root"
+            } else {
+                "captured-sourcepath-maven"
+            },
+        )?;
+        let source_name = |suffix: &str| {
+            if prefix.is_empty() {
+                suffix.to_owned()
+            } else {
+                format!("{prefix}/{suffix}")
+            }
+        };
+        let selected_name = source_name("javax/annotation/CheckForNull.java");
+        let sibling_name = source_name("javax/annotation/Nonnull.java");
+        let module_name = source_name("module-info.java");
+        let selected_sources = [JavaSource {
+            name: Path::new(&selected_name),
+            bytes: selected,
+        }];
+        let captured_dependencies = [JavaSource {
+            name: Path::new(&sibling_name),
             bytes: captured_helper,
-        },
-    ];
-    harness.image_with_captured_sourcepath(jdk, request, &modular_dependencies, &mut output)?;
-    let image = JavaAuthorityImage::open(&output)?;
-    let names = image
-        .image
-        .declarations()
-        .map(|declaration| declaration.name.bytes)
-        .collect::<Vec<_>>();
-    assert!(names.iter().any(|name| *name == b"Selected"));
-    assert!(!names.iter().any(|name| *name == b"Helper"));
+        }];
+        let request = HarnessRequest {
+            sources: &selected_sources,
+            classpath: &[],
+            release: JavaRelease::Java21,
+        };
 
-    // A valid file present only on disk is not admitted as a dependency and must not resolve.
-    write_source(
-        &root,
-        "captured/Helper.java",
-        b"package captured; public final class Helper {}",
-    )?;
-    let error = harness
-        .image_with_captured_sourcepath(jdk, request, &[], &mut output)
-        .expect_err("an uncaptured live sibling must not enter javac's source path");
-    assert_eq!(
-        error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
-    );
-    let HarnessError::Command { stderr, .. } = error else {
-        panic!("expected a compiler refusal, got {error}");
-    };
-    assert!(
-        stderr.contains("Helper"),
-        "diagnostic should identify the unresolved type: {stderr}"
-    );
-    assert!(output.is_empty());
+        // The on-disk sibling has invalid bytes. Successful compilation proves javac saw the
+        // captured dependency staged by the harness rather than consulting a live project path.
+        write_source(
+            &root,
+            &sibling_name,
+            b"package javax.annotation; this is not a class declaration",
+        )?;
+        let mut output = Vec::new();
+        harness.image_with_captured_sourcepath(
+            jdk,
+            request,
+            &captured_dependencies,
+            &mut output,
+        )?;
+        let image = JavaAuthorityImage::open(&output)?;
+        let names = image
+            .image
+            .declarations()
+            .map(|declaration| declaration.name.bytes)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| *name == b"CheckForNull"));
+        assert!(!names.iter().any(|name| *name == b"Nonnull"));
+
+        let modular_dependencies = [
+            JavaSource {
+                name: Path::new(&module_name),
+                bytes: b"module jsr305.fixture { exports javax.annotation; }",
+            },
+            JavaSource {
+                name: Path::new(&sibling_name),
+                bytes: captured_helper,
+            },
+        ];
+        harness.image_with_captured_sourcepath(jdk, request, &modular_dependencies, &mut output)?;
+        let image = JavaAuthorityImage::open(&output)?;
+        let names = image
+            .image
+            .declarations()
+            .map(|declaration| declaration.name.bytes)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| *name == b"CheckForNull"));
+        assert!(!names.iter().any(|name| *name == b"Nonnull"));
+
+        // A valid file present only on disk is not admitted as a dependency and must not resolve.
+        write_source(
+            &root,
+            &sibling_name,
+            b"package javax.annotation; public final class Nonnull {}",
+        )?;
+        let error = harness
+            .image_with_captured_sourcepath(jdk, request, &[], &mut output)
+            .expect_err("an uncaptured live sibling must not enter javac's source path");
+        assert_eq!(
+            error.unavailable_cause(),
+            Some(UnavailableCause::Compilation)
+        );
+        let HarnessError::Command { stderr, .. } = error else {
+            panic!("expected a compiler refusal, got {error}");
+        };
+        assert!(
+            stderr.contains("Nonnull"),
+            "diagnostic should identify the unresolved type: {stderr}"
+        );
+        assert!(
+            output.is_empty(),
+            "prefix case {index} should leave no image"
+        );
+    }
     Ok(())
 }
 
