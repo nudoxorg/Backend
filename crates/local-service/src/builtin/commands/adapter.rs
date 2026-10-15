@@ -6383,11 +6383,14 @@ mod tests {
             )),
         );
         assert!(backend_library::admit_reply(&command, &reply).is_ok());
+        let foreign_root =
+            backend_library::view_state_root(&[("other".to_owned(), "root".to_owned())]);
+        assert_ne!(root, foreign_root);
         let foreign = backend_library::CommandDto::new(
             7,
             backend_library::Command::Name(backend_library::NameQuery::new(
                 "Thing",
-                backend_library::ViewStateRoot::from_bytes([3; 32]),
+                foreign_root,
                 backend_library::QueryLimit::default(),
             )),
         );

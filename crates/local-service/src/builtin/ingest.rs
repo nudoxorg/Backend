@@ -3248,6 +3248,7 @@ fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_engine::CanonicalRelation;
     use std::sync::Arc;
 
     #[test]
@@ -3357,8 +3358,8 @@ mod tests {
         let source = "from pathlib import Path\nvalue: Path = Path('ordinary')\n";
         let cancelled = AtomicBool::new(false);
         for (expected, selected) in &hosts {
-            let scratch = scratch("ordinary-python-profile")?;
-            let root = scratch.0.canonicalize()?;
+            let scratch = crate::test_support::private_temp_dir("ordinary-python-profile")?;
+            let root = scratch.path().canonicalize()?;
             let venv = root.join("venv");
             let selected = selected.canonicalize()?;
             // Only the independently configured host executable creates the ordinary venv.

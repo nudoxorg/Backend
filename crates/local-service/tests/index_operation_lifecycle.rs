@@ -149,7 +149,7 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
         .map_err(|error| io::Error::other(error.to_string()))?;
     let mut first_python_source_version = None;
     let mut selected_generation = None;
-    let mut portable_source = None;
+    let mut portable_source: Option<(backend_library::SemanticSourceReference, String)> = None;
     for cold in [false, true] {
         let selection =
             LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
@@ -814,7 +814,11 @@ fn run_public_index_operation_lifecycle(
     let target = backend_replication::SemanticTargetKey::new(
         exact_reference.metadata.package.as_str(),
         exact_reference.metadata.coordinate.as_str(),
-        exact_reference.metadata.profile.profile()?,
+        exact_reference
+            .metadata
+            .profile
+            .profile()
+            .map_err(|error| io::Error::other(error.to_string()))?,
     )
     .map_err(io::Error::other)?;
     let backend_library::SemanticSourceHistory::Published {
@@ -1386,7 +1390,7 @@ fn assert_first_refusal_has_no_authority(
         selected_source_frontier: None,
     };
     let budget = SemanticShapeBudget::new(4096, 256 * 1024)?;
-    let source_epoch = captured_source_epoch(&mut session, &package)?;
+    let source_epoch = captured_source_epoch(session, package)?;
     let symbol = backend_library::SymbolKey::from_value("unselected-first-refusal-probe");
     assert!(
         matches!(
