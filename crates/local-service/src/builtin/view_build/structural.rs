@@ -242,6 +242,8 @@ pub(super) struct StructuralDeclaration {
     pub(super) id: RowId,
     pub(super) identity_preimage: Option<RowIdentityPreimage>,
     pub(super) is_file_module: bool,
+    /// The exact source binding is represented by its compiler declaration.
+    pub(super) compiler_twin: bool,
 }
 
 /// Structural declarations retained for one file that remains in the
@@ -401,6 +403,7 @@ impl StructuralProjectionPlan {
                     id,
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
+                    compiler_twin: false,
                 });
                 Ok(())
             })?;
@@ -453,6 +456,40 @@ impl StructuralProjectionPlan {
 
     pub(super) fn file(&self, file_key: [u8; 32]) -> Option<&StructuralFilePlan> {
         self.files.get(&file_key)
+    }
+
+    /// Assigns compiler-owned identity only to authenticated exact twins.
+    /// Parents resolve through the same remapped tables as rows and facts.
+    pub(super) fn unify_exact_sites(
+        &mut self,
+        sources: &IndexedSources,
+        exact: &super::exact_sites::ExactDeclarationSites,
+    ) -> Result<(), BuiltinModelError> {
+        let mut remapped = BTreeMap::new();
+        for (file_key, record) in &sources.files {
+            let Some(file) = record.file_fields() else { continue; };
+            let Some(plan) = self.files.get_mut(file_key) else { continue; };
+            for declaration in &mut plan.declarations {
+                let Some(capture) = declaration.binding_capture else { continue; };
+                let Some(id) = exact.get(file.project, file.path, capture.binding()) else { continue; };
+                if !matches!(id, RowId::Symbol(_)) {
+                    return Err(BuiltinModelError("exact compiler site is not a declaration".to_owned()));
+                }
+                remapped.insert(declaration.id, id);
+                declaration.id = id;
+                declaration.identity_preimage = None;
+                declaration.compiler_twin = true;
+            }
+        }
+        for symbols in self.by_coordinate.values_mut() {
+            for symbol in symbols {
+                if let Some(id) = remapped.get(&symbol.id) { symbol.id = *id; }
+            }
+        }
+        for (id, _) in self.by_binding.values_mut() {
+            if let Some(mapped) = remapped.get(id) { *id = *mapped; }
+        }
+        Ok(())
     }
 
     pub(super) fn declaration(
