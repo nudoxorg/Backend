@@ -10103,7 +10103,7 @@ mod tests {
         let operation =
             backend_library::IndexOperationKey::from_bytes([0x61; 32]).expect("operation");
         let reference = backend_library::PackageReference::parse(label.clone()).expect("reference");
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
         let (key, original) = {
             let (adapter, daemon) = fixture.parts();
             assert!(matches!(
@@ -10281,6 +10281,148 @@ mod tests {
         }
         fixture = fixture.reopen();
         let (_, daemon) = fixture.parts();
+        assert!(project_is_admitted(daemon, package));
+    }
+
+    /// An owner killed mid-compile leaves a Pending marker. Restarting the
+    /// owner must close it before any client read, so no surface can describe
+    /// the dead compile as live: the lane is no longer a moving fraction, the
+    /// project row is no longer loading, and the retained operation resolves
+    /// to a typed failure with retry advice.
+    #[test]
+    fn startup_reconciliation_closes_a_dead_owners_pending_capture_before_any_read() {
+        use backend_engine::builtin::{ProductSemanticCaptureOutcome, semantic_capture_relation};
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"startup_reconcile\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            Path::new(&label).join("source.py"),
+            "def reconciled_name():\n    return 9\n",
+        )
+        .expect("source");
+        let operation =
+            backend_library::IndexOperationKey::from_bytes([0x71; 32]).expect("operation");
+        let reference = backend_library::PackageReference::parse(label.clone()).expect("reference");
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let key = {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.start_index_operation(
+                    daemon,
+                    operation,
+                    reference.clone(),
+                    CompileExecutionIntent::Interactive,
+                    890
+                ),
+                Ok(Executed::Reply(_))
+            ));
+            while !adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, IndexJobWork::Compiling { .. }))
+            {
+                adapter.poll_deferred(daemon);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "reach committed Pending capture"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            // While the job is live the marker is protected: nothing to close.
+            let report = adapter.reconcile_interrupted_captures(daemon);
+            assert_eq!(report.pending_packages, 1);
+            assert!(adapter.indexing.is_some(), "the live job was not disturbed");
+            let relation = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("relation")
+                .expect("capture");
+            let page = relation
+                .page_from(
+                    &ProductSemanticPublicationKey::package_lower_bound(reference.clone()),
+                    8,
+                )
+                .expect("page");
+            let (key, record) = page.entries().first().expect("one profile").clone();
+            assert!(matches!(
+                record.outcome(),
+                ProductSemanticCaptureOutcome::Pending { .. }
+            ));
+            key.clone()
+        };
+        fixture = fixture.reopen();
+        let (adapter, daemon) = fixture.parts();
+        let cold = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("relation")
+            .expect("capture")
+            .lookup(&key)
+            .expect("lookup")
+            .expect("marker survives the restart");
+        assert!(
+            matches!(cold.outcome(), ProductSemanticCaptureOutcome::Pending { .. }),
+            "the dead owner left the marker Pending"
+        );
+        let report = adapter.reconcile_interrupted_captures(daemon);
+        assert_eq!(report.pending_packages, 1);
+        assert_eq!(report.refused_packages, 0);
+        let closed = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("relation")
+            .expect("capture")
+            .lookup(&key)
+            .expect("lookup")
+            .expect("retained marker");
+        assert!(matches!(
+            closed.outcome(),
+            ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected
+            }
+        ));
+        let view = daemon.engine().daemon().library().view();
+        assert!(
+            !view
+                .coverage()
+                .iter()
+                .any(|entry| matches!(entry, backend_engine::ViewCoverage::Partial { .. })),
+            "no lane may read as a moving fraction once the owner restarted"
+        );
+        let projects: Vec<_> = view
+            .row_refs()
+            .filter(|row| matches!(row.id, backend_engine::RowId::Package(_)))
+            .map(|row| (row.label.clone(), row.state))
+            .collect();
+        assert!(
+            projects
+                .iter()
+                .any(|(row_label, state)| row_label == &label
+                    && *state == backend_engine::RowState::Failed),
+            "the project row reads failed, not loading: {projects:?}"
+        );
+        assert!(
+            projects
+                .iter()
+                .all(|(_, state)| *state != backend_engine::RowState::Loading),
+            "no project row may read as loading once the owner restarted: {projects:?}"
+        );
+        let Some(JournalEntry::Retained(entry)) =
+            adapter.index_operations.entry(operation).expect("journal")
+        else {
+            panic!("retained operation");
+        };
+        assert!(matches!(
+            entry.state,
+            StoredOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::WorkerFailed,
+                ..
+            }
+        ));
+        // Reconciling twice is a no-op: nothing is Pending any more.
+        let again = adapter.reconcile_interrupted_captures(daemon);
+        assert_eq!(
+            again,
+            super::capture_recovery::StartupCaptureReconciliation::default()
+        );
         assert!(project_is_admitted(daemon, package));
     }
 

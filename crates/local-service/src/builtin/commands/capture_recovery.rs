@@ -27,7 +27,66 @@ struct OrphanedCapture {
     owner_fence: [u8; 32],
 }
 
+/// Upper bound on distinct packages one startup reconciliation visits.
+/// Packages beyond it keep their Pending marker and are recovered by the
+/// ordinary admission path the next time they are indexed or removed.
+const MAX_STARTUP_RECONCILED_PACKAGES: usize = 4096;
+
+/// Request identity used by the owner's own startup recovery commits.
+const STARTUP_RECOVERY_REQUEST_ID: u64 = 1;
+
+/// What one startup reconciliation pass did, for the owner log and tests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::builtin) struct StartupCaptureReconciliation {
+    /// Distinct packages whose selected capture was Pending at startup.
+    pub(in crate::builtin) pending_packages: usize,
+    /// Packages whose recovery was refused; their markers are untouched and
+    /// each refusal is reported on stderr.
+    pub(in crate::builtin) refused_packages: usize,
+}
+
 impl CommandAdapter {
+    /// Closes every Pending capture a previous owner process left behind.
+    ///
+    /// Pending is not a lease: nothing in the marker proves its writer is
+    /// alive. At startup this process has admitted no job yet, so every
+    /// selected Pending marker is orphaned unless durable remote work still
+    /// protects it. Running the same proof the admission paths run
+    /// ([`Self::recover_orphaned_package_label`]) before the owner answers
+    /// means `status`, `health`, `packages` and `index_progress` cannot
+    /// describe a dead compile as live. A refusal for one package is logged
+    /// and leaves that package's marker untouched; it never stops the owner
+    /// from starting, and the next explicit index or remove retries it.
+    pub(in crate::builtin) fn reconcile_interrupted_captures(
+        &mut self,
+        daemon: &mut ProductDaemon,
+    ) -> StartupCaptureReconciliation {
+        let mut report = StartupCaptureReconciliation::default();
+        let labels = match pending_capture_package_labels(daemon) {
+            Ok(labels) => labels,
+            Err(error) => {
+                eprintln!("locald startup: could not enumerate Pending semantic captures: {error}");
+                return report;
+            }
+        };
+        report.pending_packages = labels.len();
+        for label in labels {
+            match self.recover_orphaned_package_label(daemon, &label, STARTUP_RECOVERY_REQUEST_ID)
+            {
+                Ok(()) => eprintln!(
+                    "locald startup: reconciled interrupted semantic capture for {label}; run `add {label} --wait` to index it again"
+                ),
+                Err(error) => {
+                    report.refused_packages += 1;
+                    eprintln!(
+                        "locald startup: left Pending semantic capture for {label} untouched: {error}"
+                    );
+                }
+            }
+        }
+        report
+    }
+
     /// Explicit retry/remove is the recovery action. A live local job or any
     /// possibly recoverable remote assignment keeps the marker Pending.
     pub(super) fn recover_orphaned_package_label(
@@ -328,6 +387,47 @@ impl CommandAdapter {
                 })?;
         }
         Ok(())
+    }
+}
+
+/// Distinct package labels that hold a selected Pending capture marker.
+fn pending_capture_package_labels(
+    daemon: &ProductDaemon,
+) -> Result<BTreeSet<String>, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let Some(relation) = semantic_capture_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open startup capture relation: {error}")))?
+    else {
+        return Ok(BTreeSet::new());
+    };
+    let mut labels = BTreeSet::new();
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(format!("page startup captures: {error}")))?;
+        for (key, record) in page.entries() {
+            if key.is_selected()
+                && matches!(
+                    record.outcome(),
+                    ProductSemanticCaptureOutcome::Pending { .. }
+                )
+            {
+                if labels.len() >= MAX_STARTUP_RECONCILED_PACKAGES
+                    && !labels.contains(key.package().as_str())
+                {
+                    eprintln!(
+                        "locald startup: more than {MAX_STARTUP_RECONCILED_PACKAGES} packages hold a Pending capture; the rest are recovered when next indexed or removed"
+                    );
+                    return Ok(labels);
+                }
+                labels.insert(key.package().as_str().to_owned());
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            return Ok(labels);
+        };
+        after = Some(next);
     }
 }
 

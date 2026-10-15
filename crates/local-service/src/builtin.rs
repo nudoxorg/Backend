@@ -2208,6 +2208,12 @@ fn compose_owner_timed(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    // A previous owner process may have died between committing a Pending
+    // source capture and recording its terminal. Pending is not a lease, so
+    // close every such marker now, before the first client read can observe
+    // it. This is the only moment at which "no job exists yet" is a fact about
+    // the whole process rather than about one package.
+    commands.reconcile_interrupted_captures(&mut daemon);
     timing.begin(startup_timing::Phase::QueryWarmup);
     commands.warm_queries(&daemon);
     let commands = Arc::new(Mutex::new(commands));
