@@ -55,10 +55,24 @@ errors without changing successful return values. Legacy outcome setters defer
 mandatory coverage until checking receives its `noResolve` policy; the native
 options-aware setter performs full admission immediately.
 
-Source-free configuration diagnostics still need their own retained compiler
-channel: missing configured `types` entries remain explicit admission refusals,
-and invalid terminal `**` includes are discarded while valid roots are selected
-without retaining a TS5010 diagnostic. `no-default-lib` directive syntax remains
-recognized, but the vendored parser's preexisting always-false
-`has_no_default_lib` field has no library-selection owner in this integration;
-source-directed default-library suppression is not implemented here.
+Program/configuration diagnostics have a retained channel separate from the
+per-source checker result. Missing configured `types` entries retain native
+TS2688 and their entry-point reason only for captured NotFound outcomes; provider
+failures still refuse admission. TSZ's captured diagnostic config loader retains
+native config diagnostics, and its parser diagnoses terminal `**` includes with
+TS5010 against original JSONC string-token spans while keeping valid selectors.
+Inherited diagnostics retain their defining config file. Config files and global
+diagnostics do not become semantic source members, and diagnostic-only programs
+do not acquire a fabricated root. The diagnostic vector participates in program
+identity and is available through `program_diagnostics()` or the combined
+`diagnostics()` iterator; per-source `CheckResult` counts retain their meaning.
+
+The shared source directive stream also owns `no-default-lib` for native closure
+discovery. A true directive in the captured source graph suppresses configured
+and default libraries without rewriting `noLib`; explicit source library
+references still load unless `noLib` is set. Sources are scanned before embedded
+libraries are linked, so embedded libraries' own directives do not suppress
+themselves. The vendored parser's legacy `has_no_default_lib` field remains
+unused; this integration applies the directive at the native program's library
+selection boundary. These are native source repairs with regression coverage;
+they require separately admitted compilation and execution validation.

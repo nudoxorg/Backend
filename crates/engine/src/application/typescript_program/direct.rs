@@ -937,6 +937,37 @@ mod native_web_closure_tests {
     }
 
     #[test]
+    fn native_dependency_no_default_lib_suppresses_program_libraries_before_embedded_insertion() {
+        let fixture = Fixture::new();
+        const SOURCE: &str = "/// <reference path='./dependency.d.ts' />\nexport {};";
+        fixture.write(
+            "tsconfig.json",
+            r#"{"compilerOptions":{"lib":["es5"],"types":[]},"files":["src/main.ts"]}"#,
+        );
+        fixture.write("src/main.ts", SOURCE);
+        fixture.write("src/dependency.d.ts", "interface Dependency {}");
+        let selected = [PackageSource::new("src/main.ts", SOURCE).unwrap()];
+        let baseline = fixture.native(&selected);
+        assert_eq!(baseline.sources.len(), 2);
+        assert!(
+            baseline
+                .libraries
+                .iter()
+                .any(|library| library.file_name.ends_with("lib.es5.d.ts")),
+            "embedded libraries' own directives cannot suppress their insertion"
+        );
+
+        fixture.write(
+            "src/dependency.d.ts",
+            "/// <reference no-default-lib='true' />\ninterface Dependency {}",
+        );
+        let suppressed = fixture.native(&selected);
+        assert_eq!(suppressed.sources.len(), 2);
+        assert!(suppressed.libraries.is_empty());
+        assert!(!suppressed.options.checker.no_lib);
+    }
+
+    #[test]
     fn native_missing_configured_types_retain_global_diagnostics_and_negative_witnesses() {
         let fixture = Fixture::new();
         const SOURCE: &str = "export const value = 1;";
