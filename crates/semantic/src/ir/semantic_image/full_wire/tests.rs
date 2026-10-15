@@ -1882,7 +1882,7 @@ fn clang_name_image() -> Result<Ir, crate::ir::BuildError> {
     let item = crate::ir::TreeItemInput {
         name: b"Widget",
         anonymous_callable_anchor: None,
-        kind: ItemKind::Struct,
+        kind: ItemKind::Record,
         visibility: Visibility::Public,
         authority: EntityAuthorityFacts {
             language_extension: FactAvailability::Captured,
@@ -1947,7 +1947,7 @@ fn clang_name_span_requires_schema_five_and_roundtrips_inside_captured_extent()
         Err(super::FullSemanticImageError::Full(_))
     ));
 
-    let mut foreign_file = bytes;
+    let mut foreign_file = bytes.clone();
     let name_file_cell = fact.end - 12;
     let foreign_atom = view
         .canonical_entities()
