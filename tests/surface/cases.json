@@ -629,7 +629,8 @@
       "project_env": "NUDOX_SURFACE_CPP_PUGIXML",
       "upstream": "pugixml",
       "languages": [
-        "cpp"
+        "cpp",
+        "python"
       ],
       "index_mode": "wait",
       "authored_symbols": {
