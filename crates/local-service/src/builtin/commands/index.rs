@@ -4,6 +4,9 @@ use super::super::{
     BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use super::index_operation::IndexOperationJournal;
+use source_preparation::{
+    PreparedScanCompilation, PreparedScanProfiles, PreparedScanSource, prepare_scan_source,
+};
 #[path = "index_source_preparation.rs"]
 mod source_preparation;
 use backend_engine::WorkspaceSnapshot;
@@ -473,60 +476,36 @@ pub(super) fn finish_index_scan(
     committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     mut index_operations: Option<&mut IndexOperationJournal>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
-    let current_root = daemon.engine().daemon().owner().head().root();
-    if current_root != result.work.workspace_root {
-        return Err(BuiltinModelError(
-            "workspace selection changed while the project scan was running; retry indexing"
-                .to_owned(),
-        ));
-    }
-    let IndexScanResult {
-        work,
-        scan,
-        workspace_snapshot,
-    } = result;
-    let final_revision_fence = scan.revision_fence.clone();
-    let cancellation = work.cancellation.clone();
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
-    let relation = base_snapshot
-        .relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
-    let facts_relation = product_source_file_facts_relation(&base_snapshot)
-        .map_err(|error| BuiltinModelError(format!("open product source facts: {error}")))?;
-    let IndexScanWork {
+    let PreparedScanSource {
         package,
         label,
-        source_root,
-        coordinate,
+        requested_root: requested_root_owned,
+        coordinate: coordinate_owned,
         request_id,
         execution_intent,
         project_key,
         before,
-        old_files,
-        reusable,
-        ..
-    } = work;
-    let requested_root = source_root.as_path();
-    let coordinate = coordinate.as_ref();
-    let revision_fence = &scan.revision_fence;
-    if cancellation.load(Ordering::Acquire) {
-        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
-    }
-    if !ingest::compiler_revision_is_current_with_cancellation(
-        revision_fence,
-        Some(cancellation.as_ref()),
-    )
-    .map_err(BuiltinModelError)?
-    {
-        return Err(BuiltinModelError(
-            "project root or files changed after source admission; retry indexing".to_owned(),
-        ));
-    }
-    // Use the root pinned by the scan for configuration, compiler-input, and
-    // profile reads. Keep the original spelling only for alias-retarget checks
-    // at later admission fences.
+        mut project,
+        mut file_keys,
+        mut changes,
+        mut source_facts_changes,
+        revision_fence: final_revision_fence,
+        python_environment,
+        cancellation,
+        workspace_snapshot,
+        profiles,
+    } = prepare_scan_source(
+        &base_snapshot,
+        result,
+        compiler,
+        semantic_authority,
+        operation_key,
+    )?;
+    let revision_fence = &final_revision_fence;
     let source_root = revision_fence.canonical_root();
-    let inputs = compiler_input_admissions(source_root, &scan, compiler);
+    let requested_root = requested_root_owned.as_path();
+    let coordinate = coordinate_owned.as_ref();
     let semantic_context = SemanticCompilationContext::admit(
         package,
         &label,
@@ -534,137 +513,9 @@ pub(super) fn finish_index_scan(
         coordinate,
         request_id,
         compiler,
-        scan.python_environment.as_ref(),
+        python_environment.as_ref(),
         cancellation.as_ref(),
     )?;
-    let live = ingest::live_compiler_profiles(
-        source_root,
-        &scan.compiler_sources,
-        &scan.reused_compiler_files,
-    );
-    let present =
-        ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
-    let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
-        .map_err(BuiltinModelError)?;
-    // Persist candidate observations first. They fence compilation but remain
-    // private to freshness and query paths until the combined product intent
-    // commits.
-    let mut observed_profiles = live.clone();
-    observed_profiles.extend(lost.iter().copied());
-    let mut observations = BTreeMap::new();
-    for profile in observed_profiles {
-        let coordinate =
-            super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
-        let key = ProductSemanticPublicationKey::new(
-            semantic_context.package_reference.clone(),
-            coordinate,
-            profile,
-        )
-        .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let input_digest = semantic_input_digest(&scan, profile);
-        let count = scan
-            .compiler_sources
-            .iter()
-            .filter(|source| source.profile == profile)
-            .count()
-            .saturating_add(
-                scan.reused_compiler_files
-                    .iter()
-                    .filter(|source| source.profile == profile)
-                    .count(),
-            );
-        let count = u64::try_from(count)
-            .map_err(|_| BuiltinModelError("semantic source count exceeds u64".to_owned()))?;
-        observations.insert(
-            profile,
-            semantic_authority.observe(&key, input_digest, count)?,
-        );
-    }
-    let mut file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project_update = ProductSourceRecord::project_with_membership_pages(
-        &label,
-        scan.source_version,
-        file_keys.clone(),
-        None,
-    )
-    .map_err(BuiltinModelError)?;
-    let mut project = project_update.project_record().clone();
-    let mut changes = Vec::new();
-    if before.as_ref() != Some(&project) {
-        changes.push(BuiltinSourceChange {
-            key: project_key,
-            after: Some(project.clone()),
-        });
-    }
-    let new_page_keys = project_update
-        .membership_pages()
-        .iter()
-        .map(|(key, _)| *key)
-        .collect::<BTreeSet<_>>();
-    for (key, page) in project_update.membership_pages() {
-        let current = relation
-            .lookup(key)
-            .map_err(|error| BuiltinModelError(format!("read project membership page: {error}")))?;
-        if current.as_ref() != Some(page) {
-            changes.push(BuiltinSourceChange {
-                key: *key,
-                after: Some(page.clone()),
-            });
-        }
-    }
-    if let Some(previous) = before
-        .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
-    {
-        changes.extend(
-            previous
-                .files
-                .page_keys()
-                .iter()
-                .copied()
-                .filter(|key| !new_page_keys.contains(key))
-                .map(|key| BuiltinSourceChange { key, after: None }),
-        );
-    }
-    for (key, record) in &scan.files {
-        let current = relation
-            .lookup(&key)
-            .map_err(|error| BuiltinModelError(format!("read indexed source file: {error}")))?;
-        if current.as_ref() != Some(record) {
-            changes.push(BuiltinSourceChange {
-                key: *key,
-                after: Some(record.clone()),
-            });
-        }
-    }
-    let selected = file_keys.iter().copied().collect::<BTreeSet<_>>();
-    changes.extend(
-        old_files
-            .iter()
-            .copied()
-            .filter(|key| !selected.contains(key))
-            .map(|key| BuiltinSourceChange { key, after: None }),
-    );
-    let mut source_facts_changes = prepare_source_facts_changes(
-        &relation,
-        facts_relation.as_ref(),
-        scan.source_facts,
-        &scan.files,
-        &old_files,
-    )?;
-    // Source comparisons and exact after-images are now prepared. The committed
-    // project is reread below before compilation; the scan's decoded compact
-    // rows and accounting/configuration payloads are not compiler authority.
-    drop(scan.files);
-    drop(scan.encoded_fact_bytes);
-    drop(scan.compiler_configuration);
-    // Keep these source rows private until every semantic profile has been
-    // admitted. The eventual BuiltinIntent carries source and semantic roots
-    // in one workspace transition.
-    // This compiler owner does not expose a complete typed present-and-negative
-    // read set, so its source/configuration digest cannot authorize reuse.
-    // Every live semantic profile rebuilds until the authority can prove its
-    // complete input closure.
     let (
         semantic_changes,
         selected,
@@ -672,68 +523,26 @@ pub(super) fn finish_index_scan(
         capture_changes,
         profile_refusals,
         partial_plan,
-    ) = {
-        let fresh_profiles = scan
-            .compiler_sources
-            .iter()
-            .map(|source| {
-                ingest::compilation_profile(source_root, &source.relative_path, source.profile)
-            })
-            .collect::<BTreeSet<_>>();
-        let mut reusable_inputs = BTreeSet::new();
-        for (profile, admitted) in &inputs {
-            if compiler_exact_witness_is_current(
-                daemon,
-                package,
-                &label,
-                coordinate,
-                compiler,
-                source_root,
-                *profile,
-                *admitted,
-                cancellation.as_ref(),
-            )? {
-                reusable_inputs.insert(*profile);
-            }
-        }
-        let dirty = profiles_requiring_compilation(
-            &live,
-            &lost,
-            &fresh_profiles,
-            &inputs,
-            &reusable_inputs,
-        );
-        let (fresh, reused) = ingest::select_compiler_inputs(
-            source_root,
-            scan.compiler_sources,
-            scan.reused_compiler_files,
-            &dirty,
-        );
-        if dirty.is_empty() {
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
-                None,
-            )
-        } else {
-            // Admit the exact structural source frontier together with a
-            // per-profile Pending marker before entering any compiler path.
-            // Candidate observations remain private until this one workspace
-            // transition commits; the selected semantic generation remains
-            // the prior coherent claim and is stale against the new source.
-            let (captures, pending_changes, _capture_observations) =
-                prepare_source_capture_changes(
-                    daemon,
-                    package,
-                    &semantic_context,
-                    &dirty,
-                    &observations,
-                    scan.source_version,
-                    operation_key,
-                )?;
+    ) = match profiles {
+        PreparedScanProfiles::Reused => (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
+            None,
+        ),
+        PreparedScanProfiles::Compile(compilation) => {
+            let PreparedScanCompilation {
+                fresh,
+                reused,
+                source_admission_policy,
+                observations,
+                captures,
+                pending_changes,
+            } = *compilation;
+            // The synchronous reference path commits the independently
+            // admitted source/Pending frontier before materializing inputs.
             if !ingest::compiler_revision_is_current_with_cancellation(
                 revision_fence,
                 Some(cancellation.as_ref()),
@@ -808,7 +617,7 @@ pub(super) fn finish_index_scan(
                 revision_fence,
                 fresh,
                 reused,
-                scan.source_admission_policy,
+                source_admission_policy,
                 Some(cancellation.as_ref()),
             )
             .map_err(BuiltinModelError);
@@ -1248,33 +1057,6 @@ mod owned_source_facts_handoff_tests {
         insert_source_facts_after(&mut afters, key, row.clone()).expect("after replaces deletion");
         assert_eq!(afters[&key], Some(row));
     }
-}
-
-fn prepare_source_capture_changes(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    package: backend_engine::PackageKey,
-    context: &SemanticCompilationContext<'_>,
-    profiles: &BTreeSet<LanguageProfile>,
-    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
-    source_version: [u8; 32],
-    operation_key: Option<backend_library::IndexOperationKey>,
-) -> Result<
-    (
-        BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
-        Vec<BuiltinCaptureChange>,
-        Vec<(ProductSemanticPublicationKey, SourceObservationReceipt)>,
-    ),
-    BuiltinModelError,
-> {
-    prepare_source_capture_changes_for_snapshot(
-        &daemon.engine().daemon().owner().snapshot(),
-        package,
-        context,
-        profiles,
-        observations,
-        source_version,
-        operation_key,
-    )
 }
 
 fn prepare_source_capture_changes_for_snapshot(
@@ -3015,30 +2797,6 @@ fn compiler_input_admissions(
             )
         })
         .collect()
-}
-
-fn compiler_exact_witness_is_current(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    package: backend_engine::PackageKey,
-    label: &str,
-    coordinate: Option<&PackageUrl>,
-    compiler: &LocalCompilerClient,
-    source_root: &Path,
-    profile: LanguageProfile,
-    admission: CompilerInputAdmission,
-    cancellation: &AtomicBool,
-) -> Result<bool, BuiltinModelError> {
-    compiler_exact_witness_is_current_for_snapshot(
-        &daemon.engine().daemon().owner().snapshot(),
-        package,
-        label,
-        coordinate,
-        compiler,
-        source_root,
-        profile,
-        admission,
-        cancellation,
-    )
 }
 
 fn compiler_exact_witness_is_current_for_snapshot(

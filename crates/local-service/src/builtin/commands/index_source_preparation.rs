@@ -39,15 +39,51 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     execution_intent: CompileExecutionIntent,
 }
 
-pub(in crate::builtin::commands) fn prepare_source_scan(
+/// Shared immutable-base source and profile admission. This plan cannot
+/// commit a workspace or publish a view; callers choose their capture timing.
+pub(super) struct PreparedScanSource {
+    pub(super) package: backend_engine::PackageKey,
+    pub(super) label: String,
+    pub(super) requested_root: PathBuf,
+    pub(super) coordinate: Option<PackageUrl>,
+    pub(super) request_id: u64,
+    pub(super) execution_intent: CompileExecutionIntent,
+    pub(super) project_key: [u8; 32],
+    pub(super) before: Option<ProductSourceRecord>,
+    pub(super) project: ProductSourceRecord,
+    pub(super) file_keys: Vec<[u8; 32]>,
+    pub(super) changes: Vec<BuiltinSourceChange>,
+    pub(super) source_facts_changes: Vec<BuiltinSourceFactsChange>,
+    pub(super) revision_fence: ingest::CompilerRevisionFence,
+    pub(super) python_environment: Option<PythonEnvironmentInput>,
+    pub(super) cancellation: Arc<AtomicBool>,
+    pub(super) workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
+    pub(super) profiles: PreparedScanProfiles,
+}
+
+pub(super) enum PreparedScanProfiles {
+    Reused,
+    Compile(Box<PreparedScanCompilation>),
+}
+
+/// The exact dirty-profile input handles and private Pending after-images,
+/// admitted together against PreparedScanSource's immutable base.
+pub(super) struct PreparedScanCompilation {
+    pub(super) fresh: Vec<ingest::CompilerSourceHandle>,
+    pub(super) reused: Vec<ingest::ReusedCompilerFile>,
+    pub(super) source_admission_policy: crate::builtin::source_budget::SourceAdmissionPolicy,
+    pub(super) observations: BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    pub(super) pending_changes: Vec<BuiltinCaptureChange>,
+}
+
+pub(super) fn prepare_scan_source(
     base_snapshot: &WorkspaceSnapshot,
     result: IndexScanResult,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut crate::builtin::semantic_authority::SemanticAuthority,
     operation_key: Option<backend_library::IndexOperationKey>,
-    route: Option<SourceRoute>,
-    #[cfg(test)] before_materialization: &mut dyn FnMut(),
-) -> Result<PreparedSourceScan, BuiltinModelError> {
+) -> Result<PreparedScanSource, BuiltinModelError> {
     let current_root = base_snapshot.root();
     if current_root != result.work.workspace_root {
         return Err(BuiltinModelError(
@@ -70,8 +106,8 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     let IndexScanWork {
         package,
         label,
-        source_root,
-        coordinate,
+        source_root: source_root_owned,
+        coordinate: coordinate_owned,
         request_id,
         execution_intent,
         project_key,
@@ -80,8 +116,8 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         reusable,
         ..
     } = work;
-    let requested_root = source_root.as_path();
-    let coordinate = coordinate.as_ref();
+
+    let coordinate = coordinate_owned.as_ref();
     let revision_fence = &scan.revision_fence;
     if cancellation.load(Ordering::Acquire) {
         return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
@@ -219,16 +255,15 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
-    let mut source_facts_changes = prepare_source_facts_changes(
+    let source_facts_changes = prepare_source_facts_changes(
         &relation,
         facts_relation.as_ref(),
         scan.source_facts,
         &scan.files,
         &old_files,
     )?;
-    // Source comparisons and exact after-images are now prepared. The committed
-    // project is reread below before compilation; the scan's decoded compact
-    // rows and accounting/configuration payloads are not compiler authority.
+    // Retain only checked after-images and selected compiler handles. Decoded
+    // scan rows and configuration/accounting payloads are not compiler authority.
     drop(scan.files);
     drop(scan.encoded_fact_bytes);
     drop(scan.compiler_configuration);
@@ -265,52 +300,128 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     }
     let dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
-    if dirty.is_empty() {
-        let intent = if changes.is_empty() && source_facts_changes.is_empty() {
-            None
-        } else {
-            Some(BuiltinIntent::index_with_source_facts(
-                package,
-                &label,
-                changes,
-                Vec::new(),
-                Vec::new(),
-                source_facts_changes,
-            )?)
-        };
-        return Ok(PreparedSourceScan::Ready(PreparedProductSelection {
-            intent,
-            selected: Vec::new(),
-            revision_fence: Some(final_revision_fence),
-            profile_refusals: Box::new([]),
-            partial_plan: None,
-        }));
-    }
-    let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
-        base_snapshot,
+    let profiles = if dirty.is_empty() {
+        PreparedScanProfiles::Reused
+    } else {
+        let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
+            base_snapshot,
+            package,
+            &semantic_context,
+            &dirty,
+            &observations,
+            scan.source_version,
+            operation_key,
+        )?;
+        let (fresh, reused) = ingest::select_compiler_inputs(
+            source_root,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+            &dirty,
+        );
+        PreparedScanProfiles::Compile(Box::new(PreparedScanCompilation {
+            fresh,
+            reused,
+            source_admission_policy: scan.source_admission_policy,
+            observations,
+            captures,
+            pending_changes,
+        }))
+    };
+    Ok(PreparedScanSource {
         package,
-        &semantic_context,
-        &dirty,
-        &observations,
-        scan.source_version,
+        label,
+        requested_root: source_root_owned,
+        coordinate: coordinate_owned,
+        request_id,
+        execution_intent,
+        project_key,
+        before,
+        project,
+        file_keys,
+        changes,
+        source_facts_changes,
+        revision_fence: final_revision_fence,
+        python_environment: scan.python_environment,
+        cancellation,
+        workspace_snapshot,
+        profiles,
+    })
+}
+
+pub(in crate::builtin::commands) fn prepare_source_scan(
+    base_snapshot: &WorkspaceSnapshot,
+    result: IndexScanResult,
+    compiler: &LocalCompilerClient,
+    semantic_authority: &mut crate::builtin::semantic_authority::SemanticAuthority,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    route: Option<SourceRoute>,
+    #[cfg(test)] before_materialization: &mut dyn FnMut(),
+) -> Result<PreparedSourceScan, BuiltinModelError> {
+    let PreparedScanSource {
+        package,
+        label,
+        requested_root,
+        coordinate,
+        request_id,
+        execution_intent,
+        project_key,
+        changes,
+        mut source_facts_changes,
+        revision_fence,
+        python_environment,
+        cancellation,
+        workspace_snapshot,
+        profiles,
+        ..
+    } = prepare_scan_source(
+        base_snapshot,
+        result,
+        compiler,
+        semantic_authority,
         operation_key,
     )?;
-    let (fresh, reused) = ingest::select_compiler_inputs(
-        source_root,
-        scan.compiler_sources,
-        scan.reused_compiler_files,
-        &dirty,
-    );
-    // Materialize on this worker before any capture can become selected. A
-    // changed source, alias or cancellation leaves the old root untouched.
+    let compilation = match profiles {
+        PreparedScanProfiles::Reused => {
+            let intent = if changes.is_empty() && source_facts_changes.is_empty() {
+                None
+            } else {
+                Some(BuiltinIntent::index_with_source_facts(
+                    package,
+                    &label,
+                    changes,
+                    Vec::new(),
+                    Vec::new(),
+                    source_facts_changes,
+                )?)
+            };
+            return Ok(PreparedSourceScan::Ready(PreparedProductSelection {
+                intent,
+                selected: Vec::new(),
+                revision_fence: Some(revision_fence),
+                profile_refusals: Box::new([]),
+                partial_plan: None,
+            }));
+        }
+        PreparedScanProfiles::Compile(compilation) => compilation,
+    };
+    let PreparedScanCompilation {
+        fresh,
+        reused,
+        source_admission_policy,
+        observations,
+        captures,
+        pending_changes,
+    } = *compilation;
+    // The owned path materializes before requesting any capture grant. The
+    // synchronous reference path deliberately commits Pending first instead.
     #[cfg(test)]
     before_materialization();
     let sources = ingest::admit_compiler_sources_for_scan(
-        requested_root,
-        revision_fence,
+        &requested_root,
+        &revision_fence,
         fresh,
         reused,
-        scan.source_admission_policy,
+        source_admission_policy,
         Some(cancellation.as_ref()),
     )
     .map_err(BuiltinModelError)?;
@@ -322,7 +433,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     let selection = PreparedProductSelection {
         intent: Some(intent),
         selected: Vec::new(),
-        revision_fence: Some(final_revision_fence.clone()),
+        revision_fence: Some(revision_fence.clone()),
         profile_refusals: Box::new([]),
         partial_plan: None,
     };
@@ -332,14 +443,14 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             package,
             label,
             project_key,
-            coordinate: coordinate.cloned(),
+            coordinate,
             request_id,
-            source_root: final_revision_fence.canonical_root().to_owned(),
-            revision_fence: final_revision_fence,
+            source_root: revision_fence.canonical_root().to_owned(),
+            revision_fence,
             sources,
             observations,
             captures,
-            python_environment: scan.python_environment,
+            python_environment,
             cancellation,
             workspace_snapshot,
             route,
