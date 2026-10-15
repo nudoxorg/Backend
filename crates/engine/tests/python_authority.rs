@@ -20,9 +20,10 @@ use backend_semantic::ir::{
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
 };
 use backend_frontend_python::legacy::{
-    CheckerReport, DeclarationKind, DefinitionTarget, Inference, InferenceSite, InferredType, Span,
+    CheckerReport, DeclarationKind, Inference, InferenceSite, InferredType, Span,
     SymbolOutcome, SymbolResolution,
 };
+use backend_frontend_python::legacy::checker::DefinitionTarget;
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
 
