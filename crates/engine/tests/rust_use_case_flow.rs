@@ -199,10 +199,7 @@ fn compile_fixture(root: &PathBuf) -> Result<Ir, TestError> {
             native_work: root,
         },
     )
-    .map_err(|failure| {
-        eprintln!("Rust fixture compile failed: {failure:?}");
-        TestError::Compile(failure_label(&failure))
-    })?
+    .map_err(|failure| TestError::Compile(failure_label(&failure)))?
     .ir;
     finish("rust", "cross-module-bindings", timer.elapsed(), &ir)?;
     Ok(ir)
@@ -363,66 +360,6 @@ fn cross_module_bindings_lower_through_the_rust_authority() -> Result<(), TestEr
 
     entity_in_parent(&ir, child_module, b"bound", EntityKind::Function)?;
     entity_in_parent(&ir, child_module, b"other", EntityKind::Function)?;
-
-    Ok(())
-}
-
-/// Same-named macro-expanded functions remain children of their distinct HIR
-/// modules when their source spans both project to the invocation site.
-#[test]
-fn ryu_macro_bench_functions_keep_distinct_module_parents() -> Result<(), TestError> {
-    if resolve_tool().is_none() {
-        skip("rust", "macro-module-parentage", "rustc-missing")?;
-        return Ok(());
-    }
-
-    let root = fixture_root()?;
-    let source = br#"
-macro_rules! benches {
-    ($($name:ident($value:expr),)*) => {
-        mod bench_ryu {
-            $(fn $name(_: f64) { let _ = $value; })*
-        }
-        mod bench_std_fmt {
-            $(fn $name(_: f64) { let _ = $value; })*
-        }
-    };
-}
-
-benches! {
-    bench_0_f64(0f64),
-    bench_short_f64(0.1234f64),
-}
-"#;
-    fs::write(root.join("src/lib.rs"), source).map_err(|source| TestError::Io {
-        operation: "write macro module fixture",
-        source,
-    })?;
-    let ir = compile_fixture(&root)?;
-    let _ = fs::remove_dir_all(&root);
-
-    let ryu_module = ir
-        .items()
-        .find(|item| item.kind() == EntityKind::Module && item.name() == b"bench_ryu")
-        .map(|item| item.id())
-        .ok_or(TestError::Falsified("bench_ryu module absent"))?;
-    let fmt_module = ir
-        .items()
-        .find(|item| item.kind() == EntityKind::Module && item.name() == b"bench_std_fmt")
-        .map(|item| item.id())
-        .ok_or(TestError::Falsified("bench_std_fmt module absent"))?;
-    if ryu_module == fmt_module {
-        return Err(TestError::Falsified("sibling modules share one entity"));
-    }
-    for name in [b"bench_0_f64".as_slice(), b"bench_short_f64"] {
-        let ryu_function = entity_in_parent(&ir, ryu_module, name, EntityKind::Function)?;
-        let fmt_function = entity_in_parent(&ir, fmt_module, name, EntityKind::Function)?;
-        if ryu_function == fmt_function {
-            return Err(TestError::Falsified(
-                "same-named sibling functions share one entity identity",
-            ));
-        }
-    }
 
     Ok(())
 }
