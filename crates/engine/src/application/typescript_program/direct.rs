@@ -751,6 +751,59 @@ mod native_web_closure_tests {
             TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
         );
     }
+
+    #[test]
+    fn native_missing_source_references_retain_diagnostics_and_negative_witnesses() {
+        let fixture = Fixture::new();
+        const SOURCE: &str = "#!/usr/bin/env node\n/// <reference path='./missing.d.ts' />\n/// <reference types='absent-types' />\nexport const value = 1;";
+        fixture.write("src/main.ts", SOURCE);
+        fixture.write(
+            "tsconfig.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/**/*"]}"#,
+        );
+        let native = fixture.native(&[PackageSource::new("src/main.ts", SOURCE).unwrap()]);
+        assert_eq!(native.sources.len(), 1);
+        assert_eq!(native.options.module_resolutions.len(), 2);
+        assert!(
+            native
+                .options
+                .module_resolutions
+                .iter()
+                .all(|request| matches!(
+                    request.target,
+                    TszProjectModuleResolutionTarget::Unresolved
+                ))
+        );
+        let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+        authority
+            .update(native.sources, native.options, &native.libraries)
+            .unwrap();
+        let diagnostics = authority
+            .project()
+            .unwrap()
+            .check_result()
+            .file_results
+            .iter()
+            .flat_map(|file| &file.diagnostics)
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert!(diagnostics.contains(&6053));
+        assert!(diagnostics.contains(&2688));
+
+        fixture.write("src/missing.d.ts", "interface AppearedAfterCapture {}");
+        let host = TypeScriptProjectHost::direct(
+            None,
+            ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
+                .unwrap(),
+        );
+        let changed = host.admit(&fixture.0).unwrap().unwrap();
+        assert!(
+            native
+                .closure_witness
+                .validate_current(changed.witness())
+                .is_err()
+        );
+    }
     #[test]
     fn native_vite_client_types_use_package_declarations_after_primary_type_lookup() {
         let fixture = Fixture::new();

@@ -139,14 +139,21 @@ pub struct ProjectFileFormatInput {
     pub format: ProjectFileFormat,
 }
 
-/// Syntactic form of a TypeScript module request supplied by an admitted
-/// compiler program.
+/// Syntactic form of an import or source reference supplied by an admitted
+/// compiler program. Reference offsets locate the attribute value in UTF-8
+/// source bytes; these kinds never participate in generic module lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ProjectModuleRequestKind {
     EsmImport,
     DynamicImport,
     CjsRequire,
     EsmReExport,
+    ReferencePath {
+        offset: u32,
+    },
+    ReferenceTypes {
+        offset: u32,
+    },
     /// The compiler bridge saw a request kind TSZ does not model. Keeping it
     /// explicit makes the unsupported case fail closed instead of falling
     /// through to heuristic filename resolution.
@@ -196,6 +203,10 @@ pub enum ProjectModuleResolutionError {
     },
     EmptySpecifier,
     EmptyExternalIdentity,
+    InvalidReference {
+        importer_path: String,
+        offset: u32,
+    },
     UnsupportedRequestKind {
         syntax_kind: String,
     },
@@ -230,6 +241,10 @@ impl std::fmt::Display for ProjectModuleResolutionError {
             Self::EmptyExternalIdentity => {
                 formatter.write_str("external module identity must not be empty")
             }
+            Self::InvalidReference { importer_path, offset } => write!(
+                formatter,
+                "invalid captured reference at {importer_path:?}:{offset}"
+            ),
             Self::UnsupportedRequestKind { syntax_kind } => write!(
                 formatter,
                 "unsupported TypeScript module request kind: {syntax_kind}"
@@ -960,7 +975,10 @@ fn unambiguous_project_file_path_map(
 ) -> FxHashMap<(usize, String), usize> {
     let mut by_specifier: FxHashMap<(usize, String), Option<usize>> = FxHashMap::default();
     let mut conflicts = FxHashSet::default();
-    for ((file_idx, specifier, _, _), outcome) in outcomes {
+    for ((file_idx, specifier, _, kind), outcome) in outcomes {
+        if kind.is_reference() {
+            continue;
+        }
         let key = (*file_idx, specifier.clone());
         let target = match outcome {
             crate::checker::context::ResolvedModuleRequestOutcome::File(target_idx) => {

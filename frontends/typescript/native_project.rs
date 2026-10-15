@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 
 use tsz::config::{ResolvedCompilerOptions, TsConfig};
-use tsz::module_resolver::{ImportKind, ImportingModuleKind, ModuleResolver};
+use tsz::module_resolver::{ImportKind, ImportingModuleKind, ModuleResolver, ResolutionFailure};
 use tsz::parser::node::NodeAccess;
 use tsz::parser::{MeteredParserState, NodeIndex, syntax_kind_ext};
 use tsz::scanner::SyntaxKind;
@@ -322,11 +322,36 @@ pub fn build(
                     continue;
                 }
                 if let Some(reference) = directive.path {
-                    pending.push_back(normalize(
-                        &path.parent().unwrap_or(Path::new("")).join(reference.text),
-                    ));
+                    let target = tsz::checker::triple_slash_validator::resolve_reference_path_with(
+                        &path,
+                        &reference.text.replace('\\', "/"),
+                        options.allow_js
+                            || matches!(
+                                path.extension().and_then(|extension| extension.to_str()),
+                                Some("js" | "jsx" | "mjs" | "cjs")
+                            ),
+                        |candidate| fs.is_file(candidate),
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|target| normalize(&target));
+                    if let Some(target) = &target {
+                        pending.push_back(target.clone());
+                    }
+                    if resolutions.len() >= MAX_REQUESTS {
+                        return Err("native TSZ module request count exceeds bound".into());
+                    }
+                    resolutions.push(NativeModuleResolution {
+                        importer: path.clone(),
+                        specifier: reference.text.to_owned(),
+                        kind: TszProjectModuleRequestKind::ReferencePath {
+                            offset: reference.offset as u32,
+                        },
+                        mode: None,
+                        target,
+                    });
                 }
                 if let Some(reference) = directive.types {
+                    let offset = reference.offset as u32;
                     let reference = reference.text;
                     let mode = match directive.resolution_mode.map(|value| value.text) {
                         None => None,
@@ -338,7 +363,7 @@ pub fn build(
                             );
                         }
                     };
-                    let target = resolver
+                    let target = match resolver
                         .resolve_type_reference_directive_checked(
                             reference,
                             &path,
@@ -346,12 +371,31 @@ pub fn build(
                             mode,
                         )
                         .map_err(|error| error.to_string())?
-                        .map_err(|error| {
-                            format!(
-                                "native TSZ type reference {reference:?} did not resolve: {error:?}"
-                            )
-                        })?;
-                    pending.push_back(target.resolved_path);
+                    {
+                        Ok(target) => Some(target.resolved_path),
+                        Err(ResolutionFailure::NotFound { .. }) => None,
+                        Err(error) => {
+                            return Err(format!(
+                                "native TSZ type reference {reference:?} refused: {error:?}"
+                            ));
+                        }
+                    };
+                    if let Some(target) = &target {
+                        pending.push_back(target.clone());
+                    }
+                    if resolutions.len() >= MAX_REQUESTS {
+                        return Err("native TSZ module request count exceeds bound".into());
+                    }
+                    resolutions.push(NativeModuleResolution {
+                        importer: path.clone(),
+                        specifier: reference.to_owned(),
+                        kind: TszProjectModuleRequestKind::ReferenceTypes { offset },
+                        mode: mode.map(|mode| match mode {
+                            ImportingModuleKind::Esm => TszResolutionModeOverride::Import,
+                            ImportingModuleKind::CommonJs => TszResolutionModeOverride::Require,
+                        }),
+                        target,
+                    });
                 }
             }
         }

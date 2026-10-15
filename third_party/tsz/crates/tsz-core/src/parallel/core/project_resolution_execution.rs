@@ -72,6 +72,8 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
     }
 
     let mut outcomes = ResolvedModuleRequestOutcomeMap::default();
+    let mut reference_importers = FxHashSet::default();
+    let mut reference_sites = FxHashMap::default();
     for resolution in resolutions {
         poll(1)?;
         validate_path(&resolution.importer_path, &mut poll)?;
@@ -84,7 +86,12 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
                 path: resolution.importer_path.clone(),
             })
             .map_err(E::from)?;
-        if resolution.specifier.is_empty() {
+        let reference_offset = match resolution.request_kind {
+            ProjectModuleRequestKind::ReferencePath { offset }
+            | ProjectModuleRequestKind::ReferenceTypes { offset } => Some(offset),
+            _ => None,
+        };
+        if resolution.specifier.is_empty() && reference_offset.is_none() {
             return Err(ProjectModuleResolutionError::EmptySpecifier.into());
         }
 
@@ -93,6 +100,12 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
             ProjectModuleRequestKind::DynamicImport => ResolutionRequestKind::DynamicImport,
             ProjectModuleRequestKind::CjsRequire => ResolutionRequestKind::CjsRequire,
             ProjectModuleRequestKind::EsmReExport => ResolutionRequestKind::EsmReExport,
+            ProjectModuleRequestKind::ReferencePath { offset } => {
+                ResolutionRequestKind::ReferencePath { offset: *offset }
+            }
+            ProjectModuleRequestKind::ReferenceTypes { offset } => {
+                ResolutionRequestKind::ReferenceTypes { offset: *offset }
+            }
             ProjectModuleRequestKind::Unsupported { syntax_kind } => {
                 return Err(ProjectModuleResolutionError::UnsupportedRequestKind {
                     syntax_kind: syntax_kind.clone(),
@@ -100,6 +113,66 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
                 .into());
             }
         };
+        if let Some(offset) = reference_offset {
+            let invalid = || ProjectModuleResolutionError::InvalidReference {
+                importer_path: resolution.importer_path.clone(),
+                offset,
+            };
+            if reference_importers.insert(importer_idx) {
+                let source = program.files[importer_idx]
+                    .arena
+                    .source_files
+                    .first()
+                    .ok_or_else(invalid)
+                    .map_err(E::from)?;
+                for directive in
+                    crate::checker::triple_slash_validator::reference_directives_with_poll(
+                        &source.text,
+                        &mut poll,
+                    )
+                {
+                    let directive = directive?;
+                    let mode = match directive.resolution_mode.map(|value| value.text) {
+                        None => None,
+                        Some("import") => {
+                            Some(crate::checker::context::ResolutionModeOverride::Import)
+                        }
+                        Some("require") => {
+                            Some(crate::checker::context::ResolutionModeOverride::Require)
+                        }
+                        Some(_) => return Err(invalid().into()),
+                    };
+                    for (value, types) in [(directive.path, false), (directive.types, true)] {
+                        if let Some(value) = value {
+                            let site_offset =
+                                u32::try_from(value.offset).map_err(|_| E::from(invalid()))?;
+                            let kind = if types {
+                                ResolutionRequestKind::ReferenceTypes {
+                                    offset: site_offset,
+                                }
+                            } else {
+                                ResolutionRequestKind::ReferencePath {
+                                    offset: site_offset,
+                                }
+                            };
+                            reference_sites.insert(
+                                (importer_idx, kind),
+                                (value.text, if types { mode } else { None }),
+                            );
+                        }
+                    }
+                }
+            }
+            if reference_sites.get(&(importer_idx, request_kind))
+                != Some(&(resolution.specifier.as_str(), resolution.resolution_mode))
+                || matches!(
+                    resolution.target,
+                    ProjectModuleResolutionTarget::External { .. }
+                )
+            {
+                return Err(invalid().into());
+            }
+        }
         let outcome = match &resolution.target {
             ProjectModuleResolutionTarget::File { path } => {
                 validate_path(path, &mut poll)?;
@@ -154,14 +227,23 @@ impl MergedProgram {
         self.project_module_resolution_outcomes = None;
         let scope = tsz_common::LatchedExecutionCheckpoint::new(checkpoint);
         let span = tsz_common::ProjectExecutionSpan::new(
-            Some(&scope), tsz_common::ProjectExecutionPhase::ModuleOutcomes, None,
+            Some(&scope),
+            tsz_common::ProjectExecutionPhase::ModuleOutcomes,
+            None,
         );
         let outcomes = build_project_module_resolution_outcomes_with_poll(
-            self, resolutions,
-            |work| scope.checkpoint(work).map_err(ProjectProgramCheckError::ExecutionStopped),
+            self,
+            resolutions,
+            |work| {
+                scope
+                    .checkpoint(work)
+                    .map_err(ProjectProgramCheckError::ExecutionStopped)
+            },
             |path, poll| validate_project_virtual_path_with_poll(path, poll),
         )?;
-        scope.checkpoint(0).map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        scope
+            .checkpoint(0)
+            .map_err(ProjectProgramCheckError::ExecutionStopped)?;
         self.project_module_resolution_outcomes = Some(Arc::new(outcomes));
         span.returned();
         Ok(())

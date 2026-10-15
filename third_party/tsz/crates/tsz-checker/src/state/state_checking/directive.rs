@@ -9,6 +9,10 @@ impl<'a> CheckerState<'a> {
     /// If a referenced file doesn't exist, emits error 6053.
     /// Also emits TS1084 for malformed reference directive syntax.
     pub(crate) fn check_triple_slash_references(&mut self, file_name: &str, source_text: &str) {
+        if let Some(outcomes) = self.ctx.project_module_resolution_outcomes.clone() {
+            self.check_captured_references(source_text, &outcomes);
+            return;
+        }
         use crate::triple_slash_validator::{
             extract_reference_paths, find_malformed_reference_directives,
             reference_path_probe_extensions, validate_reference_path,
@@ -146,6 +150,104 @@ impl<'a> CheckerState<'a> {
                 let _ = &resolved;
                 let message = format_message("File '{0}' not found.", &[reference_path.as_str()]);
                 self.emit_error_at(pos, length, &message, diagnostic_codes::FILE_NOT_FOUND);
+            }
+        }
+    }
+
+    /// An admitted outcome map is the complete resolution authority. Neither a
+    /// captured miss nor a published file may consult ambient disk/filename
+    /// guesses. Directive kinds include their exact value byte position.
+    fn check_captured_references(
+        &mut self,
+        source: &str,
+        outcomes: &crate::context::ResolvedModuleRequestOutcomeMap,
+    ) {
+        use crate::context::{
+            ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
+        };
+        use crate::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
+        use crate::triple_slash_validator::reference_directives_with_poll;
+        let types = self.ctx.types;
+        for directive in
+            reference_directives_with_poll(source, |work| types.execution_checkpoint(work))
+        {
+            let Ok(directive) = directive else {
+                return;
+            };
+            if directive.path.is_none()
+                && directive.types.is_none()
+                && directive.lib.is_none()
+                && directive.no_default_lib.is_none()
+            {
+                self.emit_error_at(
+                    directive.offset as u32,
+                    directive.length as u32,
+                    diagnostic_messages::INVALID_REFERENCE_DIRECTIVE_SYNTAX,
+                    diagnostic_codes::INVALID_REFERENCE_DIRECTIVE_SYNTAX,
+                );
+            }
+            let mode = match directive.resolution_mode.map(|value| value.text) {
+                Some("import") => Some(ResolutionModeOverride::Import),
+                Some("require") => Some(ResolutionModeOverride::Require),
+                _ => None,
+            };
+            for (value, is_types) in [(directive.path, false), (directive.types, true)] {
+                let Some(value) = value else {
+                    continue;
+                };
+                let Ok(offset) = u32::try_from(value.offset) else {
+                    return;
+                };
+                let kind = if is_types {
+                    ResolutionRequestKind::ReferenceTypes { offset }
+                } else {
+                    ResolutionRequestKind::ReferencePath { offset }
+                };
+                let key = (
+                    self.ctx.current_file_idx,
+                    value.text.to_owned(),
+                    if is_types { mode } else { None },
+                    kind,
+                );
+                if matches!(
+                    outcomes.get(&key),
+                    Some(ResolvedModuleRequestOutcome::File(_))
+                ) {
+                    continue;
+                }
+                let (code, message) = if is_types {
+                    (
+                        diagnostic_codes::CANNOT_FIND_TYPE_DEFINITION_FILE_FOR,
+                        format_message(
+                            diagnostic_messages::CANNOT_FIND_TYPE_DEFINITION_FILE_FOR,
+                            &[value.text],
+                        ),
+                    )
+                } else if std::path::Path::new(value.text)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains('.'))
+                {
+                    (
+                        diagnostic_codes::FILE_NOT_FOUND,
+                        format_message("File '{0}' not found.", &[value.text]),
+                    )
+                } else {
+                    let extensions = if self.ctx.compiler_options.allow_js || self.ctx.is_js_file()
+                    {
+                        tsz_common::file_extensions::TSC_TS_JS_RESOLUTION_EXTENSIONS
+                    } else {
+                        tsz_common::file_extensions::TSC_TS_RESOLUTION_EXTENSIONS
+                    };
+                    (
+                        diagnostic_codes::COULD_NOT_RESOLVE_THE_PATH_WITH_THE_EXTENSIONS,
+                        format_message(
+                            "Could not resolve the path '{0}' with the extensions: '{1}'.",
+                            &[value.text, &extensions.join("', '")],
+                        ),
+                    )
+                };
+                self.emit_error_at(offset, value.text.len() as u32, &message, code);
             }
         }
     }

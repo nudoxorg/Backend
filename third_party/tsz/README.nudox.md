@@ -35,3 +35,21 @@ queries. Variance completed-visit memo keys include bound generic parameter
 names, so shared subtrees under the same complete context are visited once.
 Shared effective-variance masks, partial dependency-walk publication and raw
 lifetime-erased public guards are intentionally not adopted.
+
+Captured native web-program discovery also shares the checker's JSX pragma
+owners, resolves automatic/configured/source types through native package
+exports and `typesVersions`, and streams borrowed reference directives under the
+admission work checkpoint. Source path/type reference observations use the
+existing immutable request-outcome map, with typed reference kinds and exact
+UTF-8 value offsets. Admission validates those kinds, offsets, modes and values
+against the source. Captured misses produce TS6053/TS2688 in the retained checker;
+admitted checks never use the legacy reference-path disk probe. Reference rows
+do not enter ordinary module-resolution projections or consensus.
+
+Source-free configuration diagnostics still need their own retained compiler
+channel: missing configured `types` entries remain explicit admission refusals,
+and invalid terminal `**` includes are discarded while valid roots are selected
+without retaining a TS5010 diagnostic. `no-default-lib` directive syntax remains
+recognized, but the vendored parser's preexisting always-false
+`has_no_default_lib` field has no library-selection owner in this integration;
+source-directed default-library suppression is not implemented here.

@@ -262,7 +262,9 @@ pub struct TszProjectOptions {
     /// Keep semantic policy on this project value so type-origin behavior is
     /// stable across Rayon workers and direct per-file query caches.
     pub semantic_options: TszProjectSemanticOptions,
-    /// Exact compiler-resolved outcome for every observed program import.
+    /// Exact compiler-resolved outcomes for observed imports and source
+    /// references. Reference kinds bind their source byte positions as well as
+    /// their importer, value, mode and target to this immutable recipe.
     /// Empty is an explicit declaration that the admitted program has no
     /// requests; it does not enable filename-based fallback.
     pub module_resolutions: Vec<TszProjectModuleResolution>,
@@ -1494,6 +1496,7 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TszResolutionModeOverride;
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
     use tsz::parser::node::NodeAccess;
@@ -2008,6 +2011,184 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn captured_reference_outcomes_own_diagnostics_partitions_queries_and_identity() {
+        let disk = std::env::temp_dir().join(format!(
+            "tsz-reference-{}-{}.d.ts",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let cleanup = Cleanup(disk);
+        std::fs::write(&cleanup.0, "interface AmbientDiskCannotOverrideCapture {}").unwrap();
+        let path = cleanup.0.to_str().unwrap();
+        let source = format!(
+            "#!/usr/bin/env node\n/// <reference path='{path}' />\n/// <reference types='missing-ambient' resolution-mode='require' />\nexport const value = 1;"
+        );
+        let path_offset = source.find(path).unwrap() as u32;
+        let types_offset = source.find("missing-ambient").unwrap() as u32;
+        let sources = vec![
+            input("src/main.ts", &source),
+            input("types/admitted.d.ts", "interface CapturedType {}"),
+        ];
+        let mut recipe = options();
+        recipe.module_resolutions = vec![
+            TszProjectModuleResolution {
+                importer_path: "src/main.ts".into(),
+                specifier: path.into(),
+                request_kind: TszProjectModuleRequestKind::ReferencePath {
+                    offset: path_offset,
+                },
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::Unresolved,
+            },
+            TszProjectModuleResolution {
+                importer_path: "src/main.ts".into(),
+                specifier: "missing-ambient".into(),
+                request_kind: TszProjectModuleRequestKind::ReferenceTypes {
+                    offset: types_offset,
+                },
+                resolution_mode: Some(TszResolutionModeOverride::Require),
+                target: TszProjectModuleResolutionTarget::Unresolved,
+            },
+        ];
+        let codes = |project: &TszProject| {
+            project
+                .check_result()
+                .file_results
+                .iter()
+                .flat_map(|file| &file.diagnostics)
+                .filter(|diagnostic| matches!(diagnostic.code, 6053 | 2688))
+                .map(|diagnostic| (diagnostic.code, diagnostic.start))
+                .collect::<Vec<_>>()
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources.clone(), recipe.clone(), &[])
+            .unwrap();
+        let expected = codes(authority.project().unwrap());
+        assert!(expected.contains(&(6053, path_offset)));
+        assert!(expected.contains(&(2688, types_offset)));
+        for workers in [1, 2] {
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 1_000_000);
+            let mut partitioned = TszProjectAuthority::new();
+            partitioned
+                .update_with_checker_execution(
+                    sources.clone(),
+                    recipe.clone(),
+                    &[],
+                    TszProjectCheckerExecution {
+                        checkpoint: &budget,
+                        workers: std::num::NonZeroUsize::new(workers).unwrap(),
+                    },
+                )
+                .unwrap();
+            let project = partitioned.project().unwrap();
+            assert_eq!(codes(project), expected);
+            let session = project.checked_query_session(&budget).unwrap();
+            let index = project
+                .program()
+                .files
+                .iter()
+                .position(|file| file.file_name == "src/main.ts")
+                .unwrap();
+            session
+                .with_file_checker_and_types(index, |checker, _, _, _| {
+                    let key = (
+                        index,
+                        path.to_owned(),
+                        None,
+                        tsz::checker::context::ResolutionRequestKind::ReferencePath {
+                            offset: path_offset,
+                        },
+                    );
+                    assert_eq!(
+                        checker
+                            .ctx
+                            .project_module_resolution_outcomes
+                            .as_ref()
+                            .unwrap()
+                            .get(&key),
+                        Some(&tsz::checker::context::ResolvedModuleRequestOutcome::Unresolved)
+                    );
+                    assert_eq!(
+                        checker.ctx.resolve_import_target_from_file(index, path),
+                        None
+                    );
+                })
+                .unwrap();
+        }
+        std::fs::remove_file(&cleanup.0).unwrap();
+        for request in &mut recipe.module_resolutions {
+            request.target = TszProjectModuleResolutionTarget::File {
+                path: "types/admitted.d.ts".into(),
+            };
+        }
+        let report = authority.update(sources, recipe, &[]).unwrap();
+        assert_eq!(report.parsed_and_bound, 0);
+        assert!(!report.reused_project_result);
+        assert!(
+            codes(authority.project().unwrap()).is_empty(),
+            "published captured files need no ambient disk counterpart"
+        );
+    }
+
+    #[test]
+    fn captured_reference_inputs_validate_exact_source_kind_offset_mode_and_target() {
+        let source = "/// <reference types='environment' resolution-mode='require' />\nexport const sample = 'environment';";
+        let mut recipe = options();
+        let valid = TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "environment".into(),
+            request_kind: TszProjectModuleRequestKind::ReferenceTypes {
+                offset: source.find("environment").unwrap() as u32,
+            },
+            resolution_mode: Some(TszResolutionModeOverride::Require),
+            target: TszProjectModuleResolutionTarget::Unresolved,
+        };
+        for invalid in [
+            TszProjectModuleResolution {
+                request_kind: TszProjectModuleRequestKind::ReferenceTypes {
+                    offset: source.rfind("environment").unwrap() as u32,
+                },
+                ..valid.clone()
+            },
+            TszProjectModuleResolution {
+                request_kind: TszProjectModuleRequestKind::ReferencePath {
+                    offset: source.find("environment").unwrap() as u32,
+                },
+                ..valid.clone()
+            },
+            TszProjectModuleResolution {
+                resolution_mode: Some(TszResolutionModeOverride::Import),
+                ..valid.clone()
+            },
+            TszProjectModuleResolution {
+                target: TszProjectModuleResolutionTarget::External {
+                    identity: "ambient".into(),
+                },
+                ..valid.clone()
+            },
+        ] {
+            recipe.module_resolutions = vec![invalid];
+            let mut authority = TszProjectAuthority::new();
+            assert!(matches!(
+                authority.update(vec![input("src/main.ts", source)], recipe.clone(), &[]),
+                Err(TszAuthorityError::ModuleResolution(
+                    TszProjectModuleResolutionError::InvalidReference { .. }
+                ))
+            ));
+        }
+    }
     #[test]
     fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
         use tsz::checker::context::{ResolutionModeOverride, ResolutionRequestKind};
