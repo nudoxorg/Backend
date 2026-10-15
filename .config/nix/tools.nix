@@ -455,6 +455,20 @@ let
                 echo "process_start=$start_identity"
               } > "$owner_tmp"
               mv -f "$owner_tmp" "$ownerfile"
+              # Only the process above may own this start. A health probe must
+              # never bootstrap a competing owner while its endpoint is opening.
+              ready=0
+              for attempt in $(seq 1 20); do
+                if [ -S "$endpoint" ] && validate_owner && "$bin_dir/nudox-gui-probe" --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+                  ready=1
+                  break
+                fi
+                sleep 0.05
+              done
+              if [ "$ready" -ne 1 ]; then
+                echo "backend-locald did not publish a ready endpoint; retaining owner record" >&2
+                exit 75
+              fi
               ;;
             stop)
               if [ ! -f "$ownerfile" ]; then exit 0; fi
@@ -494,7 +508,7 @@ let
           case "$endpoint" in unix:*) endpoint=''${endpoint#unix:} ;; esac
           if [ -z "$workspace" ]; then workspace=$(pwd)/.local/gui-live; fi
           bin_dir=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
-          exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json health
+          exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json --passive health
           EOF
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
@@ -519,6 +533,14 @@ let
             rm -rf "$root"
           }
           trap cleanup EXIT HUP INT TERM
+          if "$bin_dir/nudox-gui-probe" --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+            echo "an absent service unexpectedly passed its health probe" >&2
+            exit 1
+          fi
+          if [ -e "$workspace" ] || [ -e "$endpoint" ]; then
+            echo "the read-only service probe started an owner or created state" >&2
+            exit 1
+          fi
           "$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace"
           "$bin_dir/nudox-gui-service" status --endpoint "$endpoint" --workspace "$workspace" >/dev/null
           mkdir "$endpoint.pid.lock"
