@@ -3909,7 +3909,7 @@ pub enum PackageSemanticRuntimeError {
     #[error("package source frontier failed worker-side admission")]
     Admission(#[from] PackageSourceSetError),
     /// Runtime ownership or panic terminal.
-    #[error("package compiler runtime failed: {0:?}")]
+    #[error("package compiler runtime failed: {}", super::compiler_terminal_text::TerminalText::new("", .0))]
     Runtime(CompilerTerminal),
     /// Package authority, lowering, publication, or reopen terminal.
     #[error(transparent)]
