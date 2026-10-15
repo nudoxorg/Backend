@@ -6,12 +6,14 @@
 use std::mem::size_of;
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
-    CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, DurableReceiptAuthority,
-    InputText, MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
+    CompilerCause, CompilerDiagnostic, CompilerFragmentFailure, CompilerFragmentFault,
+    CompilerRequest, CompilerTerminal, CorrelationId, DurableReceiptAuthority, InputText,
+    MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
+use backend_semantic::ir::FragmentError;
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 
 // The durable semantic result previously added one 32-byte image identity and
 // its exact extent to the compact-artifact reply layout (312 bytes). A later
@@ -70,6 +72,7 @@ enum DiagnosticAllocationTestError {
     DiagnosticDeallocation {
         observed: AllocationInfo,
     },
+    FragmentFaultLost,
     DiagnosticFacts {
         byte_len: usize,
         observed: usize,
@@ -84,7 +87,8 @@ fn compiler_diagnostics_are_one_cold_allocation_and_clean_replies_stay_compact()
     successful_health_is_allocation_free()?;
     unavailable_dependency_is_allocation_free()?;
     unavailable_compiler_is_allocation_free()?;
-    emitted_native_diagnostic_has_one_owner()
+    emitted_native_diagnostic_has_one_owner()?;
+    emitted_fragment_fault_has_one_owner()
 }
 
 fn successful_health_is_allocation_free() -> Result<(), DiagnosticAllocationTestError> {
@@ -243,6 +247,46 @@ fn exact_layout() -> Result<(), DiagnosticAllocationTestError> {
         return Err(DiagnosticAllocationTestError::OutcomeLayout {
             actual: outcome_bytes,
             expected: EXPECTED_APPLICATION_OUTCOME_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn emitted_fragment_fault_has_one_owner() -> Result<(), DiagnosticAllocationTestError> {
+    let mut cause = None;
+    let allocations = measure(|| {
+        cause = Some(CompilerCause::FragmentFailure(Box::new(
+            CompilerFragmentFailure::validate(FragmentError::TruncatedHeader {
+                required: 32,
+                actual: 7,
+            }),
+        )));
+    });
+    if allocations.count_total != 1 || allocations.count_current != 1 || allocations.count_max != 1
+    {
+        return Err(DiagnosticAllocationTestError::DiagnosticAllocation {
+            observed: allocations,
+        });
+    }
+    let Some(CompilerCause::FragmentFailure(failure)) = cause else {
+        return Err(DiagnosticAllocationTestError::FragmentFaultLost);
+    };
+    if !matches!(
+        failure.fault(),
+        CompilerFragmentFault::Validate(FragmentError::TruncatedHeader {
+            required: 32,
+            actual: 7
+        })
+    ) {
+        return Err(DiagnosticAllocationTestError::FragmentFaultLost);
+    }
+    let deallocations = measure(|| drop(failure));
+    if deallocations.count_total != 0
+        || deallocations.count_current != -1
+        || deallocations.count_max != 0
+    {
+        return Err(DiagnosticAllocationTestError::DiagnosticDeallocation {
+            observed: deallocations,
         });
     }
     Ok(())

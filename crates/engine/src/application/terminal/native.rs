@@ -301,7 +301,11 @@ const fn fragment_failure_terminal(
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     failure: CompilerFragmentFailure,
 ) -> CompilerTerminal {
-    compile_from_driver(source, recipe, CompilerCause::FragmentFailure(failure))
+    compile_from_driver(
+        source,
+        recipe,
+        CompilerCause::FragmentFailure(Box::new(failure)),
+    )
 }
 
 const fn configured_tool(

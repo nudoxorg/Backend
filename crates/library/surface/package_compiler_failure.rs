@@ -1829,7 +1829,7 @@ pub(crate) fn package_failure_from_terminal(
         )),
         CompilerTerminal::Compile {
             attempted,
-            cause: CompilerCause::FragmentFailure(failure),
+            cause: CompilerCause::FragmentFailure(Box::new(failure)),
         } => Some((
             Some(attempted.recipe),
             PackageCompilerFailureCause::Fragment(PackageCompilerFragmentFaultFacts::new(

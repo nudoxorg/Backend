@@ -179,7 +179,7 @@ fn fragment_failure_reply(failure: CompilerFragmentFailure) -> ApplicationReply 
                         source: artifact.source,
                         recipe: artifact.recipe.identity,
                     },
-                    cause: CompilerCause::FragmentFailure(failure),
+                    cause: CompilerCause::FragmentFailure(Box::new(failure)),
                 }),
             },
         },
