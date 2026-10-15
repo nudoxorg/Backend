@@ -106,6 +106,7 @@ pub fn build(
     let mut request_keys = BTreeSet::new();
     let mut total_bytes = 0usize;
     let mut source_lib_references = BTreeSet::new();
+    let mut suppress_configured_libraries = false;
     while let Some(path) = pending.pop_front() {
         poll(checkpoint, 1)?;
         let path = fs
@@ -315,6 +316,9 @@ pub fn build(
                 let directive = directive
                     .map_err(|stop| format!("native TSZ directive scan stopped: {stop:?}"))?;
                 poll(checkpoint, 1)?;
+                suppress_configured_libraries |= directive
+                    .no_default_lib
+                    .is_some_and(|value| value.text == "true");
                 if let Some(lib) = directive.lib {
                     source_lib_references.insert(lib.text.to_owned());
                 }
@@ -403,7 +407,13 @@ pub fn build(
     }
     // Linked declarations are data dependencies. Their bytes enter the program's
     // identity even when a project has no TypeScript package installed.
-    let mut libs = options.lib_files.clone();
+    // A source no-default-lib suppresses default/configured libraries, while
+    // explicit source lib references still load unless noLib itself is set.
+    let mut libs = if suppress_configured_libraries {
+        Vec::new()
+    } else {
+        options.lib_files.clone()
+    };
     if !options.checker.no_lib && !source_lib_references.is_empty() {
         libs.extend(
             tsz::config::resolve_lib_files_from_embedded(

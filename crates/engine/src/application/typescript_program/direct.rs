@@ -804,6 +804,60 @@ mod native_web_closure_tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn native_no_default_lib_suppresses_config_libraries_and_keeps_source_lib_requests() {
+        let fixture = Fixture::new();
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"target":"ES2022","lib":["es5"],"types":[],"noResolve":true},"include":["src/**/*"]}"#);
+        for (source, suppressed) in [
+            (
+                "#!/usr/bin/env node\n/// <reference no-default-lib='true' />\nexport {};",
+                true,
+            ),
+            (
+                "/// <reference no-default-lib='false' />\nexport {};",
+                false,
+            ),
+            (
+                "/* /// <reference no-default-lib='true' /> */\nexport {};",
+                false,
+            ),
+            ("export {};\n/// <reference no-default-lib='true' />", false),
+        ] {
+            fixture.write("src/main.ts", source);
+            let native = fixture.native(&[PackageSource::new("src/main.ts", source).unwrap()]);
+            assert_eq!(native.libraries.is_empty(), suppressed);
+            assert!(
+                !native.options.checker.no_lib,
+                "a source directive does not rewrite the explicit noLib option"
+            );
+        }
+        const REFERENCED: &str = "/// <reference no-default-lib='true' />\n/// <reference lib='es2015.promise' />\nexport {};";
+        fixture.write("src/main.ts", REFERENCED);
+        let native = fixture.native(&[PackageSource::new("src/main.ts", REFERENCED).unwrap()]);
+        assert!(
+            native
+                .libraries
+                .iter()
+                .any(|lib| lib.file_name.ends_with("lib.es2015.promise.d.ts"))
+        );
+        assert!(
+            !native
+                .libraries
+                .iter()
+                .any(|lib| lib.file_name.ends_with("lib.es5.d.ts"))
+        );
+        fixture.write(
+            "tsconfig.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/**/*"]}"#,
+        );
+        assert!(
+            fixture
+                .native(&[PackageSource::new("src/main.ts", REFERENCED).unwrap()])
+                .libraries
+                .is_empty()
+        );
+    }
     #[test]
     fn native_vite_client_types_use_package_declarations_after_primary_type_lookup() {
         let fixture = Fixture::new();
