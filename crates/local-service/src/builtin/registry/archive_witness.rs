@@ -6,7 +6,7 @@
 
 use super::{
     MAX_EXTRACTED_FILE_BYTES, MAX_EXTRACTED_FILES, MAX_EXTRACTED_TOTAL_BYTES, TAR_BLOCK_BYTES,
-    admit_expansion, pax_path, tar_name, tar_octal, validate_tar_checksum,
+    admit_expansion, pax_path, validate_tar_checksum,
 };
 use flate2::bufread::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -319,9 +319,10 @@ fn parse_tar(
             terminated = true;
             break;
         }
+        strict_tar_octal(&header[148..156])?;
         validate_tar_checksum(header).map_err(map_parent_error)?;
-        let name = tar_name(header).map_err(map_parent_error)?;
-        let size = tar_octal(&header[124..136]).map_err(map_parent_error)?;
+        let name = witness_tar_name(header)?;
+        let size = strict_tar_octal(&header[124..136])?;
         if size > MAX_EXTRACTED_FILE_BYTES {
             return Err(CrateArchiveWitnessError::Bounds);
         }
@@ -476,6 +477,73 @@ fn relative_member_path(
     Ok(relative.to_owned())
 }
 
+fn witness_tar_name(header: &[u8]) -> Result<String, CrateArchiveWitnessError> {
+    if header.len() != TAR_BLOCK_BYTES {
+        return Err(CrateArchiveWitnessError::InvalidArchive);
+    }
+    let name = strict_tar_field(&header[..100])?;
+    if name.is_empty() {
+        return Err(CrateArchiveWitnessError::InvalidArchive);
+    }
+    match (&header[257..263], &header[263..265]) {
+        (b"ustar\0", b"00") => {
+            let prefix = strict_tar_field(&header[345..500])?;
+            if prefix.is_empty() {
+                Ok(name)
+            } else {
+                Ok(format!("{prefix}/{name}"))
+            }
+        }
+        // GNU reuses the USTAR prefix area for metadata. It must never be
+        // interpreted as part of the member path.
+        (b"ustar ", b" \0") => Ok(name),
+        // V7 and unknown variants have no verified field interpretation here.
+        _ => Err(CrateArchiveWitnessError::InvalidArchive),
+    }
+}
+
+fn strict_tar_field(field: &[u8]) -> Result<String, CrateArchiveWitnessError> {
+    let end = field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len());
+    if field[end..].iter().any(|byte| *byte != 0) {
+        return Err(CrateArchiveWitnessError::InvalidArchive);
+    }
+    std::str::from_utf8(&field[..end])
+        .map(str::to_owned)
+        .map_err(|_| CrateArchiveWitnessError::InvalidArchive)
+}
+
+fn strict_tar_octal(field: &[u8]) -> Result<usize, CrateArchiveWitnessError> {
+    let digit_end = field
+        .iter()
+        .position(|byte| *byte == 0 || *byte == b' ')
+        .unwrap_or(field.len());
+    if field[digit_end..]
+        .iter()
+        .any(|byte| *byte != 0 && *byte != b' ')
+    {
+        return Err(CrateArchiveWitnessError::InvalidArchive);
+    }
+    if digit_end == 0 {
+        return if field.iter().all(|byte| *byte == 0 || *byte == b' ') {
+            Ok(0)
+        } else {
+            Err(CrateArchiveWitnessError::InvalidArchive)
+        };
+    }
+    if !field[..digit_end]
+        .iter()
+        .all(|byte| (b'0'..=b'7').contains(byte))
+    {
+        return Err(CrateArchiveWitnessError::InvalidArchive);
+    }
+    let digits = std::str::from_utf8(&field[..digit_end])
+        .map_err(|_| CrateArchiveWitnessError::InvalidArchive)?;
+    usize::from_str_radix(digits, 8).map_err(|_| CrateArchiveWitnessError::Bounds)
+}
+
 fn has_file_ancestor(files: &BTreeMap<String, [u8; 32]>, path: &str) -> bool {
     let mut boundary = 0;
     while let Some(offset) = path[boundary..].find('/') {
@@ -627,10 +695,15 @@ mod tests {
         header[156] = kind;
         header[257..263].copy_from_slice(b"ustar\0");
         header[263..265].copy_from_slice(b"00");
+        update_tar_checksum(&mut header);
+        header
+    }
+
+    fn update_tar_checksum(header: &mut [u8; TAR_BLOCK_BYTES]) {
+        header[148..156].fill(b' ');
         let checksum = header.iter().map(|byte| usize::from(*byte)).sum::<usize>();
         let checksum = format!("{checksum:06o}\0 ");
         header[148..156].copy_from_slice(checksum.as_bytes());
-        header
     }
 
     fn tar(entries: &[(&str, u8, &[u8])]) -> Vec<u8> {
@@ -699,6 +772,58 @@ mod tests {
                 .witness_hash(),
             witness.witness_hash(),
             "same authenticated bytes yield one deterministic witness"
+        );
+    }
+
+    #[test]
+    fn witness_decodes_gnu_metadata_and_rejects_lossy_or_unknown_headers() {
+        let path = "equivalent-1.0.2/src/lib.rs";
+        let mut gnu = tar(&[(path, b'0', b"source")]);
+        let header: &mut [u8; TAR_BLOCK_BYTES] =
+            gnu[..TAR_BLOCK_BYTES].try_into().expect("tar header block");
+        header[257..263].copy_from_slice(b"ustar ");
+        header[263..265].copy_from_slice(b" \0");
+        header[345..500].fill(0xff);
+        update_tar_checksum(header);
+        let archive = gzip(&gnu);
+        let witness = capture(&archive, sha256(&archive)).expect("GNU metadata is not a path");
+        assert!(witness.matches("src/lib.rs", b"source"));
+
+        let mut non_utf8 = tar(&[(path, b'0', b"source")]);
+        non_utf8[0] = 0xff;
+        let header: &mut [u8; TAR_BLOCK_BYTES] = non_utf8[..TAR_BLOCK_BYTES]
+            .try_into()
+            .expect("tar header block");
+        update_tar_checksum(header);
+        let archive = gzip(&non_utf8);
+        assert_eq!(
+            capture(&archive, sha256(&archive)).unwrap_err(),
+            CrateArchiveWitnessError::InvalidArchive
+        );
+
+        let mut non_ascii_size = tar(&[(path, b'0', b"")]);
+        let header: &mut [u8; TAR_BLOCK_BYTES] = non_ascii_size[..TAR_BLOCK_BYTES]
+            .try_into()
+            .expect("tar header block");
+        header[124] = 0xff;
+        update_tar_checksum(header);
+        let archive = gzip(&non_ascii_size);
+        assert_eq!(
+            capture(&archive, sha256(&archive)).unwrap_err(),
+            CrateArchiveWitnessError::InvalidArchive,
+            "invalid size bytes cannot collapse to tar_octal's empty-field zero"
+        );
+
+        let mut unknown = tar(&[(path, b'0', b"source")]);
+        let header: &mut [u8; TAR_BLOCK_BYTES] = unknown[..TAR_BLOCK_BYTES]
+            .try_into()
+            .expect("tar header block");
+        header[257..263].copy_from_slice(b"bogus!");
+        update_tar_checksum(header);
+        let archive = gzip(&unknown);
+        assert_eq!(
+            capture(&archive, sha256(&archive)).unwrap_err(),
+            CrateArchiveWitnessError::InvalidArchive
         );
     }
 

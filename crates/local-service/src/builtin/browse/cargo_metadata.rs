@@ -8,12 +8,13 @@ use super::{
     CargoMetadataLockState, CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata,
     InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_INPUTS, MAX_CARGO_METADATA_PACKAGES,
     MAX_CARGO_METADATA_TARGETS_PER_PACKAGE, MAX_CARGO_OBSERVATION_FILE_BYTES,
-    MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES, RequestedCargoManifest, basic_input_paths,
-    cargo_config_paths, cargo_config_relative_path_base, cargo_environment_witness,
-    cargo_tool_selection, metadata_tool_witness, observation_budget, observation_path_key,
-    preflight_selected_cargo_command, read_observation_file, requested_cargo_manifest, run,
-    run_with_default_rustc, run_with_default_rustc_and_overrides, rustup_selection_paths,
-    sccache_configuration_paths, selected_cargo_program, strict_observation_witness,
+    MAX_CARGO_OBSERVATION_PATHS, MAX_CARGO_OBSERVATION_TOTAL_BYTES, MAX_METADATA_BYTES,
+    RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,
+    cargo_environment_witness, cargo_tool_selection, metadata_tool_witness, observation_budget,
+    observation_path_key, preflight_selected_cargo_command, read_observation_file,
+    requested_cargo_manifest, run, run_with_default_rustc, run_with_default_rustc_and_overrides,
+    rustup_selection_paths, sccache_configuration_paths, selected_cargo_program,
+    strict_observation_witness,
 };
 use crate::builtin::registry::archive_witness::CrateArchiveWitness;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -808,7 +809,7 @@ fn normal_registry_archive_path_under_home(
             component,
             std::path::Component::CurDir | std::path::Component::ParentDir
         )
-    }) || cargo_home.canonicalize().ok().as_deref() != Some(cargo_home.as_path())
+    }) || cargo_home.canonicalize().ok().as_deref() != Some(cargo_home)
     {
         return Ok(None);
     }
