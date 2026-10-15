@@ -321,16 +321,19 @@ let
       "NUDOX_GO_ORACLE_BIN"
     ]
     // {
-      packages = tools.nativeCompilers ++ [
-        pkgs.python3
-        pkgs.coreutils
-        pkgs.jdk25
-      ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-        pkgs.xorg.xorgserver
-        pkgs.xdotool
-        pkgs.imagemagick
-        (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
-      ];
+      packages =
+        tools.nativeCompilers
+        ++ [
+          pkgs.python3
+          pkgs.coreutils
+          pkgs.jdk25
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.xorg.xorgserver
+          pkgs.xdotool
+          pkgs.imagemagick
+          (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
+        ];
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;
@@ -338,9 +341,13 @@ let
       NUDOX_SURFACE_PYTHON_BLINKER =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).python-blinker;
-      NUDOX_SURFACE_PYTHON_CACHETOOLS = toString (import ./surface-corpus.nix { inherit pkgs; }).python-cachetools;
+      NUDOX_SURFACE_PYTHON_CACHETOOLS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-cachetools;
       NUDOX_SURFACE_PYTHON_TOMLI = toString (import ./surface-corpus.nix { inherit pkgs; }).python-tomli;
-      NUDOX_SURFACE_PYTHON_ITSDANGEROUS = toString (import ./surface-corpus.nix { inherit pkgs; }).python-itsdangerous;
+      NUDOX_SURFACE_PYTHON_ITSDANGEROUS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-itsdangerous;
       NUDOX_SURFACE_RUST_ITOA = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa;
       NUDOX_SURFACE_RUST_RYU = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu;
       NUDOX_SURFACE_GO_UUID = toString (import ./surface-corpus.nix { inherit pkgs; }).go-uuid;

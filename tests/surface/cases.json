@@ -317,7 +317,16 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "gui": {
+        "project_name": "tomli",
+        "query": "TOMLDecodeError",
+        "result_filename": "_parser.py",
+        "visible_source": [
+          "class TOMLDecodeError",
+          "ValueError"
+        ]
+      }
     },
     {
       "name": "python-itsdangerous",
@@ -415,16 +424,7 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ],
-      "gui": {
-        "project_name": "itoa",
-        "query": "Buffer",
-        "result_filename": "lib.rs",
-        "visible_source": [
-          "pub struct Buffer",
-          "MaybeUninit"
-        ]
-      }
+      ]
     },
     {
       "name": "rust-ryu",

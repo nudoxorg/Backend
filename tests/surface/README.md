@@ -504,3 +504,12 @@ existing tolerance ratios/floors also apply to the GUI measurements. OCR/Xvfb
 observer cost is outside those product process metrics. Linux native execution
 and screenshot review are pending; parsing/unit admission controls alone do not
 prove the GUI works.
+
+
+The first expansion run489752/814 produced source-reviewed CLI/MCP answers for
+cachetools, tomli, itsdangerous and GoSync. Their first measured samples seed
+candidate baselines without changing any existing band; repeat calibration is
+required before merge. See reviews/2026-10-15-new-projects.json. Rust itoa/ryu
+project admission and GoUUID connection failures remain selected and unresolved.
+The GUI probe now uses the independently working tomli index; its new GUI answer
+and performance snapshot still need native execution and screenshot review.

@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "build": 489752,
+  "job": "pr-t1/814",
+  "source_sha": "29066f7f18af48b0d39cd37fcf779f8f2147ed1d",
+  "reviewer": "Codex / GPT-6, independent pinned-source AST/declaration-location review",
+  "calibration_status": "First native sample only. Existing default bands unchanged; repeat calibration required before merge. Tomli GUI snapshot still requires native run/review.",
+  "cases": [
+    {
+      "case": "python-cachetools",
+      "snapshot_sha256": "19e620743e8140502cf8d3efe0a345e43fe701d6faa5702e6de6ce33fc8712d5",
+      "source_review": [
+        {
+          "symbol": "TTLCache",
+          "path": "src/cachetools/__init__.py",
+          "declaration_line": 451,
+          "source_line": "class TTLCache(_TimedCache):",
+          "source_sha256": "525ba807fed4af10744f068b5f9b81710903b6f73ee897469d3bf615847e2bd0",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        },
+        {
+          "symbol": "cached",
+          "path": "src/cachetools/__init__.py",
+          "declaration_line": 738,
+          "source_line": "def cached(cache, key=keys.hashkey, lock=None, condition=None, info=False):",
+          "source_sha256": "525ba807fed4af10744f068b5f9b81710903b6f73ee897469d3bf615847e2bd0",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        }
+      ],
+      "observed_performance": {
+        "cpu_seconds": 11.76,
+        "peak_rss_kib": 513836,
+        "seconds": {
+          "cli add": 15.56,
+          "cli outline": 0.09,
+          "cli packages": 0.02,
+          "cli search TTLCache": 5.22,
+          "cli search cached": 0.03,
+          "mcp": 0.72
+        }
+      },
+      "calibration": "single native run; more measurements required before acceptance"
+    },
+    {
+      "case": "python-tomli",
+      "snapshot_sha256": "ce4d2a9e116845c6d36256f2dc18ebd4b5471bcc84c9e4c7be0927d44771b1a2",
+      "source_review": [
+        {
+          "symbol": "loads",
+          "path": "src/tomli/_parser.py",
+          "declaration_line": 142,
+          "source_line": "def loads(__s: str, *, parse_float: ParseFloat = float) -> dict[str, Any]:  # noqa: C901",
+          "source_sha256": "f70f0b1b48c1edfc26659581d2f5576de7a30c7725e00348271076b1c1270e50",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        },
+        {
+          "symbol": "TOMLDecodeError",
+          "path": "src/tomli/_parser.py",
+          "declaration_line": 71,
+          "source_line": "class TOMLDecodeError(ValueError):",
+          "source_sha256": "f70f0b1b48c1edfc26659581d2f5576de7a30c7725e00348271076b1c1270e50",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        }
+      ],
+      "observed_performance": {
+        "cpu_seconds": 2.84,
+        "peak_rss_kib": 283560,
+        "seconds": {
+          "cli add": 3.07,
+          "cli outline": 0.09,
+          "cli packages": 0.02,
+          "cli search TOMLDecodeError": 0.03,
+          "cli search loads": 1.37,
+          "mcp": 0.55
+        }
+      },
+      "calibration": "single native run; more measurements required before acceptance"
+    },
+    {
+      "case": "python-itsdangerous",
+      "snapshot_sha256": "a05cbe6edbf97160fa420fb4d6b0a3b184a63cc2010ab1bbca9ec89ee334fdcd",
+      "source_review": [
+        {
+          "symbol": "URLSafeSerializer",
+          "path": "src/itsdangerous/url_safe.py",
+          "declaration_line": 72,
+          "source_line": "class URLSafeSerializer(URLSafeSerializerMixin, Serializer[str]):",
+          "source_sha256": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        },
+        {
+          "symbol": "Signer",
+          "path": "src/itsdangerous/signer.py",
+          "declaration_line": 76,
+          "source_line": "class Signer:",
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        }
+      ],
+      "observed_performance": {
+        "cpu_seconds": 5.99,
+        "peak_rss_kib": 368208,
+        "seconds": {
+          "cli add": 7.38,
+          "cli outline": 0.1,
+          "cli packages": 0.02,
+          "cli search Signer": 0.06,
+          "cli search URLSafeSerializer": 2.61,
+          "mcp": 0.75
+        }
+      },
+      "calibration": "single native run; more measurements required before acceptance"
+    },
+    {
+      "case": "go-sync",
+      "snapshot_sha256": "a6f1df50bf90660ae57bd3c1b9be19c190efc01a16749258acbdb2db3abeb9b1",
+      "source_review": [
+        {
+          "symbol": "Weighted",
+          "path": "semaphore/semaphore.go",
+          "declaration_line": 28,
+          "source_line": "type Weighted struct {",
+          "source_sha256": "c36737088c3a0f8404a813ebd113b472ac819090b241d57f121fe9b40ec2e2af",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        },
+        {
+          "symbol": "DoChan",
+          "path": "singleflight/singleflight.go",
+          "declaration_line": 121,
+          "source_line": "func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result {",
+          "source_sha256": "3ab234a431a14594f1bc46e76d9d35928fa18d05947801e167df1015834719a8",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        }
+      ],
+      "observed_performance": {
+        "cpu_seconds": 32.22,
+        "peak_rss_kib": 406192,
+        "seconds": {
+          "cli add": 47.61,
+          "cli outline": 0.06,
+          "cli packages": 0.02,
+          "cli search DoChan": 0.02,
+          "cli search Weighted": 2.61,
+          "mcp": 0.37
+        }
+      },
+      "calibration": "single native run; more measurements required before acceptance"
+    }
+  ]
+}
