@@ -773,6 +773,10 @@ fn semantic_rows(
                 // project-wide fact hydration.
                 let owned_site_declarations = if stale {
                     Vec::new()
+                } else if !matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::Go(_)) {
+                    // Other languages retain their established display-site
+                    // fallback. Only Go mints exact cross-lane identities.
+                    sites.declarations(key.package_key().as_bytes(), &path)?
                 } else {
                     match decision.compiled.get(&path) {
                         Some(source) if image_indices.iter().all(|index| {
