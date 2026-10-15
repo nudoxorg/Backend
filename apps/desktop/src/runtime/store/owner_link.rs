@@ -105,7 +105,9 @@ pub(super) enum OwnerPhase {
     Serving,
     /// Not answered yet: pages ask, and wait here.
     Starting,
-    /// Could not start: every page says so.
+    /// Live host retained, with read/action admission waiting for fresh proof.
+    Observing,
+    /// Startup, connection, or publication is unavailable.
     Failed(OwnerFault),
 }
 
@@ -133,6 +135,7 @@ impl OwnerLink {
     pub(super) fn behind(gate: OwnerGate) -> Self {
         let phase = match gate.state() {
             OwnerState::Starting => OwnerPhase::Starting,
+            OwnerState::Ready { .. } if gate.publication_retry_pending() => OwnerPhase::Observing,
             OwnerState::Ready { .. } => OwnerPhase::Serving,
             OwnerState::Failed(fault) => OwnerPhase::Failed(fault),
         };
@@ -179,7 +182,7 @@ impl OwnerLink {
         }
         match &self.phase {
             OwnerPhase::Failed(fault) => Some(fault.clone()),
-            OwnerPhase::Serving | OwnerPhase::Starting => None,
+            OwnerPhase::Serving | OwnerPhase::Starting | OwnerPhase::Observing => None,
         }
     }
 
@@ -221,7 +224,7 @@ impl OwnerLink {
     pub(super) fn retry_at(&mut self, expected: &OwnerRetryAttachment, key: PageKey) -> bool {
         let Some(gate) = self.gate.as_ref() else { return false; };
         if !gate.same_gate(&expected.gate) || !gate.restart_at(expected.generation) { return false; }
-        self.phase = OwnerPhase::Starting;
+        self.phase = if gate.publication_retry_pending() { OwnerPhase::Observing } else { OwnerPhase::Starting };
         self.held.insert(key);
         true
     }
@@ -270,6 +273,13 @@ impl OwnerLink {
     pub(super) fn starting(&mut self) -> bool {
         let moved = self.phase != OwnerPhase::Starting;
         self.phase = OwnerPhase::Starting;
+        self.served_epoch = None;
+        moved
+    }
+
+    pub(super) fn observing(&mut self) -> bool {
+        let moved = self.phase != OwnerPhase::Observing;
+        self.phase = OwnerPhase::Observing;
         self.served_epoch = None;
         moved
     }

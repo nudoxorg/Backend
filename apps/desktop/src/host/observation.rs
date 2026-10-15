@@ -4,7 +4,7 @@
 //! ticks the same in-flight frame; native dial/authentication and decoding
 //! syscalls remain bounded by their platform behavior, not preempted here.
 
-use crate::runtime::owner::{Epoch, ObservationFailure, OwnerGate, PublicationAdmission};
+use crate::runtime::owner::{Epoch, ObservationFailure, OwnerGate, OwnerHostLifetime, PublicationAdmission};
 use backend_client::{
     ClientError, LocalSubscriptionTransport, ObservedPublicationControl, PublicationBudgetKind,
     PublicationExchangeBudget, PublicationExchangeError, PublicationLease,
@@ -14,6 +14,10 @@ use backend_replication::LocalControlExchangeFailure;
 use std::cell::Cell;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+#[path = "observation_term.rs"]
+mod term;
+use self::term::ObservationLifetime;
 
 /// Candidate policy pending blocked-owner latency measurements. The old three
 /// one-second attempts plus pauses failed after about 3.75 s; neither that
@@ -51,30 +55,40 @@ enum ObservedReply {
 
 /// Keeps the host alive and observes its exact serving attachment until
 /// closure, or until an explicit retry replaces a failed subscription.
-pub(super) fn serve(gate: &OwnerGate, endpoint: &Path) -> bool {
-    serve_with_timing(gate, endpoint, ObservationTiming::CANDIDATE, |_| {})
+pub(super) fn serve(gate: &OwnerGate, endpoint: &Path, host: OwnerHostLifetime) -> bool {
+    serve_for_host(gate, endpoint, ObservationTiming::CANDIDATE, |_| {}, host)
 }
 
+#[cfg(test)]
 fn serve_with_timing(
     gate: &OwnerGate,
     endpoint: &Path,
     timing: ObservationTiming,
-    mut on_tick: impl FnMut(PublicationObservationProgress),
+    on_tick: impl FnMut(PublicationObservationProgress),
 ) -> bool {
-    let Some(mut attachment) = gate.ready_epoch() else {
-        return gate.await_close_or_restart();
+    serve_for_host(gate, endpoint, timing, on_tick, gate.observation_host())
+}
+
+fn serve_for_host(
+    gate: &OwnerGate,
+    endpoint: &Path,
+    timing: ObservationTiming,
+    mut on_tick: impl FnMut(PublicationObservationProgress),
+    host: OwnerHostLifetime,
+) -> bool {
+    let Some((mut attachment, mut suspended)) = gate.observation_attachment_for(host) else {
+        return false;
     };
     let Some(mut cancel) = gate.observation_scope(attachment) else {
         return gate.await_close_or_restart();
     };
     let first_root_at = Instant::now();
     crate::runtime::trace::mark("observation.waiting-initial-root", "actor-admission");
-    let mut confirmed_at: Option<Instant> = None;
+    let mut lifetime = ObservationLifetime::default();
     let mut lease: Option<PublicationLease> = None;
     let mut last_renew = Instant::now();
     let mut connection: Option<LocalSubscriptionTransport> = None;
     let mut reconnects = 0usize;
-    let mut suspended = false;
     let mut reacquiring = false;
     // Once an authenticated descriptor extends the budget, a reconnect may
     // not restart that aggregate clock. Cell is worker-local, shared only by
@@ -95,10 +109,10 @@ fn serve_with_timing(
             }
             continue;
         };
-        if confirmed_at.is_none() {
+        if !lifetime.has_confirmation() {
             crate::runtime::trace::mark("observation.initial-root-admitted", "exact-attachment");
         }
-        let anchor = *confirmed_at.get_or_insert_with(Instant::now);
+        let anchor = lifetime.producer_anchor(Instant::now());
         if !fence_if_stale(
             gate,
             &mut attachment,
@@ -108,9 +122,13 @@ fn serve_with_timing(
         ) {
             break;
         }
+        // Idle subscription time belongs to freshness, not to active work.
+        // Keep this same term through every reconnect/reacquisition until
+        // this operation completes; Renew does not certify producer freshness.
+        let ordinary_deadline = lifetime.ordinary_deadline(Instant::now(), timing.ordinary_recovery);
         let deadline = reset_ceiling
             .get()
-            .map_or(anchor + timing.ordinary_recovery, |budget| {
+            .map_or(ordinary_deadline, |budget| {
                 budget.deadline()
             });
         if Instant::now() >= deadline {
@@ -237,8 +255,10 @@ fn serve_with_timing(
             Ok(ObservedReply::Renewed) => {
                 last_renew = Instant::now();
                 reconnects = 0;
+                lifetime.complete_control();
             }
             Ok(reply) => {
+                lifetime.complete_control();
                 let acquired = matches!(&reply, ObservedReply::Acquired(_));
                 if let ObservedReply::Acquired(state) = reply {
                     lease = Some(state);
@@ -278,7 +298,7 @@ fn serve_with_timing(
                         }
                         suspended = false;
                         reacquiring = false;
-                        confirmed_at = Some(Instant::now());
+                        lifetime.confirm_producer(Instant::now());
                         reconnects = 0;
                     }
                     PublicationAdmission::Obsolete if !reacquiring && !suspended => {

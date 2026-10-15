@@ -6,14 +6,14 @@
 //! seconds, and a full hydration of the view only to learn its root) runs
 //! here. It ends in one [`OwnerState`] on the gate: `Ready` with the owner's
 //! root from one `revision()` round trip, or `Failed` in the host's own words.
-//! A failed owner waits for the window's "Try again" and starts again; a
-//! serving one keeps its host alive until the app quits or a confirmed lost
-//! attachment is retried.
+//! Startup failures wait for "Try again" and start again. Publication Retry
+//! keeps the exact live host and reacquires only its read-side subscription;
+//! accepted index work retains its operation identity and uncertain outcome.
 
 use super::lease::{DesktopHost, HostError, HostMode};
 use crate::core::VersionedRoot;
 use crate::model::ServiceMode;
-use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerHostLifetime, OwnerState};
 use backend_client::Session;
 use backend_runtime::WorkspacePaths;
 use std::panic::AssertUnwindSafe;
@@ -63,7 +63,7 @@ pub(crate) fn spawn(paths: WorkspacePaths, gate: OwnerGate) -> Option<OwnerThrea
                 Started { host, key, mode }
             })
         },
-        |gate, host: &DesktopHost| super::observation::serve(gate, host.endpoint()),
+        |gate, host: &DesktopHost, lifetime| super::observation::serve(gate, host.endpoint(), lifetime),
     )
 }
 
@@ -91,7 +91,7 @@ pub(crate) fn spawn_discovering(
             };
             Started { host, key, mode }
         })
-    }, |gate, host: &DesktopHost| super::observation::serve(gate, host.endpoint()))
+    }, |gate, host: &DesktopHost, lifetime| super::observation::serve(gate, host.endpoint(), lifetime))
 }
 
 /// [`spawn`] over any way of starting an owner (a test's panics).
@@ -100,13 +100,13 @@ fn spawn_with<H: 'static>(
     gate: OwnerGate,
     starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String> + Send + 'static,
 ) -> Option<OwnerThread> {
-    spawn_with_observer(gate, starter, |gate, _| gate.await_close_or_restart())
+    spawn_with_observer(gate, starter, |gate, _, _| gate.await_close_or_restart())
 }
 
 fn spawn_with_observer<H: 'static>(
     gate: OwnerGate,
     starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String> + Send + 'static,
-    observer: impl FnMut(&OwnerGate, &H) -> bool + Send + 'static,
+    observer: impl FnMut(&OwnerGate, &H, OwnerHostLifetime) -> bool + Send + 'static,
 ) -> Option<OwnerThread> {
     let owner = gate.clone();
     match std::thread::Builder::new()
@@ -134,14 +134,14 @@ fn spawn_with_observer<H: 'static>(
 fn run<H>(
     gate: &OwnerGate,
     mut starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String>,
-    mut observer: impl FnMut(&OwnerGate, &H) -> bool,
+    mut observer: impl FnMut(&OwnerGate, &H, OwnerHostLifetime) -> bool,
 ) {
     loop {
         let fault = match std::panic::catch_unwind(AssertUnwindSafe(|| starter(gate))) {
             Ok(Ok(Started { host, key, mode })) => {
-                gate.publish(OwnerState::Ready { key, mode });
-                let restart =
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| observer(gate, &host))) {
+                let Some(host_lifetime) = gate.publish_host(key, mode) else { return; };
+                let restart = loop {
+                    let restart = match std::panic::catch_unwind(AssertUnwindSafe(|| observer(gate, &host, host_lifetime))) {
                         Ok(restart) => restart,
                         Err(panic) => {
                             gate.publish(OwnerState::Failed(OwnerFault::Panicked(
@@ -150,6 +150,13 @@ fn run<H>(
                             gate.await_restart()
                         }
                     };
+                    if !restart || !gate.publication_retry_for(host_lifetime) {
+                        break restart;
+                    }
+                    // Publication Retry replaces only the read-side socket.
+                    // Keep the exact host and its durable index operation;
+                    // the observer must freshly prove its retained cursor.
+                };
                 drop(host);
                 if restart {
                     continue;
@@ -272,7 +279,60 @@ mod tests {
         // "Try again" starts it again, and this time it answers.
         assert!(gate.restart());
         settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2,
+            "genuine startup failure retries the starter");
         drop(thread);
+    }
+
+    #[test]
+    fn publication_retry_keeps_the_live_host_and_its_exact_operation_instead_of_restarting() {
+        use crate::runtime::owner::{ObservationFailure, PublicationAdmission};
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}, mpsc};
+        struct Host {
+            operation: [u8; 32],
+            dropped: Arc<AtomicUsize>,
+        }
+        impl Drop for Host {
+            fn drop(&mut self) { self.dropped.fetch_add(1, Ordering::SeqCst); }
+        }
+        let view = crate::runtime::owner::publication_tests::view();
+        let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+        let key = VersionedRoot::from_revision(1, cursor, 0);
+        let gate = OwnerGate::starting();
+        let starts = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&starts);
+        let dropped = Arc::clone(&drops);
+        let (confirmed, confirmation) = mpsc::channel();
+        let mut original = None;
+        let owner = spawn_with_observer(gate.clone(), move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Started { host: Host { operation: [71; 32], dropped: Arc::clone(&dropped) }, key, mode: ServiceMode::Embedded })
+        }, move |gate, host, lifetime| {
+            assert!(gate.observation_attachment_for(lifetime).is_some());
+            let (attachment, suspended) = gate.observation_attachment().expect("live worker attachment");
+            let host_identity = host as *const Host as usize;
+            if let Some(identity) = original {
+                assert_eq!(identity, host_identity, "Retry reused the exact live host");
+                assert!(suspended);
+                assert_eq!(host.operation, [71; 32], "the accepted operation was retained");
+                assert_eq!(gate.publish_view(attachment, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
+                assert!(gate.complete_observation(attachment));
+                confirmed.send(()).expect("fresh read-side proof");
+            } else {
+                original = Some(host_identity);
+                assert_eq!(gate.publish_view(attachment, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
+                assert!(gate.observation_failed(attachment, ObservationFailure::RecoveryExpired(Duration::from_secs(30))));
+            }
+            gate.await_close_or_restart()
+        }).expect("worker");
+        settle(&gate, |state| matches!(state, OwnerState::Failed(OwnerFault::Observation(_))));
+        assert!(gate.restart());
+        confirmation.recv_timeout(Duration::from_secs(2)).expect("same-host publication recovery");
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "publication retry cannot stop the accepted operation's host");
+        drop(owner);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[test]
