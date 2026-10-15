@@ -518,7 +518,22 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            // A declaration guarded by `cfg(doctest)` belongs to rustdoc's
+            // doctest harness, not the normal library surface this owner
+            // indexes. Track that exact standalone cfg attribute through
+            // intervening attributes/comments to its next item. This is not
+            // a general evaluator for feature or target cfg expressions.
+            let mut doctest_only = false;
             let item = source.lines().find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed == "#[cfg(doctest)]" {
+                    doctest_only = true;
+                    return None;
+                }
+                if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("//") {
+                    return None;
+                }
+                let excluded = std::mem::take(&mut doctest_only);
                 let rest = line.strip_prefix("pub ")?;
                 let rest = ["struct ", "enum ", "trait "]
                     .iter()
@@ -526,7 +541,7 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
                 let name = rest
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                     .next()?;
-                (!name.is_empty()).then(|| name.to_owned())
+                (!excluded && !name.is_empty()).then(|| name.to_owned())
             });
             if let Some(item) = item {
                 let relative = path
@@ -550,6 +565,10 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
         .resolve(&Release::new("toml", "0.8.23").expect("release"))
         .expect("toml 0.8.23 is in the local cargo cache");
     let expected = public_items_by_file(&tree.root);
+    assert!(
+        !expected.iter().any(|(_, name)| name == "ReadmeDoctests"),
+        "the cfg(doctest)-only README harness marker is not part of toml's normal library surface"
+    );
     assert!(
         expected.len() >= 4,
         "toml 0.8.23 declares its types across several files: {expected:?}"
@@ -579,6 +598,10 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
             ))
         })
         .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        !placed.iter().any(|(_, name)| name == "ReadmeDoctests"),
+        "the normal library outline excludes toml's cfg(doctest)-only README harness marker"
+    );
     let unplaced = expected
         .iter()
         .filter(|item| !placed.contains(*item))
