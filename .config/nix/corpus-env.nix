@@ -68,7 +68,10 @@ let
         # environment is installed by backend/backendVerifier after the lane's
         # caller environment, so it must not re-enable fortify for -O0 probes.
         # Packaged release derivations keep their own hardening policy.
-        hardeningDisable = [ "fortify" "fortify3" ];
+        hardeningDisable = [
+          "fortify"
+          "fortify3"
+        ];
       }
       ''
         {
