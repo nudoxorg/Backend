@@ -1856,3 +1856,12 @@ expires = "2026-11-14"
 filter = "binary_id(backend-store) and test(=tests::tree_cas_reopens_transitively_and_writes_one_edit_boundary)"
 category = "wine-protected-dacl"
 reason = "Build490495/92868fc11: workspace object does not have a protected DACL; rejected before tested operation. Native Linux/Windows selection and production guards unchanged."
+
+[[exclude]]
+owner = "NuDox Backend maintainers"
+review = "docs/testing/quarantine.md#wine-72-triage-2026-10-15"
+reviewed = "2026-10-15"
+expires = "2026-11-14"
+filter = "binary_id(backend-compile) and test(=embedding_cache::tests::mixed_hits_retain_only_actual_hit_owners_and_corruption_releases_attempts)"
+category = "wine-protected-dacl"
+reason = "Build490924/10b8ef947: opening private cache directory returns InvalidData: workspace object does not have a protected DACL. Native selection and production admission unchanged."

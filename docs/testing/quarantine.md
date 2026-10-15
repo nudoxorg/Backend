@@ -91,3 +91,9 @@ Eighteen retained store failures now explicitly report the same protected-DACL
 rejection; their exact Wine-only filters have owner and November14 expiry.
 One cache fixture still returns an opaque None; expose the directory-capability
 error before deciding its disposition. No native-platform coverage is removed.
+
+Build490924/10b8ef947 exposes the final cache cause: opening the protected
+fixture directory returns InvalidData, workspace object does not have a protected
+DACL. All historical72 are now classified as this emulator limitation, with
+exact Wine-only owner/expiry filters. A fresh full candidate run is still needed;
+no native Windows pass or production guard relaxation is implied.

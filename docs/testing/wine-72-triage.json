@@ -9,7 +9,7 @@
     "failed": 72,
     "skipped": 134
   },
-  "coverage_limit": "Historical72-case intake; fresh490495/92868fc11 ran550:531passed19failed187skipped. Eighteen newly explicit protected-DACL errors excluded; one cache capability failure still selected pending precise diagnostic. Wine does not certify native Windows ACL semantics.",
+  "coverage_limit": "All historical72 failures have explicit protected-DACL cause with Wine-only owner/expiry exclusions. Fresh full candidate verdict pending. This does not certify native Windows ACLs or Linux pass.",
   "cases": [
     {
       "binary": "backend-cluster-transport::two_process",
@@ -50,14 +50,17 @@
     {
       "binary": "backend-compile",
       "test": "embedding_cache::tests::mixed_hits_retain_only_actual_hit_owners_and_corruption_releases_attempts",
-      "explicit_dacl": false,
+      "explicit_dacl": true,
       "owner": "NuDox Backend maintainers",
       "reviewed": "2026-10-15",
       "expires": "2026-11-14",
-      "disposition": "diagnose-before-exclusion",
+      "disposition": "exclude-wine-only",
       "panic_sites": [
         "crates/compile/src/embedding_cache.rs:1031:18:"
-      ]
+      ],
+      "evidence_build": 490924,
+      "evidence_source": "10b8ef947f4a858da8a190c253792c64d7224bd6",
+      "reason": "DirectoryCapability::open_or_create_private explicitly returns InvalidData: workspace object does not have a protected DACL. Cache operation never starts."
     },
     {
       "binary": "backend-platform",
