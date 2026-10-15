@@ -99,8 +99,8 @@
   },
   "cross_host_comparison": "Native and Linux snapshots agree on declaration totals, qualified-name set, and source locations. Opaque coordinates and keys differ with the host's /tmp versus /private/tmp project path and were not required to match.",
   "limitations": [
-    "This reviews semantic correctness only; the 67.25-second add and other performance values are preliminary samples, not calibrated performance claims.",
-    "The diagnostic log explicitly records that this is not official T2 green; acceptance here applies only to the reviewed snapshot candidate."
+    "This review covers semantic correctness only. Calibration now has one exact-head pass and one exact-head failure on identical reviewed answers, so performance remains unstable and is not a calibrated claim.",
+    "Build 34 explicitly records zero official T2 distinct-head passing streak. Snapshot acceptance here applies only to reviewed answer content; it is not official T2 green."
   ],
   "reviewer": "Codex / GPT-6 Luna, independent pinned-source/result review",
   "build": {
@@ -109,5 +109,42 @@
     "number": 30,
     "id": 495175
   },
-  "calibration_status": "Initial Linux sample only; repeat exact-head comparison/calibration required before merge. No existing baselines or bands changed."
+  "calibration_status": "Two Java answer comparisons on the same Linux head and binaries match the reviewed candidate, but performance is unstable: repeat 1 fails the unchanged MCP bound and repeat 2 passes. No performance band, tolerance, floor, snapshot, or official T2 status changed; distinct-head passing streak remains 0.",
+  "calibration_history": {
+    "source_sha": "a453e3ff976da05cd951747de3d678a5dd8fd342",
+    "build": {
+      "pipeline": "nudox-triage-proof",
+      "job": "linux",
+      "number": 34,
+      "id": 495627,
+      "status": "failed"
+    },
+    "java_answer_comparisons": [
+      {
+        "repeat": 1,
+        "answer_matches_reviewed_candidate": true,
+        "index_seconds": 68.28,
+        "mcp_seconds": 2.23,
+        "unchanged_mcp_baseline_seconds": 1.29,
+        "unchanged_mcp_limit_seconds": 1.935,
+        "performance_pass": false,
+        "owner_cpu_seconds": 5.69,
+        "owner_peak_rss_kib": 278052
+      },
+      {
+        "repeat": 2,
+        "answer_matches_reviewed_candidate": true,
+        "index_seconds": 71.69,
+        "mcp_seconds": 1.32,
+        "unchanged_mcp_baseline_seconds": 1.29,
+        "unchanged_mcp_limit_seconds": 1.935,
+        "performance_pass": true,
+        "owner_cpu_seconds": 5.69,
+        "owner_peak_rss_kib": 280980
+      }
+    ],
+    "overall_interpretation": "Same-head/same-binary answer content matches on both runs; one MCP timing fails and one passes, so this is unstable calibration rather than stable performance acceptance.",
+    "official_t2_distinct_head_passing_streak": 0,
+    "source_record": "docs/testing/runtime/2026-10-15-java-blinker-linux34.json"
+  }
 }

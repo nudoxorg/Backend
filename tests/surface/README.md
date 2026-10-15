@@ -565,6 +565,17 @@ comparison and calibration are required before merge. No existing snapshot,
 tolerance or floor was changed. Prior Linux28 had a compiler-owner refusal,
 so a single successful run does not establish stability.
 
+The Linux34 exact-head comparison (build495627, source `a453e3ff`) returned the
+same reviewed Java answers on both repeats. Indexing measured68.28s and71.69s;
+owner CPU was5.69s on each, with peak RSS278052KiB and280980KiB. MCP measured
+2.23s on repeat1, failing the unchanged1.29s baseline ×1.5 (1.935s limit), then
+1.32s on repeat2, which passes. This is one failure and one pass on the same
+head and binaries, so Java performance remains unstable. Build34 failed overall;
+official T2 distinct-head passing streak remains0. No snapshot, band, tolerance,
+or floor changed. Raw measurements and task status are in
+`docs/testing/runtime/2026-10-15-java-blinker-linux34.json`
+and summarized in `reviews/2026-10-15-java-jsr305.json`.
+
 ### Blinker external identity review (W2.4, 2026-10-15)
 
 Focused Linux34 at a453e3ff976da05cd951747de3d678a5dd8fd342 captures the
