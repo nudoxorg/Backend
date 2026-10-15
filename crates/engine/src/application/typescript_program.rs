@@ -1655,6 +1655,7 @@ fn build_native_inputs_for_config(
     let options = TszProjectOptions {
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+        program_diagnostics: Vec::new(),
         module_resolutions: resolutions,
         file_formats,
         environment,

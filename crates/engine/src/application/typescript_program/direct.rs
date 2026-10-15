@@ -186,7 +186,7 @@ pub(super) fn build_direct_inputs_for_config(
     let solution = forest
         && built.root_names.is_empty()
         && config.is_some_and(|config| !config.references.is_empty());
-    if forest && built.root_names.is_empty() && !solution {
+    if forest && built.root_names.is_empty() && !solution && built.program_diagnostics.is_empty() {
         return Err(closure_mismatch(
             "empty native TypeScript config has no solution edges",
         ));
@@ -342,6 +342,28 @@ pub(super) fn build_direct_inputs_for_config(
                 .ok_or_else(|| closure_mismatch("native file format has no admitted source"))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut program_diagnostics = built.program_diagnostics;
+    for diagnostic in &mut program_diagnostics {
+        check_admission_control(deadline, cancelled)?;
+        if diagnostic.file.is_empty() {
+            continue;
+        }
+        let source = resolver
+            .try_load_source(Path::new(&diagnostic.file))?
+            .ok_or_else(|| closure_mismatch("native config diagnostic has no captured source"))?;
+        let text = std::str::from_utf8(&source.bytes)
+            .map_err(|_| closure_mismatch("native config diagnostic source is not UTF-8"))?;
+        let start = diagnostic.start as usize;
+        let end = start
+            .checked_add(diagnostic.length as usize)
+            .ok_or_else(|| closure_mismatch("native config diagnostic span overflows"))?;
+        if text.get(start..end).is_none() {
+            return Err(closure_mismatch(
+                "native config diagnostic span is outside captured source",
+            ));
+        }
+        diagnostic.file = workspace_virtual_path(inputs, &source.path)?;
+    }
     let previous_work = aggregate.replay_work;
     aggregate.replay_work = checkpoint.work.load(std::sync::atomic::Ordering::Relaxed);
     let closure_work = aggregate.replay_work.saturating_sub(previous_work);
@@ -355,6 +377,9 @@ pub(super) fn build_direct_inputs_for_config(
     digest.update(&inputs.fingerprint);
     digest.update(sealed.digest());
     digest.update(built.options_identity.as_bytes());
+    for diagnostic in &program_diagnostics {
+        digest.update(format!("{diagnostic:?}").as_bytes());
+    }
     for (path, content) in &content_ids {
         digest.update(&(path.len() as u64).to_le_bytes());
         digest.update(path.as_bytes());
@@ -377,6 +402,7 @@ pub(super) fn build_direct_inputs_for_config(
         options: TszProjectOptions {
             checker: built.checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics,
             module_resolutions: resolutions,
             file_formats,
             environment: TszEnvironmentFingerprint::from_sha256(*digest.finalize().as_bytes()),
@@ -856,6 +882,59 @@ mod native_web_closure_tests {
                 .native(&[PackageSource::new("src/main.ts", REFERENCED).unwrap()])
                 .libraries
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_missing_configured_types_retain_global_diagnostics_and_negative_witnesses() {
+        let fixture = Fixture::new();
+        const SOURCE: &str = "export const value = 1;";
+        fixture.write("src/main.ts", SOURCE);
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":["environment","environment"],"typeRoots":["./custom-types"]},"include":["src/**/*"]}"#);
+        let native = fixture.native(&[PackageSource::new("src/main.ts", SOURCE).unwrap()]);
+        assert_eq!(native.sources.len(), 1);
+        assert!(native.options.module_resolutions.is_empty());
+        assert_eq!(native.options.program_diagnostics.len(), 1);
+        let diagnostic = &native.options.program_diagnostics[0];
+        assert_eq!(
+            (
+                diagnostic.code,
+                diagnostic.file.as_str(),
+                diagnostic.start,
+                diagnostic.length
+            ),
+            (2688, "", 0, 0)
+        );
+        assert!(
+            diagnostic
+                .related_information
+                .iter()
+                .any(|reason| reason.code == 1417)
+        );
+        let environment = native.options.environment;
+        let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+        authority
+            .update(native.sources, native.options, &native.libraries)
+            .unwrap();
+        assert_eq!(authority.project().unwrap().program_diagnostics().len(), 1);
+        fixture.write(
+            "custom-types/environment/index.d.ts",
+            "interface Environment {}",
+        );
+        let resolved = fixture.native(&[PackageSource::new("src/main.ts", SOURCE).unwrap()]);
+        assert!(resolved.options.program_diagnostics.is_empty());
+        assert_ne!(environment, resolved.options.environment);
+        let host = TypeScriptProjectHost::direct(
+            None,
+            ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
+                .unwrap(),
+        );
+        let changed = host.admit(&fixture.0).unwrap().unwrap();
+        assert!(
+            native
+                .closure_witness
+                .validate_current(changed.witness())
+                .is_err()
         );
     }
     #[test]

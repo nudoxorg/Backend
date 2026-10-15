@@ -6529,6 +6529,7 @@ mod tests {
                 TszProjectOptions {
                     checker: TszCheckerOptions::default(),
                     semantic_options: TszProjectSemanticOptions::structural(),
+                    program_diagnostics: Vec::new(),
                     module_resolutions: Vec::new(),
                     file_formats: Vec::new(),
                     environment: TszEnvironmentFingerprint::from_sha256([7; 32]),
@@ -6654,6 +6655,7 @@ mod tests {
                     TszProjectOptions {
                         checker: TszCheckerOptions::default(),
                         semantic_options: TszProjectSemanticOptions::structural(),
+                        program_diagnostics: Vec::new(),
                         module_resolutions: Vec::new(),
                         file_formats: Vec::new(),
                         environment: TszEnvironmentFingerprint::from_sha256([7; 32]),

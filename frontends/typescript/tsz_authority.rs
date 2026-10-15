@@ -94,7 +94,7 @@ pub enum TszSourceError {
     UnsupportedExtension,
     /// A project or its explicit library set lists a stable path more than once.
     DuplicatePath,
-    /// TSZ needs at least one source file to construct a project program.
+    /// A project needs a source or a native program diagnostic to retain.
     EmptyProject,
     /// An explicitly admitted library was not valid UTF-8.
     InvalidUtf8,
@@ -268,6 +268,9 @@ pub struct TszProjectOptions {
     /// Empty is an explicit declaration that the admitted program has no
     /// requests; it does not enable filename-based fallback.
     pub module_resolutions: Vec<TszProjectModuleResolution>,
+    /// Native config/program diagnostics with no semantic-source owner. A blank
+    /// file denotes a source-free diagnostic, never a synthetic program file.
+    pub program_diagnostics: Vec<TszDiagnostic>,
     /// Actual Compiler API per-file format; missing entries remain unknown.
     pub file_formats: Vec<TszProjectFileFormatInput>,
     /// Identity for all configuration and dependency inputs described above.
@@ -318,6 +321,7 @@ pub struct TszProject {
     checker_options_digest: [u8; 32],
     semantic_options_digest: [u8; 32],
     module_resolution_digest: [u8; 32],
+    program_diagnostics_digest: [u8; 32],
     file_format_digest: [u8; 32],
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
@@ -344,7 +348,7 @@ impl std::fmt::Debug for TszProject {
                 &self.bound_sources.keys().collect::<Vec<_>>(),
             )
             .field("environment", &self.options.environment)
-            .field("diagnostic_count", &self.check.diagnostic_count)
+            .field("diagnostic_count", &(self.check.diagnostic_count + self.options.program_diagnostics.len()))
             .finish()
     }
 }
@@ -538,7 +542,7 @@ impl TszProjectAuthority {
             tsz_common::ProjectExecutionPhase::SourceFrontier,
             None,
         );
-        if sources.is_empty() {
+        if sources.is_empty() && options.program_diagnostics.is_empty() {
             return Err(TszSourceError::EmptyProject.into());
         }
 
@@ -585,6 +589,8 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.module_resolution_digest != module_resolution_digest);
+        let program_diagnostics_digest = program_diagnostics_digest(&options.program_diagnostics);
+        let program_diagnostics_changed = self.project.as_ref().is_some_and(|current| current.program_diagnostics_digest != program_diagnostics_digest);
         // Parsing/binding consumes only the source, target, module detection,
         // and library binders. The full environment also includes dependency
         // source bytes and resolver reads; rebuilding every unchanged arena
@@ -596,7 +602,7 @@ impl TszProjectAuthority {
             self.bound_sources.clear();
             self.project = None;
         } else if environment_changed || checker_options_changed
-            || semantic_options_changed || module_resolutions_changed || file_formats_changed {
+            || semantic_options_changed || module_resolutions_changed || file_formats_changed || program_diagnostics_changed {
             // Reuse exact source binds, but never a checked image or solver
             // cache from another environment, option set, or module authority.
             self.project = None;
@@ -641,6 +647,7 @@ impl TszProjectAuthority {
                 current.options.environment == options.environment
                     && current.checker_options_digest == checker_digest
                     && current.semantic_options_digest == semantic_digest
+                    && current.program_diagnostics_digest == program_diagnostics_digest
                     && current.module_resolution_digest == module_resolution_digest
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
@@ -832,6 +839,7 @@ impl TszProjectAuthority {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
             module_resolution_digest,
+            program_diagnostics_digest,
             file_format_digest,
             library_digest,
             lib_files: lib_files.to_vec(),
@@ -864,6 +872,19 @@ impl TszProject {
     #[must_use]
     pub const fn check_result(&self) -> &tsz::parallel::CheckResult {
         &self.check
+    }
+
+    /// Native configuration/program diagnostics retained separately from source
+    /// checker diagnostics. Config spans refer to captured config bytes; a blank
+    /// file is source-free. These entries never create a semantic source member.
+    #[must_use]
+    pub fn program_diagnostics(&self) -> &[TszDiagnostic] {
+        &self.options.program_diagnostics
+    }
+
+    /// Every retained native diagnostic, including source-free program errors.
+    pub fn diagnostics(&self) -> impl Iterator<Item = &TszDiagnostic> {
+        self.program_diagnostics().iter().chain(self.check.file_results.iter().flat_map(|file| &file.diagnostics))
     }
 
     /// Exact program paths whose semantic check was not run because they spent
@@ -1479,6 +1500,13 @@ fn file_format_digest(formats: &[TszProjectFileFormatInput]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+fn program_diagnostics_digest(diagnostics: &[TszDiagnostic]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.tsz-program-diagnostics.v1\0");
+    for diagnostic in diagnostics { digest_part(&mut digest, format!("{diagnostic:?}").as_bytes()); }
+    digest.finalize().into()
+}
+
 fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 32] {
     // DTO Debug is a same-revision cache key only. The caller's durable
     // environment fingerprint remains responsible for resolved compiler
@@ -1503,6 +1531,7 @@ mod tests {
         TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::structural(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
@@ -1932,6 +1961,7 @@ mod tests {
                 TszProjectOptions {
                     checker: options().checker,
                     semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                    program_diagnostics: Vec::new(),
                     module_resolutions: Vec::new(),
                     file_formats: Vec::new(),
                     environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
@@ -2263,6 +2293,67 @@ mod tests {
                 .flat_map(|file| &file.diagnostics)
                 .any(|diagnostic| matches!(diagnostic.code, 6053 | 2688))
         );
+    }
+
+    #[test]
+    fn native_program_diagnostics_have_independent_identity_without_source_members() {
+        let diagnostic = TszDiagnostic::from_code(2688, "", 0, 0, &["missing-types"]);
+        let mut recipe = options();
+        recipe.program_diagnostics = vec![diagnostic.clone()];
+        let sources = vec![input("src/main.ts", "export const value = 1;")];
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources.clone(), recipe.clone(), &[])
+            .unwrap();
+        let project = authority.project().unwrap();
+        assert_eq!(project.program_diagnostics(), &[diagnostic.clone()]);
+        assert_eq!(project.source_paths().collect::<Vec<_>>(), ["src/main.ts"]);
+        assert_eq!(
+            project
+                .diagnostics()
+                .filter(|entry| entry.code == 2688)
+                .count(),
+            1
+        );
+        recipe.program_diagnostics[0] = TszDiagnostic::from_code(2688, "", 0, 0, &["other-types"]);
+        let changed = authority
+            .update(sources.clone(), recipe.clone(), &[])
+            .unwrap();
+        assert_eq!(changed.parsed_and_bound, 0);
+        assert!(!changed.reused_project_result);
+        assert!(
+            authority
+                .update(sources, recipe.clone(), &[])
+                .unwrap()
+                .reused_project_result
+        );
+        for workers in [1, 2] {
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 1_000_000);
+            let mut empty = TszProjectAuthority::new();
+            empty
+                .update_with_checker_execution(
+                    Vec::new(),
+                    recipe.clone(),
+                    &[],
+                    TszProjectCheckerExecution {
+                        checkpoint: &budget,
+                        workers: std::num::NonZeroUsize::new(workers).unwrap(),
+                    },
+                )
+                .unwrap();
+            let project = empty.project().unwrap();
+            assert_eq!(project.source_paths().count(), 0);
+            assert!(project.check_result().file_results.is_empty());
+            assert_eq!(project.diagnostics().count(), 1);
+            assert!(
+                project
+                    .checked_query_session(&budget)
+                    .unwrap()
+                    .file_index("__native_tsz_type_reference__.ts")
+                    .is_none()
+            );
+        }
     }
     #[test]
     fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
@@ -3715,6 +3806,7 @@ mod declaration_policy_tests {
             )
             .unwrap(),
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x67; 32]),

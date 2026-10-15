@@ -35,6 +35,7 @@ pub struct NativeProgram {
     /// Stable native options, including resolver policy, retained in the recipe.
     pub options_identity: String,
     pub root_names: Vec<PathBuf>,
+    pub program_diagnostics: Vec<crate::TszDiagnostic>,
 }
 
 pub struct NativeModuleResolution {
@@ -71,6 +72,7 @@ pub fn build(
         None => inferred_roots.to_vec(),
     };
     let mut resolver = ModuleResolver::with_file_system(&options, fs);
+    let mut program_diagnostics = Vec::new();
     let solution = roots.is_empty()
         && config
             .references
@@ -85,6 +87,7 @@ pub fn build(
             file_formats: Vec::new(),
             options_identity,
             root_names: roots,
+            program_diagnostics,
         });
     }
     let mut pending = roots.iter().cloned().collect::<VecDeque<_>>();
@@ -98,6 +101,7 @@ pub fn build(
         &options,
         &mut resolver,
         &mut pending,
+        &mut program_diagnostics,
         checkpoint,
     )?;
     let mut sources = BTreeMap::new();
@@ -442,6 +446,7 @@ pub fn build(
         file_formats,
         options_identity,
         root_names: roots,
+        program_diagnostics,
     })
 }
 
@@ -824,6 +829,7 @@ fn add_type_roots(
     options: &ResolvedCompilerOptions,
     resolver: &mut ModuleResolver<'_>,
     pending: &mut VecDeque<PathBuf>,
+    program_diagnostics: &mut Vec<crate::TszDiagnostic>,
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<(), String> {
     let Some(directory) = directory else {
@@ -851,9 +857,16 @@ fn add_type_roots(
         }
     };
     let importer = directory.join("__native_tsz_type_reference__.ts");
+    if requested.len() > MAX_REQUESTS {
+        return Err("native TSZ type directive count exceeds bound".into());
+    }
+    let mut seen = BTreeSet::new();
     for name in requested {
         poll(checkpoint, 1)?;
-        let resolved = resolver
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        match resolver
             .resolve_program_type_reference_directive_checked(
                 &name,
                 &importer,
@@ -861,10 +874,44 @@ fn add_type_roots(
                 None,
             )
             .map_err(|error| error.to_string())?
-            .map_err(|error| {
-                format!("native TSZ configured type {name:?} did not resolve: {error:?}")
-            })?;
-        pending.push_back(resolved.resolved_path);
+        {
+            Ok(resolved) => pending.push_back(resolved.resolved_path),
+            Err(ResolutionFailure::NotFound { .. }) => {
+                use tsz::checker::diagnostics::{
+                    Diagnostic, diagnostic_codes, diagnostic_messages, format_message,
+                };
+                let mut diagnostic = Diagnostic::from_code(
+                    diagnostic_codes::CANNOT_FIND_TYPE_DEFINITION_FILE_FOR,
+                    "",
+                    0,
+                    0,
+                    &[&name],
+                );
+                let (code, message) = if options.types.is_some() {
+                    (diagnostic_codes::ENTRY_POINT_OF_TYPE_LIBRARY_SPECIFIED_IN_COMPILEROPTIONS, diagnostic_messages::ENTRY_POINT_OF_TYPE_LIBRARY_SPECIFIED_IN_COMPILEROPTIONS)
+                } else {
+                    (
+                        diagnostic_codes::ENTRY_POINT_FOR_IMPLICIT_TYPE_LIBRARY,
+                        diagnostic_messages::ENTRY_POINT_FOR_IMPLICIT_TYPE_LIBRARY,
+                    )
+                };
+                diagnostic
+                    .related_information
+                    .push(Diagnostic::related_message(
+                        code,
+                        "",
+                        0,
+                        0,
+                        format_message(message, &[&name]),
+                    ));
+                program_diagnostics.push(diagnostic);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "native TSZ configured type {name:?} refused: {error:?}"
+                ));
+            }
+        }
     }
     Ok(())
 }
