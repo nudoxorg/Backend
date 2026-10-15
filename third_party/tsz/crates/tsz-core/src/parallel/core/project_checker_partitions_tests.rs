@@ -4576,6 +4576,10 @@ fn partitioned_image_reports_every_hot_file_and_session_queries_get_their_own_sl
         None,
         "a file query's exhaustion is not a program stop"
     );
+    assert!(!image.is_usable(), "partial shared solver writes retire the image");
+    let fresh_budget = execution_budget(&cancelled);
+    assert!(matches!(image.query_session(&fresh_budget), Err(ProjectCheckerSessionError::ExecutionStopped(_))),
+        "a fresh caller budget cannot revive interrupted solver state");
 }
 
 /// Counts admitted work without ever stopping, so a test can compare costs.
