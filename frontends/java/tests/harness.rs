@@ -293,6 +293,8 @@ public final class App {
         .err()
         .ok_or_else(|| io::Error::other("missing dependency unexpectedly compiled"))?;
     let _ = fs::remove_dir_all(&root);
+    let display = error.to_string();
+    assert!(output.is_empty());
     let HarnessError::UnresolvedDependencies {
         packages, stderr, ..
     } = error
@@ -306,8 +308,8 @@ public final class App {
         "the missing package must be named: {packages}"
     );
     assert!(
-        stderr.contains("not weakened"),
-        "the error must say the compiler was not relaxed: {stderr}"
+        display.contains("not weakened"),
+        "the wrapper must say the compiler was not relaxed: {display}"
     );
     Ok(())
 }
@@ -336,12 +338,17 @@ fn missing_dependency_with_yield_alternates_retains_both_compilation_attempts() 
     assert_eq!(attempts[0].cause, UnavailableCause::Compilation);
     assert_eq!(attempts[1].release, JavaRelease::Java8);
     assert_eq!(attempts[1].cause, UnavailableCause::Compilation);
-    let HarnessError::Command { stderr, .. } = &attempts[1].error else {
+    let HarnessError::UnresolvedDependencies {
+        packages, stderr, ..
+    } = &attempts[1].error
+    else {
         panic!(
             "the final attempt must retain a diagnostic: {:?}",
             attempts[1].error
         )
     };
+    assert_eq!(packages, "io.vavr.match.annotation");
+    assert!(stderr.contains("Generate"));
     assert!(
         stderr.contains("io.vavr.match.annotation"),
         "the final diagnostic must retain the missing dependency: {stderr}"
@@ -775,9 +782,13 @@ fn module_root_is_excluded_and_its_absence_stays_a_typed_compilation_refusal() -
         error.unavailable_cause(),
         Some(UnavailableCause::Compilation)
     );
-    let HarnessError::Command { stderr, .. } = &error else {
+    let HarnessError::UnresolvedDependencies {
+        packages, stderr, ..
+    } = &error
+    else {
         panic!("unexpected error: {error}")
     };
+    assert_eq!(packages, "org.modlib");
     assert!(
         stderr.contains("ModDep"),
         "the missing type must be named: {stderr}"
