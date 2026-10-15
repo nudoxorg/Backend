@@ -9,7 +9,7 @@ use backend_frontend_typescript::{
     TszProjectExecutionStop,
 };
 use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -100,6 +100,7 @@ pub(super) struct ObservedTypeScriptBudget<'cancel> {
     observed_events: AtomicU64,
     stop_observed: AtomicBool,
     stop_context: OnceLock<ObservedStopContext>,
+    stop_site: Arc<OnceLock<ObservedStopSite>>,
     current_program: AtomicUsize,
     admitted_sources: AtomicU64,
     admitted_libraries: AtomicU64,
@@ -107,6 +108,16 @@ pub(super) struct ObservedTypeScriptBudget<'cancel> {
     started_source_checks: AtomicU64,
     completed_source_checks: AtomicU64,
     reused_source_checks: AtomicU64,
+}
+
+/// First observed stopped computation under this exact program budget.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ObservedStopSite {
+    pub(super) reason: TszProjectExecutionStop,
+    pub(super) phase: Option<backend_frontend_typescript::TszProjectExecutionPhase>,
+    pub(super) file: Option<Box<str>>,
+    pub(super) work_charged: u64,
+    pub(super) work_allowance: u64,
 }
 
 impl<'cancel> ObservedTypeScriptBudget<'cancel> {
@@ -122,6 +133,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             observed_events: AtomicU64::new(0),
             stop_observed: AtomicBool::new(false),
             stop_context: OnceLock::new(),
+            stop_site: Arc::new(OnceLock::new()),
             current_program: AtomicUsize::new(usize::MAX),
             admitted_sources: AtomicU64::new(0),
             admitted_libraries: AtomicU64::new(0),
@@ -130,6 +142,15 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             completed_source_checks: AtomicU64::new(0),
             reused_source_checks: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn with_stop_sink(mut self, sink: Arc<OnceLock<ObservedStopSite>>) -> Self {
+        self.stop_site = sink;
+        self
+    }
+
+    pub(super) fn stop_reason(&self) -> Option<TszProjectExecutionStop> {
+        self.budget.stop_reason()
     }
 
     pub(super) fn admit_program(&self, sources: usize, libraries: usize, requests: usize) {
@@ -248,14 +269,21 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
         let result = self.budget.checkpoint(work_units);
         if let Err(stop) = result {
             if !self.stop_observed.swap(true, Ordering::AcqRel) {
-                // A rejected charge does not subtract from the remaining
-                // allowance. This call can also observe another worker's
+                // A rejected charge drains the remaining allowance exactly.
+                // This call can also observe another worker's
                 // already-latched stop: this first observed failed call's
                 // argument is not necessarily the charge that originally
                 // caused exhaustion. Identify that context and retain one
                 // remaining/charged snapshot.
                 let remaining = self.budget.remaining_work_units();
                 let context = self.active_context();
+                let _ = self.stop_site.set(ObservedStopSite {
+                    reason: stop,
+                    phase: context.phase,
+                    file: context.file.as_ref().map(|(_, path)| path.as_str().into()),
+                    work_charged: self.initial_work.saturating_sub(remaining),
+                    work_allowance: self.initial_work,
+                });
                 let _ = self.stop_context.set(context.clone());
                 let thread = std::thread::current();
                 // Sample completions before starts. Each completed boundary
@@ -377,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn release_level_stop_reports_actual_spend_and_positive_remaining_once() {
+    fn release_level_stop_reports_exact_drained_allowance_once() {
         let records = Arc::new(Mutex::new(Vec::new()));
         tracing::subscriber::with_default(StopSubscriber(Arc::clone(&records)), || {
             let cancelled = AtomicBool::new(false);
@@ -392,7 +420,7 @@ mod tests {
                 budget.checkpoint(5),
                 Err(TszProjectExecutionStop::WorkBudgetExhausted)
             );
-            assert_eq!(budget.budget.remaining_work_units(), 4);
+            assert_eq!(budget.budget.remaining_work_units(), 0);
             assert_eq!(
                 budget.checkpoint(0),
                 Err(TszProjectExecutionStop::WorkBudgetExhausted)
@@ -416,8 +444,8 @@ mod tests {
         for (name, expected) in [
             ("project_initial_work_units", 7),
             ("project_observed_attempted_work_units", 5),
-            ("project_charged_work_units", 3),
-            ("project_remaining_work_units", 4),
+            ("project_charged_work_units", 7),
+            ("project_remaining_work_units", 0),
         ] {
             assert_eq!(record.get(name), Some(&expected), "{name}");
         }
@@ -464,8 +492,8 @@ mod tests {
         );
         assert!(!record.contains_key("project_attempted_work_units"));
         assert_eq!(record.get("project_initial_work_units"), Some(&7));
-        assert_eq!(record.get("project_charged_work_units"), Some(&3));
-        assert_eq!(record.get("project_remaining_work_units"), Some(&4));
+        assert_eq!(record.get("project_charged_work_units"), Some(&7));
+        assert_eq!(record.get("project_remaining_work_units"), Some(&0));
     }
 
     #[test]

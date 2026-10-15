@@ -326,6 +326,8 @@ pub struct TszProject {
     /// of this update spent their per-file work allowance (or the caller
     /// already knew they would).
     file_work_skipped: BTreeSet<String>,
+    /// Exact requested policy that governed the complete retained result.
+    file_work_policy: Option<TszFileWorkPolicy>,
     check: tsz::parallel::CheckResult,
 }
 
@@ -641,9 +643,9 @@ impl TszProjectAuthority {
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
                     && current.program.is_usable()
-                    // A project checked with skipped files is not the exact
-                    // unisolated result, and an isolated request names its own skips.
-                    && execution.file_work().is_none()
+                    // Reuse requires the same exact policy as well as every
+                    // source/option/resolution identity. Gapped checks rebuild.
+                    && execution.file_work() == current.file_work_policy.as_ref()
                     && current.file_work_skipped.is_empty()
             })
             && report.removed_sources == 0
@@ -840,6 +842,7 @@ impl TszProjectAuthority {
             program,
             query_budget: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
             file_work_skipped,
+            file_work_policy: execution.file_work().cloned(),
             check,
         });
         Ok(report)

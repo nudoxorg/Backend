@@ -702,6 +702,8 @@ pub enum TypeScriptStopPhase {
     FileCheck,
     /// Collecting one file's diagnostics.
     FilePostprocess,
+    /// Running semantic queries for one file after project checking.
+    FileQuery,
     /// Preparing one file's statement walk.
     SourcePreparation,
     /// Walking one file's statements.
@@ -736,6 +738,7 @@ impl TypeScriptStopPhase {
             Self::FileReset => "file_reset",
             Self::FileCheck => "file_check",
             Self::FilePostprocess => "file_postprocess",
+            Self::FileQuery => "file_query",
             Self::SourcePreparation => "source_preparation",
             Self::SourceStatements => "source_statements",
             Self::SourcePostchecks => "source_postchecks",
