@@ -34,6 +34,8 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
     tools = {name: shutil.which(name) for name in ('Xvfb', 'xdotool', 'magick', 'tesseract')}
     if not all(tools.values()):
         raise RuntimeError('GUI integration requires Xvfb, xdotool, ImageMagick and English Tesseract in the surface shell')
+    if owner.process.poll() is not None:
+        raise RuntimeError(f'GUI owner retired before desktop launch: exit={owner.process.returncode}')
     root = project.parent / 'gui'
     root.mkdir(mode=0o700)
     env = dict(owner.env)
@@ -108,6 +110,8 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                 time.sleep(1)
         else:
             raise RuntimeError(f'GUI did not show the real project: {last_error}')
+        if owner.process.poll() is not None:
+            raise RuntimeError(f'GUI owner retired before project observation: exit={owner.process.returncode}')
         geometry = command('xdotool', 'getwindowgeometry', '--shell', window).stdout
         width = re.search(r'^WIDTH=(\d+)$', geometry, re.MULTILINE)
         if width is None or not 800 <= int(width.group(1)) <= 1600:
@@ -142,7 +146,9 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         time.sleep(0.5)
         pixels()
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        command('xdotool', 'key', '--clearmodifiers', 'ctrl+4')
+        # The numeric depth chord has a known Linux conflict (T3 quarantine).
+        # Use the supported page/code toggle on the committed declaration.
+        command('xdotool', 'key', '--clearmodifiers', 'ctrl+period')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
         while time.monotonic() < deadline:
