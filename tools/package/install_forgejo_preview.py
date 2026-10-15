@@ -282,7 +282,7 @@ def main(argv=None):
         module = load_library(library, key)
         manifest = verified(entry["manifest"], private / "manifest.json", MAX_METADATA) if key == "linux-x64" else None
         product, package_manifest = prepare_install_identity(entry, key, module, manifest)
-        if key == "macos-arm64":
+        if key in {"macos-arm64", "linux-x64"}:
             try:
                 reused = module.reuse_existing_install(prefix, product, package_manifest,
                                                        allow_downgrade=args.allow_downgrade)
