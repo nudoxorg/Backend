@@ -9,6 +9,12 @@
 //! - `runtime`: factory scope, import source, fragment factory
 //! - `diagnostics`: display target building, error message rendering
 
+/// Exact pragma owners shared with captured native program construction.
+pub use runtime::{
+    extract_jsx_import_source_pragma_text as program_import_source_pragma,
+    extract_jsx_runtime_pragma as program_runtime_pragma,
+};
+
 mod children;
 mod diagnostics;
 mod extraction;

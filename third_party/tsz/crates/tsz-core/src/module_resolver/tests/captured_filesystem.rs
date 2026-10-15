@@ -1,8 +1,8 @@
 //! Captured-provider controls: no ambient lookup, negative-cache epochs,
 //! symlink classification, boundary walks, and fail-closed provider errors.
 
-use super::super::{ImportKind, ModuleResolver, ResolutionFailure};
-use crate::config::ResolvedCompilerOptions;
+use super::super::{ImportKind, ImportingModuleKind, ModuleResolver, ResolutionFailure};
+use crate::config::{ModuleResolutionKind, ResolvedCompilerOptions};
 use crate::resolution::filesystem::{
     ResolutionDirEntry, ResolutionFileKind, ResolutionFileSystem,
 };
@@ -229,4 +229,275 @@ fn captured_provider_preserves_symlink_entry_kind() {
         Some(ResolutionFileKind::Symlink)
     );
     assert_eq!(fs.symlink_probes.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn type_reference_prefers_at_types_and_uses_native_package_metadata() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_dir("/virtual/workspace/node_modules");
+    fs.add_dir("/virtual/workspace/node_modules/tool");
+    fs.add_file(
+        "/virtual/workspace/node_modules/tool/index.d.ts",
+        "export declare const runtime: string;",
+    );
+    fs.add_dir("/virtual/workspace/node_modules/@types");
+    fs.add_dir("/virtual/workspace/node_modules/@types/tool");
+    fs.add_file(
+        "/virtual/workspace/node_modules/@types/tool/package.json",
+        r#"{"name":"@types/tool","types":"./types/index.d.ts"}"#,
+    );
+    fs.add_dir("/virtual/workspace/node_modules/@types/tool/types");
+    fs.add_file(
+        "/virtual/workspace/node_modules/@types/tool/types/index.d.ts",
+        "export declare const declaration: number;",
+    );
+    let importer = Path::new("/virtual/workspace/src/main.ts");
+    let mut resolver =
+        ModuleResolver::with_file_system(&ResolvedCompilerOptions::default(), &fs);
+
+    let resolved = resolver
+        .resolve_type_reference_directive_checked(
+            "tool",
+            importer,
+            None,
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("captured provider should permit type resolution")
+        .expect("matching @types package should resolve");
+
+    assert_eq!(
+        resolved.resolved_path,
+        PathBuf::from("/virtual/workspace/node_modules/@types/tool/types/index.d.ts")
+    );
+}
+
+#[test]
+fn explicit_type_roots_precede_default_at_types_roots() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_dir("/virtual/workspace/custom-types");
+    fs.add_dir("/virtual/workspace/custom-types/pkg");
+    fs.add_file(
+        "/virtual/workspace/custom-types/pkg/index.d.ts",
+        "export declare const custom: true;",
+    );
+    fs.add_dir("/virtual/workspace/node_modules");
+    fs.add_dir("/virtual/workspace/node_modules/@types");
+    fs.add_dir("/virtual/workspace/node_modules/@types/pkg");
+    fs.add_file(
+        "/virtual/workspace/node_modules/@types/pkg/index.d.ts",
+        "export declare const defaultRoot: true;",
+    );
+    let options = ResolvedCompilerOptions {
+        type_roots: Some(vec![PathBuf::from("/virtual/workspace/custom-types")]),
+        ..Default::default()
+    };
+    let mut resolver = ModuleResolver::with_file_system(&options, &fs);
+
+    let resolved = resolver
+        .resolve_type_reference_directive_checked(
+            "pkg",
+            Path::new("/virtual/workspace/src/main.ts"),
+            None,
+            None,
+        )
+        .expect("captured provider should permit type resolution")
+        .expect("explicit type root package should resolve");
+
+    assert_eq!(
+        resolved.resolved_path,
+        PathBuf::from("/virtual/workspace/custom-types/pkg/index.d.ts")
+    );
+}
+
+#[test]
+fn type_reference_uses_exports_and_types_versions_from_package_json() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_dir("/virtual/workspace/custom-types");
+    fs.add_dir("/virtual/workspace/custom-types/exports-pkg");
+    fs.add_file(
+        "/virtual/workspace/custom-types/exports-pkg/package.json",
+        r#"{"name":"exports-pkg","exports":{".":{"types":"./modern.d.ts","default":"./runtime.js"}}}"#,
+    );
+    fs.add_file(
+        "/virtual/workspace/custom-types/exports-pkg/modern.d.ts",
+        "export {};",
+    );
+    fs.add_file(
+        "/virtual/workspace/custom-types/exports-pkg/runtime.js",
+        "module.exports = {};",
+    );
+    fs.add_dir("/virtual/workspace/custom-types/versions-pkg");
+    fs.add_file(
+        "/virtual/workspace/custom-types/versions-pkg/package.json",
+        r#"{"name":"versions-pkg","typesVersions":{"*":{"*":["v5/*"]}}}"#,
+    );
+    fs.add_dir("/virtual/workspace/custom-types/versions-pkg/v5");
+    fs.add_file(
+        "/virtual/workspace/custom-types/versions-pkg/v5/index.d.ts",
+        "export {};",
+    );
+    let options = ResolvedCompilerOptions {
+        module_resolution: Some(ModuleResolutionKind::NodeNext),
+        resolve_package_json_exports: true,
+        types_versions_compiler_version: Some("5.4.0".to_owned()),
+        type_roots: Some(vec![PathBuf::from("/virtual/workspace/custom-types")]),
+        ..Default::default()
+    };
+    let mut resolver = ModuleResolver::with_file_system(&options, &fs);
+    let roots = [PathBuf::from("/virtual/workspace/custom-types")];
+
+    let exported = resolver
+        .resolve_type_reference_directive_checked(
+            "exports-pkg",
+            Path::new("/virtual/workspace/src/main.mts"),
+            Some(&roots),
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("exports package metadata should be readable")
+        .expect("types export should resolve");
+    let versioned = resolver
+        .resolve_type_reference_directive_checked(
+            "versions-pkg",
+            Path::new("/virtual/workspace/src/main.mts"),
+            Some(&roots),
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("typesVersions package metadata should be readable")
+        .expect("typesVersions entry should resolve");
+
+    assert_eq!(
+        exported.resolved_path,
+        PathBuf::from("/virtual/workspace/custom-types/exports-pkg/modern.d.ts")
+    );
+    assert_eq!(
+        versioned.resolved_path,
+        PathBuf::from("/virtual/workspace/custom-types/versions-pkg/v5/index.d.ts")
+    );
+}
+
+#[test]
+fn source_type_reference_falls_back_to_bare_package_declarations() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_dir("/virtual/workspace/node_modules");
+    fs.add_dir("/virtual/workspace/node_modules/vite");
+    fs.add_file(
+        "/virtual/workspace/node_modules/vite/package.json",
+        r#"{"name":"vite","exports":{"./client":"./client.d.ts"}}"#,
+    );
+    fs.add_file(
+        "/virtual/workspace/node_modules/vite/client.d.ts",
+        "interface ImportMetaEnv { readonly DEV: boolean; }",
+    );
+    let options = ResolvedCompilerOptions {
+        module_resolution: Some(ModuleResolutionKind::NodeNext),
+        resolve_package_json_exports: true,
+        ..Default::default()
+    };
+    let mut resolver = ModuleResolver::with_file_system(&options, &fs);
+
+    let resolved = resolver
+        .resolve_type_reference_directive_checked(
+            "vite/client",
+            Path::new("/virtual/workspace/src/main.ts"),
+            None,
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("captured provider should permit the secondary package lookup")
+        .expect("Vite's package declaration should resolve as a source type reference");
+
+    assert_eq!(
+        resolved.resolved_path,
+        PathBuf::from("/virtual/workspace/node_modules/vite/client.d.ts")
+    );
+}
+
+#[test]
+fn program_type_roots_suppress_bare_package_fallback_but_source_references_keep_it() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_dir("/virtual/workspace/custom-types");
+    fs.add_dir("/virtual/workspace/node_modules");
+    fs.add_dir("/virtual/workspace/node_modules/vite");
+    fs.add_file(
+        "/virtual/workspace/node_modules/vite/package.json",
+        r#"{"name":"vite","exports":{"./client":"./client.d.ts"}}"#,
+    );
+    fs.add_file(
+        "/virtual/workspace/node_modules/vite/client.d.ts",
+        "interface ImportMetaEnv { readonly DEV: boolean; }",
+    );
+    let options = ResolvedCompilerOptions {
+        module_resolution: Some(ModuleResolutionKind::NodeNext),
+        resolve_package_json_exports: true,
+        type_roots: Some(vec![PathBuf::from("/virtual/workspace/custom-types")]),
+        ..Default::default()
+    };
+    let roots = [PathBuf::from("/virtual/workspace/custom-types")];
+    let importer = Path::new("/virtual/workspace/src/main.ts");
+    let mut source_resolver = ModuleResolver::with_file_system(&options, &fs);
+    let source_reference = source_resolver
+        .resolve_type_reference_directive_checked(
+            "vite/client",
+            importer,
+            Some(&roots),
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("source type references permit secondary package resolution")
+        .expect("Vite's declaration should remain available to source references");
+
+    let mut program_resolver = ModuleResolver::with_file_system(&options, &fs);
+    let program_type = program_resolver
+        .resolve_program_type_reference_directive_checked(
+            "vite/client",
+            importer,
+            Some(&roots),
+            Some(ImportingModuleKind::Esm),
+        )
+        .expect("captured custom type root should be queryable");
+
+    assert_eq!(
+        source_reference.resolved_path,
+        PathBuf::from("/virtual/workspace/node_modules/vite/client.d.ts")
+    );
+    assert!(matches!(program_type, Err(ResolutionFailure::NotFound { .. })));
+}
+
+#[test]
+fn automatic_type_names_skip_explicit_null_and_propagate_provider_refusals() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    let root = PathBuf::from("/virtual/workspace/node_modules/@types");
+    fs.add_dir(&root);
+    fs.add_dir(root.join("visible"));
+    fs.add_dir(root.join("disabled"));
+    fs.add_file(root.join("disabled/package.json"), r#"{"types":null}"#);
+    fs.add_dir(root.join(".hidden"));
+    fs.add_file(root.join(".hidden/package.json"), r#"{"types":"./index.d.ts"}"#);
+    fs.add_dir(root.join("@scope"));
+    fs.add_dir(root.join("@scope/package"));
+    fs.add_file(
+        root.join("@scope/package/package.json"),
+        r#"{"typings":null}"#,
+    );
+    let mut resolver =
+        ModuleResolver::with_file_system(&ResolvedCompilerOptions::default(), &fs);
+
+    let names = resolver
+        .automatic_type_directive_names_checked(std::slice::from_ref(&root))
+        .expect("captured type root should be enumerable");
+    assert_eq!(names, vec!["visible".to_owned()]);
+
+    let denied_fs = MemoryFileSystem::new("/virtual/workspace");
+    denied_fs.add_dir(&root);
+    denied_fs.add_dir(root.join("blocked"));
+    denied_fs.deny(root.join("blocked/package.json"));
+    let mut denied_resolver =
+        ModuleResolver::with_file_system(&ResolvedCompilerOptions::default(), &denied_fs);
+    let error = denied_resolver
+        .automatic_type_directive_names_checked(std::slice::from_ref(&root))
+        .expect_err("provider refusals must not silently become absent directives");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }

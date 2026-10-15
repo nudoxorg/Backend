@@ -550,25 +550,67 @@ pub(crate) fn ts_extension_to_declaration(extension: &str) -> Option<&'static st
 }
 
 /// Simplified package.json structure for resolution
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PackageJson {
-    #[serde(default, deserialize_with = "deserialize_optional_string_field")]
     pub name: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string_field")]
     pub main: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string_field")]
     pub types: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_string_field")]
     pub typings: Option<String>,
-    #[serde(rename = "type")]
-    #[serde(default, deserialize_with = "deserialize_optional_string_field")]
     pub package_type: Option<String>,
     pub exports: Option<PackageExports>,
     pub imports: Option<IndexMap<String, PackageExports>>,
     /// TypeScript typesVersions field for version-specific type definitions
-    #[serde(rename = "typesVersions")]
     pub types_versions: Option<serde_json::Value>,
+    /// Whether package.json explicitly set `types` to null. TypeScript skips
+    /// these packages during automatic type directive discovery.
+    pub types_is_null: bool,
+    /// Whether package.json explicitly set `typings` to null.
+    pub typings_is_null: bool,
+}
+
+impl<'de> serde::Deserialize<'de> for PackageJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Fields {
+            #[serde(default, deserialize_with = "deserialize_optional_string_field")]
+            name: Option<String>,
+            #[serde(default, deserialize_with = "deserialize_optional_string_field")]
+            main: Option<String>,
+            #[serde(rename = "type")]
+            #[serde(default, deserialize_with = "deserialize_optional_string_field")]
+            package_type: Option<String>,
+            exports: Option<PackageExports>,
+            imports: Option<IndexMap<String, PackageExports>>,
+            #[serde(rename = "typesVersions")]
+            types_versions: Option<serde_json::Value>,
+            #[serde(flatten)]
+            other: serde_json::Map<String, serde_json::Value>,
+        }
+
+        let fields = <Fields as serde::Deserialize>::deserialize(deserializer)?;
+        let types_value = fields.other.get("types");
+        let typings_value = fields.other.get("typings");
+        Ok(Self {
+            name: fields.name,
+            main: fields.main,
+            types: types_value
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            typings: typings_value
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            package_type: fields.package_type,
+            exports: fields.exports,
+            imports: fields.imports,
+            types_versions: fields.types_versions,
+            types_is_null: types_value.is_some_and(serde_json::Value::is_null),
+            typings_is_null: typings_value.is_some_and(serde_json::Value::is_null),
+        })
+    }
 }
 
 fn deserialize_optional_string_field<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

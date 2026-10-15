@@ -36,7 +36,9 @@ pub use request_types::*;
 use crate::config::{JsxEmit, ModuleResolutionKind, PathMapping, ResolvedCompilerOptions};
 use crate::emitter::ModuleKind;
 use crate::module_resolver_helpers::PackageJson;
-use crate::resolution::filesystem::ResolutionFileSystem;
+use crate::resolution::filesystem::{
+    ResolutionDirEntry, ResolutionFileSystem, STD_RESOLUTION_FILE_SYSTEM,
+};
 use crate::span::Span;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
@@ -160,6 +162,8 @@ pub struct ModuleResolver<'fs> {
     root_dirs: Vec<PathBuf>,
     /// Type roots for @types packages
     type_roots: Vec<PathBuf>,
+    /// Whether `typeRoots` was explicitly specified, including an empty list.
+    type_roots_explicit: bool,
     types_versions_compiler_version: Option<String>,
     resolve_package_json_exports: bool,
     resolve_package_json_imports: bool,
@@ -294,6 +298,7 @@ impl<'fs> ModuleResolver<'fs> {
             path_mappings: options.paths.clone().unwrap_or_default(),
             root_dirs: options.root_dirs.clone(),
             type_roots: options.type_roots.clone().unwrap_or_default(),
+            type_roots_explicit: options.type_roots.is_some(),
             types_versions_compiler_version: options.types_versions_compiler_version.clone(),
             resolve_package_json_exports: options.resolve_package_json_exports,
             resolve_package_json_imports: options.resolve_package_json_imports,
@@ -340,6 +345,7 @@ impl<'fs> ModuleResolver<'fs> {
             path_mappings: Vec::new(),
             root_dirs: Vec::new(),
             type_roots: Vec::new(),
+            type_roots_explicit: false,
             types_versions_compiler_version: None,
             resolve_package_json_exports: false,
             resolve_package_json_imports: false,
@@ -529,6 +535,21 @@ impl<'fs> ModuleResolver<'fs> {
         };
         match file_system.read_file(path) {
             Ok(result) => Ok(result),
+            Err(error) => {
+                self.record_file_system_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn read_dir(&self, path: &Path) -> io::Result<Option<Vec<ResolutionDirEntry>>> {
+        let result = if let Some(file_system) = self.file_system {
+            file_system.read_dir(path)
+        } else {
+            ResolutionFileSystem::read_dir(&STD_RESOLUTION_FILE_SYSTEM, path)
+        };
+        match result {
+            Ok(entries) => Ok(entries),
             Err(error) => {
                 self.record_file_system_error(&error);
                 Err(error)
