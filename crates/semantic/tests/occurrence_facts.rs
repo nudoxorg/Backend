@@ -409,6 +409,42 @@ fn local_targets_round_trip_and_reject_out_of_lane_ordinals() -> Result<(), Test
     Ok(())
 }
 
+#[test]
+fn prepare_occurrence_error_retains_the_rejected_row_ordinal() {
+    let identity = source();
+    let mut inputs = stable_lane_inputs();
+    inputs[1].owner = EntityId::new(7);
+    let lane = OccurrenceLane { inputs: &inputs };
+
+    let error = match PreparedFragment::prepare_with_occurrences(
+        identity,
+        recipe(identity.identity),
+        &ENTITIES,
+        &[TypeNode::Primitive(PrimitiveType::Bool)],
+        &ATOMS,
+        None,
+        &lane,
+    ) {
+        Ok(_) => panic!("the second occurrence has an out-of-lane owner"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("occurrence 1"));
+    match error {
+        PrepareError::OccurrenceLane { ordinal, fault } => {
+            assert_eq!(ordinal, 1);
+            assert!(matches!(
+                fault,
+                backend_semantic::ir::OccurrenceViewFault::Owner {
+                    ordinal: 1,
+                    owner: 7,
+                    entity_count: 2,
+                }
+            ));
+        }
+        other => panic!("expected occurrence-lane preparation error, got {other:?}"),
+    }
+}
+
 /// display, origin, and the optional kind all survive the reopen.
 #[test]
 fn foreign_occurrences_survive_the_reopen_with_their_key_cells() -> Result<(), TestFailure> {
