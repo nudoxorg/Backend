@@ -87,7 +87,8 @@ use backend_replication::{
 
 use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
-    enter_package_authority_with_go_authority_witness, enter_package_authority_with_rust_workspace,
+    GoPackageAuthority, enter_package_authority_with_go_authority_witness,
+    enter_package_authority_with_rust_workspace,
 };
 use crate::application::{
     AdmittedRustRequestAuthority, LocalCompilerConfig, LocalCompilerControl,
@@ -396,6 +397,36 @@ pub enum PackageSourceCoverageGapCause {
     PythonSourceEncodingUnavailable,
     /// Native solved dependencies reach unavailable captured Python resources.
     PythonSourceDependencyUnavailable,
+    /// The language authority (loader, checker or analyzer) refused this exact source; every
+    /// other source of the package keeps the facts it would have had.
+    SourceAuthorityRefused,
+    /// The native compiler rejected this exact source's syntax or flooded its diagnostics.
+    SourceRejectedByNativeCompiler,
+    /// Lowering or compact-IR construction cannot represent this exact source.
+    SourceNotRepresentable,
+    /// The package's compile deadline passed before this source finished or could start.
+    CompileDeadlineExceeded,
+}
+
+impl std::fmt::Display for PackageSourceCoverageGapCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::RustSourceOutsideActiveCargoTarget => "outside every active Cargo target",
+            Self::TypeScriptSourceExcludedFromConfiguredProgram => {
+                "excluded from the configured TypeScript program"
+            }
+            Self::TypeScriptSourceWorkBudgetExhausted => "its TypeScript file work allowance was exhausted",
+            Self::PythonSourceSyntaxUnavailable => "its Python syntax was rejected",
+            Self::PythonSourceEncodingUnavailable => "its Python source encoding is unavailable",
+            Self::PythonSourceDependencyUnavailable => {
+                "it depends on Python resources that were not captured"
+            }
+            Self::SourceAuthorityRefused => "its language authority refused it",
+            Self::SourceRejectedByNativeCompiler => "the native compiler rejected it",
+            Self::SourceNotRepresentable => "lowering cannot represent it",
+            Self::CompileDeadlineExceeded => "the compile deadline passed before it finished",
+        })
+    }
 }
 
 /// Exact source retained in the input frontier but omitted from semantic lowering.
@@ -1960,7 +1991,8 @@ pub enum PackageSemanticError {
     },
     /// One authority, toolchain, lowering, or cancellation terminal occurred.
     #[error(
-        "package semantic compilation failed for {path}: {terminal:?}{host_hint}",
+        "package semantic compilation failed for {path}: {text}{host_hint}",
+        text = super::compiler_terminal_text::TerminalText::new(path, terminal),
         host_hint = package_compile_host_hint(terminal)
     )]
     Compile {
@@ -2119,6 +2151,216 @@ fn capture_native_program_sources<'paths>(
         .map_err(PackageSemanticError::NativeProgramSources)?;
     checkpoint(0)?;
     Ok(manifest)
+}
+
+/// Sources of one package that failed on their own and became coverage gaps.
+///
+/// One source's refusal, native rejection, unrepresentable construct or deadline
+/// must not hide the facts of the files that compiled: it becomes a typed gap
+/// and the package publishes as Partial. Only a failure that makes the whole
+/// package meaningless (no toolchain, cancellation, storage) stays a refusal,
+/// and so does a package in which no source compiled at all.
+#[derive(Default)]
+struct DegradedSources {
+    /// The first degraded source, reported as the refusal when nothing compiled.
+    first: Option<(Box<str>, CompilerTerminal)>,
+    /// The package deadline has passed: later sources are not attempted.
+    deadline_passed: bool,
+}
+
+impl DegradedSources {
+    /// Records `terminal` as `path`'s coverage gap when it is that source's own
+    /// failure, and returns it as the package's refusal when it is not.
+    fn degrade(
+        &mut self,
+        terminal: CompilerTerminal,
+        path: &str,
+        source: SourceAuthority,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) -> Result<(), PackageSemanticError> {
+        let Some(cause) = source_gap_cause(&terminal) else {
+            return Err(PackageSemanticError::Compile {
+                path: path.into(),
+                terminal: Box::new(terminal),
+            });
+        };
+        tracing::warn!(
+            target: "compiler.package_source",
+            path,
+            reason = %super::compiler_terminal_text::TerminalText::new(path, &terminal),
+            "source degraded to a coverage gap; the rest of the package keeps its facts"
+        );
+        self.deadline_passed |= cause == PackageSourceCoverageGapCause::CompileDeadlineExceeded;
+        self.push_gap(path, source, cause, gaps);
+        self.first.get_or_insert_with(|| (path.into(), terminal));
+        Ok(())
+    }
+
+    /// Records a source that was never attempted because the deadline had passed.
+    fn skip_after_deadline(
+        &mut self,
+        path: &str,
+        source: SourceAuthority,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) {
+        self.push_gap(path, source, PackageSourceCoverageGapCause::CompileDeadlineExceeded, gaps);
+    }
+
+    fn push_gap(
+        &self,
+        path: &str,
+        source: SourceAuthority,
+        cause: PackageSourceCoverageGapCause,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) {
+        gaps.push(PackageSourceCoverageGap {
+            source,
+            relative_path: path.into(),
+            cause,
+            python_source_status: None,
+            native_python_diagnostics: Box::new([]),
+        });
+    }
+
+    /// The first degraded source's terminal, when no source of the package
+    /// compiled: such a package has nothing to publish and refuses with it.
+    fn into_refusal_when_nothing_compiled(
+        self,
+        compiled: usize,
+    ) -> Option<PackageSemanticError> {
+        if compiled != 0 {
+            return None;
+        }
+        self.first.map(|(path, terminal)| PackageSemanticError::Compile {
+            path,
+            terminal: Box::new(terminal),
+        })
+    }
+}
+
+/// The gap a source's own terminal degrades to, or `None` for a failure that
+/// concerns the whole package.
+fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverageGapCause> {
+    let CompilerTerminal::Compile { cause, .. } = terminal else {
+        return None;
+    };
+    match cause {
+        CompilerCause::Authority { .. } => Some(PackageSourceCoverageGapCause::SourceAuthorityRefused),
+        CompilerCause::NativeRejected { .. } | CompilerCause::DiagnosticLimit { .. } => {
+            Some(PackageSourceCoverageGapCause::SourceRejectedByNativeCompiler)
+        }
+        CompilerCause::Lowering(_)
+        | CompilerCause::Fragment(_)
+        | CompilerCause::FragmentFailure(_) => Some(PackageSourceCoverageGapCause::SourceNotRepresentable),
+        CompilerCause::DeadlineExceeded { .. } => {
+            Some(PackageSourceCoverageGapCause::CompileDeadlineExceeded)
+        }
+        // The work directory and the child process are shared by every source.
+        CompilerCause::NativeWork(_) | CompilerCause::NativeIo { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod source_degradation_tests {
+    use super::*;
+
+    fn source() -> SourceAuthority {
+        SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package a"),
+            byte_len: 9,
+        }
+    }
+
+    fn compile(cause: CompilerCause) -> CompilerTerminal {
+        CompilerTerminal::Compile {
+            attempted: backend_library::interface::CompilerAttempt {
+                source: source(),
+                recipe: ContentId::from_canonical_bytes(b"recipe"),
+            },
+            cause,
+        }
+    }
+
+    #[test]
+    fn a_sources_own_failures_become_typed_gaps_and_shared_ones_stay_refusals() {
+        use PackageSourceCoverageGapCause as Gap;
+        let own = [
+            (
+                compile(CompilerCause::Authority {
+                    phase: backend_semantic::vocabulary::AuthorityPhase::Open,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: None,
+                }),
+                Gap::SourceAuthorityRefused,
+            ),
+            (
+                compile(CompilerCause::NativeRejected { code: Some(1), diagnostic: None }),
+                Gap::SourceRejectedByNativeCompiler,
+            ),
+            (
+                compile(CompilerCause::Fragment(backend_library::interface::FragmentCause::Validate)),
+                Gap::SourceNotRepresentable,
+            ),
+            (
+                compile(CompilerCause::DeadlineExceeded { diagnostic: None }),
+                Gap::CompileDeadlineExceeded,
+            ),
+        ];
+        for (terminal, expected) in own {
+            assert_eq!(source_gap_cause(&terminal), Some(expected));
+        }
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
+        for shared in [
+            CompilerTerminal::PackageCancelled { target, phase: PackageCompilePhase::Authority },
+            CompilerTerminal::Toolchain {
+                source: source(),
+                language: backend_semantic::vocabulary::Language::Go,
+                stage: Stage::LowerIr,
+                selected: NativeTool::GoCompiler,
+                configured: None,
+            },
+            compile(CompilerCause::NativeIo {
+                phase: backend_library::interface::NativeIoPhase::Start,
+                cause: backend_library::interface::NativeIoFact {
+                    kind: std::io::ErrorKind::NotFound,
+                    raw_os_code: Some(2),
+                },
+            }),
+        ] {
+            assert_eq!(source_gap_cause(&shared), None);
+        }
+    }
+
+    #[test]
+    fn degrading_records_one_gap_per_source_and_refuses_only_when_nothing_compiled() {
+        let mut gaps = Vec::new();
+        let mut degraded = DegradedSources::default();
+        degraded
+            .degrade(compile(CompilerCause::NativeRejected { code: None, diagnostic: None }), "a_test.go", source(), &mut gaps)
+            .expect("a source-local failure degrades");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].relative_path(), "a_test.go");
+        assert!(!degraded.deadline_passed);
+        // A shared failure is the package's refusal and records no gap.
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
+        let refusal = degraded.degrade(
+            CompilerTerminal::PackageCancelled { target, phase: PackageCompilePhase::Authority },
+            "b.go",
+            source(),
+            &mut gaps,
+        );
+        assert!(matches!(refusal, Err(PackageSemanticError::Compile { .. })));
+        assert_eq!(gaps.len(), 1);
+        // Sources that compiled keep the package publishable; none compiled refuses with the first.
+        assert!(degraded.into_refusal_when_nothing_compiled(3).is_none());
+        let mut only = DegradedSources::default();
+        only.degrade(compile(CompilerCause::DeadlineExceeded { diagnostic: None }), "c.go", source(), &mut gaps)
+            .expect("deadline degrades");
+        assert!(only.deadline_passed);
+        let refusal = only.into_refusal_when_nothing_compiled(0).expect("nothing compiled");
+        assert!(refusal.to_string().contains("package semantic compilation failed for c.go: the compile deadline passed"));
+        assert!(!refusal.to_string().contains("DeadlineExceeded"));
+    }
 }
 
 fn package_compile_host_hint(terminal: &CompilerTerminal) -> &'static str {
@@ -3049,6 +3291,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
         let mut coverage_gaps = Vec::new();
+        let mut degraded = DegradedSources::default();
         if let (Some(project), Some(raw_sources)) =
             (python_project.as_ref(), package.python_raw_sources)
         {
@@ -3330,6 +3573,63 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // Sources lowered before that point are complete; every later TypeScript
         // source is reported as a coverage gap instead of failing the package.
         let mut typescript_work_degraded = false;
+        // A Go package is admitted once and its sources are loaded one directory at
+        // a time: entering authority per source re-proved the toolchain and the
+        // dependency closure and re-ran the loader for every file.
+        let go_first_source_path = package.package_root.join(first_source.relative_path);
+        let mut go_authority = if target.profile.language()
+            == backend_semantic::vocabulary::Language::Go
+            && package_authority_configuration.go.is_some_and(|oracle| {
+                oracle.portable_invocation_options().mode()
+                    == backend_frontend_go::legacy::GoOracleInvocationModeV1::GoToolchain
+            })
+            && rust_workspace_authority.is_none()
+            && typescript_project.is_none()
+            && python_project.is_none()
+        {
+            let toolchain = self
+                .toolchain(first_application_request)
+                .map_err(|cause| {
+                    toolchain_terminal(first_authority, first_application_request, cause)
+                })
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            let go_sources = package
+                .compilation_sources()
+                .map(|source| package.package_root.join(source.relative_path))
+                .collect::<Vec<_>>();
+            Some(
+                GoPackageAuthority::begin(
+                    PackageAuthorityRequest {
+                        package_root: package.package_root,
+                        source_path: &go_first_source_path,
+                        source: first_source.source.as_bytes(),
+                        unit_key: package.package_target.unit_key(),
+                        profile: target.profile,
+                        toolchain,
+                        control,
+                        configuration: package_authority_configuration,
+                    },
+                    package.go_authority_witness,
+                    &go_sources,
+                )
+                .map_err(|cause| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        cause,
+                    )),
+                })?,
+            )
+        } else {
+            None
+        };
+
         for source in package.compilation_sources() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(PackageSemanticError::Compile {
@@ -3352,6 +3652,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     path: source.relative_path.into(),
                     terminal: Box::new(terminal),
                 })?;
+            if degraded.deadline_passed {
+                degraded.skip_after_deadline(source.relative_path, source_authority, &mut coverage_gaps);
+                continue;
+            }
             if let Some(budget) = tsz_budget.as_ref().filter(|_| !typescript_work_degraded) {
                 match backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1) {
                     // True program-wide exhaustion: keep what is already complete.
@@ -3476,7 +3780,31 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let transient_authority = if rust_workspace_authority.is_none()
+            let go_owner = match go_authority.as_mut() {
+                Some(go) => match go.owner(&source_path) {
+                    Ok(owner) => Some(owner),
+                    Err(cause) => {
+                        let terminal = package_authority_terminal(
+                            package.package_target.target(),
+                            application_request,
+                            source_authority,
+                            toolchain,
+                            cause,
+                        );
+                        degraded.degrade(
+                            terminal,
+                            source.relative_path,
+                            source_authority,
+                            &mut coverage_gaps,
+                        )?;
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let transient_authority = if go_owner.is_some() {
+                go_owner
+            } else if rust_workspace_authority.is_none()
                 && typescript_project.is_none()
                 && python_project.is_none()
             {
@@ -3612,6 +3940,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             work_charged: exhaustion.allowance,
                             work_allowance: exhaustion.allowance,
                         });
+                        return Err(PackageSemanticError::Compile {
+                            path: source.relative_path.into(),
+                            terminal: Box::new(package_authority_terminal(
+                                package.package_target.target(), application_request, source_authority,
+                                toolchain,
+                                PackageAuthorityError::TypeScriptTsz(
+                                    backend_frontend_typescript::TszAuthorityError::FileWorkExhausted(vec![exhaustion]),
+                                ),
+                            )),
+                        });
                     }
                 }
             }
@@ -3640,10 +3978,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
                 Err(terminal) => {
-                    return Err(PackageSemanticError::Compile {
-                        path: source.relative_path.into(),
-                        terminal: Box::new(terminal),
-                    });
+                    if target.profile.language() != backend_semantic::vocabulary::Language::Go {
+                        return Err(PackageSemanticError::Compile {
+                            path: source.relative_path.into(), terminal: Box::new(terminal),
+                        });
+                    }
+                    degraded.degrade(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        &mut coverage_gaps,
+                    )?;
+                    continue;
                 }
             };
             let fragment_length = compiled.fragment.len();
@@ -3686,6 +4032,50 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             {
                 embedding_sources.push((source.relative_path, source.source));
             }
+        }
+        if let Some(refusal) = degraded.into_refusal_when_nothing_compiled(artifacts.len()) {
+            return Err(refusal);
+        }
+        if artifacts.is_empty()
+            && let Some(gap) = coverage_gaps.iter().find(|gap| gap.cause == PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted)
+        {
+            let source = package.compilation_sources().find(|source| source.relative_path == gap.relative_path.as_ref())
+                .ok_or(PackageSemanticError::Capacity { lane: "TypeScript work-gap source authority" })?;
+            let request = ApplicationCompilerRequest { profile: target.profile, stage: target.stage, source: source.source };
+            let toolchain = self.toolchain_for_package(request, typescript_toolchain)
+                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
+            return Err(PackageSemanticError::Compile {
+                path: gap.relative_path.clone(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(), request, gap.source, toolchain,
+                    PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ProjectCheck(
+                        backend_frontend_typescript::TszProjectProgramCheckError::ExecutionStopped(
+                            backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted,
+                        ),
+                    )),
+                )),
+            });
+        }
+        if let Some(go) = go_authority.take() {
+            // Every image of this package is only publishable while the inputs it
+            // was produced from still match their admitted witness.
+            go.finish().map_err(|cause| {
+                let toolchain = self.toolchain(first_application_request).unwrap_or(
+                    ToolchainSelection::ExplicitlyUnavailable {
+                        tool: NativeTool::GoCompiler,
+                    },
+                );
+                PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        cause,
+                    )),
+                }
+            })?;
         }
         if embedding_unavailable.is_none()
             && let (Some(runtime), Some(identity)) =

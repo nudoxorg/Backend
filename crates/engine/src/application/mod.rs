@@ -5,6 +5,7 @@
 
 mod cluster_coordinator;
 mod compiler;
+mod compiler_terminal_text;
 mod compiler_typescript_failure;
 mod compiler_typescript_observation;
 mod config;
