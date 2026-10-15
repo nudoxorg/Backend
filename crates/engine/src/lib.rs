@@ -302,6 +302,16 @@ pub fn encode_reply_dto(reply: &ReplyDto) -> Result<Vec<u8>, String> {
     serde_json::to_vec(reply).map_err(|error| error.to_string())
 }
 
+/// Streams a reply under the unchanged native body ceiling.
+///
+/// # Errors
+/// Keeps byte overflow distinct from serialization, arithmetic and allocation failures.
+pub fn encode_reply_dto_bounded(
+    reply: &ReplyDto,
+) -> Result<Vec<u8>, backend_library::BoundedJsonError> {
+    backend_library::encode_reply_body_bounded(reply)
+}
+
 /// Encodes one producer-certified event DTO for a subscription payload.
 /// Applications use this facade instead of adding a second direct dependency
 /// on the portable library's serialization implementation.

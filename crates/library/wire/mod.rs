@@ -5,6 +5,8 @@
 //! DTO surface.
 
 mod admission;
+mod bounded_json;
+pub use bounded_json::BoundedJsonError;
 #[cfg(test)]
 mod claim_index_tests;
 mod claims;
@@ -34,7 +36,7 @@ pub use claims::{WireCertificate, WireClaim, WireSchema};
 pub use codec::{
     MAX_COMMAND_BODY, MAX_REPLY_BODY, command_request_id, decode_command_body,
     decode_command_body_for_owner, decode_reply_body, decode_reply_body_with_verifier,
-    encode_command_body,
+    encode_command_body, encode_reply_body_bounded,
 };
 pub use command::{
     CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command,

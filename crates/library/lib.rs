@@ -316,6 +316,7 @@ pub use view::{
     ViewSnapshotPage, resolve_selected_document_row, resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
+pub use wire::{BoundedJsonError, encode_reply_body_bounded};
 pub use wire::{
     CommandDto, DTO_VERSION, EventDto, JournalViewGrammarV3, MAX_COMMAND_BODY, MAX_COMMAND_TEXT,
     MAX_REPLY_BODY, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SnapshotHydrator,

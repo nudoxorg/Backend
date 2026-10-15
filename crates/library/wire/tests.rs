@@ -2958,3 +2958,173 @@ fn legacy_wire_empty_initial_owner_cursor_admission_is_preserved() {
         "shared wire admission historically allows an empty initial owner position"
     );
 }
+
+#[test]
+fn borrowed_catalog_wire_is_byte_identical_to_the_existing_owned_projection() {
+    for case in 0..6 {
+        let (base, ids) = paged_query_fixture(0);
+        let mut rows = base.view().rows().to_vec();
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.document = vec![
+                Fragment::Text("quotes\"\\\nאב🙂".repeat(20)),
+                Fragment::Code("fn f() {\n}\t".to_owned()),
+                Fragment::Link {
+                    label: "other\"".to_owned(),
+                    target: symbol_key("pkg::Thing1"),
+                },
+                Fragment::Break,
+            ]
+            .into_boxed_slice();
+            row.signature = (i != 0).then(|| "fn f(λ: &str)".to_owned());
+            row.kind = (i != 1).then_some(crate::DeclarationKind::Function);
+            row.parent = (i == 2).then_some(symbol_key("pkg::Thing1"));
+            row.source = match case {
+                0 | 5 => crate::SourceAvailability::Captured(
+                    crate::SourceLocation::new("src/a\".rs", 2).expect("location"),
+                ),
+                1 => crate::SourceAvailability::NotCaptured,
+                2 => crate::SourceAvailability::NotHydrated,
+                3 => crate::SourceAvailability::Unconfigured,
+                _ => crate::SourceAvailability::stale_file("src/old.rs").expect("stale file"),
+            };
+            row.excerpt = match case {
+                0 => crate::SourceExcerpt::captured(
+                    "fn f() { λ }",
+                    crate::SourceExcerptExtent::Complete,
+                )
+                .expect("complete excerpt"),
+                1 => crate::SourceExcerpt::NotCaptured,
+                2 => crate::SourceExcerpt::NotHydrated,
+                3 => crate::SourceExcerpt::Unconfigured,
+                _ => {
+                    crate::SourceExcerpt::captured("fn f(λ", crate::SourceExcerptExtent::Truncated)
+                        .expect("truncated excerpt")
+                }
+            };
+            row.facts = match i {
+                0 => crate::DeclarationFacts::UNOBSERVED,
+                1 => crate::DeclarationFacts {
+                    deprecation: crate::Fact::Absent,
+                    obligation: crate::Fact::Absent,
+                },
+                _ => crate::DeclarationFacts {
+                    deprecation: crate::Fact::Present(crate::Deprecation::new(
+                        Some("1.0"),
+                        Some("use \"other\"\\λ"),
+                    )),
+                    obligation: crate::Fact::Present(crate::Obligation::Required),
+                },
+            };
+        }
+        let root = ViewRoot::new_checked(
+            base.view().recipe(),
+            base.view().basis(),
+            base.view().frontier(),
+            rows,
+            base.view().coverage().to_vec(),
+            base.view().capability().expect("owned fixture scope"),
+        )
+        .expect("real catalog root");
+        let library =
+            crate::Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("catalog");
+        let limit = QueryLimit::new(4).expect("issued");
+        let window =
+            crate::QueryWindow::new(limit, QueryLimit::new(2).expect("delivery")).expect("window");
+        let names = library
+            .names(
+                &NameQuery::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("names window"),
+            )
+            .expect("actual names");
+        let search = library
+            .search(
+                &Query::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("search window"),
+            )
+            .expect("actual search");
+        let mut sorted = ids.clone();
+        sorted.sort();
+        let graph = library
+            .graph_page_from_ids(
+                symbol_key("pkg::Thing0"),
+                crate::SymbolAddress::canonical(symbol_key("pkg::Thing0")),
+                crate::PageRequest::new(library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("graph window"),
+                &sorted,
+            )
+            .expect("actual selected graph");
+        let names_tail = library
+            .names(
+                &NameQuery::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("names window")
+                    .with_cursor(names.next.expect("names prefix")),
+            )
+            .expect("actual names tail");
+        let search_tail = library
+            .search(
+                &Query::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("search window")
+                    .with_cursor(search.next.expect("search prefix")),
+            )
+            .expect("actual search tail");
+        let graph_tail = library
+            .graph_page_from_ids(
+                symbol_key("pkg::Thing0"),
+                crate::SymbolAddress::canonical(symbol_key("pkg::Thing0")),
+                crate::PageRequest::new(library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("graph window")
+                    .with_continuation(crate::PageContinuation::from_cursor(
+                        graph.snapshot.next.expect("graph prefix"),
+                    )),
+                &sorted,
+            )
+            .expect("actual graph tail");
+        for body in [
+            CommandReply::Names(names),
+            CommandReply::Search(search),
+            CommandReply::ProjectionPage(graph),
+            CommandReply::Names(names_tail),
+            CommandReply::Search(search_tail),
+            CommandReply::ProjectionPage(graph_tail),
+        ] {
+            // This comparison tests transport spelling only. Empty certificate
+            // carries no producer authority, and no index/owner proof is claimed.
+            let mut dto = ReplyDto::new(17, body).with_certificate(WireCertificate::new());
+            if matches!(&dto.reply, CommandReply::Search(_)) {
+                dto = dto.with_semantic_search_status(crate::SemanticSearchStatus::Available);
+            }
+            let owned = super::reply::ReplyEnvelope {
+                version: DTO_VERSION,
+                request_id: dto.request_id,
+                reply: super::reply::reply_to_wire(&dto.reply)
+                    .expect("maintained owned projection"),
+                certificate: dto.certificate().cloned(),
+                health_cursor: None,
+                semantic_search: dto.semantic_search_status(),
+            };
+            let expected = serde_json::to_vec(&owned).expect("existing complete bytes");
+            assert_eq!(
+                serde_json::to_vec(&dto).expect("borrowed serializer"),
+                expected
+            );
+            assert_eq!(
+                crate::encode_reply_body_bounded(&dto).expect("bounded native body"),
+                expected
+            );
+            assert_eq!(
+                super::bounded_json::bounded_json(&dto, expected.len()).expect("exact bound"),
+                expected
+            );
+            assert!(matches!(
+                super::bounded_json::bounded_json(&dto, expected.len() - 1),
+                Err(crate::BoundedJsonError::LimitExceeded { .. })
+            ));
+        }
+    }
+}
