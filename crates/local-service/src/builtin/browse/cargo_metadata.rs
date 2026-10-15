@@ -3544,6 +3544,8 @@ mod tests {
             "packages": [
                 {
                     "id": "serde 1.0.0 (registry)",
+                    "name": "serde",
+                    "version": "1.0.0",
                     "source": "registry+https://github.com/rust-lang/crates.io-index",
                     "manifest_path": registry_manifest,
                     "dependencies": [],
@@ -3663,6 +3665,8 @@ mod tests {
                 },
                 {
                     "id": normal_id,
+                    "name": "normal",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": normal_manifest,
                     "dependencies": [],
@@ -3670,6 +3674,8 @@ mod tests {
                 },
                 {
                     "id": build_id,
+                    "name": "build",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": build_manifest,
                     "dependencies": [],
@@ -3677,6 +3683,8 @@ mod tests {
                 },
                 {
                     "id": dev_id,
+                    "name": "dev",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": dev_manifest,
                     "dependencies": [],
@@ -3684,6 +3692,8 @@ mod tests {
                 },
                 {
                     "id": transitive_id,
+                    "name": "transitive",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": transitive_manifest,
                     "dependencies": [],
@@ -3691,6 +3701,8 @@ mod tests {
                 },
                 {
                     "id": disconnected_id,
+                    "name": "disconnected",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": disconnected_manifest,
                     "dependencies": [],
@@ -3698,6 +3710,8 @@ mod tests {
                 },
                 {
                     "id": filtered_id,
+                    "name": "filtered",
+                    "version": "1.0.0",
                     "source": "registry+https://example.test/index",
                     "manifest_path": filtered_manifest,
                     "dependencies": [],

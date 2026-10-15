@@ -7096,13 +7096,20 @@ mod tests {
 
         std::fs::write(helper.join("docs/README.md"), "# changed README\n")
             .expect("mutate witnessed README");
-        assert!(matches!(
-            owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
-                origin.package.clone(),
-                binding,
-            )),
-            CargoPackageReadmeResultV1::Stale { .. }
+        let changed_readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+            origin.package.clone(),
+            binding,
         ));
+        assert!(
+            matches!(
+                &changed_readme,
+                CargoPackageReadmeResultV1::Unavailable {
+                    reason: CargoPackageReadmeFailureV1::SourceObservationUnavailable,
+                    ..
+                }
+            ),
+            "archive README mutation is refused when selected bytes no longer match the witness: {changed_readme:?}"
+        );
         std::fs::write(helper.join("docs/README.md"), readme_contents)
             .expect("restore witnessed README");
 
