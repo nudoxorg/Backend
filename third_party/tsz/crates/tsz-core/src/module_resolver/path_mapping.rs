@@ -9,7 +9,7 @@ pub(super) struct PathMappingAttempt {
     pub attempted: bool,
 }
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     /// Try resolving through path mappings.
     ///
     /// tsc selects exactly **one** `paths` pattern for a specifier

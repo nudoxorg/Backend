@@ -110,7 +110,7 @@ impl Fixture {
         .unwrap();
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .unwrap();
         native
     }
@@ -463,7 +463,7 @@ fn configured_paths_and_bom_dependency_reads_keep_exact_raw_source_authority() {
     ), "a raw-byte hash cannot impersonate the compiler's decoded text receipt");
     native
         .closure_witness
-        .validate_current(admitted.witness.as_ref())
+        .validate_current(admitted.witness().as_ref())
         .unwrap();
     fs::write(
         &dependency_path,
@@ -473,7 +473,7 @@ fn configured_paths_and_bom_dependency_reads_keep_exact_raw_source_authority() {
     assert!(
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .is_err(),
         "removing only the BOM still changes the raw source proof"
     );
@@ -540,7 +540,7 @@ fn excluded_sources_still_refuse_missing_changed_outside_and_cancelled_inputs() 
     assert!(
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .is_err(),
         "an excluded source remains in the retained resolver closure"
     );
@@ -931,7 +931,7 @@ fn angular_solution_selects_app_program_without_inheriting_root_references() {
     );
     native
         .closure_witness
-        .validate_current(admitted.witness.as_ref())
+        .validate_current(admitted.witness().as_ref())
         .unwrap();
     fs::write(
         fixture.root.join("tsconfig.spec.json"),
@@ -941,7 +941,7 @@ fn angular_solution_selects_app_program_without_inheriting_root_references() {
     assert!(
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .is_err(),
         "the excluded spec config remains an exact captured witness"
     );
@@ -1434,7 +1434,7 @@ fn solution_forest_keeps_actual_program_options_members_and_all_config_witnesses
             .map(|node| node.native.closure_witness)
             .collect(),
     );
-    witness.validate_current(admitted.witness.as_ref()).unwrap();
+    witness.validate_current(admitted.witness().as_ref()).unwrap();
     // Changing the referenced node that did not own the app query invalidates
     // the whole staged authority, not just that node's local result.
     fs::write(
@@ -1442,7 +1442,7 @@ fn solution_forest_keeps_actual_program_options_members_and_all_config_witnesses
         r#"{"files":["vite.config.ts"],"compilerOptions":{"strict":true}}"#,
     )
     .unwrap();
-    assert!(witness.validate_current(admitted.witness.as_ref()).is_err());
+    assert!(witness.validate_current(admitted.witness().as_ref()).is_err());
 }
 
 #[test]

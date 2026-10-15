@@ -9,12 +9,12 @@ use super::{
 };
 use crate::config::ModuleResolutionKind;
 use crate::module_resolver_helpers::{
-    KNOWN_EXTENSIONS, cached_is_dir, cached_is_file, normalize_path_segments,
+    KNOWN_EXTENSIONS, normalize_path_segments,
 };
 use crate::span::Span;
 use std::path::{Path, PathBuf};
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     const fn suggested_runtime_extension(&self, resolved_ext: ModuleExtension) -> &'static str {
         match resolved_ext {
             ModuleExtension::Ts
@@ -82,7 +82,7 @@ impl ModuleResolver {
                 ModuleResolutionKind::Node16 | ModuleResolutionKind::NodeNext
             ) && uses_require_resolution
             {
-                let package_dir = if prefer_directory || cached_is_dir(path) {
+                let package_dir = if prefer_directory || self.is_dir(path) {
                     path
                 } else {
                     path.parent().unwrap_or_else(|| Path::new("."))
@@ -197,7 +197,7 @@ impl ModuleResolver {
             // (they require `resolveJsonModule`), but tsc still suggests them.
             for candidate in &candidates {
                 let json_candidate = candidate.with_extension("json");
-                if cached_is_file(&json_candidate) {
+                if self.is_file(&json_candidate) {
                     return Err(ResolutionFailure::ImportPathNeedsExtension {
                         specifier: specifier.to_string(),
                         suggested_extension: ".json".to_string(),
@@ -250,7 +250,7 @@ impl ModuleResolver {
         if js_json_extension_suggestion {
             for candidate in &candidates {
                 let json_candidate = candidate.with_extension("json");
-                if cached_is_file(&json_candidate) {
+                if self.is_file(&json_candidate) {
                     return Err(ResolutionFailure::ImportPathNeedsExtension {
                         specifier: specifier.to_string(),
                         suggested_extension: ".json".to_string(),

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use crate::resolution::filesystem::{ResolutionFileSystem, STD_RESOLUTION_FILE_SYSTEM};
 use serde::{Deserialize, Deserializer};
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -17,8 +18,9 @@ mod lib_offsets;
 mod lib_resolution;
 
 use extends::{
-    ExtendsResolution, anchor_inherited_path_options, anchor_inherited_root_selectors,
-    merge_configs, resolve_extends_path, substitute_config_dir_templates,
+    ExtendsResolution, anchor_inherited_path_options_with_file_system,
+    anchor_inherited_root_selectors_with_file_system, merge_configs,
+    resolve_extends_path_with_file_system, substitute_config_dir_templates,
 };
 use jsonc::remove_trailing_commas;
 use lib_offsets::find_lib_entry_offset;
@@ -46,6 +48,7 @@ pub use resolved_options::{
     JsxEmit, ModuleResolutionKind, PathMapping, ResolvedCompilerOptions, apply_module_detection,
     default_module_detection_for_module, default_module_kind_for_target,
     default_module_resolution_for_module, derive_default_module_kind, resolve_compiler_options,
+    resolve_compiler_options_embedded,
 };
 
 /// Custom deserializer for boolean options that accepts both bool and string values.
@@ -1341,14 +1344,30 @@ fn known_compiler_option(key_lower: &str) -> Option<&'static str> {
 }
 
 pub fn load_tsconfig(path: &Path) -> Result<TsConfig> {
+    load_tsconfig_with_file_system(path, &STD_RESOLUTION_FILE_SYSTEM)
+}
+
+/// Load and merge a tsconfig through a captured filesystem provider.
+pub fn load_tsconfig_with_file_system(
+    path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<TsConfig> {
     let mut visited = FxHashSet::default();
-    let config_dir = root_config_dir(path);
-    load_tsconfig_inner(path, &mut visited, false, &config_dir)
+    let config_dir = root_config_dir(path, file_system)?;
+    load_tsconfig_inner(path, &mut visited, false, &config_dir, file_system)
 }
 
 /// Load tsconfig.json and collect config-level diagnostics.
 pub fn load_tsconfig_with_diagnostics(path: &Path) -> Result<ParsedTsConfig> {
-    let mut parsed = load_tsconfig_with_diagnostics_deferred(path)?;
+    load_tsconfig_with_diagnostics_and_file_system(path, &STD_RESOLUTION_FILE_SYSTEM)
+}
+
+/// Load tsconfig.json and collect diagnostics through a captured filesystem.
+pub fn load_tsconfig_with_diagnostics_and_file_system(
+    path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<ParsedTsConfig> {
+    let mut parsed = load_tsconfig_with_diagnostics_deferred_and_file_system(path, file_system)?;
     parsed.flush_pending_removed_option_notices();
     Ok(parsed)
 }
@@ -1360,9 +1379,17 @@ pub fn load_tsconfig_with_diagnostics(path: &Path) -> Result<ParsedTsConfig> {
 /// tsc validates removals on the final CLI-merged options (#15806 adjacent
 /// case).
 pub fn load_tsconfig_with_diagnostics_deferred(path: &Path) -> Result<ParsedTsConfig> {
+    load_tsconfig_with_diagnostics_deferred_and_file_system(path, &STD_RESOLUTION_FILE_SYSTEM)
+}
+
+/// Deferred-diagnostics loader using a captured filesystem provider.
+pub fn load_tsconfig_with_diagnostics_deferred_and_file_system(
+    path: &Path,
+    file_system: &dyn ResolutionFileSystem,
+) -> Result<ParsedTsConfig> {
     let mut visited = FxHashSet::default();
-    let config_dir = root_config_dir(path);
-    load_tsconfig_inner_with_diagnostics(path, &mut visited, false, &config_dir)
+    let config_dir = root_config_dir(path, file_system)?;
+    load_tsconfig_inner_with_diagnostics(path, &mut visited, false, &config_dir, file_system)
 }
 
 /// Absolute directory of the root config being compiled. Every `${configDir}`
@@ -1371,9 +1398,20 @@ pub fn load_tsconfig_with_diagnostics_deferred(path: &Path) -> Result<ParsedTsCo
 /// once at the entry point and threaded through the `extends` recursion
 /// unchanged. Canonicalization falls back to the lexical path off the
 /// filesystem (e.g. on `wasm32`), matching the existing anchoring helpers.
-fn root_config_dir(path: &Path) -> PathBuf {
+fn root_config_dir(path: &Path, file_system: &dyn ResolutionFileSystem) -> Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf())
+    Ok(file_system
+        .canonicalize(parent)?
+        .unwrap_or_else(|| parent.to_path_buf()))
+}
+
+fn read_tsconfig_text(path: &Path, file_system: &dyn ResolutionFileSystem) -> Result<String> {
+    let bytes = file_system
+        .read_file(path)?
+        .ok_or_else(|| anyhow!("file not found"))
+        .with_context(|| format!("failed to read tsconfig: {}", path.display()))?;
+    String::from_utf8(bytes)
+        .with_context(|| format!("failed to read tsconfig: {}", path.display()))
 }
 
 fn config_ignore_deprecations_silences_6_0(config: &TsConfig) -> bool {
@@ -1397,8 +1435,11 @@ fn load_tsconfig_inner(
     visited: &mut FxHashSet<PathBuf>,
     inherited: bool,
     config_dir: &Path,
+    file_system: &dyn ResolutionFileSystem,
 ) -> Result<TsConfig> {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = file_system
+        .canonicalize(path)?
+        .unwrap_or_else(|| path.to_path_buf());
     if !visited.insert(canonical.clone()) {
         // An `extends` cycle is recoverable in tsc: the cyclic base simply
         // contributes nothing and the rest of the chain still merges. See
@@ -1407,16 +1448,15 @@ fn load_tsconfig_inner(
         return Ok(TsConfig::default());
     }
 
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read tsconfig: {}", path.display()))?;
+    let source = read_tsconfig_text(path, file_system)?;
     let mut config = parse_tsconfig(&source)
         .with_context(|| format!("failed to parse tsconfig: {}", path.display()))?;
     // Resolve `${configDir}` against the root config's directory before any
     // `extends` anchoring, which only fires on the leftover relative paths.
     substitute_config_dir_templates(&mut config, config_dir);
-    anchor_inherited_path_options(&mut config, path);
+    anchor_inherited_path_options_with_file_system(&mut config, path, file_system)?;
     if inherited {
-        anchor_inherited_root_selectors(&mut config, path);
+        anchor_inherited_root_selectors_with_file_system(&mut config, path, file_system)?;
     }
 
     let extends = config.extends.take();
@@ -1433,11 +1473,13 @@ fn load_tsconfig_inner(
             // (tsc reports TS6053/TS5083 and continues with the local config).
             // This diagnostic-free loader simply degrades: skip the base rather
             // than aborting the whole config load.
-            let ExtendsResolution::Found(base_path) = resolve_extends_path(path, extends_path_str)?
+            let ExtendsResolution::Found(base_path) =
+                resolve_extends_path_with_file_system(path, extends_path_str, file_system)?
             else {
                 continue;
             };
-            let base_config = load_tsconfig_inner(&base_path, visited, true, config_dir)?;
+            let base_config =
+                load_tsconfig_inner(&base_path, visited, true, config_dir, file_system)?;
             accumulated = Some(match accumulated {
                 Some(acc) => merge_configs(acc, base_config),
                 None => base_config,
@@ -1457,8 +1499,11 @@ fn load_tsconfig_inner_with_diagnostics(
     visited: &mut FxHashSet<PathBuf>,
     inherited: bool,
     config_dir: &Path,
+    file_system: &dyn ResolutionFileSystem,
 ) -> Result<ParsedTsConfig> {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = file_system
+        .canonicalize(path)?
+        .unwrap_or_else(|| path.to_path_buf());
     if !visited.insert(canonical.clone()) {
         // tsc's `parseConfig` checks its `resolutionStack` on entry, reports
         // TS18000 once, and returns an empty config for the cyclic base — the
@@ -1483,17 +1528,16 @@ fn load_tsconfig_inner_with_diagnostics(
         return Ok(parsed);
     }
 
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read tsconfig: {}", path.display()))?;
+    let source = read_tsconfig_text(path, file_system)?;
     let file_display = path.display().to_string();
     let mut parsed = parse::parse_tsconfig_with_diagnostics_deferred(&source, &file_display)
         .with_context(|| format!("failed to parse tsconfig: {}", path.display()))?;
     // Resolve `${configDir}` against the root config's directory before any
     // `extends` anchoring, which only fires on the leftover relative paths.
     substitute_config_dir_templates(&mut parsed.config, config_dir);
-    anchor_inherited_path_options(&mut parsed.config, path);
+    anchor_inherited_path_options_with_file_system(&mut parsed.config, path, file_system)?;
     if inherited {
-        anchor_inherited_root_selectors(&mut parsed.config, path);
+        anchor_inherited_root_selectors_with_file_system(&mut parsed.config, path, file_system)?;
     }
 
     let extends = parsed.config.extends.take();
@@ -1536,7 +1580,11 @@ fn load_tsconfig_inner_with_diagnostics(
                 ));
                 continue;
             }
-            let base_path = match resolve_extends_path(path, extends_path_str)? {
+            let base_path = match resolve_extends_path_with_file_system(
+                path,
+                extends_path_str,
+                file_system,
+            )? {
                 ExtendsResolution::Found(base_path) => base_path,
                 ExtendsResolution::Unreadable(resolved) => {
                     // A rooted/relative `.json` specifier resolved to a concrete
@@ -1580,8 +1628,13 @@ fn load_tsconfig_inner_with_diagnostics(
             // fire on the *base* file (matching tsc's `base.json(L,C):` anchor)
             // instead of the child's invalid option being silently coerced through
             // the type-validating-free `load_tsconfig_inner`.
-            let mut base_parsed =
-                load_tsconfig_inner_with_diagnostics(&base_path, visited, true, config_dir)?;
+            let mut base_parsed = load_tsconfig_inner_with_diagnostics(
+                &base_path,
+                visited,
+                true,
+                config_dir,
+                file_system,
+            )?;
             parsed.diagnostics.extend(base_parsed.diagnostics);
             // Later `extends` entries override earlier ones: a VALUE notice is
             // dropped when this base's subtree sets the key to a valid value;

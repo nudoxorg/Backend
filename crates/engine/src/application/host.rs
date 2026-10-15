@@ -556,13 +556,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         }
 
         self.capture_installed_python_paths(&mut paths, home.as_deref())?;
-        for (variable, role, tool) in [
-            (
-                LocalHostVariable::NudoxGo,
-                LocalHostPathRole::Native(NativeTool::GoCompiler),
-                NativeTool::GoCompiler,
-            ),
-        ] {
+        for (variable, role, tool) in [(
+            LocalHostVariable::NudoxGo,
+            LocalHostPathRole::Native(NativeTool::GoCompiler),
+            NativeTool::GoCompiler,
+        )] {
             match self.executable(
                 variable,
                 role,
@@ -735,6 +733,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             self.jdk_candidates(home.as_deref()),
         )?;
         let typescript_host = self.typescript_host_selection(home.as_deref())?;
+        let native_typescript = typescript_host.direct_native;
         let use_external_python_checker = self
             .environment
             .value(LocalHostVariable::NudoxPyrefly)
@@ -852,6 +851,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             probe_limits,
             go_discovery_failure,
         )?;
+        if native_typescript
+            && let Some(row) = toolchains
+                .iter_mut()
+                .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+        {
+            *row = crate::application::LocalRuntimeToolchain::compiled_native_typescript();
+        }
         if let crate::application::LocalRuntimePythonCheckerAdmission::Native { authority } =
             &package_authority.python_checker
         {

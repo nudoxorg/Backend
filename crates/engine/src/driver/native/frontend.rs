@@ -6,8 +6,8 @@ use std::{ffi::OsString, path::Path, process::Command};
 use backend_semantic::vocabulary::{CStandard, CxxStandard, PythonVersion, RustEdition};
 
 use crate::driver::types::{
-    CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeArtifactRole,
-    NativeRecipe, NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain,
+    CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, ExternalToolchain,
+    NativeArtifactRole, NativeRecipe, NativeWorkError, NativeWorkPhase, NativeWorkPrimary,
     SourceIdentity,
 };
 
@@ -35,7 +35,7 @@ pub(super) trait NativeFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command;
 
@@ -63,7 +63,7 @@ impl NativeFrontend for RustFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command {
         let mut command = Command::new(toolchain.executable());
@@ -89,7 +89,7 @@ impl NativeFrontend for ClangFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command {
         let mut command = Command::new(toolchain.executable());
@@ -112,7 +112,7 @@ impl NativeFrontend for PythonFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command {
         let mut command = Command::new(toolchain.executable());

@@ -2820,7 +2820,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         };
         let mut package_authority_configuration = self.package_authority;
         if let Some(project) = typescript_project.as_ref() {
-            package_authority_configuration.typescript = Some(&project.checker);
+            package_authority_configuration.typescript = project.checker();
         }
         // A configured TypeScript package is resolved once into the exact
         // compiler-owned program, then all package files borrow one TSZ
@@ -3399,7 +3399,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         });
                     }
                 };
-                if authority_configuration.toolchain.selected_rustc() != resolved.as_ref() {
+                let external = resolved.external().map_err(|source| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(), first_application_request, first_authority,
+                        toolchain, PackageAuthorityError::ExternalToolchainRequired { profile: target.profile, source },
+                    )),
+                })?;
+                if authority_configuration.toolchain.selected_rustc() != external.executable() {
                     return Err(PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
                         terminal: Box::new(package_authority_terminal(
@@ -3414,7 +3421,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                                     .selected_rustc()
                                     .to_path_buf()
                                     .into_boxed_path(),
-                                resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
+                                resolved: external.executable().to_path_buf().into_boxed_path(),
                             },
                         )),
                     });
@@ -4197,7 +4204,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_closure_witness.as_ref(),
         ) {
             (Some(project), Some(resolver_witness)) => resolver_witness
-                .validate_current(project.witness.as_ref())
+                .validate_current(project.witness().as_ref())
                 .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
             (None, None) => {}
             _ => {
@@ -4274,7 +4281,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     target.profile,
                     target.stage,
                     toolchain.identity,
-                    project.fingerprint,
+                    project.fingerprint(),
                 )
             })
         });
@@ -4335,7 +4342,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             }),
             typescript_witness: typescript_project
                 .as_ref()
-                .map(|project| std::sync::Arc::clone(&project.witness)),
+                .map(|project| std::sync::Arc::clone(project.witness())),
             typescript_closure_witness,
             native_program_sources,
             python_witness: python_project
@@ -6053,6 +6060,7 @@ fn package_authority_projection(
 
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
+        | PackageAuthorityError::ExternalToolchainRequired { .. }
         | PackageAuthorityError::TypeScriptSourcePath { .. }
         | PackageAuthorityError::CompilationUnitMismatch { .. }
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
