@@ -77,6 +77,9 @@ patch or establish runtime repair.
   and read-only-plus-disabled states, preserving current text/focus semantics.
 - Disable/re-enable updates on a button without Click: Enabled/Sensitive
   notifications and current states, without introducing ReadOnly or Action.
+- A focused button with explicit Focus support retained throughout
+  enabled/disabled/enabled updates: Focusable/Focused remain set, without focus
+  state notifications, while Enabled/Sensitive toggle.
 
 Native tests are **UNRUN**. No Cargo check/build/test, Nix evaluation, native
 compiler/index/owner job, or remote native command was run for this change.

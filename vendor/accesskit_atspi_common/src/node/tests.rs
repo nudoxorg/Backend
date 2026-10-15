@@ -164,3 +164,35 @@ fn disabling_and_reenabling_button_emits_enabled_and_sensitive_changes() {
         callback.states.lock().unwrap().clear();
     }
 }
+
+#[test]
+fn disabled_button_preserves_explicit_focus_action_and_tree_focus() {
+    let (mut adapter, child, callback) = build(button(false, false), true);
+    assert!(child.state().contains(State::Focusable | State::Focused));
+    assert!(child.state().contains(State::Enabled | State::Sensitive));
+    callback.states.lock().unwrap().clear();
+
+    for disabled in [true, false] {
+        let mut node = button(disabled, false);
+        // Keep both provider focus support and tree focus constant across updates.
+        node.add_action(Action::Focus);
+        adapter.update(TreeUpdate {
+            nodes: vec![(LocalNodeId(1), node)],
+            tree: None,
+            tree_id: TreeId::ROOT,
+            focus: LocalNodeId(1),
+        });
+        let state = child.state();
+        assert!(state.contains(State::Focusable | State::Focused));
+        assert_eq!(state.contains(State::Enabled), !disabled);
+        assert_eq!(state.contains(State::Sensitive), !disabled);
+        let changes = callback.states.lock().unwrap();
+        assert!(
+            !changes
+                .iter()
+                .any(|(_, state, _)| matches!(state, State::Focusable | State::Focused))
+        );
+        drop(changes);
+        callback.states.lock().unwrap().clear();
+    }
+}
