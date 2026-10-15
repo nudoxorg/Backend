@@ -12,6 +12,13 @@ let
     cargo = toolchains.stable;
     rustc = toolchains.stable;
   };
+  # The pinned nixpkgs cargoBuildHook calls preBuild before it forms
+  # `cargo build -j $NIX_BUILD_CORES`. Bound only our product derivations;
+  # preserve a smaller daemon request and cap its all-cores/large requests.
+  boundedProductCargoPreBuild = ''
+    source "${../scripts/nix-cargo-jobs.sh}"
+    nudox_cap_nix_build_cores || exit $?
+  '';
   # These generated scripts run in checks with an otherwise isolated PATH and
   # are also shipped as runtime entry points. Keep their shell tools in the
   # runtime closure rather than relying on utilities installed on the host.
@@ -257,6 +264,7 @@ let
   backendControl =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
+        preBuild = boundedProductCargoPreBuild;
         cargoBuildFlags = [
           "--package"
           "backend-control"
@@ -308,6 +316,7 @@ let
   guiRuntime =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
+        preBuild = boundedProductCargoPreBuild;
         pname = "nudox-gui-runtime";
         version = "0.1.0";
         src = workspaceSource;
@@ -406,6 +415,19 @@ let
             key="$1"
             sed -n "s/^$key=//p" "$ownerfile"
           }
+          # Keep this in step with backend_runtime::COMMAND_STARTUP_TIMEOUT
+          # (crates/runtime/src/lib.rs:91,98): cold owner startup is allowed
+          # the existing 90-second product budget, not a GUI-specific budget.
+          startup_budget_ms=90000
+          monotonic_ms() {
+            if [ -r /proc/uptime ]; then
+              awk 'NR == 1 { printf "%.0f\n", $1 * 1000 }' /proc/uptime
+            else
+              # The packaged shell is bash-compatible on Darwin; GNU timeout
+              # below remains the hard cap if the coarse fallback is used.
+              printf '%s000\n' "$SECONDS"
+            fi
+          }
           validate_owner() {
             if [ ! -f "$ownerfile" ]; then echo "locald owner record is missing: $ownerfile" >&2; return 75; fi
             owner_pid=$(owner_value pid)
@@ -427,15 +449,62 @@ let
               return 75
             fi
           }
+          wait_for_owned_ready() {
+            if [ "$#" -gt 0 ]; then
+              ready_deadline="$1"
+            else
+              ready_deadline=$(( $(monotonic_ms) + startup_budget_ms ))
+            fi
+            while :; do
+              if ! validate_owner; then
+                echo "locald owner exited or changed before its endpoint became ready" >&2
+                return 75
+              fi
+              now_ms=$(monotonic_ms)
+              remaining_ms=$((ready_deadline - now_ms))
+              if [ "$remaining_ms" -le 0 ]; then
+                echo "backend-locald did not publish a ready endpoint within the existing 90-second startup budget; retaining owner record" >&2
+                return 75
+              fi
+              if [ -S "$endpoint" ]; then
+                # Keep a single unresponsive health RPC from hiding owner
+                # exit; retry short slices until the shared startup deadline.
+                probe_budget_ms=$((remaining_ms < 1000 ? remaining_ms : 1000))
+                probe_timeout=$(printf '%d.%03ds' "$((probe_budget_ms / 1000))" "$((probe_budget_ms % 1000))")
+                if timeout --signal=KILL "$probe_timeout" \
+                  "$bin_dir/nudox-gui-probe" --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+                  # A health reply is readiness only while the recorded owner
+                  # that this start launched (or found) still has the same
+                  # executable and process-start identity.
+                  if validate_owner; then return 0; fi
+                  echo "locald owner exited or changed while its endpoint became ready" >&2
+                  return 75
+                fi
+              fi
+              now_ms=$(monotonic_ms)
+              remaining_ms=$((ready_deadline - now_ms))
+              if [ "$remaining_ms" -le 0 ]; then
+                echo "backend-locald did not publish a ready endpoint within the existing 90-second startup budget; retaining owner record" >&2
+                return 75
+              fi
+              sleep_ms=$((remaining_ms < 50 ? remaining_ms : 50))
+              sleep "0.$(printf '%03d' "$sleep_ms")"
+            done
+          }
           case "$action" in
             start)
               mkdir -p "$(dirname -- "$endpoint")" "$workspace"
               acquire_lock
               if [ -f "$ownerfile" ]; then
-                if validate_owner; then echo "locald already running: $(owner_value pid)" >&2; exit 0; fi
+                if validate_owner; then
+                  wait_for_owned_ready
+                  echo "locald already running and ready: $(owner_value pid)" >&2
+                  exit 0
+                fi
                 echo "refusing to replace a stale or reused locald owner record: $ownerfile" >&2
                 exit 75
               fi
+              startup_deadline=$(( $(monotonic_ms) + startup_budget_ms ))
               "$locald_executable" --endpoint "$endpoint" --workspace "$workspace" --profile builtin --idle-timeout-ms 0 >"$logfile" 2>&1 &
               pid=$!
               for attempt in $(seq 1 20); do kill -0 "$pid" 2>/dev/null && break; sleep 0.05; done
@@ -455,6 +524,9 @@ let
                 echo "process_start=$start_identity"
               } > "$owner_tmp"
               mv -f "$owner_tmp" "$ownerfile"
+              # Only this recorded process may satisfy readiness. The probe
+              # connects passively and each call is bounded by remaining time.
+              wait_for_owned_ready "$startup_deadline" || exit $?
               ;;
             stop)
               if [ ! -f "$ownerfile" ]; then exit 0; fi
@@ -494,7 +566,7 @@ let
           case "$endpoint" in unix:*) endpoint=''${endpoint#unix:} ;; esac
           if [ -z "$workspace" ]; then workspace=$(pwd)/.local/gui-live; fi
           bin_dir=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
-          exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json health
+          exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json --passive health
           EOF
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
@@ -519,6 +591,17 @@ let
             rm -rf "$root"
           }
           trap cleanup EXIT HUP INT TERM
+          if "$bin_dir/nudox-gui-probe" --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+            echo "an absent service unexpectedly passed its health probe" >&2
+            exit 1
+          fi
+          if [ -e "$workspace" ] || [ -e "$endpoint" ]; then
+            echo "the read-only service probe started an owner or created state" >&2
+            exit 1
+          fi
+          "$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace"
+          # A repeated start must observe the already-recorded owner's actual
+          # endpoint readiness instead of treating a live PID as sufficient.
           "$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace"
           "$bin_dir/nudox-gui-service" status --endpoint "$endpoint" --workspace "$workspace" >/dev/null
           mkdir "$endpoint.pid.lock"

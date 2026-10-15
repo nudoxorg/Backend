@@ -92,7 +92,7 @@ def print-captured-failures []: nothing -> nothing {
 # Fetches the registry releases the desktop registry and journey tests expect
 # to find unpacked in the Cargo cache. Best effort: a failure here shows up
 # as those tests' own failures, with their own messages.
-def warm-registry-cache []: nothing -> nothing {
+export def warm-registry-cache []: nothing -> nothing {
     # The Rust frontend's tests resolve this workspace itself offline, for
     # every platform: macOS- and Windows-only dependencies (accesskit_*)
     # included, which a Linux build never downloads. `cargo fetch` with no

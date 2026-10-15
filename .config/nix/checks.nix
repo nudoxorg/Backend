@@ -144,6 +144,9 @@ in
         cp ${../ci/quarantine.py} quarantine.py
         cp ${../ci/test_quarantine.py} test_quarantine.py
         python3 test_quarantine.py
+        cp ${../ci/fast_cache.py} fast_cache.py
+        cp ${../ci/test_fast_cache.py} test_fast_cache.py
+        python3 test_fast_cache.py
         cp ${../ci/source_ignores.py} source_ignores.py
         cp ${../ci/test_source_ignores.py} test_source_ignores.py
         python3 test_source_ignores.py
@@ -232,6 +235,15 @@ in
           ${pkgs.bash}/bin/bash repo/tests/cargo-shared-cache.sh
         mkdir -p $out/share
         echo validated > $out/share/cargo-cache-protocol
+      '';
+
+  # Exercise the small bound used by the two backend buildRustPackage
+  # products without evaluating or building either product derivation.
+  cargo-build-job-cap =
+    pkgs.runCommand "nudox-cargo-build-job-cap" { nativeBuildInputs = [ pkgs.bash ]; }
+      ''
+        ${pkgs.bash}/bin/bash ${../scripts/test-nix-cargo-jobs.sh} ${../scripts/nix-cargo-jobs.sh}
+        touch "$out"
       '';
 
   # Guard the public `luna-tools` shell's actual Nix requisites. Checking
