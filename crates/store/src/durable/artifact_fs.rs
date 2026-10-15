@@ -165,6 +165,67 @@ pub(super) struct SessionDirectory {
     pub(super) lease: File,
 }
 
+/// Test-owned trees can contain sealed CAS members, aliases, and interrupted staging copies.
+/// Keep cleanup alive through assertion unwinding, including before a fixture open succeeds.
+#[cfg(test)]
+pub(in crate::durable) struct TestDirectoryCleanup(PathBuf);
+
+#[cfg(test)]
+impl TestDirectoryCleanup {
+    pub(in crate::durable) fn new(path: &std::path::Path) -> Self {
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDirectoryCleanup {
+    fn drop(&mut self) {
+        let _ = remove_test_directory(&self.0);
+    }
+}
+
+#[cfg(test)]
+pub(in crate::durable) fn remove_test_file(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let file = backend_platform::durability::open_regular_file_nofollow(path)?;
+        backend_platform::durability::unlink_file_preserving_readonly(path, &file)
+    }
+    #[cfg(not(windows))]
+    std::fs::remove_file(path)
+}
+
+/// Recurses only through ordinary directories in a test-owned tree. Reparse points are
+/// removed as links, and regular files are unlinked by identity without clearing attributes.
+#[cfg(test)]
+pub(in crate::durable) fn remove_test_directory(
+    path: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let path = path.as_ref();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{FileTypeExt as _, MetadataExt as _};
+        const REPARSE_POINT: u32 = 0x400;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            return if metadata.is_dir() || metadata.file_type().is_symlink_dir() {
+                std::fs::remove_dir(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+        }
+        if !metadata.is_dir() {
+            return remove_test_file(path);
+        }
+        for entry in std::fs::read_dir(path)? {
+            remove_test_directory(entry?.path())?;
+        }
+        std::fs::remove_dir(path)
+    }
+    #[cfg(not(windows))]
+    std::fs::remove_dir_all(path)
+}
+
 /// Private provenance for the particular inode that completed the stream's barriers.
 /// Kept inside the pinned receive session; admission borrows it together with that GC pin.
 #[derive(Clone, Copy)]
@@ -1487,20 +1548,9 @@ mod imp {
         Ok(())
     }
 
-    #[cfg(any(not(windows), test))]
+    #[cfg(not(windows))]
     fn remove_stage_path(path: &Path) -> Result<(), StoreError> {
-        #[cfg(windows)]
-        {
-            let file = backend_platform::durability::open_regular_file_nofollow(path)
-                .map_err(|error| io_error(&error))?;
-            check_regular(path, &file)?;
-            backend_platform::durability::unlink_file_preserving_readonly(path, &file)
-                .map_err(|error| io_error(&error))
-        }
-        #[cfg(not(windows))]
-        {
-            fs::remove_file(path).map_err(|error| io_error(&error))
-        }
+        fs::remove_file(path).map_err(|error| io_error(&error))
     }
 
     /// Marks an object's bytes immutable and flushes them. The read-only
@@ -1692,6 +1742,7 @@ mod imp {
             root: PathBuf,
             store: FileStore,
             path: PathBuf,
+            _cleanup: super::super::TestDirectoryCleanup,
         }
 
         impl Fixture {
@@ -1701,6 +1752,7 @@ mod imp {
                     std::process::id(),
                     NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
                 ));
+                let cleanup = super::super::TestDirectoryCleanup::new(&root);
                 let store = FileStore::open(&root, 1 << 20).expect("open Windows repair store");
                 let path = root.join("nodes/member.ref");
                 fs::write(&path, b"verified member").expect("inject unsynchronized bytes");
@@ -1708,7 +1760,12 @@ mod imp {
                 permissions.set_readonly(true);
                 fs::set_permissions(&path, permissions)
                     .expect("inject read-only bit without provenance");
-                Self { root, store, path }
+                Self {
+                    root,
+                    store,
+                    path,
+                    _cleanup: cleanup,
+                }
             }
 
             fn directory(&self) -> File {
@@ -1730,23 +1787,6 @@ mod imp {
                         .permissions()
                         .readonly()
                 );
-            }
-        }
-
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                // A failed assertion may leave a sealed old alias as well as the new name.
-                // Remove fixture links by handle, so remove_dir_all cannot leak the tree.
-                for directory in [&self.root, &self.root.join("nodes")] {
-                    if let Ok(entries) = fs::read_dir(directory) {
-                        for entry in entries.flatten() {
-                            if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-                                let _ = remove_stage_path(&entry.path());
-                            }
-                        }
-                    }
-                }
-                let _ = fs::remove_dir_all(&self.root);
             }
         }
 

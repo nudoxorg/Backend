@@ -692,6 +692,9 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+    use super::super::super::artifact_fs::{
+        TestDirectoryCleanup, remove_test_directory as remove_store_fixture, remove_test_file,
+    };
     use backend_version::{ObjectKey, Schema};
     use std::fs::File;
     use std::path::PathBuf;
@@ -708,7 +711,7 @@ mod tests {
         }
     }
 
-    fn test_store(label: &str) -> (FileStore, PathBuf) {
+    fn test_store(label: &str) -> (TestDirectoryCleanup, FileStore, PathBuf) {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -716,8 +719,9 @@ mod tests {
             std::process::id()
         ));
         let _ = remove_store_fixture(&root);
+        let cleanup = TestDirectoryCleanup::new(&root);
         let store = FileStore::open(&root, 1024 * 1024).expect("open test store");
-        (store, root)
+        (cleanup, store, root)
     }
 
     fn bytes_object(bytes: Vec<u8>) -> TypedObject {
@@ -744,38 +748,8 @@ mod tests {
         fs::write(path, bytes).expect("write replacement object fixture");
     }
 
-    fn remove_store_fixture(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-        let path = path.as_ref();
-        #[cfg(windows)]
-        for directory in ["objects", "closures", "nodes"] {
-            if let Ok(entries) = fs::read_dir(path.join(directory)) {
-                for entry in entries {
-                    let entry = entry?;
-                    if entry.file_type()?.is_file() {
-                        let file = backend_platform::durability::open_regular_file_nofollow(
-                            &entry.path(),
-                        )?;
-                        backend_platform::durability::unlink_file_preserving_readonly(
-                            &entry.path(),
-                            &file,
-                        )?;
-                    }
-                }
-            }
-        }
-        fs::remove_dir_all(path)
-    }
-
     fn remove_immutable_fixture(path: &std::path::Path) {
-        #[cfg(windows)]
-        {
-            let file = backend_platform::durability::open_regular_file_nofollow(path)
-                .expect("open immutable fixture");
-            backend_platform::durability::unlink_file_preserving_readonly(path, &file)
-                .expect("unlink fixture without unsealing");
-        }
-        #[cfg(not(windows))]
-        fs::remove_file(path).expect("remove immutable fixture");
+        remove_test_file(path).expect("remove immutable fixture without unsealing");
     }
 
     fn branch() -> crate::Node {
@@ -801,7 +775,7 @@ mod tests {
 
     #[test]
     fn legacy_parent_reference_without_descendants_is_a_miss_after_cold_reopen_and_repairs() {
-        let (store, path) = test_store("legacy-incomplete-parent");
+        let (_cleanup_path, store, path) = test_store("legacy-incomplete-parent");
         let node = branch();
         let object = root_object(&node);
         index_object(&store, &object);
@@ -823,7 +797,7 @@ mod tests {
     #[test]
     fn interruption_after_object_or_child_barriers_never_installs_a_parent_reference() {
         for point in [1, 2] {
-            let (store, path) = test_store("interrupted-parent");
+            let (_cleanup_path, store, path) = test_store("interrupted-parent");
             let node = branch();
             let object = root_object(&node);
             super::super::dependencies::set_test_fault(point, object.id());
@@ -844,7 +818,7 @@ mod tests {
     #[test]
     fn failed_dependency_file_or_directory_barrier_cannot_populate_the_reuse_memo() {
         for point in [3, 4] {
-            let (store, path) = test_store("dependency-barrier-failure");
+            let (_cleanup_path, store, path) = test_store("dependency-barrier-failure");
             let node = branch();
             let object = root_object(&node);
             install_branch(&store, &node).expect("install complete branch");
@@ -862,7 +836,7 @@ mod tests {
 
     #[test]
     fn cancelled_dependency_admission_grants_no_reuse_receipt_and_releases_gc_custody() {
-        let (store, path) = test_store("cancelled-dependencies");
+        let (_cleanup_path, store, path) = test_store("cancelled-dependencies");
         let node = branch();
         let object = root_object(&node);
         install_branch(&store, &node).expect("install complete branch");
@@ -881,8 +855,8 @@ mod tests {
 
     #[test]
     fn dependency_admission_refuses_a_pin_for_another_store() {
-        let (first, first_path) = test_store("first-pin-root");
-        let (second, second_path) = test_store("second-pin-root");
+        let (_cleanup_first_path, first, first_path) = test_store("first-pin-root");
+        let (_cleanup_second_path, second, second_path) = test_store("second-pin-root");
         let pin = second.acquire_gc_pin().expect("second root pin");
         assert!(RelationAdmission::new(&first, &pin).is_err());
         drop((pin, first, second));
@@ -892,7 +866,7 @@ mod tests {
 
     #[test]
     fn cold_recovery_removes_only_a_reference_writers_orphan_temporary_link() {
-        let (store, path) = test_store("orphan-ref-link");
+        let (_cleanup_path, store, path) = test_store("orphan-ref-link");
         let node = branch();
         let object = root_object(&node);
         install_branch(&store, &node).expect("complete branch");
@@ -926,7 +900,7 @@ mod tests {
     #[test]
     fn process_loss_between_parent_object_and_reference_cold_reopens_without_false_reuse() {
         for point in [1_u8, 2] {
-            let (store, path) = test_store("process-loss-parent");
+            let (_cleanup_path, store, path) = test_store("process-loss-parent");
             drop(store);
             let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
                 .args(["--exact", "durable::nodes::relation::tests::relation_dependency_crash_probe_child", "--nocapture"])
@@ -947,12 +921,12 @@ mod tests {
 
     #[test]
     fn dangling_relation_reference_is_a_miss() {
-        let (store, root) = test_store("dangling");
+        let (_cleanup_root, store, root) = test_store("dangling");
         let object = bytes_object(b"dangling relation node".to_vec());
         index_object(&store, &object);
         let schema = object.schema();
         let version = *object.version();
-        fs::remove_file(store.object_path(object.id())).expect("remove referenced object");
+        remove_immutable_fixture(&store.object_path(object.id()));
 
         assert_eq!(store.relation_ref_matches(schema, &version), Ok(false));
         let _ = remove_store_fixture(root);
@@ -960,7 +934,7 @@ mod tests {
 
     #[test]
     fn relation_reference_rejects_a_different_object_descriptor() {
-        let (store, root) = test_store("wrong-descriptor");
+        let (_cleanup_root, store, root) = test_store("wrong-descriptor");
         let expected = bytes_object(b"expected relation node".to_vec());
         let actual = bytes_object(b"different relation node".to_vec());
         store.write_object(&actual).expect("write actual object");
@@ -977,7 +951,7 @@ mod tests {
 
     #[test]
     fn relation_reference_rejects_a_corrupt_or_wrong_hash_envelope() {
-        let (store, root) = test_store("corrupt-object");
+        let (_cleanup_root, store, root) = test_store("corrupt-object");
         let object = bytes_object(b"relation node bytes".to_vec());
         index_object(&store, &object);
         let schema = object.schema();
@@ -1004,13 +978,13 @@ mod tests {
 
     #[test]
     fn relation_reference_rejects_an_oversized_object() {
-        let (store, root) = test_store("oversized-object");
+        let (_cleanup_root, store, root) = test_store("oversized-object");
         let object = bytes_object(b"relation node bytes".to_vec());
         index_object(&store, &object);
         let schema = object.schema();
         let version = *object.version();
         let path = store.object_path(object.id());
-        fs::remove_file(&path).expect("remove immutable object fixture");
+        remove_immutable_fixture(&path);
         let file = File::create(path).expect("create sparse object fixture");
         let oversized_len = u64::try_from(store.object_envelope_limit().expect("envelope limit"))
             .expect("limit fits")
@@ -1028,7 +1002,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn relation_reference_rejects_a_symlinked_object_path() {
-        let (store, root) = test_store("symlink-object");
+        let (_cleanup_root, store, root) = test_store("symlink-object");
         let object = bytes_object(b"relation node bytes".to_vec());
         index_object(&store, &object);
         let schema = object.schema();
@@ -1036,7 +1010,7 @@ mod tests {
         let path = store.object_path(object.id());
         let target = root.join("outside-object");
         fs::write(&target, b"not an object envelope").expect("write symlink target");
-        fs::remove_file(&path).expect("remove immutable object fixture");
+        remove_immutable_fixture(&path);
         std::os::unix::fs::symlink(&target, &path).expect("replace object with symlink");
 
         assert_eq!(
@@ -1049,7 +1023,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn relation_reference_rejects_a_hard_linked_object_path() {
-        let (store, root) = test_store("hardlink-object");
+        let (_cleanup_root, store, root) = test_store("hardlink-object");
         let object = bytes_object(b"relation node bytes".to_vec());
         index_object(&store, &object);
         let schema = object.schema();

@@ -448,6 +448,19 @@ mod tests {
     #[test]
     fn replace_overwrites_a_read_only_destination_without_waiting() {
         let directory = scratch("read-only");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Ok(directory) = crate::durability::open_directory_readonly_nofollow(&self.0) {
+                    let _ = crate::durability::unlink_directory_files_preserving_readonly(
+                        &directory,
+                        |name| matches!(name, "next" | "state"),
+                    );
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
         let (source, destination) = (directory.join("next"), directory.join("state"));
         fs::write(&destination, b"old").expect("write destination");
         let mut permissions = fs::metadata(&destination).expect("stat").permissions();

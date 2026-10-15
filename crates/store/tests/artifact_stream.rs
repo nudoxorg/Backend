@@ -38,6 +38,7 @@ impl Schema for BytesSchema {
 struct TestStore {
     path: PathBuf,
     store: FileStore,
+    _cleanup: TestDirectoryCleanup,
 }
 
 impl TestStore {
@@ -47,26 +48,48 @@ impl TestStore {
             "backend-store-artifact-{}-{ordinal}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&path);
+        let _ = remove_test_directory(&path);
+        let cleanup = TestDirectoryCleanup(path.clone());
         let store = FileStore::open(&path, 64 * 1024).expect("open artifact test store");
-        Self { path, store }
+        Self {
+            path,
+            store,
+            _cleanup: cleanup,
+        }
     }
 }
 
-impl Drop for TestStore {
+struct TestDirectoryCleanup(PathBuf);
+
+impl Drop for TestDirectoryCleanup {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        for directory in ["objects", "closures", "nodes"] {
-            if let Ok(entries) = fs::read_dir(self.path.join(directory)) {
-                for entry in entries.flatten() {
-                    if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-                        let _ = remove_immutable_fixture(&entry.path());
-                    }
-                }
-            }
-        }
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = remove_test_directory(&self.0);
     }
+}
+
+fn remove_test_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{FileTypeExt as _, MetadataExt as _};
+        const REPARSE_POINT: u32 = 0x400;
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            return if metadata.is_dir() || metadata.file_type().is_symlink_dir() {
+                fs::remove_dir(path)
+            } else {
+                fs::remove_file(path)
+            };
+        }
+        if !metadata.is_dir() {
+            return remove_immutable_fixture(path);
+        }
+        for entry in fs::read_dir(path)? {
+            remove_test_directory(&entry?.path())?;
+        }
+        fs::remove_dir(path)
+    }
+    #[cfg(not(windows))]
+    fs::remove_dir_all(path)
 }
 
 fn object(seed: u8, length: usize) -> TypedObject {
