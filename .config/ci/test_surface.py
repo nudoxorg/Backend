@@ -212,6 +212,18 @@ class AuthoredCorpusAdmissionTests(unittest.TestCase):
                 surface.require_authored_symbols(wrong, expected, "go")
 
 
+        expected = {"Nonnull": {"name": "javax.annotation.Nonnull", "path": "javax/annotation/Nonnull.java"}}
+        row = {"identity": {"name": "javax.annotation.Nonnull", "path": "javax/annotation/Nonnull.java"}, "language": "java", "state": "ready"}
+        surface.require_authored_symbols({"records": [row]}, expected, "java")
+        for wrong in (
+            dict(row, identity=dict(row["identity"], name="Nonnull")),
+            dict(row, identity=dict(row["identity"], path="elsewhere/Nonnull.java")),
+            dict(row, language="unknown"), dict(row, state="unverified"),
+        ):
+            with self.subTest(qualified_identity=wrong), self.assertRaises(RuntimeError):
+                surface.require_authored_symbols({"records": [wrong]}, expected, "java")
+
+
 class SnapshotContinuationTests(unittest.TestCase):
     def page(self, token="pc4-one", coordinate="first"):
         size = 100 + len(token)
