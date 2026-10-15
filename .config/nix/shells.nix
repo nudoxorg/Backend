@@ -321,6 +321,9 @@ let
       "NUDOX_GO_ORACLE_BIN"
     ]
     // {
+      # T2 now launches the published desktop as well as CLI/MCP. Keep its
+      # font lookup hermetic, as the smoke shell does for the same binary.
+      FONTCONFIG_FILE = gui.fontConfig;
       packages =
         tools.nativeCompilers
         ++ [
