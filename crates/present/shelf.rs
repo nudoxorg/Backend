@@ -161,11 +161,9 @@ impl ShelfEntry {
                 .cmp(&left.declarations)
                 .then_with(|| left.language.cmp(&right.language))
         });
-        self.declarations = Some(RowCount::new(
-            sorted
-                .iter()
-                .fold(0_u64, |total, row| total.saturating_add(row.declarations.get())),
-        ));
+        self.declarations = Some(RowCount::new(sorted.iter().fold(0_u64, |total, row| {
+            total.saturating_add(row.declarations.get())
+        })));
         self.languages = sorted.into_boxed_slice();
         self
     }
@@ -219,7 +217,13 @@ impl ShelfEntry {
                 tags.push(format!("{} declaration(s)", count.get()));
             }
             Some(_) => {}
-            None => tags.push("declaration count unavailable".to_owned()),
+            // With a published row count the line already carries a count; a
+            // second clause calling the declaration count unavailable only
+            // contradicts it. A reply carrying no count at all still says so.
+            None if indexing_rows.or(self.published_rows).is_none() => {
+                tags.push("declaration count unavailable".to_owned());
+            }
+            None => {}
         }
         tags
     }

@@ -18,6 +18,17 @@
 //! and the two never share a word: `indexing` means work is running,
 //! `partial` means it finished and left gaps.
 //!
+//! The `semantic` lane is the *compiler's* coverage of the project. Optional
+//! vector search (embeddings) is a separate capability: a project whose compiler
+//! lane is complete and whose embeddings were never configured is a complete
+//! project, and its line says `semantic✓`, never `semantic✗`. The owner reports
+//! that one fact through the same lane entry (`Unavailable`, `Unconfigured`),
+//! which stays in the typed model for consumers that show it; this module reads
+//! it back out for the line: a lane unavailable for a reason outside its
+//! declared scope marks like a complete one and never reads as a failure.
+//! Per-query vector status rides separately, and is mentioned only when it
+//! failed.
+//!
 //! A lane that the reply never mentioned renders `·`: not covered, not
 //! failed, simply not observed. That distinction is the whole point — an empty
 //! complete result and an unavailable lane must never look the same.
@@ -108,6 +119,12 @@ impl LaneCoverage {
             LaneState::Complete => rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}")),
             LaneState::Partial { completed, total } => format!("◐{completed}/{total}"),
             LaneState::Gapped => "◐ partial".to_owned(),
+            // A lane unavailable for a reason outside its declared scope (the
+            // optional vector feature was never configured) covered everything
+            // it was asked to: it marks like a complete lane, never as a ✗.
+            LaneState::Unavailable { reason } if reason.is_outside_declared_scope() => {
+                rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}"))
+            }
             LaneState::Unavailable { reason } => format!("✗ {}", reason_name(reason)),
             LaneState::Unobserved => "·".to_owned(),
         }
@@ -116,7 +133,10 @@ impl LaneCoverage {
     /// Returns whether this lane refused to answer.
     #[must_use]
     pub const fn is_unavailable(self) -> bool {
-        matches!(self.state, LaneState::Unavailable { .. })
+        match self.state {
+            LaneState::Unavailable { reason } => !reason.is_outside_declared_scope(),
+            _ => false,
+        }
     }
 }
 
@@ -253,9 +273,23 @@ impl CoverageLine {
     #[must_use]
     pub fn has_unavailable(&self) -> bool {
         self.lanes.iter().any(|lane| lane.is_unavailable())
-            || self
-                .semantic_search
-                .is_some_and(|status| !matches!(status, SemanticSearchStatus::Available))
+            || self.semantic_search.is_some_and(|status| {
+                !matches!(
+                    status,
+                    SemanticSearchStatus::Available
+                        | SemanticSearchStatus::Unavailable {
+                            reason: SemanticSearchReason::Unconfigured
+                        }
+                )
+            })
+    }
+
+    /// Returns whether this line has nothing to say: every lane covered its
+    /// declared scope and no per-query vector search failed. A response leads
+    /// with its lane statement only when it is not quiet.
+    #[must_use]
+    pub fn is_quiet(&self) -> bool {
+        self.state() == ReadinessState::Ready && !self.has_unavailable()
     }
 
     /// Returns whether any lane failed work it was asked to do.
@@ -350,7 +384,18 @@ impl CoverageLine {
         for lane in &self.lanes {
             let _ = write!(line, " {}{}", lane.name(), lane.mark(rows));
         }
-        if let Some(status) = self.semantic_search {
+        // Vector search is optional: it is mentioned only when it failed or
+        // went stale. Its setup instruction belongs to status, which says it
+        // once, not to every result.
+        if let Some(status) = self.semantic_search
+            && !matches!(
+                status,
+                SemanticSearchStatus::Available
+                    | SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::Unconfigured
+                    }
+            )
+        {
             let _ = write!(line, " semantic-search {}", semantic_search_name(status));
         }
         line
@@ -361,18 +406,10 @@ fn semantic_search_name(status: SemanticSearchStatus) -> String {
     match status {
         SemanticSearchStatus::Available => "available".to_owned(),
         SemanticSearchStatus::Unavailable { reason } => {
-            format!(
-                "unavailable ({}) — {}",
-                semantic_search_reason_name(reason),
-                reason.setup_instruction()
-            )
+            format!("unavailable ({})", semantic_search_reason_name(reason))
         }
         SemanticSearchStatus::Stale { reason } => {
-            format!(
-                "stale ({}) — {}",
-                semantic_search_reason_name(reason),
-                reason.setup_instruction()
-            )
+            format!("stale ({})", semantic_search_reason_name(reason))
         }
     }
 }
@@ -505,7 +542,10 @@ mod page_tests {
             ],
             Some(161),
         );
-        assert_eq!(gapped.render(), "~lanes exact✓161 names✓161 graph✓161 semantic◐ partial");
+        assert_eq!(
+            gapped.render(),
+            "~lanes exact✓161 names✓161 graph✓161 semantic◐ partial"
+        );
         assert_eq!(gapped.readiness(), "partial");
         assert!(!gapped.has_failed_lane(), "a settled gap is not a failure");
         assert!(!gapped.is_complete(), "a settled gap is not complete");
