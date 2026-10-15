@@ -23,8 +23,13 @@ repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # A Nix check runs this file as a lone store path, where the repository layout
 # is gone; it names the script under test explicitly instead.
 source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/nudox-cargo-cache.XXXXXX")"
+# macOS TMPDIR normally ends in '/'. Keep the actual Cargo path spelling
+# equal to pathlib's expected spelling instead of introducing a doubled '/'.
+test_tmpdir="${TMPDIR:-/tmp}"
+test_root="$(mktemp -d "${test_tmpdir%/}/nudox-cargo-cache.XXXXXX")"
 cleanup() {
+  if [ -n "${signal_release:-}" ]; then touch "$signal_release"; fi
+  if [ -n "${signal_pid:-}" ]; then wait "$signal_pid" 2>/dev/null || true; fi
   if [ -n "${election_release:-}" ]; then touch "$election_release"; fi
   if [ -n "${election_owner:-}" ]; then wait "$election_owner" 2>/dev/null || true; fi
   if [ -n "${ceiling_release:-}" ]; then touch "$ceiling_release"; fi
@@ -100,8 +105,19 @@ printf '%s\n' '#!/bin/sh' \
 'if [ -n "${NUDOX_TEST_MUTATE_RUSTC:-}" ]; then printf "# changed during cargo\\n" >> "$NUDOX_TEST_MUTATE_RUSTC"; fi' \
 'if [ "${NUDOX_TEST_BREAK_PROVENANCE:-0}" != 0 ]; then printf "not a directory\\n" > "$CARGO_TARGET_DIR/.nudox-provenance"; fi' \
 'printf "%s|%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" "${RUSTC_WRAPPER:-}" >> "$NUDOX_TEST_LOG"' \
-'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
-  'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
+  'handle_signal() {' \
+  '  if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi' \
+  '  if [ -n "${NUDOX_TEST_CHILD_TERM_RELEASE_FILE:-}" ]; then' \
+  '    release_deadline=$(( $(date +%s) + 30 ))' \
+  '    while [ ! -f "$NUDOX_TEST_CHILD_TERM_RELEASE_FILE" ]; do' \
+  '      [ "$(date +%s)" -lt "$release_deadline" ] || exit 48' \
+  '      sleep 0.05' \
+  '    done' \
+  '  fi' \
+  '  exit 143' \
+  '}' \
+  'trap handle_signal HUP INT TERM' \
+  'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
   '  end=$(( $(date +%s) + NUDOX_TEST_CARGO_SLEEP ))' \
   '  while [ "$(date +%s)" -lt "$end" ]; do :; done' \
@@ -907,14 +923,16 @@ signal_target="$test_root/signal-target-$signal_protocol"
 signal_build="$test_root/signal-build-$signal_protocol"
 signal_child_pid="$test_root/signal-child-$signal_protocol.pid"
 signal_child_done="$test_root/signal-child-$signal_protocol.done"
+signal_release="$test_root/signal-child-$signal_protocol.release"
 if [ "$signal_protocol" = file ]; then
   mkdir -p "$signal_cache/locks"
   printf 'persistent permit\n' > "$signal_cache/locks/slot-0.lock"
 fi
-signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-1}"
+signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-0}"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
   NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP="$signal_sleep" \
+  NUDOX_TEST_CARGO_RELEASE_FILE="$signal_release" NUDOX_TEST_CHILD_TERM_RELEASE_FILE="$signal_release" \
   NUDOX_TEST_CHILD_PID_FILE="$signal_child_pid" NUDOX_TEST_CHILD_DONE_FILE="$signal_child_done" \
   CARGO_BUILD_BUILD_DIR="$signal_build" CARGO_TARGET_DIR="$signal_target" \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
@@ -959,9 +977,20 @@ while [ "$signal_waited" -lt 80 ] && [ ! -f "$signal_child_done" ]; do
   sleep 0.05
   signal_waited="$((signal_waited + 1))"
 done
+# Fake Cargo has acknowledged TERM but cannot exit until we release it. Check
+# leases in that stable state, then retain all existing post-exit assertions.
+[ -f "$signal_child_done" ] || fail "fake Cargo never acknowledged TERM"
+if ! find "$signal_cache/locks" -type d -name 'worktree-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "cancelled compile released the lease while fake Cargo was still alive"
+fi
+if ! find "$signal_build/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "cancelled compile released the role-graph lease while fake Cargo was still alive"
+fi
+touch "$signal_release"
 if wait "$signal_pid"; then
   fail "cancelled compile unexpectedly succeeded"
 fi
+signal_pid=""
 if find "$signal_cache/locks" -type d \( -name 'worktree-*.lock' -o -name 'slot-*.lock' \) -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "cancelled compile left a lease behind"
 fi

@@ -86,10 +86,11 @@ which [Cargo defines as overriding configured wrappers](https://doc.rust-lang.or
 This disables **all** rustc wrappers for the invocation, including caller
 instrumentation or other custom behavior. It preserves the selected compiler,
 Cargo arguments, build leases, graph/target paths and existing shared cache
-contents. Other values, including an explicitly empty setting, fail with
-status 64 before Cargo or cache startup. Read-only commands keep their existing
-early bypass. The mode does not constrain subprocesses started by build scripts
-or other tools; the managed custodian still owns final scope cleanup.
+contents. For compiling commands, other values, including an explicitly empty
+setting, fail with status 64 before Cargo or cache startup. Read-only commands
+keep their existing early bypass. The mode does not constrain subprocesses
+started by build scripts or other tools; the managed custodian still owns final
+scope cleanup.
 
 Do not infer a no-start guarantee from a ready socket: a later cache client
 can start a replacement server after socket loss. Do not stop a shared daemon
