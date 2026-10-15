@@ -6985,6 +6985,9 @@ mod tests {
     mod index_profile_worker_tests;
     #[path = "index_publication_worker.rs"]
     mod index_publication_worker_tests;
+    #[cfg(unix)]
+    #[path = "index_refresh_capability.rs"]
+    mod index_refresh_capability_tests;
     #[path = "index_request_admission.rs"]
     mod index_request_admission_tests;
     #[cfg(unix)]

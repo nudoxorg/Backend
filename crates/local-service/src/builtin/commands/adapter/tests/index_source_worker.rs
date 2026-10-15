@@ -12,11 +12,35 @@ use backend_engine::{
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::Instant;
 
+/// Observation only: copied from the real daemon after actual public commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadHeadIdentity {
+    workspace: [u8; 32],
+    commit: [u8; 32],
+    sequence: u64,
+    view: [u8; 32],
+    cursor: backend_engine::Cursor,
+}
+impl ReadHeadIdentity {
+    fn capture(daemon: &ProductDaemon) -> Self {
+        let owner = daemon.engine().daemon().owner();
+        let library = daemon.engine().daemon().library();
+        Self {
+            workspace: *owner.head().root().as_bytes(),
+            commit: *owner.head().commit().id().as_bytes(),
+            sequence: owner.head().sequence(),
+            view: *library.view().root().as_bytes(),
+            cursor: library.cursor(),
+        }
+    }
+}
+
 struct SourceWire {
     // Keep the fixture's private workspace alive until the production owner
     // has closed and every tracked worker has joined.
     fixture: AdapterFixture,
     commands: Arc<Mutex<CommandAdapter>>,
+    read_head: Arc<Mutex<Option<ReadHeadIdentity>>>,
     endpoint: PathBuf,
     stopped: ListenerShutdown,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -129,16 +153,21 @@ impl SourceWire {
         let cursor = owner_cursor(daemon);
         let commands = Arc::new(Mutex::new(fixture.adapter.take().expect("single adapter")));
         let command_owner = Arc::clone(&commands);
+        let read_head = Arc::new(Mutex::new(None));
+        let observed_head = Arc::clone(&read_head);
         let owner = fixture
             .daemon
             .take()
             .expect("single daemon")
             .into_owner(move |daemon: &mut ProductDaemon, body: &[u8]| {
-                command_owner
+                let result = command_owner
                     .lock()
                     .expect("serial owner adapter")
                     .execute(daemon, body)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string());
+                *observed_head.lock().expect("read-only head observer") =
+                    Some(ReadHeadIdentity::capture(daemon));
+                result
             })
             .with_deferred_commands(Box::new(crate::builtin::DeferredBuiltinCommands(
                 Arc::clone(&commands),
@@ -160,6 +189,7 @@ impl SourceWire {
         Self {
             fixture,
             commands,
+            read_head,
             endpoint,
             stopped,
             thread: Some(thread),
@@ -772,6 +802,15 @@ fn source_edit_after_durable_prepared_barrier_is_refused_before_final_grant() {
 
 #[test]
 fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
+    no_op_refresh_control(false);
+}
+
+#[test]
+fn cancelled_no_op_missing_witness_refresh_returns_all_original_custody() {
+    no_op_refresh_control(true);
+}
+
+fn no_op_refresh_control(cancel_before_approval: bool) {
     let mut wire = SourceWire::start_kind(
         TestStage::BeforeSourcePreparation,
         false,
@@ -782,6 +821,18 @@ fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
     wire.wait_at_source();
     wire.release();
     wire.wait_terminal();
+    Session::connect(&wire.endpoint)
+        .expect("first status session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStatus {
+            operation_key: wire.operation,
+        })
+        .expect("observe actual first selected read head");
+    let first_head = wire
+        .read_head
+        .lock()
+        .expect("observed daemon")
+        .clone()
+        .expect("actual selected base");
     let first = {
         let commands = wire.commands.lock().expect("same original adapter");
         let Some(JournalEntry::Retained(entry)) = commands
@@ -870,6 +921,18 @@ fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
         .resume_lease(lease, before_cursor, 1, term)
         .expect("sibling quiet poll");
     sibling.cancel_lease(lease).expect("release sibling lease");
+    if cancel_before_approval {
+        let ticket = {
+            let commands = wire.commands.lock().expect("same active adapter");
+            let job = commands.indexing.as_ref().expect("held no-op refresh");
+            assert_eq!(job.operation_key, Some(wire.operation));
+            job.owner_ticket.clone()
+        };
+        Session::connect(&wire.endpoint)
+            .expect("independent cancellation session")
+            .surface(backend_library::SurfaceCommand::IndexCancel { ticket })
+            .expect("actual cancellation before refresh approval");
+    }
     wire.release();
     wire.wait_terminal();
     client
@@ -877,23 +940,115 @@ fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
         .expect("quiet after coherent refresh");
     assert_eq!(observed.cursor(), before_cursor);
     assert_eq!(observed.root().root(), before_view.root());
-    let commands = wire.commands.lock().expect("original writers returned");
-    let Some(JournalEntry::Retained(entry)) = commands
-        .index_operations
-        .entry(wire.operation)
-        .expect("second receipt")
-    else {
-        panic!("same second operation");
-    };
-    let StoredOperationState::Published { receipt, .. } = entry.state else {
-        panic!("no-op refresh publishes only its operation receipt");
-    };
-    assert_eq!(receipt.workspace_root(), first.workspace_root());
-    assert_eq!(receipt.workspace_sequence(), first.workspace_sequence());
-    assert_eq!(receipt.commit_identity(), first.commit_identity());
-    assert!(
-        receipt.request_identity().is_none(),
-        "no synthetic workspace request"
+    Session::connect(&wire.endpoint)
+        .expect("terminal status session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStatus {
+            operation_key: wire.operation,
+        })
+        .expect("observe actual selected read head after worker retirement");
+    let after = wire
+        .read_head
+        .lock()
+        .expect("observed daemon")
+        .clone()
+        .expect("actual read head");
+    assert_eq!(
+        after, first_head,
+        "root/view/cursor/commit/sequence remain the exact admitted predecessor"
     );
-    assert!(!commands.index_operations.publication_writer_reserved());
+    {
+        let mut commands = wire.commands.lock().expect("original writers returned");
+        let Some(JournalEntry::Retained(entry)) = commands
+            .index_operations
+            .entry(wire.operation)
+            .expect("second receipt")
+        else {
+            panic!("same second operation");
+        };
+        if cancel_before_approval {
+            assert!(matches!(
+                entry.state,
+                StoredOperationState::Failed {
+                    reason: backend_library::IndexOperationFailureReason::Cancelled,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                commands
+                    .index_terminals
+                    .back()
+                    .expect("original cancelled terminal")
+                    .outcome,
+                backend_library::IndexJobOutcome::Cancelled
+            ));
+        } else {
+            let StoredOperationState::Published { receipt, .. } = entry.state else {
+                panic!("no-op refresh publishes only its operation receipt");
+            };
+            assert_eq!(receipt.workspace_root(), first.workspace_root());
+            assert_eq!(receipt.workspace_sequence(), first.workspace_sequence());
+            assert_eq!(receipt.commit_identity(), first.commit_identity());
+            assert!(
+                receipt.request_identity().is_none(),
+                "no synthetic workspace request"
+            );
+        }
+        assert!(!commands.index_operations.publication_writer_reserved());
+        commands
+            .sql_projection
+            .writer_mut()
+            .expect("original projection writer returned");
+        let root = backend_version::WorkspaceRoot::from_bytes(first_head.workspace);
+        let semantic = commands
+            .semantic_authority
+            .detach_index_writer(root)
+            .expect("original semantic writer returned");
+        let returned = commands
+            .semantic_authority
+            .prepare_index_writer_return(root, semantic)
+            .unwrap_or_else(|_| panic!("same original semantic custody"));
+        drop(returned.install());
+    }
+    if cancel_before_approval {
+        // A subsequent real changed-source operation must use the returned
+        // kernel workspace lease and all the original SQL/journal writers.
+        fs::write(
+            &wire.source,
+            "real structural edit after cancelled refresh\n",
+        )
+        .expect("next real edit");
+        wire.operation =
+            backend_library::IndexOperationKey::from_bytes([0xc3; 32]).expect("next key");
+        let package = backend_library::PackageReference::parse(
+            wire.source
+                .parent()
+                .expect("root")
+                .to_str()
+                .expect("UTF8")
+                .to_owned(),
+        )
+        .expect("same source package");
+        Session::connect(&wire.endpoint)
+            .expect("next actual writer session")
+            .surface(backend_library::SurfaceCommand::IndexOperationStart {
+                operation_key: wire.operation,
+                package,
+                execution_intent: CompileExecutionIntent::Interactive,
+            })
+            .expect("returned custody admits actual next write");
+        wire.wait_terminal();
+        let commands = wire.commands.lock().expect("same original adapter");
+        let Some(JournalEntry::Retained(entry)) = commands
+            .index_operations
+            .entry(wire.operation)
+            .expect("next receipt")
+        else {
+            panic!("next operation retained");
+        };
+        let StoredOperationState::Published { receipt, .. } = entry.state else {
+            panic!("actual next write uses original returned custody");
+        };
+        assert!(receipt.workspace_sequence() > first_head.sequence);
+        assert_ne!(receipt.workspace_root(), &first_head.workspace);
+    }
 }
