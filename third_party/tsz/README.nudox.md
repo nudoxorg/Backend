@@ -66,6 +66,12 @@ diagnostics do not become semantic source members, and diagnostic-only programs
 do not acquire a fabricated root. The diagnostic vector participates in program
 identity and is available through `program_diagnostics()` or the combined
 `diagnostics()` iterator; per-source `CheckResult` counts retain their meaning.
+Solution containers with config diagnostics retain a zero-source authority in
+the existing program lane and appear in the forest consumer's retained-image
+list, while their semantic leaf and query session remain absent. Once their
+diagnostics disappear, ordinary solution eviction removes that image. The
+package compiler currently projects semantic facts; this retained compiler
+channel does not add a package/UI diagnostic publication boundary.
 
 The shared source directive stream also owns `no-default-lib` for native closure
 discovery. A true directive in the captured source graph suppresses configured

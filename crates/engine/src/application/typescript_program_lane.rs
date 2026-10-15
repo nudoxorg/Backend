@@ -3,7 +3,8 @@
 //! The host re-admits the complete forest and source closure on every request.
 //! Only that freshly admitted forest may borrow these authorities; this cache
 //! never discovers inputs, admits membership, or supplies a closure witness.
-//! One package root is resident at a time, and removed/solution nodes are evicted.
+//! One package root is resident at a time. Removed nodes and solutions without
+//! retained native diagnostics are evicted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

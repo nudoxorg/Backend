@@ -636,6 +636,21 @@ mod native_web_closure_tests {
                 .unwrap();
             native
         }
+        fn forest(&self, sources: &[PackageSource<'_>]) -> NativeTypeScriptForestInputs {
+            let host = TypeScriptProjectHost::direct(
+                None,
+                ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
+                    .unwrap(),
+            );
+            let admitted = host.admit(&self.0).unwrap().unwrap();
+            build_native_forest_inputs(
+                &admitted.inputs(),
+                sources,
+                Instant::now() + Duration::from_secs(30),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -827,6 +842,71 @@ mod native_web_closure_tests {
         assert_eq!(project.source_paths().count(), 0);
         assert!(project.check_result().file_results.is_empty());
         assert_eq!(project.diagnostics().count(), 1);
+    }
+
+    #[test]
+    fn native_solution_config_diagnostics_retain_an_image_and_evict_when_resolved() {
+        use crate::application::typescript_program_lane::TypeScriptProgramAuthorityLane;
+
+        for inherited in [false, true] {
+            let fixture = Fixture::new();
+            const SOURCE: &str = "export const value = 1;";
+            fixture.write("child/src/main.ts", SOURCE);
+            fixture.write("child/tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[],"composite":true},"files":["src/main.ts"]}"#);
+            let config = if inherited {
+                fixture.write("base.json", r#"{/* π */ "include":["unused/**"]}"#);
+                r#"{"extends":"./base.json","compilerOptions":{"noLib":true,"types":[]},"references":[{"path":"./child"}]}"#
+            } else {
+                r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["unused/**"],"references":[{"path":"./child"}]}"#
+            };
+            fixture.write("tsconfig.json", config);
+            let selected = [PackageSource::new("child/src/main.ts", SOURCE).unwrap()];
+            let forest = fixture.forest(&selected);
+            let root = forest.nodes.into_iter().nth(forest.root as usize).unwrap();
+            let key = root.config.map(|(path, _)| path);
+            assert!(root.native.solution);
+            assert!(root.native.sources.is_empty());
+            assert!(root.native.libraries.is_empty());
+            assert!(root.native.requires_retained_authority());
+            let diagnostics = &root.native.options.program_diagnostics;
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0].code, 5010);
+            assert_eq!(
+                diagnostics[0].file,
+                if inherited {
+                    "base.json"
+                } else {
+                    "tsconfig.json"
+                }
+            );
+
+            let mut lane = TypeScriptProgramAuthorityLane::default();
+            lane.prepare(&fixture.0, &[key.clone()]).unwrap();
+            lane.authority(key.clone())
+                .update(
+                    root.native.sources,
+                    root.native.options,
+                    &root.native.libraries,
+                )
+                .unwrap();
+            let image = lane.project(&key).unwrap();
+            assert_eq!(image.program_diagnostics().len(), 1);
+            assert_eq!(image.source_paths().count(), 0);
+            assert!(image.check_result().file_results.is_empty());
+
+            if inherited {
+                fixture.write("base.json", r#"{"include":[]}"#);
+            } else {
+                fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"include":[],"references":[{"path":"./child"}]}"#);
+            }
+            let resolved = fixture.forest(&selected);
+            let root = &resolved.nodes[resolved.root as usize];
+            assert!(root.native.solution);
+            assert!(!root.native.requires_retained_authority());
+            assert!(root.native.options.program_diagnostics.is_empty());
+            lane.prepare(&fixture.0, &[]).unwrap();
+            assert!(lane.project(&key).is_none());
+        }
     }
 
     #[test]

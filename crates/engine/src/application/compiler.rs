@@ -2876,7 +2876,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 forest.work_units,
             ).with_stop_sink(std::sync::Arc::clone(stop_site)));
             let budget = tsz_budget.as_ref().expect("shared forest budget");
-            let active_programs = forest.nodes.iter().filter(|node| !node.native.solution)
+            let active_programs = forest.nodes.iter().filter(|node| node.native.requires_retained_authority())
                 .map(|node| node.config.as_ref().map(|(path, _)| path.clone())).collect::<Vec<_>>();
             typescript_lane.prepare(package.package_root, &active_programs)
                 .map_err(|_| PackageSemanticError::Capacity { lane: "distinct admitted TypeScript program authorities" })?;
@@ -2884,6 +2884,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             for (program_index, node) in forest.nodes.into_iter().enumerate() {
                 let program_key = node.config.as_ref().map(|(path, _)| path.clone());
                 let native = node.native;
+                let retain_authority = native.requires_retained_authority();
                 tsz_node_metadata.push((
                     node.config,
                     node.references,
@@ -2891,8 +2892,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 ));
                 witnesses.push(native.closure_witness);
                 tsz_file_work_units.push(native.file_work_units);
-                if native.solution {
-                    tsz_authorities.push(None);
+                if !retain_authority {
+                    tsz_authorities.push((None, native.solution));
                     continue;
                 }
                 let program_sources = native.sources.len();
@@ -2970,17 +2971,24 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         skipped = ?project.file_work_skipped(),
                         "TypeScript files spent their own work allowance and are not semantically covered");
                 }
-                tsz_authorities.push(Some(program_key));
+                tsz_authorities.push((Some(program_key), native.solution));
             }
             typescript_closure_witness = Some(
                 crate::application::typescript_program::TypeScriptForestClosureWitness(witnesses),
             );
         }
-        let tsz_projects = tsz_authorities.iter().map(|key| {
+        // Every retained native image is available to the forest consumer,
+        // including the program_diagnostics() of source-free solutions.
+        let tsz_images = tsz_authorities.iter().map(|(key, _)| {
             key.as_ref().map(|key| typescript_lane.project(key).ok_or(PackageSemanticError::Capacity {
                 lane: "complete admitted TypeScript checked authority",
             })).transpose()
         }).collect::<Result<Vec<_>, PackageSemanticError>>()?;
+        // A solution diagnostic owner contributes no semantic forest leaf or
+        // per-source query session. Its checked image remains separately held.
+        let tsz_projects = tsz_images.iter().zip(&tsz_authorities)
+            .map(|(image, (_, solution))| if *solution { None } else { *image })
+            .collect::<Vec<_>>();
         if let (Some(budget), Some(toolchain)) = (tsz_budget.as_ref(), typescript_toolchain) {
             let stopped = |cause| PackageSemanticError::Compile {
                 path: first_source.relative_path.into(),
