@@ -165,6 +165,44 @@ pub(super) struct SessionDirectory {
     pub(super) lease: File,
 }
 
+/// Private provenance for the particular inode that completed the stream's barriers.
+/// Kept inside the pinned receive session; admission borrows it together with that GC pin.
+#[derive(Clone, Copy)]
+pub(super) struct DurableObjectFile {
+    object: ObjectId,
+    identity: backend_platform::FileIdentity,
+}
+
+impl DurableObjectFile {
+    pub(super) fn matches(&self, object: ObjectId, file: &File) -> Result<bool, StoreError> {
+        Ok(self.object == object
+            && self.identity
+                == backend_platform::FileIdentity::of_file(file)
+                    .map_err(|error| io_error(&error))?)
+    }
+}
+
+#[cfg(not(windows))]
+fn linked_object_receipt(
+    source: &File,
+    store: &FileStore,
+    id: ObjectId,
+) -> Result<DurableObjectFile, StoreError> {
+    let destination = open_object(store, id)?.ok_or(StoreError::Corrupt)?;
+    let identity =
+        backend_platform::FileIdentity::of_file(source).map_err(|error| io_error(&error))?;
+    if identity
+        != backend_platform::FileIdentity::of_file(&destination)
+            .map_err(|error| io_error(&error))?
+    {
+        return Err(StoreError::UnsafePath);
+    }
+    Ok(DurableObjectFile {
+        object: id,
+        identity,
+    })
+}
+
 #[cfg(unix)]
 mod imp {
     use super::*;
@@ -705,7 +743,9 @@ mod imp {
     pub(in crate::durable) fn unlink_stage_file(
         directory: &ArtifactDirectory,
         name: &str,
+        expected: &File,
     ) -> Result<(), StoreError> {
+        let _ = expected;
         unlinkat(&directory.file, name, AtFlags::empty()).map_err(error)
     }
 
@@ -715,7 +755,7 @@ mod imp {
         source: &File,
         store: &FileStore,
         id: ObjectId,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Option<DurableObjectFile>, StoreError> {
         let staged = open_file_at(&staging.file, staging_name, OFlags::RDONLY)?
             .ok_or(StoreError::Corrupt)?;
         validate_single_link_file(&staged)?;
@@ -744,11 +784,11 @@ mod imp {
                         "injected interruption after object link".to_owned(),
                     ));
                 }
-                unlink_stage_file(staging, staging_name)?;
+                unlink_stage_file(staging, staging_name, source)?;
                 staging.sync_all()?;
-                Ok(true)
+                linked_object_receipt(source, store, id).map(Some)
             }
-            Err(Errno::EXIST) => Ok(false),
+            Err(Errno::EXIST) => Ok(None),
             Err(error) => Err(self::error(error)),
         }
     }
@@ -762,11 +802,10 @@ mod imp {
         let mut temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
         let write_result = temp.write_all(bytes);
         if let Err(error) = write_result {
-            let _ = unlink_stage_file(staging, CLOSURE_TEMP_FILE);
+            let _ = unlink_stage_file(staging, CLOSURE_TEMP_FILE, &temp);
             return Err(io_error(&error));
         }
         seal_immutable_file(&temp)?;
-        drop(temp);
 
         let closures = store_dir(store, "closures")?;
         let name = format!("{}.closure", super::super::hex(id.as_bytes()));
@@ -807,7 +846,7 @@ mod imp {
                 ));
             }
         }
-        unlink_stage_file(staging, CLOSURE_TEMP_FILE)?;
+        unlink_stage_file(staging, CLOSURE_TEMP_FILE, &temp)?;
         staging.sync_all()?;
         Ok(created)
     }
@@ -928,7 +967,10 @@ mod imp {
             // Exercise the first admission of the fresh writer's inode. A
             // prewarming read would hide a redundant permission/write barrier.
             assert_eq!(
-                fixture.store.read_object(object.id()).expect("first admission"),
+                fixture
+                    .store
+                    .read_object(object.id())
+                    .expect("first admission"),
                 object
             );
             assert_eq!(
@@ -1011,7 +1053,9 @@ mod imp {
 #[cfg(not(unix))]
 mod imp {
     use super::*;
-    use std::fs::{self, OpenOptions};
+    use std::fs;
+    #[cfg(not(windows))]
+    use std::fs::OpenOptions;
     use std::io::ErrorKind;
 
     fn check_regular(path: &Path, file: &File) -> Result<(), StoreError> {
@@ -1019,6 +1063,15 @@ mod imp {
         if path_metadata.file_type().is_symlink()
             || !path_metadata.is_file()
             || !file.metadata().map_err(|error| io_error(&error))?.is_file()
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        // A type check alone does not establish that `file` is the file named by path.
+        // The no-follow opener rejects every Windows reparse point on its actual handle.
+        let named = backend_platform::durability::open_regular_file_nofollow(path)
+            .map_err(|error| io_error(&error))?;
+        if backend_platform::FileIdentity::of_file(&named).map_err(|error| io_error(&error))?
+            != backend_platform::FileIdentity::of_file(file).map_err(|error| io_error(&error))?
         {
             return Err(StoreError::UnsafePath);
         }
@@ -1037,6 +1090,7 @@ mod imp {
             .map_err(|error| io_error(&error))
     }
 
+    #[cfg(not(windows))]
     fn ensure_directory(path: &Path) -> Result<File, StoreError> {
         match fs::create_dir(path) {
             Ok(()) => {}
@@ -1047,18 +1101,24 @@ mod imp {
     }
 
     fn read_directory_names(directory: &ArtifactDirectory) -> Result<Vec<String>, StoreError> {
-        let mut names = Vec::new();
-        for entry in fs::read_dir(&directory.path).map_err(|error| io_error(&error))? {
-            let entry = entry.map_err(|error| io_error(&error))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| StoreError::Corrupt)?;
-            if name != "." && name != ".." {
-                names.push(name);
+        #[cfg(windows)]
+        return backend_platform::durability::directory_child_names(&directory.file)
+            .map_err(|error| io_error(&error));
+        #[cfg(not(windows))]
+        {
+            let mut names = Vec::new();
+            for entry in fs::read_dir(&directory.path).map_err(|error| io_error(&error))? {
+                let entry = entry.map_err(|error| io_error(&error))?;
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| StoreError::Corrupt)?;
+                if name != "." && name != ".." {
+                    names.push(name);
+                }
             }
+            Ok(names)
         }
-        Ok(names)
     }
 
     fn valid_temp_name(name: &str) -> bool {
@@ -1071,6 +1131,7 @@ mod imp {
                 })
     }
 
+    #[cfg(not(windows))]
     fn create_lease(path: &Path) -> Result<File, StoreError> {
         let lease = OpenOptions::new()
             .create_new(true)
@@ -1087,22 +1148,34 @@ mod imp {
         directory: &ArtifactDirectory,
         _store: Option<&FileStore>,
     ) -> Result<(), StoreError> {
-        let names = read_directory_names(directory)?;
-        for name in &names {
-            if name != LOCK_FILE && !valid_temp_name(name) {
-                return Err(StoreError::Corrupt);
-            }
-            let path = directory.path.join(&name);
-            let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&error))?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(StoreError::Corrupt);
-            }
+        #[cfg(windows)]
+        {
+            backend_platform::durability::unlink_directory_files_preserving_readonly(
+                &directory.file,
+                |name| name == LOCK_FILE || valid_temp_name(name),
+            )
+            .map_err(|error| io_error(&error))?;
+            return directory.sync_all();
         }
-        for name in names {
-            let path = directory.path.join(&name);
-            fs::remove_file(path).map_err(|error| io_error(&error))?;
+        #[cfg(not(windows))]
+        {
+            let names = read_directory_names(directory)?;
+            for name in &names {
+                if name != LOCK_FILE && !valid_temp_name(name) {
+                    return Err(StoreError::Corrupt);
+                }
+                let path = directory.path.join(&name);
+                let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&error))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            for name in names {
+                let path = directory.path.join(&name);
+                remove_stage_path(&path)?;
+            }
+            directory.sync_all()
         }
-        directory.sync_all()
     }
 
     fn remove_session_at(
@@ -1112,27 +1185,70 @@ mod imp {
         store: Option<&FileStore>,
     ) -> Result<(), StoreError> {
         remove_session_contents(directory, store)?;
+        #[cfg(windows)]
+        backend_platform::durability::remove_empty_directory_child(
+            &parent.file,
+            name,
+            &directory.file,
+        )
+        .map_err(|error| io_error(&error))?;
+        #[cfg(not(windows))]
         fs::remove_dir(&directory.path).map_err(|error| io_error(&error))?;
         parent.sync_all()?;
         let _ = name;
         Ok(())
     }
 
+    #[cfg(any(not(windows), test))]
     fn open_path(path: &Path) -> Result<Option<File>, StoreError> {
-        let file = match OpenOptions::new().read(true).open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(io_error(&error)),
-        };
-        check_regular(path, &file)?;
-        Ok(Some(file))
+        for attempt in 0..100 {
+            let file = match backend_platform::durability::open_regular_file_nofollow(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(&error)),
+            };
+            check_regular(path, &file)?;
+            match backend_platform::file_identity::number_of_links(&file)
+                .map_err(|error| io_error(&error))?
+            {
+                1 => return Ok(Some(file)),
+                2 if attempt < 99 => std::thread::sleep(std::time::Duration::from_millis(1)),
+                _ => return Err(StoreError::UnsafePath),
+            }
+        }
+        Err(StoreError::UnsafePath)
     }
 
     pub(in crate::durable) fn open_object(
         store: &FileStore,
         id: ObjectId,
     ) -> Result<Option<File>, StoreError> {
-        open_path(&store.object_path(id))
+        let name = format!("{}.object", super::super::hex(id.as_bytes()));
+        open_store_file(store, "objects", &name)
+    }
+
+    #[cfg(windows)]
+    pub(in crate::durable) fn open_directory_file(
+        parent: &File,
+        name: &str,
+    ) -> Result<Option<File>, StoreError> {
+        for attempt in 0..100 {
+            let file = match backend_platform::durability::open_regular_file_child_nofollow(
+                parent, name,
+            ) {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(&error)),
+            };
+            match backend_platform::file_identity::number_of_links(&file)
+                .map_err(|error| io_error(&error))?
+            {
+                1 => return Ok(Some(file)),
+                2 if attempt < 99 => std::thread::sleep(std::time::Duration::from_millis(1)),
+                _ => return Err(StoreError::UnsafePath),
+            }
+        }
+        Err(StoreError::UnsafePath)
     }
 
     pub(in crate::durable) fn open_store_file(
@@ -1140,6 +1256,17 @@ mod imp {
         directory: &str,
         name: &str,
     ) -> Result<Option<File>, StoreError> {
+        #[cfg(windows)]
+        {
+            let root = backend_platform::durability::open_directory_readonly_nofollow(&store.root)
+                .map_err(|error| io_error(&error))?;
+            let parent = backend_platform::durability::open_directory_readonly_child_nofollow(
+                &root, directory,
+            )
+            .map_err(|error| io_error(&error))?;
+            return open_directory_file(&parent, name);
+        }
+        #[cfg(not(windows))]
         open_path(&store.root.join(directory).join(name))
     }
 
@@ -1147,7 +1274,8 @@ mod imp {
         store: &FileStore,
         id: ClosureId,
     ) -> Result<File, StoreError> {
-        open_path(&store.closure_path(id))?.ok_or(StoreError::Corrupt)
+        let name = format!("{}.closure", super::super::hex(id.as_bytes()));
+        open_store_file(store, "closures", &name)?.ok_or(StoreError::Corrupt)
     }
 
     pub(in crate::durable) fn prepare_staging_root(
@@ -1159,12 +1287,18 @@ mod imp {
             path: store.root.clone(),
         };
         let staging_path = store.root.join("staging");
+        #[cfg(windows)]
+        let staging_file = ensure_child_directory(&root_dir.file, "staging")?;
+        #[cfg(not(windows))]
         let staging_file = ensure_directory(&staging_path)?;
         let staging = ArtifactDirectory {
             file: staging_file,
             path: staging_path,
         };
         let artifacts_path = staging.path.join("artifacts");
+        #[cfg(windows)]
+        let artifacts_file = ensure_child_directory(&staging.file, "artifacts")?;
+        #[cfg(not(windows))]
         let artifacts_file = ensure_directory(&artifacts_path)?;
         let artifacts = ArtifactDirectory {
             file: artifacts_file,
@@ -1175,27 +1309,77 @@ mod imp {
         Ok(artifacts)
     }
 
+    #[cfg(windows)]
+    fn ensure_child_directory(parent: &File, name: &str) -> Result<File, StoreError> {
+        match backend_platform::durability::create_directory_child_nofollow(parent, name) {
+            Ok(file) => Ok(file),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                backend_platform::durability::open_directory_child_nofollow(parent, name)
+                    .map_err(|error| io_error(&error))
+            }
+            Err(error) => Err(io_error(&error)),
+        }
+    }
+
     pub(in crate::durable) fn create_session(
         parent: &ArtifactDirectory,
     ) -> Result<SessionDirectory, StoreError> {
+        let parent_copy = parent.try_clone()?;
         loop {
             let name = super::next_session_name();
             let path = parent.path.join(&name);
+            #[cfg(windows)]
+            let session_file = match backend_platform::durability::create_directory_child_nofollow(
+                &parent.file,
+                &name,
+            ) {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(io_error(&error)),
+            };
+            #[cfg(not(windows))]
             match fs::create_dir(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(io_error(&error)),
             }
             let directory = ArtifactDirectory {
+                #[cfg(windows)]
+                file: session_file,
+                #[cfg(not(windows))]
                 file: check_directory(&path)?,
                 path: path.clone(),
             };
+            #[cfg(windows)]
+            let lease = {
+                let result = (|| {
+                    let lease = backend_platform::durability::create_regular_file_child_nofollow(
+                        &directory.file,
+                        LOCK_FILE,
+                    )
+                    .map_err(|error| io_error(&error))?;
+                    lease.try_lock().map_err(lock_error)?;
+                    directory.sync_all()?;
+                    parent.sync_all()?;
+                    Ok(lease)
+                })();
+                match result {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        let _ = remove_session_at(parent, &name, &directory, None);
+                        return Err(error);
+                    }
+                }
+            };
+            #[cfg(not(windows))]
             let lease = create_lease(&path.join(LOCK_FILE))?;
+            #[cfg(not(windows))]
             directory.sync_all()?;
+            #[cfg(not(windows))]
             parent.sync_all()?;
             return Ok(SessionDirectory {
                 name,
-                parent: parent.try_clone()?,
+                parent: parent_copy,
                 directory,
                 lease,
             });
@@ -1212,19 +1396,36 @@ mod imp {
             }
             let path = parent.path.join(&name);
             let directory = ArtifactDirectory {
+                #[cfg(windows)]
+                file: backend_platform::durability::open_directory_child_nofollow(
+                    &parent.file,
+                    &name,
+                )
+                .map_err(|error| io_error(&error))?,
+                #[cfg(not(windows))]
                 file: check_directory(&path)?,
                 path: path.clone(),
             };
-            let lease_path = path.join(LOCK_FILE);
-            let metadata = fs::symlink_metadata(&lease_path).map_err(|error| io_error(&error))?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(StoreError::Corrupt);
-            }
-            let lease = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&lease_path)
-                .map_err(|error| io_error(&error))?;
+            #[cfg(windows)]
+            let lease = backend_platform::durability::open_regular_file_readwrite_child_nofollow(
+                &directory.file,
+                LOCK_FILE,
+            )
+            .map_err(|error| io_error(&error))?;
+            #[cfg(not(windows))]
+            let lease = {
+                let lease_path = path.join(LOCK_FILE);
+                let metadata =
+                    fs::symlink_metadata(&lease_path).map_err(|error| io_error(&error))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(StoreError::Corrupt);
+                }
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&lease_path)
+                    .map_err(|error| io_error(&error))?
+            };
             match lease.try_lock() {
                 Ok(()) => {
                     remove_session_at(parent, &name, &directory, Some(store))?;
@@ -1243,30 +1444,75 @@ mod imp {
         directory: &ArtifactDirectory,
         name: &str,
     ) -> Result<File, StoreError> {
-        let path = directory.path.join(name);
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|error| io_error(&error))?;
-        check_regular(&path, &file)?;
-        Ok(file)
+        #[cfg(windows)]
+        return backend_platform::durability::create_regular_file_child_nofollow(
+            &directory.file,
+            name,
+        )
+        .map_err(|error| io_error(&error));
+        #[cfg(not(windows))]
+        {
+            let path = directory.path.join(name);
+            let file = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|error| io_error(&error))?;
+            check_regular(&path, &file)?;
+            Ok(file)
+        }
     }
 
     pub(in crate::durable) fn unlink_stage_file(
         directory: &ArtifactDirectory,
         name: &str,
+        expected: &File,
     ) -> Result<(), StoreError> {
-        fs::remove_file(directory.path.join(name)).map_err(|error| io_error(&error))?;
+        #[cfg(windows)]
+        {
+            backend_platform::durability::unlink_file_preserving_readonly_at(
+                &directory.file,
+                name,
+                expected,
+            )
+            .map_err(|error| io_error(&error))?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = expected;
+            remove_stage_path(&directory.path.join(name))?;
+        }
         directory.sync_all()?;
         Ok(())
+    }
+
+    #[cfg(any(not(windows), test))]
+    fn remove_stage_path(path: &Path) -> Result<(), StoreError> {
+        #[cfg(windows)]
+        {
+            let file = backend_platform::durability::open_regular_file_nofollow(path)
+                .map_err(|error| io_error(&error))?;
+            check_regular(path, &file)?;
+            backend_platform::durability::unlink_file_preserving_readonly(path, &file)
+                .map_err(|error| io_error(&error))
+        }
+        #[cfg(not(windows))]
+        {
+            fs::remove_file(path).map_err(|error| io_error(&error))
+        }
     }
 
     /// Marks an object's bytes immutable and flushes them. The read-only
     /// attribute is the closest portable seal; a hard link to the sealed file
     /// shares it, so the published name is sealed too.
     fn seal_immutable_file(file: &File) -> Result<(), StoreError> {
+        if backend_platform::file_identity::number_of_links(file)
+            .map_err(|error| io_error(&error))?
+            != 1
+        {
+            return Err(StoreError::UnsafePath);
+        }
         let mut permissions = file
             .metadata()
             .map_err(|error| io_error(&error))?
@@ -1277,21 +1523,436 @@ mod imp {
         file.sync_all().map_err(|error| io_error(&error))
     }
 
+    /// One lazily created, leased private directory for an admission's bounded repair work.
+    /// The admission borrows its existing GC pin; this never opens a per-member GC lease.
+    #[cfg(windows)]
+    pub(in crate::durable) struct DurabilityRepair<'store> {
+        store: &'store FileStore,
+        _pin: &'store super::super::layout::GcPinLease,
+        session: SessionDirectory,
+        next: AtomicU64,
+    }
+
+    #[cfg(windows)]
+    impl<'store> DurabilityRepair<'store> {
+        pub(in crate::durable) fn new(
+            store: &'store FileStore,
+            pin: &'store super::super::layout::GcPinLease,
+        ) -> Result<Self, StoreError> {
+            if !pin.covers_root(&store.root)? {
+                return Err(StoreError::UnsafePath);
+            }
+            let parent = prepare_staging_root(store)?;
+            let session = create_session(&parent)?;
+            Ok(Self {
+                store,
+                _pin: pin,
+                session,
+                next: AtomicU64::new(0),
+            })
+        }
+
+        /// Copies at most `maximum` bytes, verifies that private copy, then seals and flushes
+        /// its actual writable handle before a single extended replacing rename. The old
+        /// inode is never made writable, including on any failure path.
+        pub(in crate::durable) fn replace_verified(
+            &self,
+            destination_parent: &File,
+            name: &str,
+            source: &mut File,
+            maximum: u64,
+            verify: impl FnOnce(File) -> Result<(), StoreError>,
+        ) -> Result<(), StoreError> {
+            let ordinal = self
+                .next
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                    next.checked_add(1)
+                })
+                .map_err(|_| StoreError::Bounds)?;
+            let stage_name = format!("object-{ordinal}.tmp");
+            let mut copied = create_stage_file(&self.session.directory, &stage_name)?;
+            let result = (|| {
+                let length = source.metadata().map_err(|error| io_error(&error))?.len();
+                if length > maximum {
+                    return Err(StoreError::Bounds);
+                }
+                source
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|error| io_error(&error))?;
+                let mut remaining = length;
+                let mut buffer = [0_u8; super::super::artifact::VERIFY_BUFFER_BYTES];
+                while remaining != 0 {
+                    let count = usize::try_from(remaining.min(buffer.len() as u64))
+                        .map_err(|_| StoreError::Bounds)?;
+                    source
+                        .read_exact(&mut buffer[..count])
+                        .map_err(|error| io_error(&error))?;
+                    copied
+                        .write_all(&buffer[..count])
+                        .map_err(|error| io_error(&error))?;
+                    remaining -= count as u64;
+                }
+                let mut extra = [0_u8; 1];
+                if source.read(&mut extra).map_err(|error| io_error(&error))? != 0 {
+                    return Err(StoreError::Corrupt);
+                }
+                copied
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|error| io_error(&error))?;
+                verify(copied.try_clone().map_err(|error| io_error(&error))?)?;
+                if take_test_fault(31) {
+                    return Err(StoreError::Io(
+                        "injected failure before immutable repair barrier".to_owned(),
+                    ));
+                }
+                seal_immutable_file(&copied)?;
+                let named = backend_platform::durability::open_regular_file_child_nofollow(
+                    destination_parent,
+                    name,
+                )
+                .map_err(|error| io_error(&error))?;
+                if backend_platform::FileIdentity::of_file(&named)
+                    .map_err(|error| io_error(&error))?
+                    != backend_platform::FileIdentity::of_file(source)
+                        .map_err(|error| io_error(&error))?
+                {
+                    return Err(StoreError::UnsafePath);
+                }
+                if take_test_fault(32) {
+                    return Err(StoreError::Io(
+                        "injected failure before immutable repair rename".to_owned(),
+                    ));
+                }
+                backend_platform::durability::replace_file_preserving_readonly_at(
+                    &self.session.directory.file,
+                    &stage_name,
+                    &copied,
+                    destination_parent,
+                    name,
+                )
+                .map_err(|error| io_error(&error))?;
+                // Both affected directories precede the receipt. On a failed barrier the new
+                // name can be visible, but no caller receives permission to publish it.
+                destination_parent
+                    .sync_all()
+                    .map_err(|error| io_error(&error))?;
+                self.session.directory.sync_all()?;
+                let current = backend_platform::durability::open_regular_file_child_nofollow(
+                    destination_parent,
+                    name,
+                )
+                .map_err(|error| io_error(&error))?;
+                if backend_platform::file_identity::number_of_links(&current)
+                    .map_err(|error| io_error(&error))?
+                    != 1
+                {
+                    return Err(StoreError::UnsafePath);
+                }
+                if backend_platform::FileIdentity::of_file(&current)
+                    .map_err(|error| io_error(&error))?
+                    != backend_platform::FileIdentity::of_file(&copied)
+                        .map_err(|error| io_error(&error))?
+                {
+                    return Err(StoreError::UnsafePath);
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                // This can only remove our private name. It never clears a shared inode's
+                // attributes, even after the copy was sealed or a rename failed.
+                let _ = backend_platform::durability::unlink_file_preserving_readonly_at(
+                    &self.session.directory.file,
+                    &stage_name,
+                    &copied,
+                );
+            }
+            result
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for DurabilityRepair<'_> {
+        fn drop(&mut self) {
+            let _ = cleanup_session(
+                self.store,
+                &self.session.parent,
+                &self.session.name,
+                &self.session.directory,
+            );
+        }
+    }
+
+    #[cfg(all(windows, test))]
+    mod windows_repair_controls {
+        #![allow(clippy::expect_used)]
+        use super::*;
+        use backend_platform::FileIdentity;
+
+        struct Fixture {
+            root: PathBuf,
+            store: FileStore,
+            path: PathBuf,
+        }
+
+        impl Fixture {
+            fn new() -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "backend-windows-repair-{}-{}",
+                    std::process::id(),
+                    NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
+                ));
+                let store = FileStore::open(&root, 1 << 20).expect("open Windows repair store");
+                let path = root.join("nodes/member.ref");
+                fs::write(&path, b"verified member").expect("inject unsynchronized bytes");
+                let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+                permissions.set_readonly(true);
+                fs::set_permissions(&path, permissions)
+                    .expect("inject read-only bit without provenance");
+                Self { root, store, path }
+            }
+
+            fn directory(&self) -> File {
+                check_directory(&self.root.join("nodes")).expect("held fixture nodes directory")
+            }
+
+            fn assert_old(&self, identity: FileIdentity) {
+                assert_eq!(
+                    identity,
+                    FileIdentity::of_path_nofollow(&self.path).expect("old name retained")
+                );
+                assert_eq!(
+                    fs::read(&self.path).expect("old bytes readable"),
+                    b"verified member"
+                );
+                assert!(
+                    fs::metadata(&self.path)
+                        .expect("old seal retained")
+                        .permissions()
+                        .readonly()
+                );
+            }
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                // A failed assertion may leave a sealed old alias as well as the new name.
+                // Remove fixture links by handle, so remove_dir_all cannot leak the tree.
+                for directory in [&self.root, &self.root.join("nodes")] {
+                    if let Ok(entries) = fs::read_dir(directory) {
+                        for entry in entries.flatten() {
+                            if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                                let _ = remove_stage_path(&entry.path());
+                            }
+                        }
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+
+        fn verify(file: File) -> Result<(), StoreError> {
+            let mut bytes = Vec::new();
+            file.take(16)
+                .read_to_end(&mut bytes)
+                .map_err(|error| io_error(&error))?;
+            if bytes != b"verified member" {
+                return Err(StoreError::Corrupt);
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn replacement_preserves_a_held_old_inode_and_its_readonly_alias() {
+            let fixture = Fixture::new();
+            let pin = fixture.store.acquire_gc_pin().expect("existing GC pin");
+            let repair = DurabilityRepair::new(&fixture.store, &pin).expect("repair directory");
+            let mut source = open_path(&fixture.path)
+                .expect("open old name")
+                .expect("old member");
+            let old = FileIdentity::of_file(&source).expect("old identity");
+            let alias = fixture.root.join("old-alias");
+            fs::hard_link(&fixture.path, &alias).expect("retain a link to the old inode");
+            repair
+                .replace_verified(&fixture.directory(), "member.ref", &mut source, 15, verify)
+                .expect("replace through the extended readonly rename capability");
+            assert_ne!(
+                old,
+                FileIdentity::of_path_nofollow(&fixture.path).expect("new inode")
+            );
+            assert_eq!(
+                old,
+                FileIdentity::of_path_nofollow(&alias).expect("old alias identity")
+            );
+            assert!(
+                source
+                    .metadata()
+                    .expect("old handle seal")
+                    .permissions()
+                    .readonly()
+            );
+            assert!(
+                fs::metadata(&alias)
+                    .expect("old alias seal")
+                    .permissions()
+                    .readonly()
+            );
+            assert!(
+                fs::metadata(&fixture.path)
+                    .expect("new seal")
+                    .permissions()
+                    .readonly()
+            );
+            source.seek(SeekFrom::Start(0)).expect("rewind old reader");
+            let mut old_bytes = Vec::new();
+            source
+                .read_to_end(&mut old_bytes)
+                .expect("held old reader remains usable");
+            assert_eq!(old_bytes, b"verified member");
+            assert_eq!(fs::read(&fixture.path).expect("new bytes"), old_bytes);
+        }
+
+        #[test]
+        fn private_stage_create_failure_leaves_old_readonly_name_and_bytes() {
+            let fixture = Fixture::new();
+            let pin = fixture.store.acquire_gc_pin().expect("existing GC pin");
+            let repair =
+                DurabilityRepair::new(&fixture.store, &pin).expect("one leased repair directory");
+            let _collision = create_stage_file(&repair.session.directory, "object-0.tmp")
+                .expect("force actual create_new failure");
+            let mut source = open_path(&fixture.path)
+                .expect("open old name")
+                .expect("old member");
+            let identity = FileIdentity::of_file(&source).expect("old identity");
+            assert!(
+                repair
+                    .replace_verified(&fixture.directory(), "member.ref", &mut source, 15, verify)
+                    .is_err()
+            );
+            fixture.assert_old(identity);
+            assert!(
+                fixture
+                    .store
+                    .try_with_gc_exclusive_lease(|| Ok(()))
+                    .expect("GC cannot cut across repair")
+                    .is_none()
+            );
+            drop((repair, pin));
+            assert!(
+                fixture
+                    .store
+                    .try_with_gc_exclusive_lease(|| Ok(()))
+                    .expect("GC released after repair")
+                    .is_some()
+            );
+        }
+
+        #[test]
+        fn copy_bounds_verification_and_prepublication_failures_leave_old_inode_sealed() {
+            for point in [0, 30, 31, 32] {
+                let fixture = Fixture::new();
+                let pin = fixture.store.acquire_gc_pin().expect("existing GC custody");
+                let repair = DurabilityRepair::new(&fixture.store, &pin).expect("repair directory");
+                let mut source = open_path(&fixture.path)
+                    .expect("open old name")
+                    .expect("old member");
+                let identity = FileIdentity::of_file(&source).expect("old identity");
+                if matches!(point, 31 | 32) {
+                    super::super::set_test_fault(point);
+                }
+                let result = repair.replace_verified(
+                    &fixture.directory(),
+                    "member.ref",
+                    &mut source,
+                    if point == 0 { 1 } else { 15 },
+                    |file| {
+                        if point == 30 {
+                            Err(StoreError::Corrupt)
+                        } else {
+                            verify(file)
+                        }
+                    },
+                );
+                assert!(result.is_err());
+                fixture.assert_old(identity);
+                // These fault points model a returned error, so let normal fixture cleanup run.
+                let _ = super::super::simulate_process_crash();
+            }
+        }
+
+        #[test]
+        fn stage_identity_check_refuses_a_different_regular_file() {
+            let fixture = Fixture::new();
+            let foreign_path = fixture.root.join("foreign");
+            fs::write(&foreign_path, b"verified member").expect("different regular inode");
+            let foreign = File::open(&foreign_path).expect("foreign handle");
+            assert_eq!(
+                check_regular(&fixture.path, &foreign),
+                Err(StoreError::UnsafePath)
+            );
+            let identity =
+                FileIdentity::of_path_nofollow(&fixture.path).expect("original fixture identity");
+            let directory = ArtifactDirectory {
+                file: check_directory(&fixture.root.join("nodes"))
+                    .expect("actual fixture directory"),
+                path: fixture.root.join("nodes"),
+            };
+            assert!(unlink_stage_file(&directory, "member.ref", &foreign).is_err());
+            fixture.assert_old(identity);
+        }
+    }
+
+    #[cfg(windows)]
+    fn checked_linked_file(
+        parent: &File,
+        name: &str,
+        source: &File,
+        links: u64,
+    ) -> Result<File, StoreError> {
+        let named = backend_platform::durability::open_regular_file_child_nofollow(parent, name)
+            .map_err(|error| io_error(&error))?;
+        if backend_platform::FileIdentity::of_file(&named).map_err(|error| io_error(&error))?
+            != backend_platform::FileIdentity::of_file(source).map_err(|error| io_error(&error))?
+            || backend_platform::file_identity::number_of_links(&named)
+                .map_err(|error| io_error(&error))?
+                != links
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        Ok(named)
+    }
+
     pub(in crate::durable) fn link_stage_object(
         staging: &ArtifactDirectory,
         staging_name: &str,
         source: &File,
         store: &FileStore,
         id: ObjectId,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<Option<DurableObjectFile>, StoreError> {
         let staged_path = staging.path.join(staging_name);
         check_regular(&staged_path, source)?;
         seal_immutable_file(source)?;
-        source.sync_all().map_err(|error| io_error(&error))?;
+        #[cfg(windows)]
+        let objects_handle = {
+            let root = check_directory(&store.root)?;
+            backend_platform::durability::open_directory_child_nofollow(&root, "objects")
+                .map_err(|error| io_error(&error))?
+        };
+        #[cfg(not(windows))]
         let objects = store.root.join("objects");
         let destination = store.object_path(id);
         match fs::hard_link(&staged_path, &destination) {
             Ok(()) => {
+                #[cfg(windows)]
+                {
+                    // A receipt covers the actual destination under this held directory,
+                    // never whichever directory a later path lookup happens to resolve.
+                    let name = format!("{}.object", super::super::hex(id.as_bytes()));
+                    checked_linked_file(&objects_handle, &name, source, 2)?;
+                    objects_handle
+                        .sync_all()
+                        .map_err(|error| io_error(&error))?;
+                }
+                #[cfg(not(windows))]
                 crate::durable::sync_directory(&objects)?;
                 super::wait_test_link_barrier();
                 if take_test_fault(12) {
@@ -1299,10 +1960,22 @@ mod imp {
                         "injected interruption after object link".to_owned(),
                     ));
                 }
-                unlink_stage_file(staging, staging_name)?;
-                Ok(true)
+                unlink_stage_file(staging, staging_name, source)?;
+                #[cfg(windows)]
+                {
+                    let name = format!("{}.object", super::super::hex(id.as_bytes()));
+                    let named = checked_linked_file(&objects_handle, &name, source, 1)?;
+                    let identity = backend_platform::FileIdentity::of_file(&named)
+                        .map_err(|error| io_error(&error))?;
+                    Ok(Some(DurableObjectFile {
+                        object: id,
+                        identity,
+                    }))
+                }
+                #[cfg(not(windows))]
+                linked_object_receipt(source, store, id).map(Some)
             }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(None),
             Err(error) => Err(io_error(&error)),
         }
     }
@@ -1317,12 +1990,32 @@ mod imp {
         let mut temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
         temp.write_all(bytes).map_err(|error| io_error(&error))?;
         seal_immutable_file(&temp)?;
-        drop(temp);
+        #[cfg(windows)]
+        let closures = {
+            let root = check_directory(&store.root)?;
+            backend_platform::durability::open_directory_child_nofollow(&root, "closures")
+                .map_err(|error| io_error(&error))?
+        };
+        #[cfg(windows)]
+        let name = format!("{}.closure", super::super::hex(id.as_bytes()));
         let destination = store.closure_path(id);
         let created = match fs::hard_link(&temp_path, &destination) {
             Ok(()) => true,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                let existing = open_path(&destination)?.ok_or(StoreError::Corrupt)?;
+                #[cfg(windows)]
+                let existing = backend_platform::durability::open_regular_file_child_nofollow(
+                    &closures, &name,
+                )
+                .map_err(|error| io_error(&error))?;
+                #[cfg(not(windows))]
+                let existing = open_closure(store, id)?;
+                #[cfg(windows)]
+                if backend_platform::file_identity::number_of_links(&existing)
+                    .map_err(|error| io_error(&error))?
+                    != 1
+                {
+                    return Err(StoreError::UnsafePath);
+                }
                 let mut existing_bytes = Vec::new();
                 existing
                     .take(
@@ -1335,11 +2028,35 @@ mod imp {
                 if existing_bytes != bytes {
                     return Err(StoreError::Corrupt);
                 }
+                #[cfg(windows)]
+                {
+                    // Equal old bytes and a read-only bit do not prove the descriptor's
+                    // durability. The canonical temp already completed its actual barrier.
+                    backend_platform::durability::replace_file_preserving_readonly_at(
+                        &staging.file,
+                        CLOSURE_TEMP_FILE,
+                        &temp,
+                        &closures,
+                        &name,
+                    )
+                    .map_err(|error| io_error(&error))?;
+                    closures.sync_all().map_err(|error| io_error(&error))?;
+                    staging.sync_all()?;
+                    checked_linked_file(&closures, &name, &temp, 1)?;
+                    return Ok(false);
+                }
+                #[cfg(not(windows))]
                 false
             }
             Err(error) => return Err(io_error(&error)),
         };
         if created {
+            #[cfg(windows)]
+            {
+                checked_linked_file(&closures, &name, &temp, 2)?;
+                closures.sync_all().map_err(|error| io_error(&error))?;
+            }
+            #[cfg(not(windows))]
             crate::durable::sync_directory(&store.root.join("closures"))?;
             super::wait_test_link_barrier();
             if take_test_fault(13) {
@@ -1348,7 +2065,9 @@ mod imp {
                 ));
             }
         }
-        unlink_stage_file(staging, CLOSURE_TEMP_FILE)?;
+        unlink_stage_file(staging, CLOSURE_TEMP_FILE, &temp)?;
+        #[cfg(windows)]
+        checked_linked_file(&closures, &name, &temp, 1)?;
         Ok(created)
     }
 
@@ -1370,6 +2089,9 @@ pub(super) use imp::{
     open_object, open_store_file, prepare_staging_root, reap_stale_sessions, unlink_stage_file,
     write_closure_descriptor,
 };
+
+#[cfg(windows)]
+pub(super) use imp::{DurabilityRepair, open_directory_file};
 
 /// Recovers the staging sessions of processes that died mid-write, when the
 /// store has ever staged one.

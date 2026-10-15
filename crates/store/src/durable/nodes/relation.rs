@@ -715,7 +715,7 @@ mod tests {
             "backend-store-relation-ref-{label}-{}-{nonce}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = remove_store_fixture(&root);
         let store = FileStore::open(&root, 1024 * 1024).expect("open test store");
         (store, root)
     }
@@ -740,8 +740,42 @@ mod tests {
 
     fn replace_object(store: &FileStore, id: ObjectId, bytes: &[u8]) {
         let path = store.object_path(id);
-        fs::remove_file(&path).expect("remove immutable object fixture");
+        remove_immutable_fixture(&path);
         fs::write(path, bytes).expect("write replacement object fixture");
+    }
+
+    fn remove_store_fixture(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let path = path.as_ref();
+        #[cfg(windows)]
+        for directory in ["objects", "closures", "nodes"] {
+            if let Ok(entries) = fs::read_dir(path.join(directory)) {
+                for entry in entries {
+                    let entry = entry?;
+                    if entry.file_type()?.is_file() {
+                        let file = backend_platform::durability::open_regular_file_nofollow(
+                            &entry.path(),
+                        )?;
+                        backend_platform::durability::unlink_file_preserving_readonly(
+                            &entry.path(),
+                            &file,
+                        )?;
+                    }
+                }
+            }
+        }
+        fs::remove_dir_all(path)
+    }
+
+    fn remove_immutable_fixture(path: &std::path::Path) {
+        #[cfg(windows)]
+        {
+            let file = backend_platform::durability::open_regular_file_nofollow(path)
+                .expect("open immutable fixture");
+            backend_platform::durability::unlink_file_preserving_readonly(path, &file)
+                .expect("unlink fixture without unsealing");
+        }
+        #[cfg(not(windows))]
+        fs::remove_file(path).expect("remove immutable fixture");
     }
 
     fn branch() -> crate::Node {
@@ -783,7 +817,7 @@ mod tests {
         let store = FileStore::open(&path, 1024 * 1024).expect("reopen repaired tree");
         assert_eq!(store.relation_ref_matches(schema, &version), Ok(true));
         drop(store);
-        fs::remove_dir_all(path).expect("remove fixture");
+        remove_store_fixture(path).expect("remove fixture");
     }
 
     #[test]
@@ -803,7 +837,7 @@ mod tests {
             install_branch(&store, &node).expect("retry complete admission");
             assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
             drop(store);
-            fs::remove_dir_all(path).expect("remove fixture");
+            remove_store_fixture(path).expect("remove fixture");
         }
     }
 
@@ -819,10 +853,10 @@ mod tests {
             super::super::dependencies::set_test_fault(point, object.id());
             assert!(admission.existing(object.schema(), object.version()).is_err());
             let child = node.children().next().expect("child");
-            fs::remove_file(store.object_path(root_object(&child).id())).expect("simulate lost child");
+            remove_immutable_fixture(&store.object_path(root_object(&child).id()));
             assert!(admission.existing(object.schema(), object.version()).expect("probe again").is_none());
             drop((admission, pin, store));
-            fs::remove_dir_all(path).expect("remove fixture");
+            remove_store_fixture(path).expect("remove fixture");
         }
     }
 
@@ -842,7 +876,7 @@ mod tests {
         drop((admission, pin));
         assert!(store.try_with_gc_exclusive_lease(|| Ok(())).expect("try GC again").is_some());
         drop(store);
-        fs::remove_dir_all(path).expect("remove fixture");
+        remove_store_fixture(path).expect("remove fixture");
     }
 
     #[test]
@@ -852,8 +886,8 @@ mod tests {
         let pin = second.acquire_gc_pin().expect("second root pin");
         assert!(RelationAdmission::new(&first, &pin).is_err());
         drop((pin, first, second));
-        fs::remove_dir_all(first_path).expect("remove first root");
-        fs::remove_dir_all(second_path).expect("remove second root");
+        remove_store_fixture(first_path).expect("remove first root");
+        remove_store_fixture(second_path).expect("remove second root");
     }
 
     #[test]
@@ -875,7 +909,7 @@ mod tests {
         assert!(unrelated.exists());
         assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
         drop(store);
-        fs::remove_dir_all(path).expect("remove fixture");
+        remove_store_fixture(path).expect("remove fixture");
     }
 
     #[test]
@@ -907,7 +941,7 @@ mod tests {
             install_branch(&store, &node).expect("retry after process loss");
             assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
             drop(store);
-            fs::remove_dir_all(path).expect("remove fixture");
+            remove_store_fixture(path).expect("remove fixture");
         }
     }
 
@@ -921,7 +955,7 @@ mod tests {
         fs::remove_file(store.object_path(object.id())).expect("remove referenced object");
 
         assert_eq!(store.relation_ref_matches(schema, &version), Ok(false));
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 
     #[test]
@@ -938,7 +972,7 @@ mod tests {
             store.relation_ref_matches(schema, &version),
             Err(StoreError::Corrupt)
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 
     #[test]
@@ -965,7 +999,7 @@ mod tests {
             store.relation_ref_matches(schema, &version),
             Err(StoreError::Corrupt)
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 
     #[test]
@@ -988,7 +1022,7 @@ mod tests {
             store.relation_ref_matches(schema, &version),
             Err(StoreError::Bounds)
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 
     #[cfg(unix)]
@@ -1009,7 +1043,7 @@ mod tests {
             store.relation_ref_matches(schema, &version),
             Err(StoreError::UnsafePath)
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 
     #[cfg(unix)]
@@ -1028,6 +1062,6 @@ mod tests {
             store.relation_ref_matches(schema, &version),
             Err(StoreError::UnsafePath)
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = remove_store_fixture(root);
     }
 }

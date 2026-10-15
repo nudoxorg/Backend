@@ -90,6 +90,70 @@ fn orphan_objects_are_reclaimed_and_roots_are_retained() {
     let _ = fs::remove_dir_all(path);
 }
 
+#[cfg(windows)]
+#[test]
+fn readonly_quarantine_deletion_preserves_live_members_and_held_old_readers() {
+    use std::io::Read as _;
+
+    let (store, path) = temp_store("windows-readonly-quarantine");
+    let live = object(10_001);
+    let orphan = object(10_002);
+    for member in [&live, &orphan] {
+        store.write_object(member).expect("write GC fixture member");
+        let member_path = store.object_path(member.id());
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&member_path)
+            .expect("hold actual writable fixture handle");
+        let mut permissions = handle.metadata().expect("fixture metadata").permissions();
+        permissions.set_readonly(true);
+        handle.set_permissions(permissions).expect("seal fixture");
+        handle
+            .sync_all()
+            .expect("flush actual sealed fixture handle");
+    }
+    let orphan_path = store.object_path(orphan.id());
+    let expected = fs::read(&orphan_path).expect("orphan envelope");
+    let mut held = fs::File::open(&orphan_path).expect("hold old readonly reader");
+    let mut roots = GcRoots::new();
+    roots.add(GcRoot::Object(live.id()));
+    let report = store
+        .collect_garbage(&roots, GcLimits::default())
+        .expect("collect real readonly Windows member");
+    assert_eq!(report.swept_items, 1);
+    assert!(!orphan_path.exists());
+    assert!(
+        store
+            .contains_object(live.id())
+            .expect("live member retained")
+    );
+    assert!(
+        fs::metadata(store.object_path(live.id()))
+            .expect("live metadata")
+            .permissions()
+            .readonly()
+    );
+    assert!(
+        held.metadata()
+            .expect("old reader metadata")
+            .permissions()
+            .readonly()
+    );
+    let mut actual = Vec::new();
+    held.read_to_end(&mut actual)
+        .expect("old reader stays readable after unlink");
+    assert_eq!(actual, expected);
+    let live_path = store.object_path(live.id());
+    let live_file = backend_platform::durability::open_regular_file_nofollow(&live_path)
+        .expect("open remaining readonly fixture");
+    backend_platform::durability::unlink_file_preserving_readonly(&live_path, &live_file)
+        .expect("remove remaining fixture without unsealing");
+    drop(live_file);
+    drop((held, store));
+    let _ = fs::remove_dir_all(path);
+}
+
 #[test]
 fn missing_reachable_object_fails_closed_before_sweep() {
     let (store, path) = temp_store("missing");

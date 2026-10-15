@@ -1186,6 +1186,7 @@ pub struct ArtifactSession {
     budget: ArtifactBudget,
     plan: ArtifactPlan,
     object_ids: Vec<Option<ObjectId>>,
+    durable_objects: std::collections::HashMap<ObjectId, artifact_fs::DurableObjectFile>,
     next_put: usize,
     pending: Option<PendingObject>,
     staging_name: String,
@@ -1236,6 +1237,7 @@ impl ArtifactSession {
             gc_pin: Some(gc_pin),
             budget,
             object_ids: vec![None; plan.puts.len()],
+            durable_objects: std::collections::HashMap::new(),
             plan,
             next_put: 0,
             pending: None,
@@ -1444,8 +1446,11 @@ impl ArtifactSession {
             return Err(StoreError::Bounds);
         }
         let pin = self.gc_pin.as_ref().ok_or(StoreError::Corrupt)?;
-        let mut admission = nodes::RelationAdmission::new(&self.store, pin)?;
-        let relation_write = self.store.write_lazy_relation_update_admitted(&update, &mut admission)?;
+        let mut admission =
+            nodes::RelationAdmission::streamed(&self.store, pin, &self.durable_objects)?;
+        let relation_write = self
+            .store
+            .write_lazy_relation_update_admitted(&update, &mut admission)?;
         let candidate_facts = verify_closure_tree(
             &self.store,
             update.target_root(),
@@ -1653,14 +1658,19 @@ impl ArtifactSession {
             .and_then(|_| pending.file.sync_all())
             .map_err(|error| io_error(&error))?;
 
-        let created = artifact_fs::link_stage_object(
+        let durable = artifact_fs::link_stage_object(
             &self.staging_dir,
             &pending.name,
             &pending.file,
             &self.store,
             id,
         )?;
-        if created {
+        let created = durable.is_some();
+        if let Some(receipt) = durable {
+            self.durable_objects
+                .try_reserve(1)
+                .map_err(|_| StoreError::Bounds)?;
+            self.durable_objects.insert(id, receipt);
             // The staging link was removed only after the CAS directory entry
             // was synchronized. The file descriptor remains open here, but
             // the immutable CAS name now has a single link.
@@ -1674,7 +1684,7 @@ impl ArtifactSession {
             if checked.id != id {
                 return Err(StoreError::Corrupt);
             }
-            artifact_fs::unlink_stage_file(&self.staging_dir, &pending.name)?;
+            artifact_fs::unlink_stage_file(&self.staging_dir, &pending.name, &pending.file)?;
             self.staging_dir.sync_all()?;
         }
         drop(pending.file);
@@ -1884,10 +1894,49 @@ fn verify_object_file_reader_limited_with_payload(
     maximum_payload_bytes: Option<u64>,
     consume_chunk: &mut impl FnMut(&[u8]) -> Result<(), StoreError>,
 ) -> Result<Option<(VerifiedObject, File)>, StoreError> {
-    let mut file = match artifact_fs::open_object(store, ObjectId::from_bytes(*claim.as_bytes()))? {
+    let file = match artifact_fs::open_object(store, ObjectId::from_bytes(*claim.as_bytes()))? {
         Some(file) => file,
         None => return Ok(None),
     };
+    verify_object_reader_limited_with_payload(
+        store,
+        claim,
+        expected,
+        maximum_payload_bytes,
+        consume_chunk,
+        file,
+    )
+    .map(Some)
+}
+
+/// Authenticates the exact private copy that will receive the durability barrier.
+/// Ordinary payloads use the existing fixed verification buffer; relation payloads retain
+/// their existing relation-object bound. No pathname reopen supplies bytes to this check.
+#[cfg(windows)]
+pub(super) fn verify_object_file_handle(
+    store: &FileStore,
+    id: ObjectId,
+    file: File,
+) -> Result<(), StoreError> {
+    verify_object_reader_limited_with_payload(
+        store,
+        UntrustedObjectId::from_bytes(*id.as_bytes()),
+        None,
+        None,
+        &mut |_| Ok(()),
+        file,
+    )
+    .map(|_| ())
+}
+
+fn verify_object_reader_limited_with_payload(
+    store: &FileStore,
+    claim: UntrustedObjectId,
+    expected: Option<ArtifactObjectClaim>,
+    maximum_payload_bytes: Option<u64>,
+    consume_chunk: &mut impl FnMut(&[u8]) -> Result<(), StoreError>,
+    mut file: File,
+) -> Result<(VerifiedObject, File), StoreError> {
     let metadata = file.metadata().map_err(|error| io_error(&error))?;
     let encoded_len = usize::try_from(metadata.len()).map_err(|_| StoreError::Bounds)?;
     if encoded_len > store.object_envelope_limit()? || encoded_len < object_header_bytes() {
@@ -2022,7 +2071,7 @@ fn verify_object_file_reader_limited_with_payload(
     };
     file.seek(SeekFrom::Start(0))
         .map_err(|error| io_error(&error))?;
-    Ok(Some((verified, file)))
+    Ok((verified, file))
 }
 
 fn verify_stored_closure(

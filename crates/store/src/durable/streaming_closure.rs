@@ -545,7 +545,7 @@ impl StreamingClosureBuilder {
             {
                 return Err(StoreError::Corrupt);
             }
-            artifact_fs::unlink_stage_file(&self.staging_dir, name)?;
+            artifact_fs::unlink_stage_file(&self.staging_dir, name, &file)?;
             self.staging_dir.sync_all()?;
         } else {
             let linked = artifact_fs::link_stage_object(
@@ -555,7 +555,11 @@ impl StreamingClosureBuilder {
                 &self.store,
                 object_id,
             )?;
-            if linked {
+            if linked.is_some() {
+                // This builder keeps its per-member metadata on disk and deliberately does
+                // not retain the stream session's in-memory inode receipts. Seal admission
+                // therefore performs a fresh actual barrier, including a verified private
+                // copy on Windows; this boolean is accounting, never durability provenance.
                 created = true;
             } else {
                 let existing = self
@@ -570,7 +574,7 @@ impl StreamingClosureBuilder {
                 {
                     return Err(StoreError::Corrupt);
                 }
-                artifact_fs::unlink_stage_file(&self.staging_dir, name)?;
+                artifact_fs::unlink_stage_file(&self.staging_dir, name, &file)?;
                 self.staging_dir.sync_all()?;
             }
         }
