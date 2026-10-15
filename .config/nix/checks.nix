@@ -25,6 +25,13 @@ let
   lunaToolsClosure = pkgs.closureInfo {
     rootPaths = [ lunaTools ];
   };
+  nativeCompilerEnv = import ./corpus-env.nix {
+    inherit pkgs tools toolchains;
+    corpus = null;
+  };
+  nativeCompilerFlags = pkgs.lib.filterAttrs (
+    name: _: pkgs.lib.hasPrefix "NIX_" name
+  ) nativeCompilerEnv;
   localHostRuntimeContract =
     if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
       pkgs.runCommand "nudox-local-host-runtime-contract"
@@ -87,6 +94,36 @@ in
       done
       touch "$out"
     '';
+
+  native-c-probe-contract = pkgs.runCommand "nudox-native-c-probe-contract" {
+    nativeBuildInputs = [ pkgs.stdenv.cc ];
+  } ''
+    # The backend command installs these captured flags after the caller's
+    # environment. Exercise that actual environment, rather than the shell's
+    # hardeningDisable setting, with jemalloc's real -O0/-Werror pattern.
+    ${pkgs.lib.concatMapStringsSep "\n" (
+      name: "export ${name}=${pkgs.lib.escapeShellArg nativeCompilerFlags.${name}}"
+    ) (builtins.attrNames nativeCompilerFlags)}
+    cat > probe.c <<'C'
+    #define _GNU_SOURCE
+    #include <errno.h>
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    int main(void) {
+      char buffer[100];
+    #ifdef __linux__
+      char *message = strerror_r(EINVAL, buffer, sizeof(buffer));
+      return message == NULL;
+    #else
+      return strerror_r(EINVAL, buffer, sizeof(buffer)) != 0;
+    #endif
+    }
+    C
+    cc -std=gnu11 -O0 -Werror probe.c -o probe
+    ./probe
+    touch "$out"
+  '';
 
   surface-smoke-contract =
     pkgs.runCommand "nudox-surface-smoke-contract"
