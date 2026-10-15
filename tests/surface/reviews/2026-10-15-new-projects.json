@@ -153,6 +153,47 @@
         }
       },
       "calibration": "single native run; more measurements required before acceptance"
+    },
+    {
+      "case": "rust-itoa",
+      "build": 490240,
+      "harness_sha": "bae811776",
+      "artifact_source_sha": "29066f7f18af48b0d39cd37fcf779f8f2147ed1d",
+      "not_exact_head_ci_verdict": true,
+      "snapshot_sha256": "6254213696d2be1b41499ea353ed481fb49b38443f51e53c06c6234ea095c79d",
+      "source_review": [
+        {
+          "symbol": "Buffer",
+          "path": "src/lib.rs",
+          "declaration_line": 64,
+          "source_line": "pub struct Buffer {",
+          "source_sha256": "dda57223f32db917f3996d5294acbbdff61e4860fc7d1b284a105c6f77399e28",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        },
+        {
+          "symbol": "format",
+          "path": "src/lib.rs",
+          "declaration_line": 98,
+          "source_line": "pub fn format<I: Integer>(&mut self, i: I) -> &str {",
+          "source_sha256": "dda57223f32db917f3996d5294acbbdff61e4860fc7d1b284a105c6f77399e28",
+          "cli_location_matches": true,
+          "mcp_contains_authored_path": true
+        }
+      ],
+      "observed_performance": {
+        "cpu_seconds": 25.91,
+        "peak_rss_kib": 759328,
+        "seconds": {
+          "cli add": 27.84,
+          "cli outline": 0.04,
+          "cli packages": 0.02,
+          "cli search Buffer": 3.51,
+          "cli search format": 0.02,
+          "mcp": 0.16
+        }
+      },
+      "calibration": "single native run; repeat measurements required before acceptance"
     }
   ]
 }
