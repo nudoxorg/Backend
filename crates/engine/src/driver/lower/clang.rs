@@ -2583,7 +2583,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 } = reference.target
                 {
                     if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
-                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                        if let Ok(package_lineage) =
+                            PackageLineage::new(ECOSYSTEM, package_path.as_ref())
+                        {
                             let (name_bytes, site_span) = match reference.kind {
                                 ReferenceKind::Call => (
                                     member_call_callee_name(self.source, reference.span)
@@ -2609,27 +2611,38 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            // Package keys require a source-backed spelling. Macro
-                            // expansions can carry a valid foreign USR while their
-                            // expansion-site name range is empty; keep those refs on
-                            // the stable USR/file target path below instead of
-                            // manufacturing an empty package key.
+                            // Package keys require a source-backed spelling that
+                            // satisfies the canonical ForeignKey path contract. A
+                            // call extent may include escaped string arguments; that
+                            // is useful source evidence, but not a legal package path.
+                            // Keep such resolved refs on the stable USR/file target.
                             if !name_bytes.is_empty() {
                                 if let Ok(name) = core::str::from_utf8(name_bytes) {
-                                    self.facts
-                                        .push_owned_package_occurrence(
-                                            owner,
-                                            ECOSYSTEM,
-                                            package_path.as_ref(),
-                                            name,
-                                            name,
-                                            entity_kind,
-                                            lane_reference_kind(reference.kind),
-                                            OccurrenceConfidence::Oracle,
-                                            span,
-                                        )
-                                        .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
-                                    continue;
+                                    if ForeignKey::new(
+                                        ForeignOrigin::Package(package_lineage),
+                                        name,
+                                        name,
+                                        entity_kind,
+                                    )
+                                    .is_ok()
+                                    {
+                                        self.facts
+                                            .push_owned_package_occurrence(
+                                                owner,
+                                                ECOSYSTEM,
+                                                package_path.as_ref(),
+                                                name,
+                                                name,
+                                                entity_kind,
+                                                lane_reference_kind(reference.kind),
+                                                OccurrenceConfidence::Oracle,
+                                                span,
+                                            )
+                                            .map_err(|fault| {
+                                                lane_terminal(&self.facts, 0, fault)
+                                            })?;
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -4653,16 +4666,17 @@ mod tests {
         Ok(())
     }
 
-    /// A foreign type reached through a macro whose expansion spelling has no
-    /// source bytes must retain its USR/file identity. The package-key fast path
-    /// is reserved for an actual nonempty spelling.
+    /// A foreign call reached through a macro must retain its USR/file identity
+    /// when the span is empty or includes an escaped literal that cannot form a
+    /// canonical package path.
     #[test]
-    fn zero_width_macro_foreign_reference_keeps_stable_identity() -> Result<(), TestError> {
+    fn macro_foreign_call_keeps_stable_identity_for_invalid_package_spellings()
+    -> Result<(), TestError> {
         let root = unique_temp_project()?;
         let header = root.join("include").join("decl.h");
         let entry = root.join("src").join("main.c");
-        let source = b"#include \"decl.h\"\n#define FOREIGN_TYPE HeaderType\nFOREIGN_TYPE *use(void) { return 0; }\n";
-        fs::write(&header, b"typedef int HeaderType;\n")
+        let source = b"#include \"decl.h\"\n#define FOREIGN_CALL(text) declared_in_header(text)\nint use(void) { return FOREIGN_CALL(\"a\\xb0\") != 0; }\n";
+        fs::write(&header, b"int declared_in_header(const char *);\n")
             .map_err(|_| TestError::Missing("header write"))?;
         fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
         let database = format!(
@@ -4674,29 +4688,38 @@ mod tests {
 
         let project =
             ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
-        let (bytes, expected_target) =
-            lower_project_with_zero_width_foreign_type(&project, source)?;
-        let view = FragmentView::validate(&bytes)?;
-        let owner = entity_of(&view, b"use", EntityKind::Function)?;
-        if !occurrences(&view)?.iter().any(|row| {
-            row.owner == owner
-                && row.occurrence.kind == backend_semantic::ir::ReferenceKind::TypeReference
-                && row.occurrence.target == expected_target
-        }) {
-            return Err(TestError::Missing(
-                "stable foreign type occurrence through macro",
-            ));
+        for span_mode in [ForeignCallSpan::ZeroWidth, ForeignCallSpan::WholeInvocation] {
+            let (bytes, expected_target) =
+                lower_project_with_foreign_call(&project, source, span_mode)?;
+            let view = FragmentView::validate(&bytes)?;
+            let owner = entity_of(&view, b"use", EntityKind::Function)?;
+            if !occurrences(&view)?.iter().any(|row| {
+                row.owner == owner
+                    && row.occurrence.kind == backend_semantic::ir::ReferenceKind::FunctionCall
+                    && row.occurrence.target == expected_target
+            }) {
+                return Err(TestError::Missing(
+                    "stable foreign call occurrence through macro",
+                ));
+            }
         }
 
         Ok(())
     }
 
-    /// Collects real project authority, then makes the macro-expanded foreign
-    /// type use zero-width before running the production projection passes.
-    /// This isolates the empty-spelling branch without fabricating a target.
-    fn lower_project_with_zero_width_foreign_type(
+    #[derive(Clone, Copy)]
+    enum ForeignCallSpan {
+        ZeroWidth,
+        WholeInvocation,
+    }
+
+    /// Collects real project authority, then adjusts the macro call span before
+    /// running production projection passes. The full invocation contains a
+    /// backslash and cannot be a canonical key path.
+    fn lower_project_with_foreign_call(
         project: &ClangProject,
         source: &[u8],
+        span_mode: ForeignCallSpan,
     ) -> Result<(Vec<u8>, OccurrenceTarget<'static>), TestError> {
         let file_name = CString::new(project.entry().to_string_lossy().as_bytes())
             .map_err(|_| TestError::Missing("entry path"))?;
@@ -4731,7 +4754,7 @@ mod tests {
 
         project
             .environment()
-            .with_loaded_libclang(|| -> Result<(), ClangCollectError> {
+            .with_loaded_libclang(|| -> Result<(), TestError> {
                 let authority = super::collect_cancellable(
                     input,
                     ClangScratch {
@@ -4745,31 +4768,25 @@ mod tests {
                     },
                     &AtomicBool::new(false),
                 )
-                .map_err(ClangCollectError::Authority)?;
+                .map_err(|error| TestError::Collect(ClangCollectError::Authority(error)))?;
                 let mut references = authority.references.to_vec();
                 let use_start = source
-                    .windows(b"FOREIGN_TYPE".len())
-                    .rposition(|window| window == b"FOREIGN_TYPE")
-                    .ok_or(ClangCollectError::Lowering(
-                        super::LoweringUnsupported::ClangDeclarationForm,
-                    ))?;
-                let use_start = u32::try_from(use_start).map_err(|_| {
-                    ClangCollectError::Lowering(super::LoweringUnsupported::ClangDeclarationForm)
-                })?;
+                    .windows(b"FOREIGN_CALL".len())
+                    .rposition(|window| window == b"FOREIGN_CALL")
+                    .ok_or(TestError::Missing("macro invocation source range"))?;
+                let use_start = u32::try_from(use_start).map_err(|_| TestError::Tail)?;
                 let reference = references
                     .iter_mut()
                     .find(|reference| {
-                        matches!(
-                            reference.kind,
-                            super::ReferenceKind::Type | super::ReferenceKind::Template
-                        ) && reference.owner.is_some()
+                        reference.kind == super::ReferenceKind::Call
+                            && reference.owner.is_some()
                             && matches!(
                                 reference.target,
                                 super::ReferenceTarget::Foreign { path: Some(_), .. }
                             )
                     })
-                    .ok_or(ClangCollectError::Lowering(
-                        super::LoweringUnsupported::ClangDeclarationForm,
+                    .ok_or(TestError::Missing(
+                        "owner-bound foreign call with project path",
                     ))?;
                 let (identity, file) = match reference.target {
                     super::ReferenceTarget::Foreign {
@@ -4777,16 +4794,25 @@ mod tests {
                         file: Some(file),
                         path: Some(_),
                     } => (identity, file),
-                    _ => {
-                        return Err(ClangCollectError::Lowering(
-                            super::LoweringUnsupported::ClangDeclarationForm,
-                        ));
-                    }
+                    _ => return Err(TestError::Missing("foreign call file identity")),
                 };
                 expected_target = Some(super::stable_foreign_target(identity, file));
+                let span_end = match span_mode {
+                    ForeignCallSpan::ZeroWidth => use_start,
+                    ForeignCallSpan::WholeInvocation => {
+                        let tail = source.get(use_start as usize..).ok_or(TestError::Tail)?;
+                        let close = tail
+                            .iter()
+                            .position(|byte| *byte == b')')
+                            .ok_or(TestError::Missing("macro invocation closing delimiter"))?;
+                        use_start
+                            .checked_add(u32::try_from(close + 1).map_err(|_| TestError::Tail)?)
+                            .ok_or(TestError::Tail)?
+                    }
+                };
                 reference.span = SourceSpan {
                     start: use_start,
-                    end: use_start,
+                    end: span_end,
                 };
                 let authority = backend_frontend_clang::legacy::ClangFacts {
                     declarations: authority.declarations,
@@ -4798,10 +4824,12 @@ mod tests {
                     overrides: authority.overrides,
                     project_paths: authority.project_paths,
                 };
-                super::project_authority(source, authority, &mut facts)
+                super::project_authority(source, authority, &mut facts).map_err(TestError::Collect)
             })
             .map_err(|error| {
-                ClangCollectError::Authority(CollectError::ConfiguredLibrary(error))
+                TestError::Collect(ClangCollectError::Authority(
+                    CollectError::ConfiguredLibrary(error),
+                ))
             })??;
         Ok((
             encode_facts(LanguageProfile::C(CStandard::C11), source, &facts)?,
