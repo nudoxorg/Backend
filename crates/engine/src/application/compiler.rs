@@ -1073,8 +1073,8 @@ pub enum StagedVersionedPlaneError {
     #[error("semantic-plane output requires an admitted compiler runtime identity")]
     ExecutionIdentityUnavailable,
     /// The runtime identity does not govern the exact staged package target/profile/stage.
-    #[error("semantic-plane identity does not match the staged compiler target")]
-    ExecutionIdentityMismatch,
+    #[error("semantic-plane identity does not match the staged compiler target: {0}")]
+    ExecutionIdentityMismatch(StagedIdentityFacet),
     /// One canonical semantic image was empty and cannot form a nonempty segment range.
     #[error("semantic image {artifact_ordinal} is empty")]
     EmptySemanticImage {
@@ -1092,6 +1092,165 @@ pub enum StagedVersionedPlaneError {
     Allocation(#[source] std::collections::TryReserveError),
 }
 
+/// The one staged identity fact that failed to bind compiler output to its admitted runtime.
+///
+/// Every staged-plane producer validates through [`StagedSemanticPackage::admitted_runtime`] and
+/// [`StagedSemanticPackage::admitted_artifact_recipe`], so a refusal always names the exact fact
+/// instead of collapsing several distinct checks into one message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedIdentityFacet {
+    /// The host-local plane identity was sealed over another input/read witness.
+    InputWitness,
+    /// The runtime identity governs another package or translation-unit target.
+    Target,
+    /// The runtime identity governs another language profile.
+    Profile,
+    /// The runtime identity governs another semantic stage.
+    Stage,
+    /// One artifact was compiled under another language profile.
+    ArtifactProfile {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+    },
+    /// One artifact was compiled at another semantic stage.
+    ArtifactStage {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+    },
+    /// One artifact was compiled by another native tool family.
+    ArtifactTool {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+        /// Tool family named by the admitted runtime identity.
+        expected: NativeTool,
+        /// Tool family recorded by the artifact recipe.
+        actual: NativeTool,
+    },
+    /// One artifact was compiled by another resolved toolchain.
+    ArtifactToolchain {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+        /// Toolchain identity named by the admitted runtime identity.
+        expected: [u8; 32],
+        /// Toolchain identity recorded by the artifact recipe.
+        actual: [u8; 32],
+    },
+    /// The staged artifact table or image plan omits one artifact.
+    ArtifactImage {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+    },
+    /// The embedding output omits one artifact's vector.
+    EmbeddingArtifact {
+        /// Zero-based staged artifact ordinal.
+        artifact: usize,
+    },
+}
+
+impl std::fmt::Display for StagedIdentityFacet {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn short(bytes: &[u8; 32]) -> String {
+            bytes.iter().take(6).map(|byte| format!("{byte:02x}")).collect()
+        }
+        match self {
+            Self::InputWitness => formatter.write_str("host-local plane input witness differs"),
+            Self::Target => formatter.write_str("runtime identity names another compilation target"),
+            Self::Profile => formatter.write_str("runtime identity names another language profile"),
+            Self::Stage => formatter.write_str("runtime identity names another semantic stage"),
+            Self::ArtifactProfile { artifact } => {
+                write!(formatter, "artifact {artifact} was compiled under another language profile")
+            }
+            Self::ArtifactStage { artifact } => {
+                write!(formatter, "artifact {artifact} was compiled at another semantic stage")
+            }
+            Self::ArtifactTool {
+                artifact,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "artifact {artifact} was compiled by {actual:?}, but the admitted runtime is {expected:?}"
+            ),
+            Self::ArtifactToolchain {
+                artifact,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "artifact {artifact} toolchain {}… differs from the admitted runtime toolchain {}…",
+                short(actual),
+                short(expected)
+            ),
+            Self::ArtifactImage { artifact } => {
+                write!(formatter, "artifact {artifact} has no staged semantic image")
+            }
+            Self::EmbeddingArtifact { artifact } => {
+                write!(formatter, "artifact {artifact} has no staged embedding vector")
+            }
+        }
+    }
+}
+
+/// Runtime facts shared by every staged-plane producer after identity admission.
+#[derive(Clone, Copy, Debug)]
+struct AdmittedStagedRuntime {
+    target: ContentId<backend_version::CompilationTargetDomain>,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    stage: backend_semantic::vocabulary::Stage,
+    tool: NativeTool,
+    toolchain: [u8; 32],
+    environment: [u8; 32],
+    target_platform: [u8; 32],
+}
+
+impl AdmittedStagedRuntime {
+    /// Build identity is per semantic image. `CompileRecipeFact` binds the exact source image,
+    /// while the remaining build fields retain the runtime, toolchain, environment, and platform
+    /// authorities. The invocation/local-plane recipe is not interchangeable with this
+    /// source-bound identity and must not be placed in this field.
+    fn build_identity(
+        &self,
+        package_identity: [u8; 32],
+        recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    ) -> SemanticBuildIdentity {
+        SemanticBuildIdentity::new(
+            package_identity,
+            *self.target.as_ref(),
+            self.profile,
+            self.stage,
+            *recipe.identity.as_ref(),
+            self.toolchain,
+            self.environment,
+            self.target_platform,
+        )
+    }
+}
+
+/// Refusal from [`StagedSemanticPackage::admitted_runtime`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StagedRuntimeRefusal {
+    Unavailable,
+    Mismatch(StagedIdentityFacet),
+}
+
+impl From<StagedRuntimeRefusal> for StagedVersionedPlaneError {
+    fn from(refusal: StagedRuntimeRefusal) -> Self {
+        match refusal {
+            StagedRuntimeRefusal::Unavailable => Self::ExecutionIdentityUnavailable,
+            StagedRuntimeRefusal::Mismatch(facet) => Self::ExecutionIdentityMismatch(facet),
+        }
+    }
+}
+
+impl From<StagedRuntimeRefusal> for StagedTypedPlaneContentError {
+    fn from(refusal: StagedRuntimeRefusal) -> Self {
+        match refusal {
+            StagedRuntimeRefusal::Unavailable => Self::ExecutionIdentityUnavailable,
+            StagedRuntimeRefusal::Mismatch(facet) => Self::ExecutionIdentityMismatch(facet),
+        }
+    }
+}
+
 /// Failure while streaming stable-key c007 content from staged readers.
 #[derive(Debug, Error)]
 pub enum StagedTypedPlaneContentError {
@@ -1099,8 +1258,8 @@ pub enum StagedTypedPlaneContentError {
     #[error("typed semantic content requires an admitted compiler runtime identity")]
     ExecutionIdentityUnavailable,
     /// The runtime, input, or source recipe does not govern the staged package.
-    #[error("typed semantic content identity does not match the staged compiler output")]
-    ExecutionIdentityMismatch,
+    #[error("typed semantic content identity does not match the staged compiler output: {0}")]
+    ExecutionIdentityMismatch(StagedIdentityFacet),
     /// One c007 artifact did not retain the exact staged image or witness claim.
     #[error("typed semantic content differs from its exact staged image or input claim")]
     ContentIdentityMismatch,
@@ -1320,6 +1479,94 @@ impl StagedSemanticPackage {
         }
     }
 
+    /// Admits the one runtime identity that governs every staged plane of this package.
+    ///
+    /// A portable execution identity takes precedence over a host-local plane identity. Both
+    /// must govern this exact target, profile, and stage, and a host-local identity must have
+    /// been sealed over this exact input witness.
+    fn admitted_runtime(&self) -> Result<AdmittedStagedRuntime, StagedRuntimeRefusal> {
+        use StagedRuntimeRefusal::Mismatch;
+        if self
+            .plane_execution_identity
+            .is_some_and(|identity| identity.input_witness() != self.input)
+        {
+            return Err(Mismatch(StagedIdentityFacet::InputWitness));
+        }
+        let runtime = if let Some(identity) = self.execution_identity {
+            AdmittedStagedRuntime {
+                target: identity.target(),
+                profile: identity.profile(),
+                stage: identity.stage(),
+                tool: identity.toolchain(),
+                toolchain: identity.toolchain_identity(),
+                environment: identity.environment_identity(),
+                target_platform: identity.target_platform_identity(),
+            }
+        } else if let Some(identity) = self.plane_execution_identity {
+            AdmittedStagedRuntime {
+                target: identity.target(),
+                profile: identity.profile(),
+                stage: identity.stage(),
+                tool: identity.toolchain(),
+                toolchain: identity.toolchain_identity(),
+                environment: identity.environment_identity(),
+                target_platform: identity.target_platform_identity(),
+            }
+        } else {
+            return Err(StagedRuntimeRefusal::Unavailable);
+        };
+        if runtime.target != self.target_identity {
+            return Err(Mismatch(StagedIdentityFacet::Target));
+        }
+        if runtime.profile != self.profile {
+            return Err(Mismatch(StagedIdentityFacet::Profile));
+        }
+        if runtime.stage != self.stage {
+            return Err(Mismatch(StagedIdentityFacet::Stage));
+        }
+        Ok(runtime)
+    }
+
+    /// Returns one staged artifact whose recipe was produced by the admitted runtime.
+    fn admitted_artifact_recipe(
+        &self,
+        runtime: &AdmittedStagedRuntime,
+        artifact: usize,
+    ) -> Result<
+        (
+            &StagedSemanticArtifact,
+            backend_semantic::vocabulary::CompileRecipeFact,
+        ),
+        StagedIdentityFacet,
+    > {
+        let staged = self
+            .artifacts
+            .get(artifact)
+            .ok_or(StagedIdentityFacet::ArtifactImage { artifact })?;
+        let recipe = staged.recipe();
+        if recipe.profile != runtime.profile {
+            return Err(StagedIdentityFacet::ArtifactProfile { artifact });
+        }
+        if recipe.stage != runtime.stage {
+            return Err(StagedIdentityFacet::ArtifactStage { artifact });
+        }
+        if recipe.tool != runtime.tool {
+            return Err(StagedIdentityFacet::ArtifactTool {
+                artifact,
+                expected: runtime.tool,
+                actual: recipe.tool,
+            });
+        }
+        if recipe.toolchain.as_ref() != &runtime.toolchain {
+            return Err(StagedIdentityFacet::ArtifactToolchain {
+                artifact,
+                expected: runtime.toolchain,
+                actual: *recipe.toolchain.as_ref(),
+            });
+        }
+        Ok((staged, recipe))
+    }
+
     /// Streams every staged image through the shared stable-key c007 producer.
     ///
     /// Each producer call runs inside [`Self::with_semantic_reader`], so the
@@ -1334,70 +1581,17 @@ impl StagedSemanticPackage {
         tier: SemanticTypedPlaneVerificationTierV2,
         jumbo_limits: JumboRopeLimits,
     ) -> Result<StagedTypedPlaneContentV3, StagedTypedPlaneContentError> {
-        if self
-            .plane_execution_identity
-            .is_some_and(|identity| identity.input_witness() != self.input)
-        {
-            return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-        }
-        let (target, profile, stage, tool, toolchain, environment, target_platform) =
-            if let Some(identity) = self.execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else if let Some(identity) = self.plane_execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else {
-                return Err(StagedTypedPlaneContentError::ExecutionIdentityUnavailable);
-            };
-        if target != self.target_identity || profile != self.profile || stage != self.stage {
-            return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-        }
+        let runtime = self.admitted_runtime()?;
 
         let mut output = Vec::new();
         output
             .try_reserve_exact(self.artifacts.len())
             .map_err(StagedTypedPlaneContentError::Allocation)?;
         for artifact_ordinal in 0..self.artifacts.len() {
-            let artifact = self
-                .artifacts
-                .get(artifact_ordinal)
-                .ok_or(StagedTypedPlaneContentError::ExecutionIdentityMismatch)?;
-            let recipe = artifact.recipe();
-            if recipe.profile != profile
-                || recipe.stage != stage
-                || recipe.tool != tool
-                || recipe.toolchain.as_ref() != &toolchain
-            {
-                return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-            }
-            // Match the per-image source recipe and runtime fields used by the
-            // existing transitional V1 plane producer. Keep this value tied to
-            // the artifact ordinal; the request-level recipe is not equivalent.
-            let build = SemanticBuildIdentity::new(
-                self.package_identity,
-                *target.as_ref(),
-                profile,
-                stage,
-                *recipe.identity.as_ref(),
-                toolchain,
-                environment,
-                target_platform,
-            );
+            let (artifact, recipe) = self
+                .admitted_artifact_recipe(&runtime, artifact_ordinal)
+                .map_err(StagedTypedPlaneContentError::ExecutionIdentityMismatch)?;
+            let build = runtime.build_identity(self.package_identity, recipe);
             let semantic_image = artifact.semantic_image();
             let input_witness = self.input;
             let produced = self.with_semantic_reader(artifact_ordinal, |reader, _metrics| {
@@ -1467,39 +1661,7 @@ impl StagedSemanticPackage {
     /// Payload bytes are borrowed from the existing canonical image buffer, so creating a range
     /// bundle does not copy a full image.
     pub fn versioned_planes(&self) -> Result<StagedVersionedPlanes<'_>, StagedVersionedPlaneError> {
-        if self
-            .plane_execution_identity
-            .is_some_and(|identity| identity.input_witness() != self.input)
-        {
-            return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
-        }
-        let (target, profile, stage, tool, toolchain, environment, target_platform) =
-            if let Some(identity) = self.execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else if let Some(identity) = self.plane_execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else {
-                return Err(StagedVersionedPlaneError::ExecutionIdentityUnavailable);
-            };
-        if target != self.target_identity || profile != self.profile || stage != self.stage {
-            return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
-        }
+        let runtime = self.admitted_runtime()?;
         let input = self.input;
         let mut output = Vec::new();
         output
@@ -1507,46 +1669,30 @@ impl StagedSemanticPackage {
             .map_err(StagedVersionedPlaneError::Allocation)?;
 
         for artifact_ordinal in 0..self.artifacts.len() {
-            let artifact = self
-                .artifacts
-                .get(artifact_ordinal)
-                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
-            let recipe = artifact.recipe();
-            if recipe.profile != profile
-                || recipe.stage != stage
-                || recipe.tool != tool
-                || recipe.toolchain.as_ref() != &toolchain
-            {
-                return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
-            }
-            // Build identity is per semantic image. `CompileRecipeFact` binds
-            // the exact source image, while the remaining build fields retain
-            // the runtime, toolchain, environment, and platform authorities.
-            // The invocation/local-plane recipe is not interchangeable with
-            // this source-bound identity and must not be placed in this field.
-            let build = SemanticBuildIdentity::new(
-                self.package_identity,
-                *target.as_ref(),
-                profile,
-                stage,
-                *recipe.identity.as_ref(),
-                toolchain,
-                environment,
-                target_platform,
-            );
+            let (_, recipe) = self
+                .admitted_artifact_recipe(&runtime, artifact_ordinal)
+                .map_err(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+            let build = runtime.build_identity(self.package_identity, recipe);
+            let missing_image = || {
+                StagedVersionedPlaneError::ExecutionIdentityMismatch(
+                    StagedIdentityFacet::ArtifactImage {
+                        artifact: artifact_ordinal,
+                    },
+                )
+            };
             let input_ordinal = *self
                 .prepared
                 .canonical_ordinals
                 .get(artifact_ordinal)
-                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+                .ok_or_else(missing_image)?;
             let region = *self
                 .staged
                 .image_plan
                 .get(input_ordinal)
-                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+                .ok_or_else(missing_image)?;
             let image = region
                 .bytes(&self.staged.semantic_images)
-                .ok_or(StagedVersionedPlaneError::ExecutionIdentityMismatch)?;
+                .ok_or_else(missing_image)?;
             if image.is_empty() {
                 return Err(StagedVersionedPlaneError::EmptySemanticImage { artifact_ordinal });
             }
@@ -1595,7 +1741,11 @@ impl StagedSemanticPackage {
                     Coverage::Unavailable
                 } else {
                     let Some(vector) = embedding.artifacts.get(input_ordinal) else {
-                        return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch);
+                        return Err(StagedVersionedPlaneError::ExecutionIdentityMismatch(
+                            StagedIdentityFacet::EmbeddingArtifact {
+                                artifact: artifact_ordinal,
+                            },
+                        ));
                     };
                     vector_segments
                         .try_reserve_exact(1)
