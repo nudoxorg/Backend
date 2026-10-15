@@ -807,6 +807,7 @@ mod startup_tests {
             assert!(retry.contains("--workspace '"));
             assert!(retry.contains("'\\''$(sentinel)"));
             assert!(retry.ends_with(" status)"));
+            assert!(!retry.contains("authority.secret"));
         }
         assert!(
             pending_status_retry(
@@ -830,6 +831,22 @@ mod startup_tests {
             )
             .is_none()
         );
+        for executable in [
+            PathBuf::from("relative-backend-cli"),
+            root.join(OsString::from_vec(vec![b'c', 0xff])),
+            root.join(OsString::from_vec(vec![b'c', 0])),
+        ] {
+            assert!(
+                pending_status_retry_for_executable(
+                    &Request::Status,
+                    &workspace,
+                    backend_present::StartupRecoveryCommand::Status,
+                    backend_present::StartupRecoveryMode::Active,
+                    &executable,
+                )
+                .is_none()
+            );
+        }
         assert!(!root.exists());
     }
 
@@ -1090,6 +1107,7 @@ printf '%s\000' "$@" __ENV__ "${HOME-__UNSET__}" "${XDG_STATE_HOME-__UNSET__}" "
                     } else {
                         let shell = before["retry"].as_str().expect("complete captured retry");
                         assert!(!shell.contains("authority.secret"));
+                        assert!(!shell.contains(" nudox "));
                         assert!(!shell.contains(authority.to_str().expect("fixture authority")));
                         assert!(shell.ends_with(&format!(" {action})")));
                         assert_eq!(
