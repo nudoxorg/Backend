@@ -135,11 +135,10 @@ pub use backend_library::{
     CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
     CompleteViewProjection, Coverage as ViewCoverage, CoverageCapability, Cursor, CursorEvent,
     CursorResetReason, DTO_VERSION, DeclarationChange, DeclarationReadExtent, DeclarationRecord,
-    DependencyAuthority,
-    DependencyEvidence, DependencyFacts, DependencyScope, DiffRecord, Document,
-    EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization,
-    EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, FaultRows,
-    ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DiffRecord,
+    Document, EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric,
+    EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto,
+    FaultRows, ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
     ForgeRepositoryMetadataRecord, Fragment, Freshness, FreshnessState, Frontier, GraphAuthority,
     GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind, GraphLayoutEdge, GraphLayoutInput,
     GraphNeighborhoodQuery, GraphNodeId, GraphPageTerminal, GraphProvenance, GraphQueryControl,
@@ -156,7 +155,7 @@ pub use backend_library::{
     PackageReference, PageContinuation, PageRequest, PageTerminal, PolicyReason,
     ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     ProjectionPage, Query, QueryLimit, QueryPageRecipe, REGISTRY_FORGE_ASSOCIATION_VERSION,
-    REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason, ReferenceFact, ReferenceRecord,
+    REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason, ReferenceFact, ReferencePlace, ReferenceRecord,
     RegistryAuthorityId, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
     RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,
     RegistryEcosystem, RegistryFactAvailability, RegistryForgeAssociation,
@@ -169,17 +168,17 @@ pub use backend_library::{
     RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge, RichGraphError,
     RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision, RichGraphSnapshot, Row,
     RowChange, RowId, RowIdentityPreimage, RowIdentityPreimageError, RowState,
-    SelectedProjectSourceFrontier,
-    SemanticArrayShape, SemanticCallableShape, SemanticConfidence, SemanticDeclarationIdentity,
-    SemanticDeclarationShape, SemanticGenerationId, SemanticHistoryImageIdentity,
-    SemanticHistoryImagePublicationProof, SemanticHistoryInputReplayStatus,
-    SemanticHistoryPublicationProof, SemanticHistoryPublicationStatus,
-    SemanticHistorySelectionStamp, SemanticImagePayloadBytes, SemanticLanguageProfile,
-    SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticLiteral,
-    SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary, SemanticShapeBatch,
-    SemanticShapeBatchSchema, SemanticShapeBudget, SemanticShapeEntry, SemanticShapeFact,
-    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SelectedProjectSourceFrontier, SemanticArrayShape, SemanticCallableShape, SemanticConfidence,
+    SemanticDeclarationIdentity, SemanticDeclarationShape, SemanticGenerationId,
+    SemanticHistoryImageIdentity, SemanticHistoryImagePublicationProof,
+    SemanticHistoryInputReplayStatus, SemanticHistoryPublicationProof,
+    SemanticHistoryPublicationStatus, SemanticHistorySelectionStamp, SemanticImagePayloadBytes,
+    SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind,
+    SemanticLinkTarget, SemanticLiteral, SemanticObjectMember, SemanticPropertyKey,
+    SemanticShapeAdmissionSummary, SemanticShapeBatch, SemanticShapeBatchSchema,
+    SemanticShapeBudget, SemanticShapeEntry, SemanticShapeFact, SemanticShapeImageOrigin,
+    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
+    SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
     SemanticShapeSourceSchema, SemanticShapeUnavailable, SemanticSourceSpan, SemanticTypeElement,
     SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, SemanticVersionFreshness,
     SemanticVersionRecord, SeverityLevel, SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto,
@@ -381,7 +380,6 @@ pub use backend_replication::{
 };
 #[cfg(any(unix, windows))]
 pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
-pub use daemon::{PreparedReadHeadRefresh, PublishedReadHeadRefresh};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
     DaemonReply, DaemonRequest, Operation, PublishedReadHead, QueryState,
@@ -389,6 +387,7 @@ pub use daemon::{
     SelectedReadHead, SubscriptionReply, ViewBinding, ViewBindingAdmission, ViewBindingState,
     ViewPersistence,
 };
+pub use daemon::{PreparedReadHeadRefresh, PublishedReadHeadRefresh};
 pub use dispatch::{
     AcceptedResultProof, AuthoritySnapshot, AuthorityTransition, Blake3AuthorityVerifier,
     CompleteSemanticCoverage, CompleteSemanticCoverageCapability, CompositeAdmissionValidator,
@@ -443,12 +442,11 @@ pub use workspace::{
     PreparedTransition, PreparedWorkspaceCandidate, PublicationStatus, PublishGrant, Published,
     PublishedPublication, PublishedWorkspaceWriter, RelationIdentity, RelationKeyPrefix,
     RetiredWorkspaceHead, TransactionId, TransactionSchema, TransactionVersion, TransitionWork,
-    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceError, WorkspaceGcPin,
-    WorkspaceDirectoryAdmission, WorkspaceHead, WorkspaceModel, WorkspaceOwner,
-    WorkspacePublicationFailure, WorkspaceRecord,
-    WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
-    WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
-    WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceDirectoryAdmission,
+    WorkspaceError, WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner,
+    WorkspacePublicationFailure, WorkspaceRecord, WorkspaceRelationChild, WorkspaceRelationError,
+    WorkspaceRelationFault, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
+    WorkspaceRelationNodePage, WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
 };
 
 /// Generic engine composition around one daemon owner.
