@@ -11,6 +11,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.request
 
@@ -24,6 +26,8 @@ spec.loader.exec_module(boot)
 candidate_spec = importlib.util.spec_from_file_location("candidate_mirror", ROOT / "install_forgejo_preview.py")
 candidate_boot = importlib.util.module_from_spec(candidate_spec)
 candidate_spec.loader.exec_module(candidate_boot)
+import compose_forgejo_checkpoint as compose
+import test_install_linux as linux_installer_tests
 
 
 def channel():
@@ -142,6 +146,158 @@ urllib.request.build_opener=lambda *handlers: Opener()
     environment = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1",
                    "FIXTURE_MAPPING": str(mapping_path), "FIXTURE_REQUESTS": str(Path(root) / "candidate-requests")}
     return entry, value, environment
+
+
+def candidate_linux_release(root, source, date):
+    """Build the candidate bootstrap's real pinned Linux-library route from local fixtures."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    entry, package_facts, archive = linux_installer_tests.InstallerFilesystemTests._fixture_release(
+        root, source, date
+    )
+    release_manifest = {
+        "schema": 1,
+        "version": entry["version"],
+        "source_sha": source,
+        "source_tree": "b" * 40,
+        "cargo_lock_sha256": "c" * 64,
+        "platform": "linux-x64",
+        "target": "x86_64-unknown-linux-gnu",
+        "asset": entry["asset"],
+        "sha256": package_facts["sha256"],
+        "size_bytes": package_facts["size_bytes"],
+        "minimum_glibc": package_facts["minimum_glibc"],
+        "build_manifest_sha256": package_facts["build_manifest_sha256"],
+        "packaging_manifest_sha256": package_facts["packaging_manifest_sha256"],
+    }
+    manifest_bytes = json.dumps(release_manifest, sort_keys=True).encode()
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    tag = entry["tag"]
+    library = compose.pin_linux_installer(
+        (ROOT / "install_linux.py").read_bytes(), tag, manifest_sha256
+    )
+    library_sha256 = hashlib.sha256(library).hexdigest()
+    libraries = dict(candidate_boot.LIBRARIES)
+    libraries["linux-x64"] = (library_sha256, len(library), "install-linux-x64")
+
+    value = channel()
+    bootstrap = (ROOT / "install_forgejo_preview.py").read_bytes()
+    bootstrap_sha256 = hashlib.sha256(bootstrap).hexdigest()
+    value["bootstrap"] = {
+        "url": candidate_boot.release_url(
+            candidate_boot.BOOTSTRAP_TAG,
+            "install-forgejo-bootstrap-" + bootstrap_sha256[:16] + ".py",
+        ),
+        "sha256": bootstrap_sha256,
+        "bytes": len(bootstrap),
+    }
+    candidate_library_metadata(value, "macos-arm64")
+    row = value["platforms"]["linux-x64"]
+    row["source"] = source
+    row["tag"] = tag
+    row["installer"] = {
+        "url": candidate_boot.release_url(
+            candidate_boot.BOOTSTRAP_TAG,
+            "install-linux-x64-" + library_sha256[:16] + ".py",
+        ),
+        "sha256": library_sha256,
+        "bytes": len(library),
+    }
+    row["archive"] = {
+        "url": candidate_boot.release_url(tag, entry["asset"]),
+        "sha256": release_manifest["sha256"],
+        "bytes": release_manifest["size_bytes"],
+    }
+    row["manifest"] = {
+        "url": candidate_boot.release_url(tag, "release-manifest-linux-x64.json"),
+        "sha256": manifest_sha256,
+        "bytes": len(manifest_bytes),
+    }
+    candidate_boot.validate_channel(value, libraries=libraries)
+    candidate_boot.admit_libraries(value, libraries=libraries)
+    channel_bytes = json.dumps(value).encode()
+    library_path = root / ("install-linux-x64-" + date + ".py")
+    library_path.write_bytes(library)
+    return {
+        "archive": archive,
+        "archive_url": row["archive"]["url"],
+        "bootstrap": bootstrap,
+        "channel": value,
+        "channel_bytes": channel_bytes,
+        "installer_url": row["installer"]["url"],
+        "library": library,
+        "library_path": library_path,
+        "libraries": libraries,
+        "manifest": release_manifest,
+        "manifest_bytes": manifest_bytes,
+        "manifest_url": row["manifest"]["url"],
+        "product": entry,
+        "source": source,
+        "tag": tag,
+    }
+
+
+def run_candidate_linux_bootstrap(bundle, prefix, *, archive_body=None):
+    bodies = {
+        candidate_boot.CHANNEL: bundle["channel_bytes"],
+        bundle["installer_url"]: bundle["library"],
+        bundle["manifest_url"]: bundle["manifest_bytes"],
+        bundle["archive_url"]: (
+            bundle["archive"].read_bytes() if archive_body is None else archive_body
+        ),
+    }
+    requests = []
+
+    class Response(io.BytesIO):
+        def __init__(self, url, body):
+            super().__init__(body)
+            self.url = url
+
+        def geturl(self):
+            return self.url
+
+    class Opener:
+        def open(self, request, timeout):
+            requests.append(request.full_url)
+            return Response(request.full_url, bodies[request.full_url])
+
+    original_load_library = candidate_boot.load_library
+    original_admit_libraries = candidate_boot.admit_libraries
+
+    def load_library(path, key):
+        module = original_load_library(path, key)
+        module._glibc_version = lambda: (99, 0)
+        return module
+
+    def admit_libraries(channel_value):
+        return original_admit_libraries(channel_value, libraries=bundle["libraries"])
+
+    result = None
+    error = None
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with patch.object(candidate_boot, "LIBRARIES", bundle["libraries"]), \
+         patch.object(candidate_boot, "platform_key", return_value="linux-x64"), \
+         patch.object(candidate_boot.urllib.request, "build_opener", side_effect=lambda *args: Opener()), \
+         patch.object(candidate_boot, "load_library", side_effect=load_library), \
+         patch.object(candidate_boot, "admit_libraries", side_effect=admit_libraries), \
+         patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b"")), \
+         redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            result = candidate_boot.main(["--prefix", str(prefix)])
+        except candidate_boot.InstallError as caught:
+            error = caught
+    return result, error, requests, stdout.getvalue(), stderr.getvalue()
+
+
+def install_candidate_linux_fixture(bundle, prefix):
+    with patch.object(candidate_boot, "LIBRARIES", bundle["libraries"]):
+        module = candidate_boot.load_library(bundle["library_path"], "linux-x64")
+    module._glibc_version = lambda: (99, 0)
+    product, manifest = module.parse_pinned_manifest(bundle["tag"], bundle["manifest_bytes"])
+    with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b"")):
+        module.install(prefix, product, manifest, bundle["archive"])
+    return product, manifest
 
 
 class Response(io.BytesIO):
@@ -312,6 +468,84 @@ class Tests(unittest.TestCase):
             self.assertEqual(downgrade.returncode, 1, downgrade.stdout + downgrade.stderr)
             self.assertIn("older", downgrade.stderr)
             self.assertNotIn(entry["archive"]["url"], requests.read_text().splitlines())
+
+    def test_candidate_bootstrap_repeat_reuses_verified_linux_install_before_archive_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            bundle = candidate_linux_release(root / "candidate", "a" * 40, "20261014")
+            prefix = root / "prefix"
+            install_candidate_linux_fixture(bundle, prefix)
+            current = prefix / "lib/nudox/current"
+            selected = current.resolve()
+            marker = (selected / ".installed-release.json").read_bytes()
+
+            result, error, requests, stdout, stderr = run_candidate_linux_bootstrap(bundle, prefix)
+
+            self.assertIsNone(error)
+            self.assertEqual(result, 0)
+            self.assertIn("skipped its archive download", stderr)
+            self.assertIn(bundle["installer_url"], requests)
+            self.assertIn(bundle["manifest_url"], requests)
+            self.assertNotIn(bundle["archive_url"], requests)
+            self.assertEqual(current.resolve(), selected)
+            self.assertEqual((selected / ".installed-release.json").read_bytes(), marker)
+            self.assertIn("Installed diagnostic CLI", stdout)
+
+    def test_candidate_bootstrap_corrupt_linux_install_fails_before_archive_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            bundle = candidate_linux_release(root / "candidate", "b" * 40, "20261014")
+            prefix = root / "prefix"
+            install_candidate_linux_fixture(bundle, prefix)
+            current = prefix / "lib/nudox/current"
+            selected = current.resolve()
+            marker = (selected / ".installed-release.json").read_bytes()
+            (selected / "bin/backend-cli").write_bytes(b"changed after installation")
+
+            result, error, requests, _stdout, _stderr = run_candidate_linux_bootstrap(bundle, prefix)
+
+            self.assertIsNone(result)
+            self.assertIsInstance(error, candidate_boot.InstallError)
+            self.assertIn("integrity/startup recheck", str(error))
+            self.assertNotIn(bundle["archive_url"], requests)
+            self.assertEqual(current.resolve(), selected)
+            self.assertEqual((selected / ".installed-release.json").read_bytes(), marker)
+
+    def test_candidate_bootstrap_linux_update_downloads_and_truncated_update_preserves_current(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = candidate_linux_release(root / "first", "c" * 40, "20261013")
+            second = candidate_linux_release(root / "second", "d" * 40, "20261014")
+            third = candidate_linux_release(root / "third", "e" * 40, "20261015")
+            self.assertNotEqual(first["library"], second["library"])
+            self.assertNotEqual(second["library"], third["library"])
+            prefix = root / "prefix"
+            install_candidate_linux_fixture(first, prefix)
+
+            result, error, requests, _stdout, _stderr = run_candidate_linux_bootstrap(second, prefix)
+
+            self.assertIsNone(error)
+            self.assertEqual(result, 0)
+            self.assertIn(second["archive_url"], requests)
+            current = prefix / "lib/nudox/current"
+            self.assertEqual(current.resolve().name, second["tag"])
+            selected = current.resolve()
+            marker = (selected / ".installed-release.json").read_bytes()
+
+            incomplete = third["archive"].read_bytes()[:32]
+            result, error, requests, _stdout, _stderr = run_candidate_linux_bootstrap(
+                third, prefix, archive_body=incomplete
+            )
+
+            self.assertIsNone(result)
+            self.assertIsInstance(error, candidate_boot.InstallError)
+            self.assertIn("size mismatch", str(error))
+            self.assertIn(third["archive_url"], requests)
+            self.assertEqual(current.resolve(), selected)
+            self.assertEqual((selected / ".installed-release.json").read_bytes(), marker)
+            version_root = prefix / "lib/nudox/versions"
+            self.assertFalse((version_root / third["tag"]).exists())
+            self.assertFalse(any(path.name.startswith(".staging-") for path in version_root.iterdir()))
 
     def test_candidate_bootstrap_transport_reports_progress_with_bounded_timeout(self):
         class StreamingResponse(io.BytesIO):
