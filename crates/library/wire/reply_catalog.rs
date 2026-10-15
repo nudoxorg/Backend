@@ -1,5 +1,6 @@
 //! Borrowed spelling of the existing catalog reply grammar.
 //! Rows and fragments stream in order; no payload-sized wire copy is built.
+use super::super::reply_content::FactWire;
 use super::*;
 use crate::{
     DeclarationFacts, Fact, Fragment, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
@@ -222,15 +223,9 @@ impl<'a> Excerpt<'a> {
 #[derive(Serialize)]
 struct Facts<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    deprecation: Option<Observed<Notice<'a>>>,
+    deprecation: Option<FactWire<Notice<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    obligation: Option<Observed<&'a str>>,
-}
-#[derive(Serialize)]
-#[serde(tag = "state", content = "data", rename_all = "snake_case")]
-enum Observed<T> {
-    Absent,
-    Present(T),
+    obligation: Option<FactWire<&'a str>>,
 }
 #[derive(Serialize)]
 struct Notice<'a> {
@@ -247,16 +242,16 @@ impl<'a> Facts<'a> {
         Some(Self {
             deprecation: match &facts.deprecation {
                 Fact::Unobserved => None,
-                Fact::Absent => Some(Observed::Absent),
-                Fact::Present(notice) => Some(Observed::Present(Notice {
+                Fact::Absent => Some(FactWire::Absent),
+                Fact::Present(notice) => Some(FactWire::Present(Notice {
                     since: notice.since(),
                     note: notice.note(),
                 })),
             },
             obligation: match &facts.obligation {
                 Fact::Unobserved => None,
-                Fact::Absent => Some(Observed::Absent),
-                Fact::Present(obligation) => Some(Observed::Present(obligation.name())),
+                Fact::Absent => Some(FactWire::Absent),
+                Fact::Present(obligation) => Some(FactWire::Present(obligation.name())),
             },
         })
     }
