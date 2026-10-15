@@ -65,7 +65,7 @@ let
       ) requiredFiles}
     '';
 in
-{
+rec {
   rust-percent-encoding =
     pkgs.runCommand "nudox-surface-rust-percent-encoding-2.3.2"
       {
@@ -137,6 +137,9 @@ in
     "version4.go"
     "uuid.go"
   ];
+
+  rust-itoa-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-itoa}/Cargo.lock"; };
+  rust-ryu-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-ryu}/Cargo.lock"; };
 
   go-sync = goProject "go-sync-0.11.0" "golang:golang.org/x/sync@v0.11.0" [
     "go.mod"

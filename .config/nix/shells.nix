@@ -350,6 +350,12 @@ let
           (import ./surface-corpus.nix { inherit pkgs; }).python-itsdangerous;
       NUDOX_SURFACE_RUST_ITOA = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa;
       NUDOX_SURFACE_RUST_RYU = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu;
+      NUDOX_SURFACE_RUST_ITOA_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa-vendor;
+      NUDOX_SURFACE_RUST_RYU_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu-vendor;
       NUDOX_SURFACE_GO_UUID = toString (import ./surface-corpus.nix { inherit pkgs; }).go-uuid;
       NUDOX_SURFACE_GO_SYNC = toString (import ./surface-corpus.nix { inherit pkgs; }).go-sync;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.

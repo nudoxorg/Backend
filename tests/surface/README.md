@@ -490,13 +490,13 @@ multiple license files. No generated module is inserted to make an old upstream
 archive appear compatible. The initial Go errors candidate was rejected because
 its archive lacks go.mod; x/sync replaces it.
 
-The itoa case also proposes one GUI content proof on Linux. The same indexed
+The tomli case also proposes one GUI content proof on Linux. The same indexed
 owner and published desktop binary open the real project; actual X11 keyboard
 input searches Buffer and opens its code page. Native window pixels are captured
 and read by pinned English OCR. The observer requires the project name and
 original-source text `pub struct Buffer` and `MaybeUninit`, then a clean Quit.
 A typed search query alone cannot pass. The current window PNG/text remain under
-/tmp/nudox-surface/rust-itoa/gui; CI emits its source/artifact-bound image digest.
+/tmp/nudox-surface/python-tomli/gui; CI emits its source/artifact-bound image digest.
 No in-memory fixture renderer or extra product build is used.
 
 GUI wall time, process CPU and peak RSS are recorded separately from the owner;
@@ -513,3 +513,9 @@ required before merge. See reviews/2026-10-15-new-projects.json. Rust itoa/ryu
 project admission and GoUUID connection failures remain selected and unresolved.
 The GUI probe now uses the independently working tomli index; its new GUI answer
 and performance snapshot still need native execution and screenshot review.
+
+
+Rust cases retain offline owner policy. Their original Cargo.lock checksums feed
+Nix importCargoLock; per-case writable Cargo homes point to immutable vendored
+sources outside the unchanged upstream project. This supplies pinned dependencies
+without permitting network fallback or editing project source/lockfiles.

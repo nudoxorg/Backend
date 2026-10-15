@@ -424,7 +424,8 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "cargo_vendor_env": "NUDOX_SURFACE_RUST_ITOA_VENDOR"
     },
     {
       "name": "rust-ryu",
@@ -473,7 +474,8 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "cargo_vendor_env": "NUDOX_SURFACE_RUST_RYU_VENDOR"
     },
     {
       "name": "go-uuid",

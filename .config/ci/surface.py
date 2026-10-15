@@ -145,12 +145,23 @@ def stable(value):
 class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
-    def __init__(self, bin_dir: Path, case_root: Path):
+    def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
         self.bin_dir = bin_dir
         self.home = case_root / "home"
         self.workspace = case_root / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
+        if cargo_vendor is not None:
+            # Pinned lockfile sources are outside the upstream project. Keep
+            # the owner offline and give this case its own writable Cargo home.
+            cargo_home = case_root / "cargo-home"
+            cargo_home.mkdir(mode=0o700)
+            (cargo_home / "config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "nudox-surface-vendor"\n'
+                '[source.nudox-surface-vendor]\ndirectory = '
+                + json.dumps(str(cargo_vendor)) + '\n[net]\noffline = true\n')
+            self.env["NUDOX_CARGO_HOME"] = str(cargo_home)
+
         self.workspace.mkdir(parents=True, mode=0o700)
         authority = self.workspace / "authority.secret"
         self.env["BACKEND_LOCALD_WORKSPACE"] = str(self.workspace)
@@ -848,7 +859,14 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     else:
         shutil.copytree(ROOT / case["project"], project)
     timeout = case.get("timeout_seconds", 300)
-    owner = Owner(bin_dir, case_root)
+    cargo_vendor = None
+    if "cargo_vendor_env" in case:
+        vendor = os.environ.get(case["cargo_vendor_env"], "")
+        cargo_vendor = Path(vendor)
+        if not cargo_vendor.is_absolute() or not cargo_vendor.is_dir() or not str(cargo_vendor.resolve()).startswith("/nix/store/"):
+            raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
+    owner = Owner(bin_dir, case_root, cargo_vendor)
+
     record = {"answers": {}, "performance": {"seconds": {}}}
     proven_tokens = set()
     try:
