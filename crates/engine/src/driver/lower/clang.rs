@@ -1136,8 +1136,19 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             self.identities.push((identity, ordinal));
         }
         if let Some(name) = declaration.name {
-            let source_len = self.facts.primary_source_len.unwrap_or(0);
-            let valid = name.start < name.end
+            // The native projector always holds the actual entered bytes.
+            // Database and direct-authority callers need not allocate their
+            // FactSet through the request planner; absence is not an empty file.
+            let source_len = u32::try_from(self.source.len()).map_err(|_| {
+                lane_terminal(self.facts, 0, FactFault::SourceSpan {
+                    entity: ordinal,
+                    start: name.start,
+                    end: name.end,
+                    source_len: u32::MAX,
+                })
+            })?;
+            let valid = self.facts.primary_source_len.is_none_or(|entered| entered == source_len)
+                && name.start < name.end
                 && declaration.span.start <= name.start
                 && name.end <= declaration.span.end
                 && name.end <= source_len;
