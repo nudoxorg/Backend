@@ -15,10 +15,10 @@ use crate::ir::{
     CSharpVersion, CallableAnchorStep, CallableChildRole, CallableParentShape,
     CallableTypeContainerKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
     ConcreteType, CorePayloadHash, CxxStandard, DeclarationFamilyId, EntityAuthorityFacts,
-    EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder,
-    LanguageExtensionInput, LanguageProfile, NativeTool, PackageLineage, ParentageAuthority,
-    RustEdition, RustFacts, RustOwnership, SemanticCoreReader, SemanticImageAuthority,
-    SemanticImageEncodeError, SemanticReader, SignatureCarrierBinding, SignatureCarrierBindingRole,
+    EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder, ItemKind,
+    LanguageExtensionInput, LanguageProfile, PackageLineage, ParentageAuthority, RustEdition,
+    RustFacts, RustOwnership, SemanticCoreReader, SemanticImageAuthority, SemanticImageEncodeError,
+    SemanticReader, SignatureCarrierBinding, SignatureCarrierBindingRole,
     SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput, SignatureCarrierRole,
     SignatureCarrierRoleObservation, SourceIdentity, SourceSpan, TreeItemInput, TupleElement,
     TupleElementKind, TypeExpr, TypeParameterBound, TypeScriptSource, VariadicForm,
@@ -35,6 +35,7 @@ use super::{
     SemanticImageProofOwner, SemanticImageView, encode_full_semantic_image,
     full_semantic_image_len,
 };
+use crate::vocabulary::NativeTool;
 
 fn version(value: u8) -> EntityVersion {
     EntityVersion {
@@ -1954,7 +1955,7 @@ fn clang_name_span_requires_schema_five_and_roundtrips_inside_captured_extent()
         .expect("entity")
         .name
         .atom()
-        .raw();
+        .raw;
     set_u32(&mut foreign_file, name_file_cell, foreign_atom);
     assert!(matches!(
         SemanticImageView::reopen(&foreign_file),
