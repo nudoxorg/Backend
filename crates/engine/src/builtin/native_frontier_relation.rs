@@ -8,7 +8,7 @@ use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, Workspac
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_store::TypedObject;
 use backend_version::{
-    CanonicalRelation, ContentId, Relation, RelationDecodeError, Schema, SchemaIdentity,
+    CanonicalRelation, ContentId, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity,
     SourceFactDomain, StateRoot,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -357,7 +357,7 @@ pub fn product_native_frontier_digest<'a>(
         previous = Some(path);
         hasher.update(&(path.len() as u32).to_be_bytes());
         hasher.update(path.as_bytes());
-        encode_disposition(disposition, &mut |bytes| {
+        encode_disposition(disposition, &mut |bytes: &[u8]| {
             hasher.update(bytes);
         });
         count = count
@@ -716,7 +716,7 @@ impl Relation for ProductNativeFrontierRelation {
                 output.extend_from_slice(&<[u8; 2]>::from(*profile));
                 output.extend_from_slice(&(path.len() as u32).to_be_bytes());
                 output.extend_from_slice(path.as_bytes());
-                encode_disposition(*disposition, &mut |bytes| {
+                encode_disposition(*disposition, &mut |bytes: &[u8]| {
                     output.extend_from_slice(bytes);
                 });
             }
@@ -757,7 +757,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
     let mut cursor = 4;
     let tag = take(bytes, &mut cursor, 1)?[0];
     let project = take(bytes, &mut cursor, 32)?.try_into().map_err(|_| ())?;
-    let profile_code = take(bytes, &mut cursor, 2)?.try_into().map_err(|_| ())?;
+    let profile_code: [u8; 2] = take(bytes, &mut cursor, 2)?.try_into().map_err(|_| ())?;
     let profile = LanguageProfile::try_from(profile_code).map_err(|_| ())?;
     let record = match tag {
         1 => {
@@ -1048,7 +1048,11 @@ mod tests {
         ])
         .expect("complete disposition digest");
         assert_eq!(count, 2);
-        let NativePathDisposition::ClangMalformed { content, .. } = rows[1].1.clone() else {
+        let ProductNativeFrontierRecord::Path {
+            disposition: NativePathDisposition::ClangMalformed { content, .. },
+            ..
+        } = rows[1].1.clone()
+        else {
             panic!("first path is the malformed Clang candidate");
         };
         assert_eq!(content, candidate_content);

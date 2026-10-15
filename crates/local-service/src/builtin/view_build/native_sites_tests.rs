@@ -13,8 +13,8 @@ use backend_engine::{PackageKey, Relation, SourceLanguage, product_source_file_k
 use backend_semantic::ir::{
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, DeclarationFamilyId,
     EntityAuthorityFacts, EntityVersion, FactAvailability, IrBuilder, ItemKind,
-    LanguageExtensionInput, ParentageAuthority, SemanticImageView, SourceIdentity, SourceSpan,
-    TreeItemInput, VariantFingerprint, Visibility,
+    LanguageExtensionInput, ParentageAuthority, SemanticCoreReader as _, SemanticImageView,
+    SourceIdentity, SourceSpan, TreeItemInput, VariantFingerprint, Visibility,
 };
 use backend_semantic::vocabulary::{
     CxxStandard, LanguageProfile, NativeTool, PackageLineage, Stage,
@@ -237,7 +237,7 @@ fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32,
             },
             templates: empty_templates,
             includes: empty_includes,
-            declared_name: Some(SourceSpan::new(path, *name_start, *name_end)),
+            declared_name: SourceSpan::new(path, *name_start, *name_end),
         });
     }
     for ((_, entity_name, name_start, name_end), fact) in claims.iter().zip(&facts) {
@@ -262,11 +262,11 @@ fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32,
             members: &[],
             docs: &[],
             attributes: &[],
-            source: Some(SourceSpan::new(
+            source: SourceSpan::new(
                 path,
                 u32::try_from(declaration_start).expect("declaration start"),
                 u32::try_from(declaration_end).expect("declaration end"),
-            )),
+            ),
             extension: Some(LanguageExtensionInput::Clang(fact)),
         });
     }
@@ -278,9 +278,14 @@ fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32,
         })
         .expect("fixture semantic entities");
     let ir = builder.finish().expect("fixture IR");
-    let mut encoded = Vec::new();
-    backend_semantic::ir::encode_full_semantic_image(&ir, &mut encoded)
+    let mut encoded = vec![
+        0;
+        backend_semantic::ir::full_semantic_image_len(&ir)
+            .expect("measure provenance-bearing semantic image")
+    ];
+    let written = backend_semantic::ir::encode_full_semantic_image(&ir, &mut encoded)
         .expect("encode provenance-bearing semantic image");
+    encoded.truncate(written);
     encoded
 }
 
