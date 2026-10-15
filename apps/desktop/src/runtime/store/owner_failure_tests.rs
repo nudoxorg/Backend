@@ -370,6 +370,78 @@ impl EngineClient for RootOnly {
 }
 
 #[gpui::test]
+fn publication_failure_and_retry_keep_read_bytes_and_unconfirmed_operation_without_reindexing(
+    cx: &mut TestAppContext,
+) {
+    use crate::model::ProjectPhase;
+    use crate::runtime::owner::ObservationFailure;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct ObservedClient(Arc<AtomicUsize>);
+    impl EngineClient for ObservedClient {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            if matches!(request, EngineRequest::IndexProject { .. }) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            RootOnly.execute(request)
+        }
+    }
+    cx.executor().allow_parking();
+    let view = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let at = VersionedRoot::from_revision(1, cursor, 0);
+    let project = crate::core::LocalProjectId::new("/fixture/publication-retry").expect("project");
+    let base = crate::navigation::reduce(&AppSnapshot::empty(at), crate::navigation::Intent::AddProject {
+        project: project.clone(),
+    }).snapshot;
+    let mut workspace = base.workspace().clone();
+    let mut rows = workspace.projects.to_vec();
+    let mut operation = crate::model::index_operation::tests::claim(&project, 71);
+    operation.observation = Some(crate::model::index_operation::tests::observation(
+        &operation, backend_library::IndexOperationState::Accepted,
+    ));
+    rows[0].operation = Some(operation.clone());
+    rows[0].request = None;
+    rows[0].phase = ProjectPhase::Unconfirmed;
+    workspace.projects = rows.into();
+    let gate = OwnerGate::ready(at, ServiceMode::Embedded);
+    let attachment = gate.ready_epoch().expect("initial host");
+    assert_eq!(gate.publish_view(attachment, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let actor = EngineActor::start(ObservedClient(Arc::clone(&mutations)), 8).expect("actor");
+    let graph = cx.update(|cx| UiEntityGraph::install_with_owner(cx,
+        DesktopRuntime::new(base.with_workspace(workspace), actor), None,
+        Some(ReadPool::start(1, |_| Fixture).expect("pool")), Some(gate.clone()), None));
+    let store = &graph.store;
+    until(store, cx, "initial page read", |store| store.health().is_loaded() && store.pool_activity().is_idle());
+    let retained = store.read_with(cx, |store, _| Arc::clone(store.health().loaded_arc().expect("read bytes")));
+    assert!(gate.observation_failed(attachment, ObservationFailure::RecoveryExpired(std::time::Duration::from_secs(30))));
+    until(store, cx, "publication fault words", |store| matches!(store.owner.phase(), OwnerPhase::Failed(_)));
+    store.read_with(cx, |store, _| {
+        let notice = store.notice().expect("unavailable notice");
+        assert!(notice.message.contains("Index updates are unavailable"));
+        assert!(!notice.message.contains("could not start"));
+        assert!(Arc::ptr_eq(store.health().loaded_arc().expect("retained read bytes"), &retained));
+    });
+    assert!(gate.restart());
+    until(store, cx, "publication pending notice", |store| matches!(store.owner.phase(), OwnerPhase::Observing));
+    store.update(cx, |store, cx| {
+        let notice = store.notice().cloned().expect("pending notice");
+        assert!(notice.message.contains("Waiting for index updates"));
+        assert!(notice.retry.is_none());
+        assert!(store.current_owner_attachment().is_none());
+        store.admit_graph_focus(None, None, cx);
+        assert_eq!(store.notice(), Some(&notice), "pending owner notice survives graph repaint");
+        assert!(Arc::ptr_eq(store.health().loaded_arc().expect("pending read bytes"), &retained));
+    });
+    let row = &graph.root.read_with(cx, |root, _| root.snapshot().workspace().projects.to_vec())[0];
+    assert_eq!(row.phase, ProjectPhase::Unconfirmed);
+    assert_eq!(row.operation.as_ref(), Some(&operation));
+    assert!(!operation.permits_new_attempt(), "a known accepted operation must be checked before another index starts");
+    assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    gate.close();
+}
+
+#[gpui::test]
 fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_resource(
     cx: &mut TestAppContext,
 ) {
