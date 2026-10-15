@@ -51,6 +51,11 @@ mod exact_extent_tests {
         let analysis = super::syntax_frontend().map_err(|error| error.to_string())?
             .analyze(std::path::Path::new("main.go"), source.as_bytes())
             .map_err(|error| error.to_string())?;
+        assert_eq!(
+            analysis.declarations().iter().filter(|site| site.name() == "Alias").count(),
+            1,
+            "the combined alias and exact-extent query emits one declaration"
+        );
         for (name, extent) in [
             ("One", "type One struct{}"), ("Two", "Two int"), ("Three", "Three string"),
             ("Alias", "type Alias = One"), ("Solo", "var Solo = 1"),
