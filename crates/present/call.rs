@@ -409,7 +409,17 @@ pub fn lower_with_opener(
             } else {
                 path
             };
-            Ok(Request::Outline(path))
+            if invocation.option("limit").is_some() || invocation.option("cursor").is_some() {
+                query_cursor(
+                    invocation,
+                    Request::OutlinePage {
+                        path,
+                        limit: limit(invocation)?,
+                    },
+                )
+            } else {
+                Ok(Request::Outline(path))
+            }
         }
         CommandId::ProjectTree => {
             let root = path_or(invocation, project);

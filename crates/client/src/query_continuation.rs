@@ -22,6 +22,10 @@ fn query_parts(
 // can resolve its exact text-derived address to a compiler-selected row.
 // Selected addresses retain only their original opaque selector commitment.
 fn graph_address_claim(command: &Command, claim: &WireClaim) -> bool {
+    if let Command::OutlinePage { package, .. } = command {
+        return matches!(claim, WireClaim::Key { schema: WireSchema::Package, id, .. }
+            if id == &encode_id(package.as_bytes()));
+    }
     let Command::GraphPage { symbol, .. } = command else {
         return false;
     };
@@ -59,7 +63,7 @@ pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> 
     match command {
         Command::Search(query) => Some(query.basis()),
         Command::Name(query) => Some(query.basis()),
-        Command::GraphPage { page, .. } => Some(page.basis()),
+        Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => Some(page.basis()),
         _ => None,
     }
 }
@@ -161,7 +165,12 @@ impl Session {
         }
         let next = match &reply.reply {
             CommandReply::Search(page) | CommandReply::Names(page) => page.next,
-            CommandReply::ProjectionPage(page) if matches!(&command, Command::GraphPage { .. }) => {
+            CommandReply::ProjectionPage(page)
+                if matches!(
+                    &command,
+                    Command::GraphPage { .. } | Command::OutlinePage { .. }
+                ) =>
+            {
                 page.snapshot.next
             }
             _ => None,
@@ -188,6 +197,10 @@ impl Session {
             Command::Name(query) => Command::Name(query.with_cursor(cursor)),
             Command::GraphPage { symbol, page } => Command::GraphPage {
                 symbol,
+                page: page.with_continuation(PageContinuation::from_cursor(cursor)),
+            },
+            Command::OutlinePage { package, page } => Command::OutlinePage {
+                package,
                 page: page.with_continuation(PageContinuation::from_cursor(cursor)),
             },
             _ => return Ok(()),
@@ -314,7 +327,9 @@ impl Session {
             }
         };
         let cursor = match &imported.command {
-            Command::GraphPage { page, .. } => page.continuation().map(PageContinuation::cursor),
+            Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
+                page.continuation().map(PageContinuation::cursor)
+            }
             command => query_parts(command).and_then(|(_, _, _, cursor)| cursor),
         }
         .ok_or_else(|| ClientError::Protocol("token is not a continued query".to_owned()))?;
@@ -356,6 +371,14 @@ impl Session {
                     ClientError::Protocol("graph predecessor changed window credit".to_owned())
                 })?
             }
+            Command::OutlinePage { package, page } => {
+                if page.window().is_windowed() || cursor.query_position().predecessor().is_some() {
+                    return Err(ClientError::Protocol(
+                        "outline token changed fixed page credit".to_owned(),
+                    ));
+                }
+                backend_library::QueryPageRecipe::outline(revision.root, *package, page.limit())
+            }
             _ => {
                 return Err(ClientError::Protocol(
                     "query token changed family".to_owned(),
@@ -386,6 +409,35 @@ impl Session {
         }
         self.prepared_query = Some(CommandDto::new(1, imported.command).with_certificate(fresh));
         Ok(PageContinuation::from_cursor(cursor))
+    }
+
+    pub(super) fn resume_prepared_outline(
+        &mut self,
+        package: backend_library::PackageKey,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let request = self
+            .prepared_query
+            .take()
+            .ok_or_else(|| ClientError::Protocol("outline page was not prepared".to_owned()))?;
+        let Command::OutlinePage {
+            package: actual,
+            page,
+        } = &request.command
+        else {
+            return Err(ClientError::Protocol(
+                "continuation changed query family".to_owned(),
+            ));
+        };
+        if *actual != package || page.limit().get() != limit || page.continuation() != continuation
+        {
+            return Err(ClientError::Protocol(
+                "continuation changed outline package/credit/predecessor".to_owned(),
+            ));
+        }
+        let certificate = request.certificate().cloned();
+        self.send_success(request.command, certificate)
     }
 
     pub(super) fn resume_prepared_graph(

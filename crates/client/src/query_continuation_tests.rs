@@ -38,6 +38,15 @@ fn owner_with_label(context: u8, count: usize, sequence: u64, label: &str) -> Li
     owner_with_labels(context, count, sequence, &[label])
 }
 fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) -> Library {
+    owner_with_package(context, count, sequence, labels, None)
+}
+fn owner_with_package(
+    context: u8,
+    count: usize,
+    sequence: u64,
+    labels: &[&str],
+    package: Option<&str>,
+) -> Library {
     let object = object_version(b"library-source-v1");
     let scope = ScopeRoot::from_bytes(object.to_bytes());
     let observation = admit_producer_observation(
@@ -55,7 +64,7 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
     )
     .expect("evidence");
     let basis = Basis::new(view_state_root(&[]), object);
-    let rows = labels
+    let mut rows: Vec<Row> = labels
         .iter()
         .cycle()
         .take(count)
@@ -68,6 +77,13 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
             )
         })
         .collect();
+    if let Some(package) = package {
+        let key = backend_library::package_key(package);
+        for row in &mut rows {
+            row.package = Some(key);
+        }
+        rows.push(Row::new(RowId::Package(key), basis, package));
+    }
     let root = ViewRoot::new_checked(
         view_key(b"library-view-v1"),
         basis,
@@ -171,6 +187,9 @@ impl CommandTransport for Transport {
                 Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query),
                 Command::GraphPage { symbol, page } => {
                     QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
+                }
+                Command::OutlinePage { package, page } => {
+                    QueryPageRecipe::outline(library.revision_root(), *package, page.limit())
                 }
                 _ => unreachable!("query reply"),
             };
@@ -2704,4 +2723,72 @@ fn reopening_waits_out_lost_replacements_and_keeps_the_loss_when_nothing_answers
             "one attempt, no spin"
         );
     }
+}
+
+#[test]
+fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_scope_changes() {
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        7,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .outline_page("/p", 3, None)
+        .expect("native outline page");
+    let CommandReply::ProjectionPage(first) = first.reply else {
+        panic!("projection");
+    };
+    let next = PageContinuation::from_cursor(first.snapshot.next.expect("more"));
+    let token = issuing
+        .encode_query_continuation(next)
+        .expect("portable native outline proof");
+    let mut fresh = session(&owner, &requests);
+    let imported = fresh
+        .decode_page_continuation(&token)
+        .expect("fresh owner admits proof");
+    let resumed = fresh
+        .outline_page("/p", 3, Some(imported))
+        .expect("exact successor");
+    let CommandReply::ProjectionPage(resumed) = resumed.reply else {
+        panic!("projection");
+    };
+    assert_eq!(resumed.snapshot.root.row_count(), 3);
+    assert_eq!(
+        resumed
+            .snapshot
+            .next
+            .expect("last page follows")
+            .query_offset(),
+        6
+    );
+    for (path, credit) in [("/other", 3), ("/p", 1)] {
+        let mut fresh = session(&owner, &requests);
+        let imported = fresh.decode_page_continuation(&token).expect("same proof");
+        let before = requests.lock().expect("requests").len();
+        assert!(fresh.outline_page(path, credit, Some(imported)).is_err());
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "refused before sending"
+        );
+    }
+    let mut changed = token_value(&token);
+    changed["command"]["data"]["page"]["limit"] = serde_json::json!(1);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&self::token(&changed))
+            .is_err(),
+        "native recipe binds exact credit"
+    );
+    *owner.lock().expect("owner") = owner_with_package(2, 7, 0, &["Thing"], Some("/p"));
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&token)
+            .is_err(),
+        "foreign issuing scope"
+    );
 }

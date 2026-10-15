@@ -314,11 +314,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::ResumeQuery { query, cursor } => {
             if !matches!(
                 query.as_ref(),
-                Request::Search { .. } | Request::Resolve { .. }
+                Request::Search { .. } | Request::Resolve { .. } | Request::OutlinePage { .. }
             ) {
                 return Err(Fault::usage(
                     "cursor",
-                    "only search and names have portable query continuations",
+                    "only search, names and bounded outlines have portable query continuations",
                 ));
             }
             let continuation = engine.prepare_query_continuation(cursor).map_err(|error| {

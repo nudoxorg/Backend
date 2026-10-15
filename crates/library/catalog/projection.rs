@@ -140,6 +140,19 @@ impl QueryPageRecipe {
         }
     }
 
+    /// Binds a fixed outline page to its package, source root and exact credit.
+    #[must_use]
+    pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit) -> Self {
+        let recipe = outline_page_recipe(package, limit);
+        let preimage =
+            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
+                .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
     fn new(
         kind: QueryPageKind,
         text: &str,
@@ -184,6 +197,13 @@ impl QueryPageRecipe {
     pub fn canonical_preimage(&self) -> &[u8] {
         &self.preimage
     }
+}
+
+pub(crate) fn outline_page_recipe(package: PackageKey, limit: QueryLimit) -> Vec<u8> {
+    let mut bytes = b"outline-page-v3\0".to_vec();
+    bytes.extend_from_slice(package.as_bytes());
+    bytes.extend_from_slice(&limit.get().to_be_bytes());
+    bytes
 }
 
 fn graph_page_recipe(address: crate::SymbolAddress, window: QueryWindow) -> Vec<u8> {
@@ -280,8 +300,7 @@ impl Library {
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);
         }
-        let mut recipe_bytes = b"outline-page-v2".to_vec();
-        recipe_bytes.extend_from_slice(package.as_bytes());
+        let recipe_bytes = outline_page_recipe(package, page.limit());
         let recipe = self.query_recipe(&recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);

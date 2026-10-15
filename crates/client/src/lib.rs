@@ -1621,6 +1621,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_outline(package_key(coordinate), limit, continuation);
+        }
         let revision = self.revision()?;
         let package = package_key(coordinate);
         let certificate = revision.certificate.with_claim_once(WireClaim::Key {
@@ -2439,6 +2442,7 @@ impl Session {
                 | Command::Name(_)
                 | Command::GraphQuery(_)
                 | Command::GraphPage { .. }
+                | Command::OutlinePage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
         let remaining = remaining.map(|budget| budget.saturating_sub(started.elapsed()));
