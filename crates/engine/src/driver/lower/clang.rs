@@ -404,6 +404,14 @@ fn collect_input<'input, 'source>(
         cancelled,
     )
     .map_err(ClangCollectError::Authority)?;
+    project_authority(source, authority, facts)
+}
+
+fn project_authority<'scratch, 'source>(
+    source: &'source [u8],
+    authority: backend_frontend_clang::legacy::ClangFacts<'scratch>,
+    facts: &mut FactSet<'source>,
+) -> Result<(), ClangCollectError> {
     let mut projector = Projector::new(source, authority, facts);
     projector.select_representatives()?;
     projector.push_type_anchors()?;
@@ -2601,21 +2609,28 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            if let Ok(name) = core::str::from_utf8(name_bytes) {
-                                self.facts
-                                    .push_owned_package_occurrence(
-                                        owner,
-                                        ECOSYSTEM,
-                                        package_path.as_ref(),
-                                        name,
-                                        name,
-                                        entity_kind,
-                                        lane_reference_kind(reference.kind),
-                                        OccurrenceConfidence::Oracle,
-                                        span,
-                                    )
-                                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
-                                continue;
+                            // Package keys require a source-backed spelling. Macro
+                            // expansions can carry a valid foreign USR while their
+                            // expansion-site name range is empty; keep those refs on
+                            // the stable USR/file target path below instead of
+                            // manufacturing an empty package key.
+                            if !name_bytes.is_empty() {
+                                if let Ok(name) = core::str::from_utf8(name_bytes) {
+                                    self.facts
+                                        .push_owned_package_occurrence(
+                                            owner,
+                                            ECOSYSTEM,
+                                            package_path.as_ref(),
+                                            name,
+                                            name,
+                                            entity_kind,
+                                            lane_reference_kind(reference.kind),
+                                            OccurrenceConfidence::Oracle,
+                                            span,
+                                        )
+                                        .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -3425,13 +3440,15 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 mod tests {
     use core::sync::atomic::AtomicBool;
     use std::{
+        ffi::CString,
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU32, Ordering},
     };
 
     use backend_frontend_clang::legacy::{
-        CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
+        ClangInput, ClangScratch, CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan,
+        SymbolIdentity,
     };
     use backend_frontend_clang::{ClangAuthorityEnvironment, ClangProject};
     use backend_semantic::ir::{
@@ -3572,30 +3589,7 @@ mod tests {
             &AtomicBool::new(false),
             &mut facts,
         )?;
-        let identity = SourceIdentity {
-            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
-        };
-        let recipe = CompileRecipeFact::derive(
-            profile,
-            Stage::LowerIr,
-            NativeTool::Clang,
-            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
-        );
-        let mut output = vec![0xa5_u8; 65_536];
-        let length =
-            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-                .map_err(|fault| TestError::Admission {
-                    label: "admission",
-                    fault,
-                })?
-                .len();
-        if !output[length..].iter().all(|byte| *byte == 0xa5) {
-            return Err(TestError::Tail);
-        }
-        output.truncate(length);
-        Ok(output)
+        encode_facts(profile, source, &facts)
     }
 
     fn owned_ir(source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
@@ -4657,6 +4651,193 @@ mod tests {
             return Err(TestError::Missing("header foreign call and printf stable"));
         }
         Ok(())
+    }
+
+    /// A foreign type reached through a macro whose expansion spelling has no
+    /// source bytes must retain its USR/file identity. The package-key fast path
+    /// is reserved for an actual nonempty spelling.
+    #[test]
+    fn zero_width_macro_foreign_reference_keeps_stable_identity() -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include").join("decl.h");
+        let entry = root.join("src").join("main.c");
+        let source = b"#include \"decl.h\"\n#define FOREIGN_TYPE HeaderType\nFOREIGN_TYPE *use(void) { return 0; }\n";
+        fs::write(&header, b"typedef int HeaderType;\n")
+            .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.c\",\"arguments\":[\"cc\",\"-Iinclude\",\"-std=c11\",\"-c\",\"src/main.c\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        let (bytes, expected_target) =
+            lower_project_with_zero_width_foreign_type(&project, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let owner = entity_of(&view, b"use", EntityKind::Function)?;
+        if !occurrences(&view)?.iter().any(|row| {
+            row.owner == owner
+                && row.occurrence.kind == backend_semantic::ir::ReferenceKind::TypeReference
+                && row.occurrence.target == expected_target
+        }) {
+            return Err(TestError::Missing(
+                "stable foreign type occurrence through macro",
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Collects real project authority, then makes the macro-expanded foreign
+    /// type use zero-width before running the production projection passes.
+    /// This isolates the empty-spelling branch without fabricating a target.
+    fn lower_project_with_zero_width_foreign_type(
+        project: &ClangProject,
+        source: &[u8],
+    ) -> Result<(Vec<u8>, OccurrenceTarget<'static>), TestError> {
+        let file_name = CString::new(project.entry().to_string_lossy().as_bytes())
+            .map_err(|_| TestError::Missing("entry path"))?;
+        let directory = CString::new(project.root().to_string_lossy().as_bytes())
+            .map_err(|_| TestError::Missing("project root"))?;
+        let arguments = project.arguments();
+        let owned = arguments
+            .iter()
+            .map(|argument| CString::new(argument.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("project arguments"))?;
+        let borrowed = owned.iter().map(CString::as_c_str).collect::<Vec<_>>();
+        let input = ClangInput::from_database(&file_name, source, &borrowed, &directory)
+            .map_err(|_| TestError::Missing("database input"))?;
+
+        let mut declarations =
+            vec![super::empty_declaration(); super::declaration_slots(source.len())]
+                .into_boxed_slice();
+        let mut types =
+            vec![super::empty_type(); super::type_slots(source.len())].into_boxed_slice();
+        let mut type_edges =
+            vec![super::empty_type_edge(); super::type_edge_slots(source.len())].into_boxed_slice();
+        let mut references =
+            vec![super::empty_reference(); super::reference_slots(source.len())].into_boxed_slice();
+        let mut diagnostics =
+            vec![super::empty_diagnostic(); super::DIAGNOSTIC_SLOTS].into_boxed_slice();
+        let mut includes =
+            vec![super::empty_include(); super::include_slots(source.len())].into_boxed_slice();
+        let mut overrides = vec![super::empty_override(); super::OVERRIDE_SLOTS].into_boxed_slice();
+        let mut facts = FactSet::new();
+        let mut expected_target = None;
+
+        project
+            .environment()
+            .with_loaded_libclang(|| -> Result<(), ClangCollectError> {
+                let authority = super::collect_cancellable(
+                    input,
+                    ClangScratch {
+                        declarations: &mut declarations,
+                        types: &mut types,
+                        type_edges: &mut type_edges,
+                        references: &mut references,
+                        diagnostics: &mut diagnostics,
+                        includes: &mut includes,
+                        overrides: &mut overrides,
+                    },
+                    &AtomicBool::new(false),
+                )
+                .map_err(ClangCollectError::Authority)?;
+                let mut references = authority.references.to_vec();
+                let use_start = source
+                    .windows(b"FOREIGN_TYPE".len())
+                    .rposition(|window| window == b"FOREIGN_TYPE")
+                    .ok_or(ClangCollectError::Lowering(
+                        super::LoweringUnsupported::ClangDeclarationForm,
+                    ))?;
+                let use_start = u32::try_from(use_start).map_err(|_| {
+                    ClangCollectError::Lowering(super::LoweringUnsupported::ClangDeclarationForm)
+                })?;
+                let reference = references
+                    .iter_mut()
+                    .find(|reference| {
+                        matches!(
+                            reference.kind,
+                            super::ReferenceKind::Type | super::ReferenceKind::Template
+                        ) && reference.owner.is_some()
+                            && matches!(
+                                reference.target,
+                                super::ReferenceTarget::Foreign { path: Some(_), .. }
+                            )
+                    })
+                    .ok_or(ClangCollectError::Lowering(
+                        super::LoweringUnsupported::ClangDeclarationForm,
+                    ))?;
+                let (identity, file) = match reference.target {
+                    super::ReferenceTarget::Foreign {
+                        identity,
+                        file: Some(file),
+                        path: Some(_),
+                    } => (identity, file),
+                    _ => {
+                        return Err(ClangCollectError::Lowering(
+                            super::LoweringUnsupported::ClangDeclarationForm,
+                        ));
+                    }
+                };
+                expected_target = Some(super::stable_foreign_target(identity, file));
+                reference.span = SourceSpan {
+                    start: use_start,
+                    end: use_start,
+                };
+                let authority = backend_frontend_clang::legacy::ClangFacts {
+                    declarations: authority.declarations,
+                    types: authority.types,
+                    type_edges: authority.type_edges,
+                    references: &references,
+                    diagnostics: authority.diagnostics,
+                    includes: authority.includes,
+                    overrides: authority.overrides,
+                    project_paths: authority.project_paths,
+                };
+                super::project_authority(source, authority, &mut facts)
+            })
+            .map_err(|error| {
+                ClangCollectError::Authority(CollectError::ConfiguredLibrary(error))
+            })??;
+        Ok((
+            encode_facts(LanguageProfile::C(CStandard::C11), source, &facts)?,
+            expected_target.ok_or(TestError::Missing("stable foreign target fixture"))?,
+        ))
+    }
+
+    fn encode_facts(
+        profile: LanguageProfile,
+        source: &[u8],
+        facts: &FactSet<'_>,
+    ) -> Result<Vec<u8>, TestError> {
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Clang,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
+        );
+        let mut output = vec![0xa5_u8; 65_536];
+        let length =
+            crate::driver::lower::admit(facts, identity, recipe, recipe.profile, &mut output)
+                .map_err(|fault| TestError::Admission {
+                    label: "admission",
+                    fault,
+                })?
+                .len();
+        if !output[length..].iter().all(|byte| *byte == 0xa5) {
+            return Err(TestError::Tail);
+        }
+        output.truncate(length);
+        Ok(output)
     }
 
     /// Allocates a unique temporary project directory and removes it on drop.
