@@ -28,6 +28,10 @@ pub(super) struct PublicationWork {
     pub(super) proof: Option<UnselectedWorkspaceCandidate>,
     pub(super) roots: Option<PublishedRoots>,
     pub(super) outcome: Option<backend_library::IndexJobOutcome>,
+    preparation: Preparation,
+    // Kept outside consumed phase payloads so unwind cannot lose durable
+    // candidate attempts that still require retirement.
+    source_attempts: Vec<backend_extension_turso::CandidateAttempt>,
     base: WorkspaceSnapshot,
     current: backend_engine::ViewRoot,
     compiler: LocalCompilerClient,
@@ -53,11 +57,46 @@ pub(super) struct PublicationWork {
     observed: Arc<TestObservation>,
     #[cfg(test)]
     pub(super) test_hook: Option<TestHook>,
+    #[cfg(test)]
+    pub(super) test_spawn_refusal: bool,
+}
+
+/// Exactly one owned preparation or checked continuation. The storage
+/// capabilities above remain original and independent of the phase payload.
+pub(super) enum Preparation {
+    Publication {
+        refusal: Option<backend_library::IndexJobOutcome>,
+    },
+    Source {
+        scan: IndexScanResult,
+        route: Option<super::super::index::SourceRoute>,
+    },
+    Cluster(super::super::index::SourceCompilePlan),
+    Finalize(DeferredIndex),
+    Cleanup {
+        plan: super::super::index::CaptureFailurePlan,
+        outcome: backend_library::IndexJobOutcome,
+    },
+    SourcePlan(super::super::index::SourceCompilePlan),
+    SourcePrepared(PreparedProductSelection),
+    SourceCaptured {
+        continuation: PreparedIndex,
+        captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    },
+    // A consumed payload may unwind, but the original capabilities and begun
+    // attempt identities remain retained for failure settlement.
+    Consumed,
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TestStage {
+    BeforeSourcePreparation,
+    BeforeSourceMaterialization,
+    BeforeFinalization,
+    BeforeViewPreparation,
+    BeforeClusterCompile,
+    BeforeClusterFallback,
     AfterGrant,
     AfterSelection,
     AfterReceipt,
@@ -77,6 +116,11 @@ pub(super) enum Head {
 
 pub(super) enum Disposition {
     Ready,
+    /// A checked source-only plan that needs no intermediate capture.
+    SourcePrepared,
+    /// The independent source/Pending capture is coherent; no terminal
+    /// Published receipt was written and compilation has not begun.
+    SourceCaptured,
     /// A verified unchanged physical base permits ordinary failure/cancel.
     Unselected(BuiltinModelError),
     /// The same original capabilities remain available for explicit retry.
@@ -92,6 +136,7 @@ pub(super) enum Event {
     Grant {
         claim: WorkspaceCandidateClaim,
         reply: SyncSender<Result<PublishGrant, WorkspaceError>>,
+        cancellation: Arc<AtomicBool>,
     },
     Complete(Completion),
 }
@@ -172,10 +217,15 @@ impl PublicationWork {
         workspace: std::path::PathBuf,
         prior: Option<PublishedRoots>,
         prepared: PreparedProductSelection,
+        preparation: Preparation,
         requested_reference: backend_library::PackageReference,
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
     ) -> Self {
+        let source_attempts = match &preparation {
+            Preparation::Finalize(job) => job.pending_attempts(),
+            _ => Vec::new(),
+        };
         Self {
             semantic,
             journal,
@@ -186,6 +236,8 @@ impl PublicationWork {
             proof: None,
             roots: None,
             outcome: None,
+            preparation,
+            source_attempts,
             base,
             current,
             compiler,
@@ -211,12 +263,149 @@ impl PublicationWork {
             observed: Arc::new(TestObservation::new()),
             #[cfg(test)]
             test_hook: None,
+            #[cfg(test)]
+            test_spawn_refusal: false,
+        }
+    }
+
+    pub(super) fn admit_workspace(
+        &mut self,
+        workspace: Result<std::path::PathBuf, BuiltinModelError>,
+    ) -> Result<(), BuiltinModelError> {
+        self.workspace = workspace?;
+        Ok(())
+    }
+
+    pub(super) fn failure_outcome(&self) -> Option<&backend_library::IndexJobOutcome> {
+        match &self.preparation {
+            Preparation::Publication { refusal } => refusal.as_ref(),
+            Preparation::Cleanup { outcome, .. } => Some(outcome),
+            _ => None,
+        }
+    }
+
+    fn is_cleanup(&self) -> bool {
+        matches!(self.preparation, Preparation::Cleanup { .. })
+    }
+
+    pub(super) fn take_source_continuation(
+        &mut self,
+    ) -> (
+        PreparedIndex,
+        BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    ) {
+        match std::mem::replace(&mut self.preparation, Preparation::Consumed) {
+            Preparation::SourcePrepared(prepared) => {
+                (PreparedIndex::Ready(prepared), BTreeMap::new())
+            }
+            Preparation::SourceCaptured {
+                continuation,
+                captures,
+            } => (continuation, captures),
+            _ => unreachable!("checked source completion"),
         }
     }
 
     fn prepare(&mut self) -> Result<(), BuiltinModelError> {
         if self.view.is_some() {
             return Ok(());
+        }
+        // Cleanup stays borrowed in the phase: a panic must retain both its
+        // frozen outcome and its unresolved attempt retirement plan.
+        if let Preparation::Cleanup { plan, .. } = &mut self.preparation {
+            self.prepared = plan.prepare(
+                &self.base,
+                self.semantic
+                    .as_mut()
+                    .expect("original cleanup semantic writer")
+                    .authority_mut(),
+            )?;
+        } else if matches!(
+            self.preparation,
+            Preparation::Finalize(_) | Preparation::Cluster(_) | Preparation::Source { .. }
+        ) {
+            #[cfg(test)]
+            self.run_test_hook(match &self.preparation {
+                Preparation::Finalize(_) => TestStage::BeforeFinalization,
+                Preparation::Cluster(_) => TestStage::BeforeClusterCompile,
+                Preparation::Source { .. } => TestStage::BeforeSourcePreparation,
+                _ => unreachable!("checked owned preparation"),
+            });
+            let preparation = std::mem::replace(&mut self.preparation, Preparation::Consumed);
+            match preparation {
+                Preparation::Finalize(job) => {
+                    let prepared =
+                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job)?;
+                    self.preparation = Preparation::SourcePrepared(prepared);
+                    return Ok(());
+                }
+                Preparation::Cluster(plan) => {
+                    #[cfg(test)]
+                    let fallback_hook = &mut self.test_hook;
+                    let prepared = plan.compile_cluster(
+                        &self.base,
+                        &self.compiler,
+                        self.semantic
+                            .as_mut()
+                            .expect("original cluster semantic writer")
+                            .authority_mut(),
+                        &mut self.source_attempts,
+                        #[cfg(test)]
+                        &mut || {
+                            if fallback_hook
+                                .as_ref()
+                                .is_some_and(|hook| hook.stage == TestStage::BeforeClusterFallback)
+                            {
+                                let hook = fallback_hook
+                                    .take()
+                                    .expect("one-shot real configured fallback");
+                                (hook.run)();
+                            }
+                        },
+                    )?;
+                    self.preparation = Preparation::SourcePrepared(prepared);
+                    return Ok(());
+                }
+                Preparation::Source { scan, route } => {
+                    #[cfg(test)]
+                    let source_hook = &mut self.test_hook;
+                    match super::super::index::prepare_source_scan(
+                        &self.base,
+                        scan,
+                        &self.compiler,
+                        self.semantic
+                            .as_mut()
+                            .expect("original source semantic writer")
+                            .authority_mut(),
+                        self.operation_key,
+                        route,
+                        #[cfg(test)]
+                        &mut || {
+                            if source_hook.as_ref().is_some_and(|hook| {
+                                hook.stage == TestStage::BeforeSourceMaterialization
+                            }) {
+                                let hook = source_hook
+                                    .take()
+                                    .expect("one-shot real source materialization");
+                                (hook.run)();
+                            }
+                        },
+                    )? {
+                        super::super::index::PreparedSourceScan::Ready(prepared) => {
+                            self.preparation = Preparation::SourcePrepared(prepared);
+                            return Ok(());
+                        }
+                        super::super::index::PreparedSourceScan::Capture {
+                            selection,
+                            continuation,
+                        } => {
+                            self.prepared = selection;
+                            self.preparation = Preparation::SourcePlan(continuation);
+                        }
+                    }
+                }
+                _ => unreachable!("checked owned preparation"),
+            }
         }
         let original = self.prepared.intent.as_ref().ok_or_else(|| {
             BuiltinModelError("publication worker requires an actual source intent".to_owned())
@@ -225,7 +414,7 @@ impl PublicationWork {
             Some(key) => original.clone().with_operation_key(key)?,
             None => original.clone(),
         };
-        if !self.prepared.profile_refusals.is_empty() {
+        if !self.prepared.profile_refusals.is_empty() && !self.prepared.selected.is_empty() {
             let producer = self
                 .prepared
                 .selected
@@ -287,6 +476,27 @@ impl PublicationWork {
         self.candidate = Some(candidate);
         self.staged = Some(staged);
         self.candidate_snapshot = Some(snapshot.clone());
+        if matches!(self.preparation, Preparation::SourcePlan(_)) {
+            let Preparation::SourcePlan(plan) =
+                std::mem::replace(&mut self.preparation, Preparation::Consumed)
+            else {
+                unreachable!("checked source plan")
+            };
+            let captures = plan.captures.clone();
+            let continuation = plan.finish(
+                &snapshot,
+                &self.compiler,
+                self.semantic
+                    .as_mut()
+                    .expect("original source semantic writer")
+                    .authority_mut(),
+                &mut self.source_attempts,
+            )?;
+            self.preparation = Preparation::SourceCaptured {
+                continuation,
+                captures,
+            };
+        }
         let loader = self
             .semantic
             .as_ref()
@@ -296,6 +506,18 @@ impl PublicationWork {
         self.generations.install_selected_loader(loader);
         #[cfg(test)]
         self.observed.phase("prepare-view");
+        #[cfg(test)]
+        if self
+            .test_hook
+            .as_ref()
+            .is_some_and(|hook| hook.stage == TestStage::BeforeViewPreparation)
+        {
+            let hook = self
+                .test_hook
+                .take()
+                .expect("one-shot source view preparation");
+            (hook.run)();
+        }
         let view = prepare_builtin_view(
             snapshot.clone(),
             self.current.clone(),
@@ -328,7 +550,12 @@ impl PublicationWork {
 
     fn attempt(&mut self, events: &Sender<Event>) -> Result<(), FinishAddError> {
         self.prepare()?;
+        if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+            return Ok(());
+        }
         if !self.semantic_committed {
+            let source_capture = matches!(self.preparation, Preparation::SourceCaptured { .. });
+            let cleanup_phase = self.is_cleanup();
             let staged = self.staged.as_ref().expect("prepared request");
             let request = staged.request_identity();
             let base_root = staged.base_workspace_root();
@@ -364,6 +591,7 @@ impl PublicationWork {
                         }
                         #[cfg(test)]
                         observed.phase("publication-barrier");
+                        if !source_capture && !cleanup_phase {
                         prepare_publication_barrier(journal, operation_key, Some(request),
                             base_root, base_sequence, plan).map_err(|e| match e {
                                 FinishAddError::PublicationBusy => {
@@ -372,9 +600,10 @@ impl PublicationWork {
                                 }
                                 FinishAddError::Failed(e) => e,
                             })?;
+                        }
                     }
                     select_head(head, candidate, events, grant_accepted,
-                        #[cfg(test)] test_hook, #[cfg(test)] observed)
+                        #[cfg(test)] test_hook, cancellation, #[cfg(test)] observed)
                 }).map_err(|e| if busy { FinishAddError::PublicationBusy } else { e.into() })?;
             self.semantic_committed = true;
             #[cfg(test)]
@@ -402,6 +631,84 @@ impl PublicationWork {
             self.projected = true;
         }
         let staged = self.staged.as_ref().expect("actual request");
+        if let Preparation::SourceCaptured { captures, .. } = &self.preparation {
+            if let Some(key) = self.operation_key {
+                let receipt = super::super::index::source_capture_receipt_for_snapshot(
+                    snapshot,
+                    captures
+                        .keys()
+                        .next()
+                        .expect("captured source scope")
+                        .package(),
+                    key,
+                    Some(staged.request_identity()),
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError("source candidate lost its exact capture marker".to_owned())
+                })?;
+                self.journal
+                    .as_mut()
+                    .expect("original source receipt writer")
+                    .journal_mut()
+                    .source_captured(key, receipt)
+                    .map_err(|e| BuiltinModelError(format!("record source capture: {e}")))?;
+            }
+            self.roots = Some(view.outcome.roots.clone());
+            return Ok(());
+        }
+        if let Some(outcome) = self.failure_outcome().cloned() {
+            if let Some(key) = self.operation_key {
+                let journal = self
+                    .journal
+                    .as_mut()
+                    .expect("original refusal receipt writer")
+                    .journal_mut();
+                let Some(JournalEntry::Retained(entry)) = journal
+                    .entry(key)
+                    .map_err(|e| BuiltinModelError(format!("read refusal receipt: {e}")))?
+                else {
+                    return Err(
+                        BuiltinModelError("refusal lost its exact operation".to_owned()).into(),
+                    );
+                };
+                if let Some(source) = entry.source_capture.as_ref() {
+                    refresh_index_operation_source_capture_for_snapshot(
+                        journal,
+                        snapshot,
+                        key,
+                        entry.source_package(),
+                        source,
+                    )
+                    .map_err(|e| BuiltinModelError(format!("record refusal capture: {e}")))?;
+                }
+                let (reason, detail, compiler_failure) = index_operation_failure(Some(&outcome));
+                match &entry.state {
+                    StoredOperationState::Failed {
+                        reason: stored_reason,
+                        detail: stored_detail,
+                        compiler_failure: stored_failure,
+                    } if *stored_reason == reason
+                        && *stored_detail == detail
+                        && *stored_failure == compiler_failure => {}
+                    StoredOperationState::Accepted | StoredOperationState::Prepared { .. } => {
+                        journal
+                            .failed_with_compiler_failure(key, reason, detail, compiler_failure)
+                            .map_err(|e| {
+                                BuiltinModelError(format!("record capture-only refusal: {e}"))
+                            })?;
+                    }
+                    _ => {
+                        return Err(BuiltinModelError(
+                            "refusal receipt contradicts its retained terminal".to_owned(),
+                        )
+                        .into());
+                    }
+                }
+            }
+            self.roots = Some(view.outcome.roots.clone());
+            self.outcome = Some(outcome.clone());
+            return Ok(());
+        }
         #[cfg(test)]
         self.observed.phase("publish-receipt");
         let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
@@ -538,7 +845,15 @@ impl PublicationWork {
             .into())
         });
         let error = match result {
-            Ok(()) => return Disposition::Ready,
+            Ok(()) => {
+                return if matches!(self.preparation, Preparation::SourceCaptured { .. }) {
+                    Disposition::SourceCaptured
+                } else if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+                    Disposition::SourcePrepared
+                } else {
+                    Disposition::Ready
+                };
+            }
             Err(FinishAddError::PublicationBusy) => {
                 return Disposition::Pending(BuiltinModelError(
                     "durable publication is temporarily busy".to_owned(),
@@ -546,6 +861,12 @@ impl PublicationWork {
             }
             Err(FinishAddError::Failed(e)) => e,
         };
+        if self.is_cleanup() {
+            // Its terminal decision is already frozen. Keep the original
+            // cleanup plan/writers for explicit retry instead of dropping
+            // unresolved attempt retirement or synthesizing another terminal.
+            return Disposition::Pending(error);
+        }
         // Physical selection, not cancellation or a best-effort notification,
         // decides whether this attempt can become an ordinary failed terminal.
         let writer = match &mut self.head {
@@ -592,13 +913,29 @@ impl PublicationWork {
         &mut self,
         error: &BuiltinModelError,
     ) -> Result<(), BuiltinModelError> {
-        let outcome = self.outcome.clone().unwrap_or_else(|| {
-            if self.cancellation_won() {
-                backend_library::IndexJobOutcome::Cancelled
-            } else {
-                backend_library::IndexJobOutcome::Failed(bounded_index_detail(error.clone()))
-            }
-        });
+        let outcome = self
+            .outcome
+            .clone()
+            .or_else(|| self.failure_outcome().cloned())
+            .unwrap_or_else(|| {
+                if self.cancellation_won() {
+                    backend_library::IndexJobOutcome::Cancelled
+                } else {
+                    backend_library::IndexJobOutcome::Failed(bounded_index_detail(error.clone()))
+                }
+            });
+        let reason = if self.cancellation_won() {
+            backend_extension_turso::CandidateAttemptRetirementReason::Cancelled
+        } else {
+            backend_extension_turso::CandidateAttemptRetirementReason::Failed
+        };
+        for attempt in &self.source_attempts {
+            self.semantic
+                .as_mut()
+                .expect("original source semantic writer")
+                .authority_mut()
+                .retire_candidate_attempt(attempt, reason)?;
+        }
         // Freeze arbitration across an unavailable receipt writer. A retry
         // cannot change an already chosen failure into a later cancellation.
         self.outcome = Some(outcome.clone());
@@ -691,6 +1028,7 @@ fn select_head(
     events: &Sender<Event>,
     grant_accepted: &mut bool,
     #[cfg(test)] test_hook: &mut Option<TestHook>,
+    cancellation: &Arc<AtomicBool>,
     #[cfg(test)] observed: &TestObservation,
 ) -> Result<(), BuiltinModelError> {
     if matches!(head, Head::Published(_)) {
@@ -705,9 +1043,15 @@ fn select_head(
             let (reply, receive) = std::sync::mpsc::sync_channel(1);
             #[cfg(test)]
             observed.phase("await-owner-grant");
-            events.send(Event::Grant { claim, reply }).map_err(|_| {
-                BuiltinModelError("owner retired before publication grant".to_owned())
-            })?;
+            events
+                .send(Event::Grant {
+                    claim,
+                    reply,
+                    cancellation: Arc::clone(cancellation),
+                })
+                .map_err(|_| {
+                    BuiltinModelError("owner retired before publication grant".to_owned())
+                })?;
             // The actor alone arbitrates cancellation at grant_candidate's
             // AtomicBool load. Cancellation after that load loses even if the
             // worker has not entered its physical publish call yet.
@@ -777,6 +1121,13 @@ impl PublicationWorker {
         work: Box<PublicationWork>,
     ) -> Result<Self, (Box<PublicationWork>, std::io::Error)> {
         #[cfg(test)]
+        if work.test_spawn_refusal {
+            return Err((
+                work,
+                std::io::Error::other("injected original worker thread startup refusal"),
+            ));
+        }
+        #[cfg(test)]
         let observed = Arc::clone(&work.observed);
         let (startup, receive) = std::sync::mpsc::sync_channel::<Box<PublicationWork>>(1);
         let (events, observations) = std::sync::mpsc::channel();
@@ -815,6 +1166,42 @@ impl PublicationWorker {
             return Err((
                 error.0,
                 std::io::Error::other("publication startup transfer refused"),
+            ));
+        }
+        Ok(Self {
+            events: observations,
+            settle,
+            handle,
+            #[cfg(test)]
+            observed,
+        })
+    }
+
+    pub(super) fn spawn_retirement(
+        work: Box<PublicationWork>,
+        retired: Retired,
+    ) -> Result<Self, (Box<PublicationWork>, Retired, std::io::Error)> {
+        #[cfg(test)]
+        let observed = Arc::clone(&work.observed);
+        let (start, receive) = std::sync::mpsc::sync_channel::<(Box<PublicationWork>, Retired)>(1);
+        let (_events, observations) = std::sync::mpsc::channel();
+        let (settle, _settlements) = std::sync::mpsc::channel();
+        let handle = match std::thread::Builder::new()
+            .name("locald-index-retire".to_owned())
+            .spawn(move || {
+                if let Ok(payload) = receive.recv() {
+                    drop(payload);
+                }
+            }) {
+            Ok(handle) => handle,
+            Err(error) => return Err((work, retired, error)),
+        };
+        if let Err(error) = start.send((work, retired)) {
+            let _ = handle.join();
+            return Err((
+                error.0.0,
+                error.0.1,
+                std::io::Error::other("retirement startup transfer refused"),
             ));
         }
         Ok(Self {

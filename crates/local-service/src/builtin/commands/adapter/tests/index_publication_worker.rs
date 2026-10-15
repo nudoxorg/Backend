@@ -116,6 +116,8 @@ fn after_grant_state(
                 let completed = completion.as_ref().map(|done| {
                     let disposition = match &done.disposition {
                         Disposition::Ready => "Ready".to_owned(),
+                        Disposition::SourcePrepared => "SourcePrepared".to_owned(),
+                        Disposition::SourceCaptured => "SourceCaptured".to_owned(),
                         Disposition::Unselected(error) => format!("Unselected({error:?})"),
                         Disposition::Pending(error) => format!("Pending({error:?})"),
                     };
@@ -145,6 +147,9 @@ fn after_grant_state(
                     worker.observed_state()
                 )
             }
+            IndexJobWork::PreparingSource { worker, .. } => format!("PreparingSource(finished={:?})", worker.as_ref().map(|worker| worker.is_finished())),
+            IndexJobWork::SourceRetiring { .. } => "SourceRetiring".to_owned(),
+            IndexJobWork::RetirementPending { .. } => "RetirementPending".to_owned(),
             IndexJobWork::Transition => "Transition".to_owned(),
         };
         format!(

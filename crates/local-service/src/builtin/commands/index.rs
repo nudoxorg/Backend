@@ -4,6 +4,8 @@ use super::super::{
     BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use super::index_operation::IndexOperationJournal;
+#[path = "index_source_preparation.rs"]
+mod source_preparation;
 use backend_engine::WorkspaceSnapshot;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
@@ -40,6 +42,9 @@ use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
+pub(super) use source_preparation::{
+    CaptureFailurePlan, PreparedSourceScan, SourceCompilePlan, SourceRoute, prepare_source_scan,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -228,7 +233,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         false,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
-        PreparedIndex::Compile(_) => Err(BuiltinModelError(
+        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
     }
@@ -836,6 +841,7 @@ pub(super) fn finish_index_scan(
                     &observations,
                     captures,
                     semantic_authority,
+                    None,
                 )
                 .map(PreparedIndex::Compile);
             }
@@ -1260,7 +1266,33 @@ fn prepare_source_capture_changes(
     ),
     BuiltinModelError,
 > {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    prepare_source_capture_changes_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        package,
+        context,
+        profiles,
+        observations,
+        source_version,
+        operation_key,
+    )
+}
+
+fn prepare_source_capture_changes_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+    context: &SemanticCompilationContext<'_>,
+    profiles: &BTreeSet<LanguageProfile>,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    source_version: [u8; 32],
+    operation_key: Option<backend_library::IndexOperationKey>,
+) -> Result<
+    (
+        BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+        Vec<BuiltinCaptureChange>,
+        Vec<(ProductSemanticPublicationKey, SourceObservationReceipt)>,
+    ),
+    BuiltinModelError,
+> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
@@ -1350,11 +1382,21 @@ fn current_project_frontier(
     ),
     BuiltinModelError,
 > {
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    current_project_frontier_for_snapshot(&daemon.engine().daemon().owner().snapshot(), project_key)
+}
+
+fn current_project_frontier_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    project_key: [u8; 32],
+) -> Result<
+    (
+        ProductSourceRecord,
+        Vec<[u8; 32]>,
+        CapturedProjectFileFrontier,
+    ),
+    BuiltinModelError,
+> {
+    let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open committed source frontier: {error}")))?;
     let project = relation
@@ -1627,7 +1669,20 @@ fn terminal_capture_changes(
     reason: backend_engine::builtin::SemanticUnavailableReason,
     compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
 ) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    terminal_capture_changes_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        captures,
+        reason,
+        compiler_failure,
+    )
+}
+
+fn terminal_capture_changes_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
     let relation = semantic_capture_relation(&snapshot)
         .map_err(|error| BuiltinModelError(format!("open pending semantic captures: {error}")))?
         .ok_or_else(|| {
@@ -1980,6 +2035,9 @@ pub(super) enum PreparedIndex {
     Ready(PreparedProductSelection),
     /// A compile to run off the owner loop, then publish on it.
     Compile(DeferredIndex),
+    /// A configured cluster route, including its local fallback, runs on an
+    /// owned worker after the independent source capture was installed.
+    Cluster(SourceCompilePlan),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
@@ -2313,6 +2371,7 @@ fn prepare_deferred_compile(
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     for source in sources {
@@ -2362,6 +2421,9 @@ fn prepare_deferred_compile(
                 u64::from(expected_artifacts),
             )?;
             let attempt = semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+            if let Some(retained) = retained_attempts.as_mut() {
+                retained.push(attempt.clone());
+            }
             attempt_for_error = Some(attempt.clone());
             let input_claim = SemanticInputWitness::claimed_state(
                 scan_input_digest,
@@ -2744,14 +2806,7 @@ fn prepare_terminal_profile_partition_for_snapshot(
     Ok((profile_refusals.into_boxed_slice(), partial_plan))
 }
 
-pub(super) fn finish_deferred_index(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    job: DeferredIndex,
-) -> Result<PreparedProductSelection, BuiltinModelError> {
-    finish_deferred_index_for_snapshot(&daemon.engine().daemon().owner().snapshot(), job)
-}
-
-fn finish_deferred_index_for_snapshot(
+pub(super) fn finish_deferred_index_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
@@ -2973,7 +3028,32 @@ fn compiler_exact_witness_is_current(
     admission: CompilerInputAdmission,
     cancellation: &AtomicBool,
 ) -> Result<bool, BuiltinModelError> {
-    let Some(binding) = selected_semantic_binding(daemon, package, label, coordinate, profile)?
+    compiler_exact_witness_is_current_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        package,
+        label,
+        coordinate,
+        compiler,
+        source_root,
+        profile,
+        admission,
+        cancellation,
+    )
+}
+
+fn compiler_exact_witness_is_current_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+    label: &str,
+    coordinate: Option<&PackageUrl>,
+    compiler: &LocalCompilerClient,
+    source_root: &Path,
+    profile: LanguageProfile,
+    admission: CompilerInputAdmission,
+    cancellation: &AtomicBool,
+) -> Result<bool, BuiltinModelError> {
+    let Some(binding) =
+        selected_semantic_binding_for_snapshot(snapshot, package, label, coordinate, profile)?
     else {
         return Ok(false);
     };
@@ -3073,8 +3153,8 @@ fn observe_compiler_configuration(
         .collect()
 }
 
-fn selected_semantic_binding(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn selected_semantic_binding_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     coordinate: Option<&PackageUrl>,
@@ -3086,11 +3166,7 @@ fn selected_semantic_binding(
         super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
     let key = ProductSemanticPublicationKey::new(package_reference, coordinate, profile)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("open selected semantic publication: {error}"))
@@ -3161,6 +3237,39 @@ fn compile_semantic_publications(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
 ) -> Result<CompiledSemanticPublications, BuiltinModelError> {
+    compile_semantic_publications_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        context,
+        sources,
+        revision_fence,
+        observations,
+        semantic_authority,
+        workspace_snapshot,
+        owner_cluster,
+        pending_stored_acks,
+        execution_intent,
+        None,
+        None,
+        #[cfg(test)]
+        &mut || {},
+    )
+}
+
+fn compile_semantic_publications_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    context: &SemanticCompilationContext<'_>,
+    sources: Vec<ingest::CompilerSource>,
+    revision_fence: &ingest::CompilerRevisionFence,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    workspace_snapshot: Option<&ingest::CompilerWorkspaceSnapshot>,
+    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
+    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    execution_intent: CompileExecutionIntent,
+    cancellation_owner: Option<Arc<AtomicBool>>,
+    mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
+    #[cfg(test)] before_local_compile: &mut dyn FnMut(),
+) -> Result<CompiledSemanticPublications, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -3174,11 +3283,7 @@ fn compile_semantic_publications(
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
@@ -3186,6 +3291,9 @@ fn compile_semantic_publications(
     let mut refused_profiles = BTreeMap::new();
     let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
+        if context.cancellation.load(Ordering::Acquire) {
+            return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+        }
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
         let coordinate = super::super::compiler_scope::semantic_coordinate(
@@ -3353,7 +3461,11 @@ fn compile_semantic_publications(
         // The live local compiler still consumes a source/config subset whose
         // complete positive and negative reads are not proven.
         let mut attempt = if captured_work.is_some() {
-            Some(semantic_authority.begin_candidate_attempt(&key, &observation)?)
+            let attempt = semantic_authority.begin_candidate_attempt(&key, &observation)?;
+            if let Some(retained) = retained_attempts.as_mut() {
+                retained.push(attempt.clone());
+            }
+            Some(attempt)
         } else {
             None
         };
@@ -3774,6 +3886,9 @@ fn compile_semantic_publications(
                 drop(attempt.take());
                 let local_attempt =
                     semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+                if let Some(retained) = retained_attempts.as_mut() {
+                    retained.push(local_attempt.clone());
+                }
                 let local_input_claim = SemanticInputWitness::claimed_state(
                     scan_input_digest,
                     ScopeRoot::from_bytes(scan_input_digest),
@@ -3795,8 +3910,16 @@ fn compile_semantic_publications(
                         .map_err(|error| BuiltinModelError(error.to_string()))?,
                     None => source_set,
                 };
+                #[cfg(test)]
+                before_local_compile();
                 let local_compile_started = Instant::now();
-                let compiled = context.compiler.compile_package_sources_staged(source_set);
+                let compiled = match cancellation_owner.as_ref() {
+                    Some(cancelled) => context.compiler.compile_package_sources_staged_cancellable(
+                        source_set,
+                        Arc::clone(cancelled),
+                    ),
+                    None => context.compiler.compile_package_sources_staged(source_set),
+                };
                 let compiler_failure = typed_package_compiler_failure(&compiled)?;
                 let (staged, publication_coverage) =
                     match admit_local_compile(compiled, expected_artifacts) {
