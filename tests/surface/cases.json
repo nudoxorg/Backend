@@ -319,7 +319,7 @@
         }
       ],
       "gui": {
-        "project_name": "tomli",
+        "project_name": "project",
         "query": "TOMLDecodeError",
         "result_filename": "_parser.py",
         "visible_source": [

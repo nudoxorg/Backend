@@ -528,3 +528,10 @@ inspected and native Nix unpack checks pass. These bring the candidate catalog
 to14 real projects across7 languages; TypeScript remains last. Native answer
 review, snapshots and performance calibration are still required for these four.
 A fetched source archive alone is not passing integration coverage.
+
+
+Native GUI observation490131 showed the admitted fixture as `project` (the
+actual copied folder name), with281 declarations from4/4 source files. The
+observer now expects that real UI label, then still requires the distinct
+TOMLDecodeError result filename and original class/ValueError source text. The
+initial wrong-label timeout is retained as a harness failure, not a product pass.
