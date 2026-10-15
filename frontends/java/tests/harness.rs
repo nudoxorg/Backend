@@ -307,6 +307,7 @@ public final class App {
         packages.contains("com.google.common.base"),
         "the missing package must be named: {packages}"
     );
+    assert!(stderr.contains("Preconditions"));
     assert!(
         display.contains("not weakened"),
         "the wrapper must say the compiler was not relaxed: {display}"
