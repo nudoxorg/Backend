@@ -83,6 +83,17 @@ impl<'a> ModuleIndex<'a> {
             );
             return out;
         }
+        if let Some(rest) = project_alias_rest(specifier) {
+            for root in PROJECT_ALIAS_ROOTS {
+                let base = if root.is_empty() {
+                    rest.to_owned()
+                } else {
+                    format!("{root}/{rest}")
+                };
+                self.push_candidate(&base, &mut out);
+            }
+            return out;
+        }
         if specifier.contains("::") {
             let mut remainder = specifier;
             let mut base = caller_dir;
@@ -201,7 +212,7 @@ struct ImportedCalls {
     resolved_specifiers: usize,
     unqualified: BTreeMap<String, BTreeSet<DeclarationId>>,
     qualified: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
-    methods: BTreeMap<String, BTreeSet<DeclarationId>>,
+    classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
 }
 
 impl ImportedCalls {
@@ -238,7 +249,9 @@ impl ImportedCalls {
                             if let Some(methods) = file.methods.get(exported.as_str()) {
                                 for (&name, targets) in methods {
                                     joined
-                                        .methods
+                                        .classes
+                                        .entry(import.local.clone())
+                                        .or_default()
                                         .entry(name.to_owned())
                                         .or_default()
                                         .extend(targets);
@@ -268,24 +281,53 @@ impl ImportedCalls {
         call: &CallSite,
         exact_caller: Option<backend_compile::SourceBinding>,
     ) -> Option<DeclarationId> {
-        if let Some(caller) = exact_caller.filter(|_| call.qualifier.is_none()) {
-            match local.scoped_target(caller, &call.name) {
-                LocalCallTarget::Bound(target) => return Some(target),
-                LocalCallTarget::Unresolved => return None,
-                LocalCallTarget::Unbound => {}
+        match &call.receiver {
+            CallReceiver::Bare => {
+                if let Some(caller) = exact_caller {
+                    match local.scoped_target(caller, &call.name) {
+                        LocalCallTarget::Bound(target) => return Some(target),
+                        LocalCallTarget::Unresolved => return None,
+                        LocalCallTarget::Unbound => {}
+                    }
+                } else if let Some(targets) = local.callable.get(call.name.as_str()) {
+                    // A legacy file has no exact scope proof. Methods are not
+                    // free functions merely because they share this name.
+                    let methods = local
+                        .methods
+                        .values()
+                        .filter_map(|names| names.get(call.name.as_str()))
+                        .flatten()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    return unique_target(
+                        targets
+                            .iter()
+                            .copied()
+                            .filter(|target| !methods.contains(target)),
+                    );
+                }
+                unique_target(self.unqualified.get(&call.name)?.iter().copied())
             }
-        } else if let Some(targets) = local.callable.get(call.name.as_str()) {
-            return unique_target(targets.iter().copied());
+            CallReceiver::Path { root, depth: 1, .. } => {
+                if let Some(names) = self.qualified.get(root).or_else(|| self.classes.get(root)) {
+                    return unique_target(names.get(&call.name)?.iter().copied());
+                }
+                // An exact written type name can select its own associated
+                // method. Arbitrary receivers never inherit that type by name.
+                if local.nominal.contains(root.as_str()) {
+                    return unique_target(
+                        local
+                            .methods
+                            .get(root.as_str())?
+                            .get(call.name.as_str())?
+                            .iter()
+                            .copied(),
+                    );
+                }
+                None
+            }
+            CallReceiver::Path { .. } | CallReceiver::Expression { .. } => None,
         }
-        let methods = self.methods.get(&call.name).into_iter().flatten().copied();
-        let imported = match &call.qualifier {
-            Some(qualifier) => self
-                .qualified
-                .get(qualifier)
-                .and_then(|names| names.get(&call.name)),
-            None => self.unqualified.get(&call.name),
-        };
-        unique_target(methods.chain(imported.into_iter().flatten().copied()))
     }
 }
 
@@ -912,5 +954,80 @@ mod tests {
             )]
         );
         Ok(())
+    }
+    #[test]
+    fn a_method_name_alone_never_binds_an_unknown_receiver() {
+        let mut local = FileDeclarations::default();
+        local.nominal.insert("Only");
+        local
+            .callable
+            .entry("custom_name")
+            .or_default()
+            .insert(DeclarationId(0));
+        local
+            .methods
+            .entry("Only")
+            .or_default()
+            .entry("custom_name")
+            .or_default()
+            .insert(DeclarationId(0));
+        let imported = ImportedCalls::default();
+        for excerpt in [
+            "fn caller() { other.custom_name(); }",
+            "fn caller() { factory(x).custom_name(); }",
+            "fn caller() { items[0].custom_name(); }",
+            "fn caller() { nested.value.custom_name(); }",
+            "fn caller() { custom_name(); }",
+            "fn caller() { self.custom_name(); }",
+        ] {
+            let calls = structural_excerpt_call_sites(excerpt);
+            let selected = calls
+                .iter()
+                .find(|call| call.name == "custom_name")
+                .expect("written call");
+            assert_eq!(imported.target(&local, selected, None), None, "{excerpt}");
+        }
+        let calls = structural_excerpt_call_sites("fn caller() { Only::custom_name(); }");
+        let selected = calls
+            .iter()
+            .find(|call| call.name == "custom_name")
+            .expect("qualified method");
+        assert_eq!(
+            imported.target(&local, selected, None),
+            Some(DeclarationId(0))
+        );
+    }
+
+    #[test]
+    fn an_imported_type_method_stays_bound_to_that_type_alias() {
+        let local = FileDeclarations::default();
+        let mut imported = ImportedCalls::default();
+        imported
+            .classes
+            .entry("First".to_owned())
+            .or_default()
+            .entry("close".to_owned())
+            .or_default()
+            .insert(DeclarationId(0));
+        imported
+            .classes
+            .entry("Second".to_owned())
+            .or_default()
+            .entry("close".to_owned())
+            .or_default()
+            .insert(DeclarationId(1));
+        for (receiver, expected) in [
+            ("First", Some(DeclarationId(0))),
+            ("Second", Some(DeclarationId(1))),
+            ("unknown", None),
+        ] {
+            let calls =
+                structural_excerpt_call_sites(&format!("fn caller() {{ {receiver}.close(); }}"));
+            let selected = calls
+                .iter()
+                .find(|call| call.name == "close")
+                .expect("written close");
+            assert_eq!(imported.target(&local, selected, None), expected);
+        }
     }
 }
