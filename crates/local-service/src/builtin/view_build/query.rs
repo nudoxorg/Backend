@@ -503,7 +503,8 @@ pub(super) fn append_structural_query_facts(
         if structural_plan.file(*file_key).is_none() {
             continue;
         }
-        for (index, declaration) in file.declarations.iter().enumerate() {
+        let mut index = 0usize;
+        super::structural::visit_complete_declarations(sources, record, |declaration| {
             let prepared = structural_plan.declaration(*file_key, index)?;
             let id = prepared.id.stable_key();
             let coordinate = prepared.coordinate.clone();
@@ -558,6 +559,18 @@ pub(super) fn append_structural_query_facts(
                     parent,
                     related: Box::new([]),
                 },
+            ));
+            index = index.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("structural declaration count overflow".to_owned())
+            })?;
+            Ok(())
+        })?;
+        if structural_plan
+            .file(*file_key)
+            .is_some_and(|file| file.declarations.len() != index)
+        {
+            return Err(BuiltinModelError(
+                "complete source-facts count differs from its structural plan".to_owned(),
             ));
         }
     }
