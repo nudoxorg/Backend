@@ -18,6 +18,7 @@ mod image_reopen;
 mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
+mod kinds;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
@@ -940,7 +941,9 @@ pub fn execute() {}
             .analyze(std::path::Path::new(path), source.as_bytes())
             .map_err(|error| error.to_string())?;
         let sources = structural_sources(
-            [0x31; 32], path, backend_engine::SourceLanguage::TypeScript,
+            [0x31; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
             analysis.declarations().clone(),
         )?;
         let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
@@ -948,16 +951,26 @@ pub fn execute() {}
         let (initial, _) = initial_view().map_err(|error| error.to_string())?;
         let targets = super::SemanticTargets::default();
         let scratch = std::env::temp_dir();
-        let mut projection = SourceRowProjection::new(&initial, &sources, 64, &targets, &plan, &scratch)
-            .map_err(|error| error.to_string())?;
+        let mut projection =
+            SourceRowProjection::new(&initial, &sources, 64, &targets, &plan, &scratch)
+                .map_err(|error| error.to_string())?;
         for (key, file) in &sources.files {
-            projection.append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+            projection
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
                 .map_err(|error| error.to_string())?;
         }
-        let rows = projection.finish(Vec::new()).map_err(|error| error.to_string())?;
+        let rows = projection
+            .finish(Vec::new())
+            .map_err(|error| error.to_string())?;
         let schedule = "fixture::scheduler.ts:1::generateSchedule";
-        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:2::allSections")?, schedule);
-        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:3::missingSections")?, schedule);
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:2::allSections")?,
+            schedule
+        );
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:3::missingSections")?,
+            schedule
+        );
         assert_eq!(parent_of(&rows, schedule)?, "fixture::scheduler.ts");
         assert_eq!(
             parent_of(&rows, "fixture::scheduler.ts:1::unrelated")?,

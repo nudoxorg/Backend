@@ -120,11 +120,16 @@ impl DefinitionIndex {
 }
 
 /// Returns where one captured definition node sits among its file's captures.
+///
+/// `outer` is what a definition inherits when nothing inside its own parse
+/// tree contains it: the file module for a file's own tree, and the container
+/// of the invocation for the re-parsed argument of an item-position macro.
 pub(crate) fn container_of(
     node: Node<'_>,
     definitions: &DefinitionIndex,
     source: &str,
     identity: SourceBindingIdentity,
+    outer: &Container,
 ) -> Container {
     if let Some(type_name) = attached_type(node, source) {
         return Container::attached(&type_name);
@@ -157,7 +162,7 @@ pub(crate) fn container_of(
         }
         current = parent;
     }
-    Container::Module
+    outer.clone()
 }
 
 /// Returns whether a tag names a declaration that owns members.

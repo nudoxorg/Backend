@@ -5,10 +5,11 @@ use super::super::{
 };
 use super::call_join::foreign_display_name;
 use super::identity::{
-    declaration_family, declaration_kind, external_semantic_coordinate, external_semantic_symbol,
-    semantic_coordinate, semantic_identity, semantic_symbol,
+    declaration_kind, external_semantic_coordinate, external_semantic_symbol, semantic_coordinate,
+    semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
+use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
     StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
@@ -1065,48 +1066,64 @@ impl<'a> StructuralSites<'a> {
         complete_declarations_for_file(self.sources, record)
     }
 }
-/// Pairs each semantic declaration with the structural declaration of the
-/// same name and declaration family in the same file bytes.
+/// The kind of every entity of one image, and the written declaration each
+/// is paired with.
 ///
-/// Same-keyed declarations are paired by source order: the k-th semantic
-/// entity by span start with the k-th structural declaration by line. When
-/// primary-source entities cover the structural group exactly, source-less
-/// sibling or build-excluded declarations do not participate in that pairing. A key
-/// whose two extractions disagree on the count, or whose semantic spans are
-/// not all captured, is ambiguous and keeps no site rather than a guess.
-/// Implementation blocks and parameters are not counted: they have no
-/// structural twin. A key with exactly one entity on each side pairs without
-/// a span.
-fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+/// The kind is derived from the image alone (`kinds::image_entity_kind`), so
+/// the compiler-backed rows and the structural rows of the same file speak one
+/// vocabulary; a paired declaration then settles the spelling the grammar
+/// itself decided (`kinds::kind_with_site`).
+struct EntityKinds<'site> {
+    /// The product kind each entity is shown as before its twin is known.
+    derived: BTreeMap<DeclarationIdentity, backend_compile::DeclarationKind>,
+    /// Each entity's written declaration, when one is known.
+    sites: BTreeMap<DeclarationIdentity, &'site backend_compile::SourceDeclaration>,
+}
+
+impl EntityKinds<'_> {
+    /// Returns the kind one entity is shown as.
+    fn kind_of(
+        &self,
+        identity: DeclarationIdentity,
+        item: backend_semantic::ir::ItemKind,
+    ) -> backend_compile::DeclarationKind {
+        let derived = self
+            .derived
+            .get(&identity)
+            .copied()
+            .unwrap_or_else(|| declaration_kind(item));
+        match self.sites.get(&identity) {
+            Some(site) => kinds::kind_with_site(derived, item, site.kind()),
+            None => derived,
+        }
+    }
+}
+
+/// Derives every entity's kind and pairs each with the written declaration of
+/// the same file it is (see `kinds::pair_sites`).
+///
+/// Implementation blocks and parameters are not paired: they have no
+/// structural twin. The tag query emits declarations, and only references for
+/// implementations, and it does not see parameters at all. Counting them made
+/// every type with an `impl` (and every field named like a parameter) count
+/// more semantic entities than structural declarations, and the count rule
+/// then dropped the type's own site along with theirs.
+fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    reader: &Reader,
     session: &DocumentationSession<'_, Reader>,
-    declarations: &[&'a backend_compile::SourceDeclaration],
-) -> Result<BTreeMap<DeclarationIdentity, &'a backend_compile::SourceDeclaration>, BuiltinModelError>
-{
-    let mut sites = BTreeMap::new();
-    if declarations.is_empty() {
-        return Ok(sites);
-    }
-    let mut structural = BTreeMap::<(&str, u8), Vec<&'a backend_compile::SourceDeclaration>>::new();
-    for declaration in declarations {
-        structural
-            .entry((declaration.name(), declaration_family(declaration.kind())))
-            .or_default()
-            .push(declaration);
-    }
-    for same_name in structural.values_mut() {
-        same_name.sort_by_key(|declaration| declaration.line());
-    }
-    let mut semantic = BTreeMap::<(Vec<u8>, u8), Vec<(Option<u32>, DeclarationIdentity)>>::new();
+    declarations: &[&'site backend_compile::SourceDeclaration],
+) -> Result<EntityKinds<'site>, BuiltinModelError> {
+    let language = backend_semantic::vocabulary::Language::from(profile);
+    let mut derived = BTreeMap::new();
+    let mut pairing = Vec::new();
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
-        // An implementation block and a parameter have no structural twin: the
-        // tag query emits declarations, and only references for
-        // implementations, and it does not see parameters at all. Counting
-        // them in their name's family made every type with an `impl` (and
-        // every field named like a parameter) count more semantic entities
-        // than structural declarations, and the count rule below then dropped
-        // the type's own site along with theirs.
+        let identity = entity.entity.version.identity();
+        let kind = kinds::image_entity_kind(profile, reader, session, &entity)
+            .map_err(BuiltinModelError)?;
+        derived.insert(identity, kind);
         if matches!(
             entity.entity.kind,
             backend_semantic::ir::ItemKind::Implementation
@@ -1114,44 +1131,31 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         ) {
             continue;
         }
-        let family = declaration_family(declaration_kind(entity.entity.kind));
         let Some(name) = entity.name.named_bytes() else {
             // Structural declarations have no anonymous callable identifier.
             continue;
         };
-        semantic.entry((name.to_vec(), family)).or_default().push((
-            entity.entity.source.map(|span| span.start()),
-            entity.entity.version.identity(),
-        ));
-    }
-    for ((name, family), mut entities) in semantic {
-        let Ok(name) = std::str::from_utf8(&name) else {
-            continue;
+        let holder = match entity.entity.parent {
+            Some(parent) => session
+                .entity(parent)
+                .map_err(|error| BuiltinModelError(format!("project semantic parent: {error}")))?
+                .name
+                .named_bytes()
+                .unwrap_or_default()
+                .to_vec(),
+            None => Vec::new(),
         };
-        let Some(candidates) = structural.get(&(name, family)) else {
-            continue;
-        };
-        // Package images also carry sibling-file and build-excluded facts.
-        // Only primary-source spans identify declarations in these exact
-        // bytes. If they account for the entire structural group, source-less
-        // namesakes must neither steal its site nor make it ambiguous.
-        if entities.iter().filter(|(start, _)| start.is_some()).count() == candidates.len() {
-            entities.retain(|(start, _)| start.is_some());
-        }
-        // The only entity of its name and family in the file needs no order to
-        // find its twin. Two or more are paired by span order, which needs
-        // every span.
-        if candidates.len() != entities.len()
-            || (entities.len() > 1 && entities.iter().any(|(start, _)| start.is_none()))
-        {
-            continue;
-        }
-        entities.sort_by_key(|(start, _)| *start);
-        for ((_, identity), declaration) in entities.into_iter().zip(candidates) {
-            sites.insert(identity, *declaration);
-        }
+        pairing.push(kinds::PairingEntity {
+            identity,
+            name: name.to_vec(),
+            holder,
+            item: entity.entity.kind,
+            kind,
+            start: entity.entity.source.map(|span| span.start()),
+        });
     }
-    Ok(sites)
+    let sites = kinds::pair_sites(language, &pairing, declarations);
+    Ok(EntityKinds { derived, sites })
 }
 
 pub(super) struct SemanticRowContent {
@@ -1176,7 +1180,8 @@ pub(super) fn project_image_rows(
     site_declarations: &[&backend_compile::SourceDeclaration],
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let sites = semantic_sites(&session, site_declarations)?;
+    let kinds = entity_kinds(profile, image, &session, site_declarations)?;
+    let sites = &kinds.sites;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -1238,7 +1243,7 @@ pub(super) fn project_image_rows(
         let mut row = Row::in_package(RowId::Symbol(symbol), basis, project.package, coordinate)
             .try_with_identity_preimage(&semantic_identity(project.package, identity))
             .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
-            .with_kind(declaration_kind(entity.entity.kind))
+            .with_kind(kinds.kind_of(identity, entity.entity.kind))
             .with_document(document)
             .with_facts(facts);
         if let Some(site) = sites.get(&identity) {
@@ -1442,9 +1447,33 @@ fn document_text(document: &[Fragment]) -> String {
     text
 }
 
+/// The signature a compiler-backed declaration shows when no written site
+/// supplies one: its semantic type, written in its language's own syntax.
+///
+/// A callable reads as the declaration header its language writes (`fn
+/// name(a: u32) -> bool`), anything else as its type (`&str`, `*Config`,
+/// `list[int]`). A type the image cannot name completely is not shown at all
+/// rather than shown as the compiler's internal encoding, and a declaration
+/// whose type is only itself (a record's nominal type) has no signature to
+/// show.
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
     entity: &backend_engine::application::DocumentationEntity<'_, Reader>,
 ) -> Result<Option<String>, BuiltinModelError> {
+    // These declarations are what their own type names (an enum's variant has
+    // the enum for a type, a module has none), so the type says nothing about
+    // how to use them.
+    if matches!(
+        entity.entity.kind,
+        backend_semantic::ir::ItemKind::Variant
+            | backend_semantic::ir::ItemKind::Implementation
+            | backend_semantic::ir::ItemKind::Module
+            | backend_semantic::ir::ItemKind::Namespace
+            | backend_semantic::ir::ItemKind::Macro
+            | backend_semantic::ir::ItemKind::Reexport
+    ) {
+        return Ok(None);
+    }
     let Some(semantic_type) = entity
         .semantic_type()
         .map_err(|error| BuiltinModelError(format!("project semantic type: {error}")))?
@@ -1453,21 +1482,19 @@ fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     };
     let type_depth = NonZeroUsize::new(MAX_SEMANTIC_TYPE_DEPTH)
         .ok_or_else(|| BuiltinModelError("semantic type depth bound must be nonzero".to_owned()))?;
-    let prepared = semantic_type
-        .prepare_canonical(backend_semantic::ir::CanonicalTypeRenderLimits::new(
-            type_depth,
-        ))
-        .map_err(|error| BuiltinModelError(format!("render project semantic type: {error}")))?;
-    if prepared.encoded_len > MAX_SEMANTIC_SIGNATURE_BYTES {
-        return Err(BuiltinModelError(
-            "project semantic signature exceeds its output bound".to_owned(),
-        ));
-    }
-    let mut output = vec![0; prepared.encoded_len];
-    let rendered = prepared
-        .write_into(&mut output)
-        .map_err(|error| BuiltinModelError(format!("write project semantic type: {error}")))?;
-    Ok(Some(rendered.to_owned()))
+    let limits = backend_semantic::ir::CanonicalTypeRenderLimits::new(type_depth);
+    let name = entity
+        .name
+        .named_bytes()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok());
+    let rendered = match name {
+        Some(name) if entity.entity.kind == backend_semantic::ir::ItemKind::Function => {
+            semantic_type.render_source_header(profile, name, limits)
+        }
+        _ => semantic_type.render_source(profile, limits),
+    };
+    Ok(rendered
+        .filter(|text| text.len() <= MAX_SEMANTIC_SIGNATURE_BYTES && Some(text.as_str()) != name))
 }
 
 pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
@@ -1497,7 +1524,7 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| BuiltinModelError(format!("project semantic documentation: {error}")))?;
     let documentation_bytes = documentation_bytes(&documentation)?;
-    let signature = semantic_signature(entity)?;
+    let signature = semantic_signature(profile, entity)?;
     let encoded_bytes = documentation_bytes
         .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;

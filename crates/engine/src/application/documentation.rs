@@ -11,8 +11,9 @@ use core::{iter::FusedIterator, ops::Deref};
 use backend_semantic::ir::{
     AnonymousCallableAnchorView, AtomId, CanonicalTypeRenderError, CanonicalTypeRenderLimits,
     DeclarationIdentity, DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget,
-    ItemName, ItemNameView, Link, LinkId, LinkTarget, PreparedCanonicalType, SemanticEntity,
-    SemanticImageFacts, SemanticReader, TextId, TypeExpr, TypeId, prepare_canonical_type,
+    ItemName, ItemNameView, LanguageProfile, Link, LinkId, LinkTarget, PreparedCanonicalType,
+    SemanticEntity, SemanticImageFacts, SemanticReader, TextId, TypeExpr, TypeId,
+    prepare_canonical_type, render_source_callable, render_source_type,
 };
 use thiserror::Error;
 
@@ -239,6 +240,32 @@ impl<'image, Reader: SemanticReader + ?Sized> DocumentationType<'image, Reader> 
                 cause,
             }
         })
+    }
+
+    /// Writes the type in the source syntax of `profile`, or `None` when the
+    /// image cannot name every part of it. See
+    /// [`backend_semantic::ir::render_source_type`].
+    #[must_use]
+    pub fn render_source(
+        &self,
+        profile: LanguageProfile,
+        limits: CanonicalTypeRenderLimits,
+    ) -> Option<String> {
+        render_source_type(self.reader, profile, self.id, limits)
+    }
+
+    /// Writes a callable type as the declaration header `name` has in the
+    /// source syntax of `profile`, or `None` when the type is not a callable
+    /// the language can write. See
+    /// [`backend_semantic::ir::render_source_callable`].
+    #[must_use]
+    pub fn render_source_header(
+        &self,
+        profile: LanguageProfile,
+        name: &str,
+        limits: CanonicalTypeRenderLimits,
+    ) -> Option<String> {
+        render_source_callable(self.reader, profile, name, self.id, limits)
     }
 }
 

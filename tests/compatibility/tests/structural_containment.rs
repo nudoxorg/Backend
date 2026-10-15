@@ -325,10 +325,10 @@ fn go_struct_fields_and_receivers_carry_containment() -> Result<(), Box<dyn Erro
         &[
             "constant Limit module",
             "variable Registry module",
-            "type Worker module",
+            "struct Worker module",
             "field Name in Worker@8",
             "field retries in Worker@8",
-            "type Service module",
+            "interface Service module",
             "method Execute in Service@14",
             "method Run on Worker",
             "function Execute module",

@@ -33,6 +33,7 @@ mod supervisor;
 mod syntax;
 mod syntax_facts;
 mod syntax_kind;
+mod syntax_macros;
 
 pub use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageAdmissionError, CoverageWitness, ScopeRoot,
@@ -81,6 +82,7 @@ pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{
     DeclarationFacts, Deprecation, Fact, FactError, MAX_FACT_TEXT_BYTES, Obligation,
     deprecation_in_attribute, deprecation_in_documentation, is_abstract_method_decorator,
+    is_property_decorator,
 };
 pub use frame::{
     FrameKind, MAX_FRAME_BYTES, PROTOCOL_VERSION, SessionFrame, SessionFrameVersion,
@@ -134,6 +136,7 @@ pub use syntax::{
     Container, DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceExcerpt,
     SourceExcerptExtent, SourceLanguage, SourceLocation, SyntaxError, SyntaxFrontend,
 };
+pub use syntax_kind::python_binding_kind;
 
 #[cfg(test)]
 mod tests;

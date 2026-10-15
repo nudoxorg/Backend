@@ -1307,6 +1307,7 @@ fn update_admitted_rust_toolchain_identity(
     identity.update(
         backend_frontend_rust::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes(),
     );
+    identity.update(backend_frontend_rust::legacy::RUST_ANALYSIS_CONFIG_POLICY_ID_V1.as_bytes());
     identity.update(b"rust-toolchain-ready.v1\0");
     update_path_identity(identity, &toolchain.tool);
     update_path_identity(identity, cargo);
@@ -6383,16 +6384,24 @@ mod deferred_rust_toolchain_tests {
             deferred.resolve(control(&cancelled)),
             Err(LocalRuntimeRustAuthorityFailure::SysrootUnavailable)
         );
-        assert!(home.join(".cargo").is_dir(), "only a Rust request creates it");
+        assert!(
+            home.join(".cargo").is_dir(),
+            "only a Rust request creates it"
+        );
 
         write_tool(
             &rustc,
             &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", sysroot.display()),
         );
-        let admitted = deferred.resolve(control(&cancelled)).expect("retry succeeds");
+        let admitted = deferred
+            .resolve(control(&cancelled))
+            .expect("retry succeeds");
         assert_eq!(admitted.tool, rustc);
         assert_eq!(admitted.sysroot, sysroot);
-        assert_eq!(admitted.cargo_home.as_deref(), Some(home.join(".cargo").as_path()));
+        assert_eq!(
+            admitted.cargo_home.as_deref(),
+            Some(home.join(".cargo").as_path())
+        );
 
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
