@@ -129,7 +129,7 @@ pub use backend_replication::{FramedStream, FramedStreamError};
 // into one of the lower crates.
 pub use backend_library::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
-    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, Basis, BranchKey,
+    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, Basis, BoundedJsonError, BranchKey,
     CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily, CapabilityId,
     CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
     CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
@@ -307,7 +307,7 @@ pub fn encode_reply_dto(reply: &ReplyDto) -> Result<Vec<u8>, String> {
 /// Keeps byte overflow distinct from serialization, arithmetic and allocation failures.
 pub fn encode_reply_dto_bounded(
     reply: &ReplyDto,
-) -> Result<Vec<u8>, backend_library::BoundedJsonError> {
+) -> Result<Vec<u8>, BoundedJsonError> {
     backend_library::encode_reply_body_bounded(reply)
 }
 
