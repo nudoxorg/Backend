@@ -379,7 +379,7 @@ mod tests {
         let CompilerCause::FragmentFailure(failure) = cause else {
             panic!("fragment failures must not be reclassified as authority failures")
         };
-        failure
+        *failure
     }
 
     #[test]
