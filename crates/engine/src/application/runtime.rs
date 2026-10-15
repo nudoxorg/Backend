@@ -66,7 +66,7 @@ fn compiler_lane_count() -> usize {
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
     MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_FRAGMENT_BYTES, MAX_PACKAGE_SEMANTIC_BYTES,
-    StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
+    PackageExecutionAuthority, StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
     StagedVersionedPlaneSegment,
 };
 use crate::application::executor::{
@@ -823,6 +823,50 @@ impl LocalCompilerPlaneExecutionSeed {
             recipe_identity: LocalCompilerPlaneRecipeIdentity(*recipe.finalize().as_bytes()),
             input,
         }
+    }
+}
+
+#[cfg(test)]
+mod typescript_project_authority_transition_tests {
+    use super::*;
+    use backend_semantic::vocabulary::TypeScriptSource;
+
+    #[test]
+    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints() {
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let target = ContentId::from_canonical_bytes(b"same project target");
+        let seed = LocalCompilerPlaneExecutionSeed::for_typescript_project(
+            target, profile, Stage::LowerIr, ContentId::from_digest([41; 32]), [42; 32],
+        ).unwrap();
+        let input = SemanticInputWitness::claimed_state(
+            [43; 32], backend_version::ScopeRoot::from_bytes([44; 32]), Coverage::Partial,
+        );
+        let local = seed.bind_input(input);
+        let portable = LocalCompilerExecutionIdentity {
+            target, profile, stage: Stage::LowerIr,
+            toolchain: NativeTool::TypeScriptCompiler,
+            toolchain_identity: [91; 32],
+            local_authority_fingerprint: [92; 32],
+            environment_identity: [93; 32], target_platform_identity: [94; 32],
+            invocation_recipe: crate::application::CompilerInvocationRecipeV2::new(
+                profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
+                ContentId::from_digest([91; 32]), [93; 32], [94; 32], [95; 32],
+            ).unwrap(),
+        };
+        let (execution, plane) = PackageExecutionAuthority::RuntimeStartup {
+            execution: Some(portable), plane: None,
+        }.with_admitted_typescript_project(seed).identities();
+        assert!(execution.is_none(), "a startup candidate is not portable project admission");
+        let admitted = plane.unwrap().bind_input(input);
+        assert_eq!(admitted, local);
+        assert_eq!(admitted.input_witness(), input);
+        assert_eq!(admitted.input_witness().coverage().state(), Coverage::Partial);
+        let (execution, plane) = PackageExecutionAuthority::Fixed {
+            execution: Some(portable), plane: None,
+        }.with_admitted_typescript_project(seed).identities();
+        assert_eq!(execution, Some(portable), "foreign pinned portable authority must remain a strict constraint");
+        assert_eq!(plane.unwrap().bind_input(input), local);
+        assert_ne!(portable.toolchain_identity(), local.toolchain_identity());
     }
 }
 
@@ -5300,8 +5344,10 @@ fn run_lane(
                             execution
                                 .stage_package_sources(
                                     package,
-                                    execution_identity,
-                                    plane_execution_seed,
+                                    PackageExecutionAuthority::RuntimeStartup {
+                                        execution: execution_identity,
+                                        plane: plane_execution_seed,
+                                    },
                                     embedding_runtime.as_deref(),
                                     embedding_cache_session,
                                     embedding_requirement,

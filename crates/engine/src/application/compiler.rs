@@ -1247,6 +1247,22 @@ struct AdmittedStagedRuntime {
 }
 
 impl AdmittedStagedRuntime {
+    fn admit_recipe(&self, artifact: usize, recipe: backend_semantic::vocabulary::CompileRecipeFact) -> Result<(), StagedIdentityFacet> {
+        if recipe.profile != self.profile {
+            return Err(StagedIdentityFacet::ArtifactProfile { artifact });
+        }
+        if recipe.stage != self.stage {
+            return Err(StagedIdentityFacet::ArtifactStage { artifact });
+        }
+        if recipe.tool != self.tool {
+            return Err(StagedIdentityFacet::ArtifactTool { artifact, expected: self.tool, actual: recipe.tool });
+        }
+        if recipe.toolchain.as_ref() != &self.toolchain {
+            return Err(StagedIdentityFacet::ArtifactToolchain { artifact, expected: self.toolchain, actual: *recipe.toolchain.as_ref() });
+        }
+        Ok(())
+    }
+
     /// Build identity is per semantic image. `CompileRecipeFact` binds the exact source image,
     /// while the remaining build fields retain the runtime, toolchain, environment, and platform
     /// authorities. The invocation/local-plane recipe is not interchangeable with this
@@ -1587,26 +1603,7 @@ impl StagedSemanticPackage {
             .get(artifact)
             .ok_or(StagedIdentityFacet::ArtifactImage { artifact })?;
         let recipe = staged.recipe();
-        if recipe.profile != runtime.profile {
-            return Err(StagedIdentityFacet::ArtifactProfile { artifact });
-        }
-        if recipe.stage != runtime.stage {
-            return Err(StagedIdentityFacet::ArtifactStage { artifact });
-        }
-        if recipe.tool != runtime.tool {
-            return Err(StagedIdentityFacet::ArtifactTool {
-                artifact,
-                expected: runtime.tool,
-                actual: recipe.tool,
-            });
-        }
-        if recipe.toolchain.as_ref() != &runtime.toolchain {
-            return Err(StagedIdentityFacet::ArtifactToolchain {
-                artifact,
-                expected: runtime.toolchain,
-                actual: *recipe.toolchain.as_ref(),
-            });
-        }
+        runtime.admit_recipe(artifact, recipe)?;
         Ok((staged, recipe))
     }
 
@@ -2161,6 +2158,38 @@ pub(crate) struct LocalCompilerExecution<'path, 'cancel> {
     native_work_directory: Box<Path>,
 }
 
+/// Provenance of identities supplied to a local package compiler lane.
+/// A fixed identity is a constraint; startup capability identities are only
+/// candidates until the request has admitted its installed TypeScript project.
+#[derive(Clone, Copy)]
+pub(crate) enum PackageExecutionAuthority {
+    Fixed {
+        execution: Option<LocalCompilerExecutionIdentity>,
+        plane: Option<LocalCompilerPlaneExecutionSeed>,
+    },
+    RuntimeStartup {
+        execution: Option<LocalCompilerExecutionIdentity>,
+        plane: Option<LocalCompilerPlaneExecutionSeed>,
+    },
+}
+
+impl PackageExecutionAuthority {
+    pub(super) fn identities(self) -> (Option<LocalCompilerExecutionIdentity>, Option<LocalCompilerPlaneExecutionSeed>) {
+        match self {
+            Self::Fixed { execution, plane } | Self::RuntimeStartup { execution, plane } => (execution, plane),
+        }
+    }
+
+    /// Only the runtime's startup candidate can transition to project-local
+    /// authority. A fixed portable or local identity remains a strict constraint.
+    pub(super) fn with_admitted_typescript_project(self, project: LocalCompilerPlaneExecutionSeed) -> Self {
+        match self {
+            Self::RuntimeStartup { .. } => Self::Fixed { execution: None, plane: Some(project) },
+            Self::Fixed { execution, plane } => Self::Fixed { execution, plane: plane.or(Some(project)) },
+        }
+    }
+}
+
 /// Fully owned single-source native result waiting for the durable publication owner.
 pub(crate) struct StagedCompilerArtifact {
     source: backend_semantic::ir::SourceIdentity,
@@ -2364,8 +2393,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     pub(crate) fn stage_package_sources(
         &self,
         package: PackageSourceSet<'_>,
-        execution_identity: Option<LocalCompilerExecutionIdentity>,
-        plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
+        authority: PackageExecutionAuthority,
         embedding_runtime: Option<&EmbeddingExecutable>,
         embedding_cache_session: Option<&EmbeddingCacheSession>,
         embedding_requirement: EmbeddingRequirement,
@@ -2393,8 +2421,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             let stop_site = std::sync::Arc::new(std::sync::OnceLock::new());
             match self.stage_package_sources_attempt(
                 package.clone(),
-                execution_identity,
-                plane_execution_seed,
+                authority,
                 embedding_runtime,
                 embedding_cache_session,
                 embedding_requirement,
@@ -2428,8 +2455,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     fn stage_package_sources_attempt(
         &self,
         package: PackageSourceSet<'_>,
-        mut execution_identity: Option<LocalCompilerExecutionIdentity>,
-        plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
+        authority: PackageExecutionAuthority,
         embedding_runtime: Option<&EmbeddingExecutable>,
         embedding_cache_session: Option<&EmbeddingCacheSession>,
         embedding_requirement: EmbeddingRequirement,
@@ -2441,6 +2467,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         stop_site: &std::sync::Arc<std::sync::OnceLock<super::compiler_typescript_observation::ObservedStopSite>>,
         typescript_lane: &mut super::typescript_program_lane::TypeScriptProgramAuthorityLane,
     ) -> Result<StagedPackageCompilation, PackageSemanticError> {
+        let (mut execution_identity, plane_execution_seed) = authority.identities();
         let compilation_attempt_id =
             CompilationAttemptId::mint().ok_or(PackageSemanticError::Capacity {
                 lane: "compilation attempt identity",
@@ -3861,6 +3888,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )
             })
         });
+        let (execution_identity, plane_execution_seed) = if typescript_project.is_some() {
+            let project = project_plane_seed.ok_or(PackageSemanticError::Capacity {
+                lane: "admitted TypeScript project runtime identity",
+            })?;
+            authority.with_admitted_typescript_project(project).identities()
+        } else {
+            (execution_identity, plane_execution_seed)
+        };
         let mut rust_plane_execution_identity = None;
         if let Some(lease) = rust_workspace_lease.as_ref() {
             if let Some(facts) = lease.workspace().cargo_workspace_facts() {
@@ -3900,7 +3935,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             execution_identity,
             plane_execution_identity: rust_plane_execution_identity.or_else(|| {
                 plane_execution_seed
-                    .or(project_plane_seed)
                     .map(|seed| seed.bind_input(input))
             }),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
@@ -4707,8 +4741,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package_sources(
             package,
-            None,
-            None,
+            PackageExecutionAuthority::Fixed { execution: None, plane: None },
             None,
             None,
             EmbeddingRequirement::Optional,
@@ -4748,8 +4781,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package_sources(
             package,
-            None,
-            None,
+            PackageExecutionAuthority::Fixed { execution: None, plane: None },
             None,
             None,
             EmbeddingRequirement::Optional,
@@ -7032,5 +7064,38 @@ mod typescript_work_gap_tests {
             };
             assert!(plain.typescript_stop_site.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod staged_identity_recipe_tests {
+    use super::*;
+    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, Stage, TypeScriptSource};
+
+    #[test]
+    fn project_recipe_admission_is_exact_and_foreign_toolchains_still_refuse() {
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let runtime = AdmittedStagedRuntime {
+            target: ContentId::from_canonical_bytes(b"exact target"),
+            profile, stage: Stage::LowerIr, tool: NativeTool::TypeScriptCompiler,
+            toolchain: [41; 32], environment: [42; 32], target_platform: [43; 32],
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
+            ContentId::from_canonical_bytes(b"exact source bytes"), ContentId::from_digest([41; 32]),
+        );
+        assert_eq!(runtime.admit_recipe(0, recipe), Ok(()));
+        let build = runtime.build_identity([44; 32], recipe);
+        assert_eq!(build.recipe(), recipe.identity.as_ref(), "per-image source-bound recipe is preserved");
+        assert_eq!(build.environment(), &runtime.environment);
+        let foreign = AdmittedStagedRuntime { toolchain: [91; 32], ..runtime };
+        assert_eq!(foreign.admit_recipe(7, recipe), Err(StagedIdentityFacet::ArtifactToolchain {
+            artifact: 7, expected: [91; 32], actual: [41; 32],
+        }), "portable and local constraints use this same strict recipe admission");
+        let changed_source = CompileRecipeFact::derive(
+            profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
+            ContentId::from_canonical_bytes(b"different source bytes"), recipe.toolchain,
+        );
+        assert_ne!(runtime.build_identity([44; 32], changed_source).recipe(), build.recipe());
     }
 }
