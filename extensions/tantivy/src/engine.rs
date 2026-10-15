@@ -14,6 +14,7 @@ use crate::{
 use backend_semantic::EntityId;
 use backend_platform::OwnedWorkspaceDirectory;
 use backend_version::CoverageWitness;
+use crate::deferred::DeferredSyncDirectory;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -25,7 +26,8 @@ use std::{
 };
 use tantivy::columnar::BytesColumn;
 use tantivy::{
-    DocAddress, DocId, DocSet, Index, IndexReader, ReloadPolicy, TERMINATED, TantivyDocument, Term,
+    DocAddress, DocId, DocSet, Index, IndexReader, IndexSettings, ReloadPolicy, TERMINATED,
+    TantivyDocument, Term,
     query::{
         AllQuery, BooleanQuery, EnableScoring, FuzzyTermQuery, Occur, Query as TantivyQuery,
         TermQuery,
@@ -689,19 +691,28 @@ impl TantivySource {
         }
         preflight_ordinal_map_capacity(state.iter().count())?;
         let projected = projection_schema();
-        let index = Index::create_in_dir(directory, projected.schema)?;
+        // The projection is built in a private stage that nothing can name until it is
+        // published, so its files are not flushed one by one as Tantivy writes them. The
+        // deferred directory and the writers below leave every flush to `flush_all`, which
+        // makes the whole stage durable together before this function reports it built.
+        let deferred = DeferredSyncDirectory::open(directory)?;
+        let index = Index::create(deferred.clone(), projected.schema, IndexSettings::default())?;
         let mut source = Self::populate(state, limits, index, projected.fields, cancelled)?;
-        write_ordinal_map(
+        write_ordinal_map_with(
             directory,
             projection_fingerprint(state.binding()),
             &source.documents,
+            false,
         )?;
-        write_binding_stamp(directory, projection_fingerprint(state.binding()))?;
-        write_projection_manifest(
+        write_binding_stamp_with(directory, projection_fingerprint(state.binding()), false)?;
+        write_projection_manifest_with(
             directory,
             projection_fingerprint(state.binding()),
             budget,
+            false,
         )?;
+        deferred.flush_all()?;
+        check_projection_cancelled(cancelled)?;
         source.durable = true;
         Ok(source)
     }
@@ -2789,13 +2800,28 @@ fn hex_fingerprint(fingerprint: [u8; 32]) -> String {
 }
 
 fn write_binding_stamp(directory: &Path, fingerprint: [u8; 32]) -> Result<(), io::Error> {
+    write_binding_stamp_with(directory, fingerprint, true)
+}
+
+/// Writes the binding stamp; `flush` false leaves its durability to the caller's batched flush
+/// of the whole directory.
+fn write_binding_stamp_with(
+    directory: &Path,
+    fingerprint: [u8; 32],
+    flush: bool,
+) -> Result<(), io::Error> {
     let stamp = directory.join(BINDING_FILE);
     let staging = directory.join(format!(".{BINDING_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
     io::Write::write_all(&mut file, &fingerprint)?;
-    file.sync_all()?;
+    if flush {
+        file.sync_all()?;
+    }
     backend_platform::durable::replace_file(&staging, &stamp)?;
-    sync_directory(directory)
+    if flush {
+        sync_directory(directory)?;
+    }
+    Ok(())
 }
 
 fn read_binding_stamp(directory: &Path) -> Result<[u8; 32], TantivySourceError> {
@@ -2829,6 +2855,17 @@ fn write_ordinal_map(
     fingerprint: [u8; 32],
     documents: &DocumentTable,
 ) -> Result<(), TantivySourceError> {
+    write_ordinal_map_with(directory, fingerprint, documents, true)
+}
+
+/// Writes the ordinal map; `flush` false leaves its durability to the caller's batched flush
+/// of the whole directory.
+fn write_ordinal_map_with(
+    directory: &Path,
+    fingerprint: [u8; 32],
+    documents: &DocumentTable,
+    flush: bool,
+) -> Result<(), TantivySourceError> {
     if documents.slot_count as usize > MAX_ORDINAL_SLOTS {
         return Err(Error::SizeLimit.into());
     }
@@ -2856,9 +2893,13 @@ fn write_ordinal_map(
     let staging = directory.join(format!(".{ORDINAL_MAP_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
     io::Write::write_all(&mut file, &bytes)?;
-    file.sync_all()?;
+    if flush {
+        file.sync_all()?;
+    }
     backend_platform::durable::replace_file(&staging, &directory.join(ORDINAL_MAP_FILE))?;
-    sync_directory(directory)?;
+    if flush {
+        sync_directory(directory)?;
+    }
     Ok(())
 }
 
@@ -3051,6 +3092,17 @@ fn write_projection_manifest(
     fingerprint: [u8; 32],
     budget: DurableCacheBudget,
 ) -> Result<(), TantivySourceError> {
+    write_projection_manifest_with(directory, fingerprint, budget, true)
+}
+
+/// Writes the integrity manifest; `flush` false leaves its durability to the caller's batched
+/// flush of the whole directory.
+fn write_projection_manifest_with(
+    directory: &Path,
+    fingerprint: [u8; 32],
+    budget: DurableCacheBudget,
+    flush: bool,
+) -> Result<(), TantivySourceError> {
     let files = projection_file_fingerprints(directory, budget)?;
     let content_bytes = files.values().try_fold(0_u64, |total, (size, _)| {
         total.checked_add(*size).ok_or(Error::SizeLimit)
@@ -3090,9 +3142,13 @@ fn write_projection_manifest(
     let staging = directory.join(format!(".{INTEGRITY_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
     io::Write::write_all(&mut file, &bytes)?;
-    file.sync_all()?;
+    if flush {
+        file.sync_all()?;
+    }
     backend_platform::durable::replace_file(&staging, &directory.join(INTEGRITY_FILE))?;
-    sync_directory(directory)?;
+    if flush {
+        sync_directory(directory)?;
+    }
     Ok(())
 }
 
