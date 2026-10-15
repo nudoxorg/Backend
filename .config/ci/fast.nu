@@ -125,7 +125,7 @@ def main []: nothing -> nothing {
             | into int
         )
         if $used > $limit {
-            rm --recursive --force $cache
+            clear-fast-cache $cache
             print $"fast cache: evicted ($used) GiB after build; limit ($limit) GiB"
         }
     } else { reclaim-build-output }
