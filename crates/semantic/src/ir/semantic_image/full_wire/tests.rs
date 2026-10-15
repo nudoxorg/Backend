@@ -985,7 +985,11 @@ fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
     })?;
     let ir = builder.finish()?;
     let bytes = encoded(&ir)?;
-    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+    assert_eq!(
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+        super::wire::SCHEMA_NAME_SPANS,
+        "schema 5 carries the extended Clang source-span grammar"
+    );
     let view = SemanticImageView::reopen(&bytes).expect("typed-name schema reopens");
     let entity = SemanticCoreReader::core_entity(&view, EntityId::new(0))
         .expect("one typed anonymous entity");
@@ -995,6 +999,21 @@ fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
         .expect("name tag survives reopen");
     assert_eq!(
         SemanticCoreReader::atom(&view, anchor_atom),
+        Some(&anchor_bytes[..anchor_length])
+    );
+    let mut legacy_schema_four = bytes.clone();
+    legacy_schema_four[4..6].copy_from_slice(&super::wire::SCHEMA_TYPED_NAMES.to_le_bytes());
+    let legacy_view = SemanticImageView::reopen(&legacy_schema_four)
+        .expect("schema 4 remains readable without a Clang name-span plane");
+    assert!(legacy_view.clang_extensions().next().is_none());
+    let legacy_entity = SemanticCoreReader::core_entity(&legacy_view, EntityId::new(0))
+        .expect("legacy schema-4 anonymous entity reopens");
+    let legacy_anchor = legacy_entity
+        .name
+        .anonymous_callable_anchor()
+        .expect("schema-4 anchor remains available");
+    assert_eq!(
+        SemanticCoreReader::atom(&legacy_view, legacy_anchor),
         Some(&anchor_bytes[..anchor_length])
     );
     let anchor_view =
@@ -1885,6 +1904,8 @@ fn clang_name_image() -> Result<Ir, crate::ir::BuildError> {
         kind: ItemKind::Record,
         visibility: Visibility::Public,
         authority: EntityAuthorityFacts {
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
             language_extension: FactAvailability::Captured,
             ..authority()
         },
