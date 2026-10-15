@@ -236,9 +236,12 @@ mod tests {
         })
         .expect("page lane exists before installation");
         assert!(gate.restart(), "Retry has a live producer");
-        crate::runtime::wait::until("real owner ready after rediscovery", || {
-            matches!(gate.state(), OwnerState::Ready { .. })
-        });
+        assert!(
+            crate::runtime::wait::poll(crate::runtime::wait::HUNG, || {
+                matches!(gate.state(), OwnerState::Ready { .. })
+            }),
+            "real owner not ready after rediscovery: {:?}", gate.state()
+        );
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         let bound = binding.get().expect("installed before Ready");
         assert_eq!(bound.paths.endpoint(), paths.endpoint());

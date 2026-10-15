@@ -369,8 +369,8 @@ fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
     let canonical = project.canonicalize().expect("canonical project");
     assert_eq!(
         listed(&mut session),
-        vec![(canonical.to_string_lossy().into_owned(), RowState::Ready)],
-        "the refused project is listed at once, on its structural rows"
+        vec![(canonical.to_string_lossy().into_owned(), RowState::Failed)],
+        "the refused project is listed at once, retaining its failed semantic capture"
     );
     let rows = session.health().expect("health").row_count();
     assert!(
