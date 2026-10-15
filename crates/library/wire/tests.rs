@@ -3197,7 +3197,7 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
             ids[0],
             ids[1],
             crate::SemanticLinkKind::Calls,
-        )]
+        ).with_confidence(crate::SemanticConfidence::Syntactic)]
         .into_boxed_slice();
         let revision = crate::RichGraphRevision::new(
             snapshot.root.root().to_bytes(),
@@ -3209,6 +3209,7 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
                 .expect("checked nonempty graph sidecar");
         assert_eq!(rich.nodes.len(), 3);
         assert_eq!(rich.edges.len(), 1);
+        assert_eq!(rich.edges[0].provenance.confidence, Some(crate::SemanticConfidence::Syntactic));
         snapshot.graph_relations = Some(relations);
         snapshot.rich_graph = Some(rich);
         let dto = ReplyDto::new(18, body).with_certificate(proof.clone());
@@ -3226,6 +3227,9 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
                 .len(),
             1
         );
+        assert_eq!(snapshot["graph_relations"]["schema"], 2);
+        assert_eq!(snapshot["graph_relations"]["relations"][0]["confidence"], "syntactic");
+        assert_eq!(snapshot["rich_graph"]["edges"][0]["provenance"]["confidence"], "syntactic");
         assert_eq!(
             snapshot["rich_graph"]["nodes"]
                 .as_array()
@@ -3337,4 +3341,88 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
             .is_err(),
         "coverage cannot change without its canonical root certificate"
     );
+}
+
+#[test]
+fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_evidence() {
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
+    let labels = ["pkg::from", "pkg::to"];
+    let ids = labels.map(|label| RowId::Symbol(symbol_key(label)));
+    let root = ViewRoot::new_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        labels.iter().zip(ids).map(|(label, id)| Row::new(id, basis, *label)).collect(),
+        vec![crate::Coverage::Complete],
+        capability(basis.object),
+    ).expect("checked source rows");
+    let mut proof = certificate(&root);
+    for label in labels {
+        proof = proof.with_claim(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol_key(label).as_bytes()),
+            value: label.to_owned(),
+        });
+    }
+    let relation = crate::GraphRelation::new(ids[0], ids[1], crate::SemanticLinkKind::Calls)
+        .with_confidence(crate::SemanticConfidence::Syntactic);
+    let revision = crate::RichGraphRevision::new(
+        root.root().to_bytes(), crate::SemanticGenerationId::new([7; 32]), [8; 32],
+    );
+    let rich = crate::RichGraphSnapshot::from_view(&root, ids[0], &[relation], revision)
+        .expect("observed confidence graph");
+    let snapshot = ViewSnapshot {
+        root: root.clone(), freshness: Freshness::Current, next: None,
+        graph_relations: Some(vec![relation].into_boxed_slice()), rich_graph: Some(rich),
+    };
+    let current = serde_json::to_value(super::reply::snapshot_to_wire(&snapshot)).expect("wire");
+    let decode = |value: serde_json::Value| -> Result<ViewSnapshot, String> {
+        let wire = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        super::reply::snapshot_from_wire(wire, &proof, Some(capability(basis.object)))
+    };
+    let actual = decode(current.clone()).expect("current confidence");
+    assert_eq!(actual.root.root(), root.root());
+    assert_eq!(actual.graph_relations.as_ref().unwrap()[0].confidence, Some(crate::SemanticConfidence::Syntactic));
+    assert_eq!(actual.rich_graph.as_ref().unwrap().edges[0].provenance.confidence, Some(crate::SemanticConfidence::Syntactic));
+
+    let mut legacy = current.clone();
+    legacy["graph_relations"]["schema"] = 1.into();
+    legacy["graph_relations"]["relations"][0].as_object_mut().unwrap().remove("confidence");
+    legacy["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
+    let decoded_legacy = decode(legacy.clone()).expect("legacy sidecar and rich presentation remain readable");
+    assert_eq!(decoded_legacy.graph_relations.as_ref().unwrap()[0].confidence, None);
+    let legacy_rich = decoded_legacy.rich_graph.as_ref().unwrap();
+    assert_eq!(legacy_rich.edges[0].provenance.confidence, None);
+    assert_eq!(legacy_rich.edges[0].id, actual.rich_graph.as_ref().unwrap().edges[0].id);
+    assert_eq!(legacy_rich.layout, actual.rich_graph.as_ref().unwrap().layout);
+    assert_eq!(legacy_rich.revision, revision);
+    assert_eq!(decoded_legacy.root.root(), root.root());
+    let mut legacy_without_rich = legacy.clone();
+    legacy_without_rich["rich_graph"] = serde_json::Value::Null;
+    assert_eq!(decode(legacy_without_rich).expect("legacy sidecar alone").graph_relations.as_ref().unwrap()[0].confidence, None);
+
+    let mut unknown = current.clone();
+    unknown["graph_relations"]["relations"][0]["confidence"] = serde_json::Value::Null;
+    unknown["rich_graph"] = serde_json::Value::Null;
+    assert_eq!(decode(unknown).expect("explicit unknown confidence").graph_relations.as_ref().unwrap()[0].confidence, None);
+    let mut bad_schema = current.clone();
+    bad_schema["graph_relations"]["schema"] = 3.into();
+    assert!(decode(bad_schema).is_err());
+    let mut legacy_claim = legacy;
+    legacy_claim["graph_relations"]["relations"][0]["confidence"] = "compiler".into();
+    assert!(decode(legacy_claim).is_err());
+    let mut bad_confidence = current.clone();
+    bad_confidence["graph_relations"]["relations"][0]["confidence"] = "stronger-than-compiler".into();
+    assert!(decode(bad_confidence).is_err());
+    let mut extra = current.clone();
+    extra["graph_relations"]["relations"][0]["future_authority"] = true.into();
+    assert!(decode(extra).is_err());
+    let mut duplicate = current.clone();
+    let mut conflict = duplicate["graph_relations"]["relations"][0].clone();
+    conflict["confidence"] = "compiler".into();
+    duplicate["graph_relations"]["relations"].as_array_mut().unwrap().push(conflict);
+    assert!(decode(duplicate).is_err());
+    let mut disagreement = current;
+    disagreement["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
+    assert!(decode(disagreement).unwrap_err().contains("confidence"));
 }

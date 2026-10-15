@@ -266,10 +266,33 @@ fn pairing_families(item: ItemKind, kind: DeclarationKind, language: Language) -
 
 /// The name of the declaration a written declaration sits in; empty at
 /// module level.
-fn container_name(declaration: &SourceDeclaration) -> &str {
+type BindingOwners<'a> = BTreeMap<
+    (&'a str, backend_compile::SourceBinding),
+    Option<&'a SourceDeclaration>,
+>;
+
+fn container_name<'a>(
+    declaration: &'a SourceDeclaration,
+    owners: &BindingOwners<'a>,
+) -> Option<&'a str> {
     match declaration.container() {
-        Container::Module => "",
-        Container::Enclosing { name, .. } | Container::Attached { type_name: name } => name,
+        Container::Module => Some(""),
+        Container::Enclosing { name, .. } | Container::Attached { type_name: name } => Some(name),
+        Container::Binding { binding } => {
+            let backend_compile::SourceBindingIdentity::Exact(child) = declaration.binding_identity()
+            else {
+                return None;
+            };
+            let owner = owners
+                .get(&(declaration.location().path(), *binding))
+                .copied()
+                .flatten()?;
+            let backend_compile::SourceBindingIdentity::Exact(parent) = owner.binding_identity()
+            else {
+                return None;
+            };
+            parent.strictly_contains(child).then(|| owner.name())
+        }
     }
 }
 
@@ -301,11 +324,24 @@ pub(super) fn pair_sites<'a>(
     // name across the file, because its image's holder of a member is not a
     // name the structural lane spells the same way (an `impl` block).
     let scoped = language == Language::Python;
+    let mut owners = BindingOwners::new();
+    if scoped {
+        for declaration in declarations {
+            if let backend_compile::SourceBindingIdentity::Exact(capture) = declaration.binding_identity() {
+                owners.entry((declaration.location().path(), capture.binding()))
+                    .and_modify(|owner| *owner = None)
+                    .or_insert(Some(*declaration));
+            }
+        }
+    }
     let mut taken = vec![false; declarations.len()];
     let mut written: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     for (index, declaration) in declarations.iter().enumerate() {
         let scope = if scoped {
-            container_name(declaration)
+            let Some(scope) = container_name(declaration, &owners) else {
+                continue;
+            };
+            scope
         } else {
             ""
         };
@@ -787,6 +823,35 @@ mod tests {
         let sites = pair_sites(Language::Python, &entities, &borrowed);
         assert_eq!(paired(&sites, 1), Some(5));
         assert_eq!(paired(&sites, 2), Some(15));
+    }
+
+    #[test]
+    fn exact_python_parent_binding_requires_the_same_file_and_unique_containing_owner() {
+        use backend_compile::{SourceBindingCapture, SourceBindingIdentity};
+        let owner = SourceBindingCapture::new(0, 100, 6, 7).expect("owner");
+        let member = SourceBindingCapture::new(10, 30, 14, 18).expect("member");
+        let parent = written("A", DeclarationKind::Class, 1, Container::Module)
+            .with_binding_identity(SourceBindingIdentity::Exact(owner));
+        let child = written(
+            "dump",
+            DeclarationKind::Method,
+            5,
+            Container::Binding { binding: owner.binding() },
+        )
+        .with_binding_identity(SourceBindingIdentity::Exact(member));
+        let entities = [entity(1, "dump", "A", ItemKind::Function, DeclarationKind::Method, 14)];
+        let sites = pair_sites(Language::Python, &entities, &[&parent, &child]);
+        assert_eq!(paired(&sites, 1), Some(5));
+        assert!(pair_sites(Language::Python, &entities, &[&child]).is_empty());
+        assert!(pair_sites(Language::Python, &entities, &[&parent, &parent, &child]).is_empty());
+        let foreign = SourceDeclaration::at_path("other.py", "A", DeclarationKind::Class, 1, "", "")
+            .expect("other file")
+            .with_binding_identity(SourceBindingIdentity::Exact(owner));
+        assert!(pair_sites(Language::Python, &entities, &[&foreign, &child]).is_empty());
+        let outside = child.clone().with_binding_identity(SourceBindingIdentity::Exact(
+            SourceBindingCapture::new(110, 130, 114, 118).expect("outside owner"),
+        ));
+        assert!(pair_sites(Language::Python, &entities, &[&parent, &outside]).is_empty());
     }
 
     #[test]

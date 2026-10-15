@@ -35,7 +35,7 @@ use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

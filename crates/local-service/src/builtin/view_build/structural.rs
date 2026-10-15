@@ -1691,11 +1691,14 @@ pub(crate) fn structural_call_endpoint_relations_mapped(
         let (Some(caller), Some(callee)) = (rows.mapped(caller), rows.mapped(callee)) else {
             continue;
         };
-        relations.insert(backend_engine::GraphRelation::new(
-            caller,
-            callee,
-            backend_library::SemanticLinkKind::Calls,
-        ));
+        relations.insert(
+            backend_engine::GraphRelation::new(
+                caller,
+                callee,
+                backend_library::SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+        );
     }
     relations
         .into_iter()

@@ -226,15 +226,12 @@ pub(super) fn execute_semantic_graph(
     } else {
         Vec::new()
     };
-    for relation in view_build::structural_call_endpoint_relations_mapped(
-        view,
-        &pairs,
-        package,
-        source_id,
-        include_incoming,
-    ) {
-        relations.insert(relation);
-    }
+    extend_structural_graph_relations(
+        &mut relations,
+        view_build::structural_call_endpoint_relations_mapped(
+            view, &pairs, package, source_id, include_incoming,
+        ),
+    );
     let relations = relations.into_iter().collect::<Vec<_>>();
     let mut snapshot = library
         .graph_from_semantic_relations(semantic_query, &relations)
@@ -253,6 +250,22 @@ pub(super) fn execute_semantic_graph(
     .map_err(|error| BuiltinModelError(format!("build rich semantic graph: {error}")))?;
     snapshot.rich_graph = Some(rich_graph);
     Ok(Some(snapshot))
+}
+
+/// Keeps the selected semantic fact for an edge, using syntax only for missing edges.
+fn extend_structural_graph_relations(
+    relations: &mut BTreeSet<backend_engine::GraphRelation>,
+    structural: impl IntoIterator<Item = backend_engine::GraphRelation>,
+) {
+    let mut selected = relations
+        .iter()
+        .map(|relation| (relation.from, relation.to, relation.relation))
+        .collect::<BTreeSet<_>>();
+    for relation in structural {
+        if selected.insert((relation.from, relation.to, relation.relation)) {
+            relations.insert(relation);
+        }
+    }
 }
 
 pub(super) fn execute_structural_call_graph(
@@ -528,11 +541,10 @@ fn project_opened_semantic_graph(
                 else {
                     continue;
                 };
-                relations.insert(backend_engine::GraphRelation::new(
-                    source_id,
-                    target,
-                    semantic_link_kind(link.kind),
-                ));
+                relations.insert(
+                    backend_engine::GraphRelation::new(source_id, target, semantic_link_kind(link.kind))
+                        .with_confidence(semantic_confidence(link.confidence)),
+                );
             }
         }
         if include_incoming {
@@ -567,11 +579,10 @@ fn project_opened_semantic_graph(
                     if view.row_ref(from).is_none() {
                         continue;
                     }
-                    relations.insert(backend_engine::GraphRelation::new(
-                        from,
-                        source_id,
-                        semantic_link_kind(link.kind),
-                    ));
+                    relations.insert(
+                        backend_engine::GraphRelation::new(from, source_id, semantic_link_kind(link.kind))
+                            .with_confidence(semantic_confidence(link.confidence)),
+                    );
                 }
             }
         }
@@ -1776,6 +1787,27 @@ mod project_call_tests {
 
     fn project_paths(files: &[&str]) -> BTreeSet<String> {
         files.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn structural_graph_union_keeps_selected_semantic_confidence_and_adds_only_missing_edges() {
+        let from = RowId::Symbol(backend_engine::symbol_key("pkg::from"));
+        let to = RowId::Symbol(backend_engine::symbol_key("pkg::to"));
+        let missing = RowId::Symbol(backend_engine::symbol_key("pkg::missing"));
+        for confidence in [None, Some(backend_engine::SemanticConfidence::Compiler), Some(backend_engine::SemanticConfidence::Heuristic)] {
+            let selected = GraphRelation { confidence, ..GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls) };
+            let mut relations = BTreeSet::from([selected]);
+            super::extend_structural_graph_relations(&mut relations, [
+                GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls)
+                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+                GraphRelation::new(from, missing, backend_engine::SemanticLinkKind::Calls)
+                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+            ]);
+            assert_eq!(relations.len(), 2);
+            assert!(relations.contains(&selected));
+            assert_eq!(relations.iter().find(|relation| relation.to == missing).unwrap().confidence,
+                Some(backend_engine::SemanticConfidence::Syntactic));
+        }
     }
 
     fn relation_targets(relations: &BTreeSet<GraphRelation>, from: RowId) -> Vec<RowId> {
@@ -8854,6 +8886,9 @@ mod project_call_tests {
             structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
         let relations =
             structural_call_graph_relations_mapped(&view, &pairs, package, sync_id, false);
+        if relations.iter().any(|relation| relation.confidence != Some(backend_engine::SemanticConfidence::Syntactic)) {
+            return Err("structural graph relations must retain syntactic confidence".to_owned());
+        }
         let targets = relations
             .iter()
             .map(|relation| relation.to)

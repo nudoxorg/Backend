@@ -905,7 +905,7 @@ impl Library {
         let mut ids = BTreeSet::from([source]);
         let mut unique = BTreeSet::new();
         for relation in relations {
-            if !unique.insert(*relation) {
+            if !unique.insert((relation.from, relation.to, relation.relation)) {
                 return Err(LibraryError::InvalidQuery(
                     "semantic graph contains a duplicate typed relation".to_owned(),
                 ));

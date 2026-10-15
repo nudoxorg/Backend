@@ -82,6 +82,7 @@ impl Serialize for Edges<'_> {
                 from: row_id_to_wire(edge.from),
                 to: row_id_to_wire(edge.to),
                 relation: edge.relation,
+                confidence: edge.confidence,
             })?;
         }
         sequence.end()

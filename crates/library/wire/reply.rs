@@ -123,7 +123,7 @@ pub(crate) struct SnapshotWire {
 /// Versioned typed-edge sidecar for graph snapshots. Keeping this outside the
 /// committed view root means older row/view certificates remain valid while a
 /// receiver can reject an edge vocabulary it does not understand explicitly.
-pub(crate) const GRAPH_RELATIONS_SCHEMA: u16 = 1;
+pub(crate) const GRAPH_RELATIONS_SCHEMA: u16 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,6 +138,8 @@ pub(crate) struct GraphRelationWire {
     pub(crate) from: RowIdWire,
     pub(crate) to: RowIdWire,
     pub(crate) relation: SemanticLinkKind,
+    #[serde(default)]
+    pub(crate) confidence: Option<crate::SemanticConfidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -550,6 +552,7 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
                         from: row_id_to_wire(relation.from),
                         to: row_id_to_wire(relation.to),
                         relation: relation.relation,
+                        confidence: relation.confidence,
                     })
                     .collect(),
             }),
@@ -590,9 +593,47 @@ pub(crate) fn snapshot_from_wire_with_admission<A: CoverageAdmission>(
         }
         _ => {}
     }
+    let legacy_relations = value.graph_relations.as_ref().is_some_and(|value| value.schema == 1);
+    let graph_relations = graph_relations_from_wire(value.graph_relations, &root, certificate)?;
+    let mut rich_graph = rich_graph_from_wire(value.rich_graph.as_ref(), &root)?;
+    if let (Some(relations), Some(graph)) = (&graph_relations, &mut rich_graph) {
+        let mut expected = std::collections::BTreeMap::new();
+        for relation in relations.iter() {
+            expected.insert(
+                (
+                    crate::GraphNodeId::for_row(relation.from),
+                    crate::GraphNodeId::for_row(relation.to),
+                    crate::GraphEdgeKind::Code { relation: relation.relation },
+                ),
+                relation.confidence,
+            );
+        }
+        if legacy_relations {
+            // Schema 1 never observed per-edge confidence. Keep its checked graph
+            // identity/layout while removing the old presentation's blanket claim.
+            for edge in std::sync::Arc::make_mut(&mut graph.edges) {
+                if matches!(edge.kind, crate::GraphEdgeKind::Code { .. })
+                    && expected.contains_key(&(edge.from, edge.to, edge.kind))
+                {
+                    edge.provenance.confidence = None;
+                }
+            }
+        }
+        for edge in graph.edges.iter() {
+            if !matches!(edge.kind, crate::GraphEdgeKind::Code { .. }) {
+                continue;
+            }
+            if expected.remove(&(edge.from, edge.to, edge.kind)) != Some(edge.provenance.confidence) {
+                return Err("rich graph confidence or code edge disagrees with its relation sidecar".to_owned());
+            }
+        }
+        if !expected.is_empty() {
+            return Err("rich graph omits a relation sidecar edge".to_owned());
+        }
+    }
     Ok(ViewSnapshot {
-        graph_relations: graph_relations_from_wire(value.graph_relations, &root, certificate)?,
-        rich_graph: rich_graph_from_wire(value.rich_graph.as_ref(), &root)?,
+        graph_relations,
+        rich_graph,
         root,
         freshness,
         next,
@@ -621,7 +662,7 @@ fn graph_relations_from_wire(
     let Some(value) = value else {
         return Ok(None);
     };
-    if value.schema != GRAPH_RELATIONS_SCHEMA {
+    if !matches!(value.schema, 1 | GRAPH_RELATIONS_SCHEMA) {
         return Err("unsupported graph relation sidecar schema".to_owned());
     }
     let mut relations = Vec::with_capacity(value.relations.len());
@@ -631,10 +672,21 @@ fn graph_relations_from_wire(
         if root.row(from).is_none() || root.row(to).is_none() {
             return Err("graph relation sidecar names an absent row".to_owned());
         }
-        relations.push(GraphRelation::new(from, to, relation.relation));
+        if value.schema == 1 && relation.confidence.is_some() {
+            return Err("legacy graph relation sidecar claims unsupported confidence".to_owned());
+        }
+        relations.push(GraphRelation {
+            from,
+            to,
+            relation: relation.relation,
+            confidence: relation.confidence,
+        });
     }
     relations.sort_unstable();
-    if relations.windows(2).any(|pair| pair[0] == pair[1]) {
+    if relations.windows(2).any(|pair| {
+        (pair[0].from, pair[0].to, pair[0].relation)
+            == (pair[1].from, pair[1].to, pair[1].relation)
+    }) {
         return Err("graph relation sidecar contains a duplicate edge".to_owned());
     }
     Ok(Some(relations.into_boxed_slice()))

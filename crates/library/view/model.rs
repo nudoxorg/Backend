@@ -3,7 +3,7 @@
 use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
-use crate::surface::SemanticLinkKind;
+use crate::surface::{SemanticConfidence, SemanticLinkKind};
 use backend_compile::{
     DeclarationFacts, DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation,
 };
@@ -765,13 +765,23 @@ pub struct GraphRelation {
     pub to: RowId,
     /// Compiler-defined semantic relation kind.
     pub relation: SemanticLinkKind,
+    /// Observed evidence strength; `None` retains unobserved legacy confidence.
+    pub confidence: Option<SemanticConfidence>,
 }
 
 impl GraphRelation {
-    /// Creates one typed graph relation.
+    /// Creates a relation supplied by an explicit compiler or oracle producer.
+    /// Syntactic and other observed producers must set their actual confidence.
     #[must_use]
     pub const fn new(from: RowId, to: RowId, relation: SemanticLinkKind) -> Self {
-        Self { from, to, relation }
+        Self { from, to, relation, confidence: Some(SemanticConfidence::Compiler) }
+    }
+
+    /// Carries the producer's observed evidence strength without changing edge identity.
+    #[must_use]
+    pub const fn with_confidence(mut self, confidence: SemanticConfidence) -> Self {
+        self.confidence = Some(confidence);
+        self
     }
 }
 
