@@ -203,6 +203,7 @@ impl<'pin> RelationAdmission<'pin> {
             }
             self.flush_file(*file).map_err(|error| std::io::Error::other(error.to_string()))
         }).map_err(|error| io_error(&error))?;
+        if let Some(error) = file_failure { return Err(error); }
         for directory in ["objects", "nodes"].into_iter().filter(|_| !files.is_empty()) {
             if directory == "nodes" { self.checkpoint(4, root)?; }
             sync_directory(&self.store.root.join(directory))?;
