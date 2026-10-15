@@ -532,12 +532,8 @@ fn select_roots(
         .filter(|pattern| !pattern.is_empty())
         // TSZ's config contract discards invalid recursive terminal selectors;
         // other selectors and explicit files still determine the program.
-        .filter(|pattern| {
-            !absolute_selector(directory, pattern)
-                .file_name()
-                .is_some_and(|last| last == "**")
-        })
         .map(|pattern| selector_pattern(directory, pattern))
+        .filter(|pattern| pattern.rsplit('/').next() != Some("**"))
         .collect::<Vec<_>>();
     let excludes = excludes
         .iter()

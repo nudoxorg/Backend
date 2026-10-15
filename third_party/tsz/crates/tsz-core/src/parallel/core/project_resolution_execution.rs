@@ -132,7 +132,11 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
                     )
                 {
                     let directive = directive?;
-                    let mode = match directive.resolution_mode.map(|value| value.text) {
+                    let mode = match directive
+                        .types
+                        .and(directive.resolution_mode)
+                        .map(|value| value.text)
+                    {
                         None => None,
                         Some("import") => {
                             Some(crate::checker::context::ResolutionModeOverride::Import)

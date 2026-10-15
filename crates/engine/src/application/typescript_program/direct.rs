@@ -739,7 +739,7 @@ mod native_web_closure_tests {
         fixture.write("src/explicit.ts", SOURCE);
         fixture.write("valid/selected.ts", SOURCE);
         fixture.write("src/stray.ts", SOURCE);
-        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/explicit.ts"],"include":["src/**","valid/**/*"]}"#);
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/explicit.ts"],"include":["src/**","src\\**","valid/**/*"]}"#);
         let native = fixture.native(&[
             PackageSource::new("src/explicit.ts", SOURCE).unwrap(),
             PackageSource::new("valid/selected.ts", SOURCE).unwrap(),
