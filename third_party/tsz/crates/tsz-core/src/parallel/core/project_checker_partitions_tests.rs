@@ -4382,3 +4382,285 @@ fn metered_module_outcomes_stop_before_install_and_keep_exact_negatives() {
     assert!(matches!(exact.get(&(0, request.specifier, None, crate::checker::context::ResolutionRequestKind::EsmImport)),
         Some(crate::checker::context::ResolvedModuleRequestOutcome::Unresolved)));
 }
+
+fn hot_file_sources() -> Vec<(String, String)> {
+    let hot = (0..20_000)
+        .map(|n| format!("export const v{n}: number = {n};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    vec![
+        (
+            "src/a.ts".to_owned(),
+            "export const a: number = 1; const bad_a: number = 'x';".to_owned(),
+        ),
+        ("src/hot.ts".to_owned(), hot),
+        (
+            "src/b.ts".to_owned(),
+            "export const b: string = 'b'; const bad_b: string = 2;".to_owned(),
+        ),
+    ]
+}
+
+fn plan_for<'a>(
+    program: &'a MergedProgram,
+    options: &'a CheckerOptions,
+    budget: &'a ProjectExecutionBudget<'_>,
+) -> ParallelCheckPlan<'a> {
+    ParallelCheckPlan::build(
+        program,
+        options,
+        &[],
+        ProjectSemanticOptions::structural(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(program, &[]).unwrap(),
+        )),
+        Some(budget),
+    )
+    .unwrap()
+}
+
+fn file_index(program: &MergedProgram, name: &str) -> usize {
+    program
+        .files
+        .iter()
+        .position(|file| file.file_name == name)
+        .unwrap()
+}
+
+fn diagnostics_of(result: &[FileCheckResult], name: &str) -> Vec<Diagnostic> {
+    result
+        .iter()
+        .find(|file| file.file_name == name)
+        .unwrap()
+        .diagnostics
+        .clone()
+}
+
+#[test]
+fn file_work_slice_names_a_hot_file_and_a_rebuilt_run_without_it_matches_an_independent_baseline() {
+    let allowance = 5_000;
+    let options = CheckerOptions::default();
+    let cancelled = AtomicBool::new(false);
+
+    // Round one: the hot file spends its slice. The cheap files keep their
+    // own slices, and the program budget is never latched by the hot file.
+    let program = compile_files_with_libs(hot_file_sources(), &[]);
+    let budget = execution_budget(&cancelled);
+    let plan = plan_for(&program, &options, &budget);
+    let planned = budget.remaining_work_units();
+    let work = ProjectFileWork {
+        allowance,
+        skipped: Default::default(),
+    };
+    let partition = plan
+        .check_file_partition_isolated(&(0..program.files.len()).collect::<Vec<_>>(), Some(&work), &|_| {}, |_| {})
+        .unwrap();
+    assert_eq!(
+        partition.exhausted,
+        vec![ProjectFileWorkExhaustion {
+            file_index: file_index(&program, "src/hot.ts"),
+            path: "src/hot.ts".to_owned(),
+            allowance,
+        }]
+    );
+    assert_eq!(budget.stop_reason(), None, "a file slice never latches the program");
+    let spent = planned - budget.remaining_work_units();
+    assert!(
+        spent < allowance * 3,
+        "the hot file paid at most its slice ({spent} spent checking three files)"
+    );
+    assert_eq!(partition.results.len(), 3, "every file keeps a result slot");
+    assert!(
+        diagnostics_of(&partition.results, "src/hot.ts").is_empty(),
+        "partial diagnostics of an exhausted file are dropped"
+    );
+
+    // Round two: a rebuilt program that skips the hot file. No slice stops and
+    // the remaining files are identical to checking them in a program that
+    // never contained the hot file.
+    let program = compile_files_with_libs(hot_file_sources(), &[]);
+    let budget = execution_budget(&cancelled);
+    let plan = plan_for(&program, &options, &budget);
+    let work = ProjectFileWork {
+        allowance,
+        skipped: ["src/hot.ts".to_owned()].into_iter().collect(),
+    };
+    let rebuilt = plan
+        .check_file_partition_isolated(&(0..program.files.len()).collect::<Vec<_>>(), Some(&work), &|_| {}, |_| {})
+        .unwrap();
+    assert!(rebuilt.exhausted.is_empty());
+
+    let baseline_program = compile_files_with_libs(
+        hot_file_sources()
+            .into_iter()
+            .filter(|(name, _)| name != "src/hot.ts")
+            .collect(),
+        &[],
+    );
+    let baseline_budget = execution_budget(&cancelled);
+    let baseline_plan = plan_for(&baseline_program, &options, &baseline_budget);
+    let baseline = baseline_plan
+        .check_file_partition(0, &baseline_program.files)
+        .unwrap();
+    for name in ["src/a.ts", "src/b.ts"] {
+        let rebuilt = diagnostics_of(&rebuilt.results, name);
+        assert!(!rebuilt.is_empty(), "{name} keeps its real diagnostics");
+        assert_eq!(rebuilt, diagnostics_of(&baseline, name), "{name}");
+    }
+}
+
+#[test]
+fn partitioned_image_reports_every_hot_file_and_session_queries_get_their_own_slice() {
+    let allowance = 5_000;
+    let options = CheckerOptions::default();
+    let cancelled = AtomicBool::new(false);
+    let prepare = |budget: &ProjectExecutionBudget<'_>| {
+        let mut program = compile_files_with_libs(hot_file_sources(), &[]);
+        program.set_project_module_resolutions(&[]).unwrap();
+        PreparedProjectCheckerImage::new(
+            program,
+            options.clone(),
+            &[],
+            ProjectSemanticOptions::structural(),
+            Some(budget),
+        )
+        .unwrap()
+    };
+    let execution = |budget| ProjectCheckerExecution {
+        checkpoint: budget,
+        workers: NonZeroUsize::new(2).unwrap(),
+    };
+
+    let budget = execution_budget(&cancelled);
+    let refused = prepare(&budget)
+        .with_file_work(ProjectFileWork {
+            allowance,
+            skipped: Default::default(),
+        })
+        .check_with_partitions(execution(&budget));
+    let Err(ProjectPartitionCheckError::FileWorkExhausted(files)) = refused else {
+        panic!("a hot file must be reported, not published");
+    };
+    assert_eq!(
+        files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+        ["src/hot.ts"]
+    );
+    assert_eq!(budget.stop_reason(), None);
+
+    let budget = execution_budget(&cancelled);
+    let (image, result) = prepare(&budget)
+        .with_file_work(ProjectFileWork {
+            allowance,
+            skipped: ["src/hot.ts".to_owned()].into_iter().collect(),
+        })
+        .check_with_partitions(execution(&budget))
+        .unwrap();
+    assert!(result.file_results.len() >= 3);
+    let session = image
+        .query_session(&budget)
+        .unwrap()
+        .with_file_work_allowance(allowance);
+    let hot = file_index(&image, "src/hot.ts");
+    let queried = session.with_file_checker(hot, |checker, _, file| {
+        checker.check_source_file(file.source_file);
+    });
+    assert_eq!(
+        queried,
+        Err(ProjectCheckerSessionError::FileWorkExhausted {
+            file_index: hot,
+            allowance,
+        })
+    );
+    assert_eq!(
+        budget.stop_reason(),
+        None,
+        "a file query's exhaustion is not a program stop"
+    );
+}
+
+/// Counts admitted work without ever stopping, so a test can compare costs.
+#[derive(Default)]
+struct CountingCheckpoint(std::sync::atomic::AtomicU64);
+
+impl tsz_common::ExecutionCheckpoint for CountingCheckpoint {
+    fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+        self.0.fetch_add(work, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// Work admitted by checking one file that imports `Box` as a type, in a program
+/// that also contains `unrelated_files` files that have nothing to do with it.
+fn type_import_check_work(unrelated_files: usize) -> u64 {
+    let mut sources = vec![
+        (
+            "src/importer.ts".to_owned(),
+            "import { Box } from './base'; export declare const b: Box;".to_owned(),
+        ),
+        (
+            "src/base.ts".to_owned(),
+            "export interface Box { value: number }".to_owned(),
+        ),
+    ];
+    sources.extend((0..unrelated_files).map(|n| {
+        (
+            format!("src/unrelated{n}.ts"),
+            format!("export const unrelated{n}: number = {n};"),
+        )
+    }));
+    // The project merge path, which also builds the program-wide skeleton index that
+    // the checker's shared module tables come from.
+    let binds = parse_and_bind_parallel_with_libs(sources, &[]);
+    let refs = binds.iter().collect::<Vec<_>>();
+    let program = merge_bind_results_ref_with_project_semantic_options(
+        &refs,
+        ProjectSemanticOptions::declaration_scoped(),
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/importer.ts".to_owned(),
+        specifier: "./base".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::File {
+            path: "src/base.ts".to_owned(),
+        },
+    }];
+    let options = CheckerOptions::default();
+    let counter = CountingCheckpoint::default();
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::structural(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        Some(&counter),
+    )
+    .unwrap();
+    let importer = file_index(&program, "src/importer.ts");
+    let before = counter.0.load(Ordering::Relaxed);
+    plan.check_file_partition(importer, &program.files[importer..=importer])
+        .unwrap();
+    counter.0.load(Ordering::Relaxed) - before
+}
+
+#[test]
+fn a_type_import_costs_the_same_in_a_small_and_a_large_program() {
+    // Regression for N5: resolving a named import in type position retried its
+    // module lookup against every binder in the program, and each retry was
+    // charged the whole request-kind/mode probe domain. The work for one import
+    // therefore grew with the program's file count (several hundred million
+    // units for an Angular application) while the import itself never changed.
+    const UNRELATED: usize = 120;
+    // Before the fix each unrelated file added roughly 300 units to this one import.
+    // What remains is a handful of cheap per-file key probes.
+    const MAX_UNITS_PER_UNRELATED_FILE: u64 = 40;
+    let small = type_import_check_work(0);
+    let large = type_import_check_work(UNRELATED);
+    assert!(small > 0, "the import is real checked work");
+    assert!(
+        large <= small + MAX_UNITS_PER_UNRELATED_FILE * UNRELATED as u64,
+        "work for one import must not scale with unrelated files: {small} units alone, {large} units among {UNRELATED} other files"
+    );
+}

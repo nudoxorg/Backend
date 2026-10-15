@@ -322,6 +322,11 @@ pub enum ProjectCheckerSessionError {
     FileIndexOutOfRange { file_index: usize, file_count: usize },
     /// The one shared cancellation/deadline/work budget stopped this session.
     ExecutionStopped(tsz_common::ProjectExecutionStop),
+    /// One file query spent its whole per-file work allowance. Its output is
+    /// partial and was discarded, and the checked image may carry state that
+    /// the interrupted query wrote: the caller must stop using this image for
+    /// further queries and rebuild it.
+    FileWorkExhausted { file_index: usize, allowance: u64 },
 }
 
 impl std::fmt::Display for ProjectCheckerSessionError {
@@ -343,6 +348,13 @@ impl std::fmt::Display for ProjectCheckerSessionError {
             Self::ExecutionStopped(reason) => {
                 write!(formatter, "project checker session stopped: {reason:?}")
             }
+            Self::FileWorkExhausted {
+                file_index,
+                allowance,
+            } => write!(
+                formatter,
+                "project checker file {file_index} spent its {allowance} unit work allowance"
+            ),
         }
     }
 }
@@ -359,6 +371,9 @@ impl std::error::Error for ProjectCheckerSessionError {}
 /// used to create this session.
 pub struct ProjectCheckerSession<'a> {
     plan: ParallelCheckPlan<'a>,
+    /// Per-file query work allowance; `None` leaves each query on the shared
+    /// program checkpoint alone.
+    file_work: Option<u64>,
 }
 
 impl<'a> ProjectCheckerSession<'a> {
@@ -391,7 +406,23 @@ impl<'a> ProjectCheckerSession<'a> {
         plan.prime_module_augmentation_bodies();
         plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
-        Ok(Self { plan })
+        Ok(Self {
+            plan,
+            file_work: None,
+        })
+    }
+
+    /// Run every file query under its own work allowance of `allowance` units.
+    ///
+    /// A query that spends its allowance returns
+    /// [`ProjectCheckerSessionError::FileWorkExhausted`] and its output is
+    /// discarded. The interrupted query may have written partial state into
+    /// the image's program-wide tables, so a session must not be used again
+    /// after that error: rebuild the image first.
+    #[must_use]
+    pub fn with_file_work_allowance(mut self, allowance: u64) -> Self {
+        self.file_work = Some(allowance);
+        self
     }
 
     /// Lend the exact configured checker for one file and its type database.
@@ -423,11 +454,39 @@ impl<'a> ProjectCheckerSession<'a> {
         );
         self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
-        let output = self
-            .plan
-            .with_bound_file_checker_and_types(file_index, file, consume);
+        let Some(allowance) = self.file_work else {
+            let output = self
+                .plan
+                .with_bound_file_checker_and_types(file_index, file, consume);
+            self.plan.checkpoint(0)
+                .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+            query_span.returned();
+            return Ok(output);
+        };
+        let parent = self.plan.execution_control().ok_or(
+            ProjectCheckerSessionError::ExecutionStopped(
+                tsz_common::ProjectExecutionStop::Cancelled,
+            ),
+        )?;
+        let slice = tsz_common::FileWorkSlice::new(parent, allowance);
+        let output = self.plan.with_bound_file_checker_and_types_over(
+            file_index, file, Some(&slice), consume,
+        );
+        // A program-wide stop wins over this file's own exhaustion.
         self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        if slice.is_exhausted() {
+            // The parent program still has work, but this image can retain
+            // partial shared solver writes. Poison only this image so neither
+            // another session nor a fresh budget can reuse those writes.
+            if let Some(stop) = self.plan.execution_scope.as_ref().and_then(|scope| scope.image_stop) {
+                let _ = stop.compare_exchange(0, 3, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire);
+            }
+            return Err(ProjectCheckerSessionError::FileWorkExhausted {
+                file_index,
+                allowance,
+            });
+        }
         query_span.returned();
         Ok(output)
     }
@@ -1068,6 +1127,7 @@ struct ProjectCheckerImageContents {
 pub struct PreparedProjectCheckerImage {
     contents: ProjectCheckerImageContents,
     execution_identity: Option<tsz_common::ProjectExecutionIdentity>,
+    file_work: Option<ProjectFileWork>,
 }
 
 /// A fully checked exact native program and reusable views/cache. Persistent
@@ -1144,7 +1204,16 @@ impl PreparedProjectCheckerImage {
                 stopped: std::sync::atomic::AtomicU8::new(0),
             },
             execution_identity: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
+            file_work: None,
         })
+    }
+
+    /// Isolate each file's semantic check under its own work allowance and skip
+    /// the files the policy names. Applies to [`Self::check_with_partitions`].
+    #[must_use]
+    pub fn with_file_work(mut self, file_work: ProjectFileWork) -> Self {
+        self.file_work = Some(file_work);
+        self
     }
 
     /// Build shared views inside the same caller-bounded private worker policy
@@ -1186,7 +1255,13 @@ impl PreparedProjectCheckerImage {
         }
         let result = {
             let plan = self.contents.plan(Some(execution.checkpoint));
-            check_prepared_project_partitions(&plan, execution.workers, &|_| {}, &|_| {})?
+            check_prepared_project_partitions(
+                &plan,
+                execution.workers,
+                self.file_work.as_ref(),
+                &|_| {},
+                &|_| {},
+            )?
         };
         Ok((
             ProjectCheckerImage { contents: self.contents },
@@ -1262,7 +1337,10 @@ impl ProjectCheckerImage {
         let plan = self.contents.plan(Some(checkpoint));
         plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
-        Ok(ProjectCheckerSession { plan })
+        Ok(ProjectCheckerSession {
+            plan,
+            file_work: None,
+        })
     }
 }
 
@@ -1491,6 +1569,15 @@ impl<'a> ParallelCheckPlan<'a> {
     /// Each thread gets its own `RefCell`/`Cell`-backed cache (no atomic
     /// overhead) for memoized `evaluate_type` / `is_subtype_of` calls.
     fn make_query_cache(&self) -> tsz_solver::construction::QueryCache<'_> {
+        self.make_query_cache_with(self.execution_control())
+    }
+
+    /// Build a query cache whose every checkpoint poll, and therefore every
+    /// guard on persistent cache writes, goes through `checkpoint`.
+    fn make_query_cache_with<'x>(
+        &'x self,
+        checkpoint: Option<&'x dyn tsz_common::ExecutionCheckpoint>,
+    ) -> tsz_solver::construction::QueryCache<'x> {
         let cache = if let Some(ref shared) = self.shared_query_cache {
             tsz_solver::construction::QueryCache::new_with_shared(
                 &self.program.type_interner,
@@ -1504,7 +1591,7 @@ impl<'a> ParallelCheckPlan<'a> {
         let cache = cache
             .with_project_semantic_options(self.project_semantic_options)
             .with_definition_store(&self.program.definition_store);
-        match self.execution_control() {
+        match checkpoint {
             Some(checkpoint) => cache.with_execution_checkpoint(checkpoint),
             None => cache,
         }
@@ -1566,7 +1653,29 @@ impl<'a> ParallelCheckPlan<'a> {
             &dyn tsz_solver::construction::TypeDatabase,
         ) -> Output,
     ) -> Output {
-        let query_cache = self.make_query_cache();
+        self.with_bound_file_checker_and_types_over(
+            file_idx,
+            file,
+            self.execution_control(),
+            consume,
+        )
+    }
+
+    /// Like [`Self::with_bound_file_checker_and_types`], but every checkpoint
+    /// poll of the file query goes through `checkpoint` instead of the plan scope.
+    fn with_bound_file_checker_and_types_over<Output>(
+        &self,
+        file_idx: usize,
+        file: &BoundFile,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+            &dyn tsz_solver::construction::TypeDatabase,
+        ) -> Output,
+    ) -> Output {
+        let query_cache = self.make_query_cache_with(checkpoint);
         let mut checker = self.configured_file_checker(file_idx, file, &query_cache);
 
         consume(
