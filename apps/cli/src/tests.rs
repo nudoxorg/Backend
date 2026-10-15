@@ -58,9 +58,10 @@ fn root() -> ViewRoot {
 // complete empty view so a Failed reply cannot make freshness tests pass.
 fn certified_search_fixture() -> (CommandDto, ReplyDto) {
     let empty = backend_library::Library::new();
-    let library =
-        backend_library::Library::with_coverage(fixture_projection_capability(empty.view().basis))
-            .expect("producer-admitted empty library");
+    let library = backend_library::Library::with_coverage(fixture_projection_capability(
+        empty.view().basis(),
+    ))
+    .expect("producer-admitted empty library");
     let request = CommandDto::new(
         7,
         Command::Search(Query::new(
