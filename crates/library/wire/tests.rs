@@ -3285,14 +3285,13 @@ fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort(
 
 #[test]
 fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_journal_container() {
-    let (library, _) = paged_query_fixture(0);
-    let original = library.view();
-    let basis = original.basis();
+    // The maintained certificate fixture owns these exact preimages.
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
     let root = ViewRoot::new_checked(
-        original.recipe(),
+        view_key(b"view"),
         basis,
-        original.frontier(),
-        original.rows().to_vec(),
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        Vec::new(),
         vec![
             crate::Coverage::Complete,
             crate::Coverage::Gapped {
