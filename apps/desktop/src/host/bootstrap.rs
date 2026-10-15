@@ -250,9 +250,7 @@ mod tests {
         session.revision().expect("actual owner revision");
         drop(session);
         let root_deadline = std::time::Instant::now() + crate::runtime::wait::HUNG;
-        let initial_attachment = gate
-            .ready_epoch()
-            .expect("initial ready attachment");
+        let initial_attachment = gate.ready_epoch().expect("initial ready attachment");
         let initial_request = RequestId::new(1);
         let initial_basis = VersionedRoot::unserved();
         assert!(matches!(
@@ -354,7 +352,9 @@ mod tests {
                     retry_request,
                     retry_basis,
                     retry_event.result.unwrap_or_else(|fault| {
-                        panic!("the fresh Root retry must succeed after owner certification: {fault:?}")
+                        panic!(
+                            "the fresh Root retry must succeed after owner certification: {fault:?}"
+                        )
                     }),
                 )
             }
@@ -362,13 +362,14 @@ mod tests {
                 "the initial Root request failed before a recoverable owner rotation: {other:?}"
             ),
         };
-        assert!(matches!(
-            &root_result,
-            EngineDto::Root { request, basis, key, revision, .. }
-                if *request == root_request
-                    && basis.same_authority(root_basis)
-                    && key.revision() == *revision
-        ),
+        assert!(
+            matches!(
+                &root_result,
+                EngineDto::Root { request, basis, key, revision, .. }
+                    if *request == root_request
+                        && basis.same_authority(root_basis)
+                        && key.revision() == *revision
+            ),
             "only a successful Root for the submitted request and basis completes recovery: {root_result:?}"
         );
         let admitted = pool.submit(ReadJob {
