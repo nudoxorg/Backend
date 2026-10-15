@@ -365,7 +365,11 @@ pub enum LocaldError {
 
 impl fmt::Display for LocaldError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "locald error: {self:?}")
+        match self {
+            Self::Workspace(error) => write!(f, "locald workspace error: {error}"),
+            Self::Queue(error) => write!(f, "locald queue error: {error}"),
+            Self::Daemon(error) => write!(f, "locald daemon error: {error}"),
+        }
     }
 }
 impl std::error::Error for LocaldError {}

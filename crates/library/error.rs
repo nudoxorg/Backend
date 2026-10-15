@@ -29,7 +29,7 @@ impl core::fmt::Display for LibraryError {
         match self {
             Self::NotFound => f.write_str("library record not found"),
             Self::WrongBasis { .. } => f.write_str("query basis does not match the view revision"),
-            Self::View(error) => write!(f, "view transition failed: {error:?}"),
+            Self::View(error) => write!(f, "view transition failed: {error}"),
             Self::InvalidQuery(error) => write!(f, "invalid query: {error}"),
             Self::SequenceOverflow => f.write_str("library event sequence overflowed"),
             Self::CursorMismatch => f.write_str("subscription cursor does not match the view"),

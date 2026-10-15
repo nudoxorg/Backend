@@ -89,6 +89,7 @@ mod signature;
 mod status;
 mod startup_recovery;
 mod token_count;
+mod words;
 
 pub use startup_recovery::{StartupRecoveryContext, StartupRecoveryWorkspace};
 
@@ -148,7 +149,7 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, product_view, product_view_for_command,
+    ProductView, index_stage_name, product_view, product_view_for_command,
 };
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};

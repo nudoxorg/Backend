@@ -66,7 +66,7 @@ impl fmt::Display for ReplyAdmissionError {
                 "reply request id {observed} does not match request id {expected}"
             ),
             Self::Protocol(message) => formatter.write_str(message),
-            Self::Projection(error) => write!(formatter, "view projection rejected: {error:?}"),
+            Self::Projection(error) => write!(formatter, "view projection rejected: {error}"),
         }
     }
 }

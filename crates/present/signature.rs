@@ -151,22 +151,84 @@ impl Token {
     }
 }
 
-/// What a producer writes as a signature when it knows nothing about the type.
-const UNANNOTATED: &str = "unknown(unannotated)";
+/// The leading spellings of the compiler's canonical type encoding.
+///
+/// That encoding is an injective machine form: every name is hex
+/// (`label=x"70617468"`), every type a tagged tree (`builtin(string)`,
+/// `nominal(entity(family=x"…"))`), and an unknown type says why it is unknown
+/// (`unknown(unannotated)`). It is never something to read, so a signature
+/// that still carries it is shown as no signature.
+const CANONICAL_ENCODING_TAGS: &[&str] = &[
+    "annotated(kind=",
+    "applied(",
+    "array(shape=",
+    "awaited(",
+    "builtin(",
+    "c-block-pointer(",
+    "c-pointer(",
+    "c-qualified(",
+    "channel(direction=",
+    "conditional(check=",
+    "cxx-member-pointer(",
+    "cxx-reference(",
+    "dyn-trait[",
+    "external(",
+    "function(parameters=",
+    "impl-trait[",
+    "import(specifier=",
+    "indexed(object=",
+    "inferred(",
+    "intersection[",
+    "keyof(",
+    "literal.",
+    "map(key=",
+    "mapped(",
+    "native-character(",
+    "nominal(",
+    "object[",
+    "optional(",
+    "parameter(x\"",
+    "pointer(mutability=",
+    "qualified(self=",
+    "reference(mutability=",
+    "slice(",
+    "template[",
+    "tuple[",
+    "typeof(",
+    "union[",
+    "unknown(",
+    "wildcard",
+];
+
+/// Returns whether `text` is the compiler's canonical type encoding rather
+/// than something a producer wrote.
+///
+/// The encoding contains no whitespace and opens with one of a closed set of
+/// constructor tags; a written signature (`fn a()`, `def f():`, `x: int`) has
+/// a space or a keyword before anything that looks like a tag.
+fn is_canonical_encoding(text: &str) -> bool {
+    !text.contains(char::is_whitespace)
+        && CANONICAL_ENCODING_TAGS
+            .iter()
+            .any(|tag| text.starts_with(tag))
+}
 
 /// The signature text worth showing for one declaration, or `None` when the
 /// producer recorded none.
 ///
 /// Two producer spellings are normalized so no surface repeats them:
 ///
-/// * the sentinel `unknown(unannotated)` says nothing and is dropped;
+/// * the compiler's canonical type encoding (`unknown(unannotated)`,
+///   `function(parameters=[…])`, `nominal(entity(…))`) says nothing a reader
+///   can use and is dropped;
 /// * an import's canonical type renders as one fragment per line (kind,
 ///   module specifier, imported name). It reads as the one line a reader
 ///   would write: `import { name } from "module"` (`import type …`,
 ///   `import * as name …`, or `import name …` for the other kinds); any other
 ///   multi-line import text is joined onto one line.
 ///
-/// Other declarations keep their signature text exactly.
+/// A written header spread over several lines reads as one
+/// (`fn a(\n    x: u32,\n)` as `fn a(x: u32)`).
 #[cfg(test)]
 #[must_use]
 pub(crate) fn display_text(
@@ -187,14 +249,11 @@ pub(crate) fn display_text_in(
     text: &str,
 ) -> Option<String> {
     let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed == UNANNOTATED {
+    if trimmed.is_empty() || is_canonical_encoding(trimmed) {
         return None;
     }
-    if let Some(readable) = readable_callable(trimmed) {
-        return Some(readable);
-    }
     if kind != Some(backend_library::DeclarationKind::Import) || !trimmed.contains('\n') {
-        return Some(text.to_owned());
+        return Some(one_line(trimmed));
     }
     let lines = trimmed
         .lines()
@@ -207,6 +266,77 @@ pub(crate) fn display_text_in(
         return Some(one);
     }
     Some(lines.join(" "))
+}
+
+/// Reads a header as one line with single spaces.
+///
+/// Every line break and the indentation after it becomes a single space,
+/// except directly inside a bracket, where it becomes nothing, and a trailing
+/// comma before the closing bracket is dropped: `def f(\n    a,\n    b,\n):`
+/// reads as `def f(a, b):`. A run of spaces (the alignment `gofmt` writes
+/// between a field and its type) becomes one. A string literal keeps its text.
+pub(crate) fn one_line(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(character) = characters.next() {
+        if let Some(open) = quote {
+            output.push(character);
+            if character == '\\' {
+                output.extend(characters.next());
+            } else if character == open {
+                quote = None;
+            }
+            continue;
+        }
+        if character == '"' {
+            quote = Some(character);
+            output.push(character);
+            continue;
+        }
+        if !character.is_whitespace() {
+            output.push(character);
+            continue;
+        }
+        let mut broke = character == '\n';
+        while let Some(next) = characters.next_if(|next| next.is_whitespace()) {
+            broke |= next == '\n';
+        }
+        if !broke {
+            // Alignment is layout, not content.
+            output.push(' ');
+            continue;
+        }
+        let closes = characters
+            .peek()
+            .is_some_and(|next| matches!(next, ')' | ']'));
+        if closes && output.ends_with(',') {
+            output.pop();
+        }
+        let opens = output.ends_with(['(', '[']);
+        if !(opens || closes || output.is_empty()) {
+            output.push(' ');
+        }
+    }
+    // The comma that ends a `where` clause written one bound per line.
+    output.truncate(output.trim_end_matches(',').len());
+    output
+}
+
+/// A Python module as `import` writes it. The index records a relative import
+/// with a path-like specifier (`.core` as `/core`, `..pkg.mod` as `//pkg/mod`);
+/// leading slashes read as the dots they came from and the rest as dotted
+/// names.
+fn python_module(specifier: &str) -> String {
+    let relative = specifier.len() - specifier.trim_start_matches('/').len();
+    if relative == 0 {
+        return specifier.to_owned();
+    }
+    format!(
+        "{}{}",
+        ".".repeat(relative),
+        specifier.trim_start_matches('/').replace('/', ".")
+    )
 }
 
 /// One import as the line its language would write, from the canonical
@@ -222,85 +352,19 @@ fn import_line(language: Language, flavor: &str, module: &str, name: &str) -> Op
             "namespace" => format!("import * as {name} from \"{module}\""),
             _ => format!("import {name} from \"{module}\""),
         },
-        Language::Python => match flavor {
-            "namespace" => format!("import {module} as {name}"),
-            _ => format!("from {module} import {name}"),
-        },
+        Language::Python => {
+            let module = python_module(module);
+            match flavor {
+                "namespace" => format!("import {module} as {name}"),
+                _ => format!("from {module} import {name}"),
+            }
+        }
         Language::Rust => match flavor {
             "namespace" => format!("use {module} as {name};"),
             _ => format!("use {module}::{name};"),
         },
         _ => format!("import {name} from {module}"),
     })
-}
-
-/// Reads the parameter names out of a callable's canonical IR spelling
-/// (`function(parameters=[element(kind=required,label=x"6170",type=…)],
-/// results=[…],…)`, where each name is hex), as `function(app, …)`.
-///
-/// A callable with no written signature carries only that machine encoding.
-/// Only a text of exactly that shape is rewritten; anything else, or any
-/// element that does not parse, leaves the text untouched.
-fn readable_callable(text: &str) -> Option<String> {
-    let rest = text.strip_prefix("function(parameters=[")?;
-    let mut names = Vec::new();
-    // Depth 1 is inside the parameter list; a nested callable type opens
-    // deeper brackets of its own whose parameters are not this one's.
-    let mut depth = 1_usize;
-    let mut element = None;
-    let mut quoted = false;
-    let mut closed = None;
-    for (at, character) in rest.char_indices() {
-        if character == '"' {
-            quoted = !quoted;
-        }
-        if quoted {
-            continue;
-        }
-        match character {
-            '(' | '[' => {
-                if depth == 1 && character == '(' && rest[..at].ends_with("element") {
-                    element = Some(at + 1);
-                }
-                depth += 1;
-            }
-            ')' | ']' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 1
-                    && let Some(start) = element.take()
-                {
-                    names.push(element_name(&rest[start..at])?);
-                } else if depth == 0 {
-                    closed = Some(at);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let after = &rest[closed? + 1..];
-    after
-        .starts_with(",results=")
-        .then(|| format!("function({})", names.join(", ")))
-}
-
-/// The parameter name of one `kind=…,label=…,type=…` element body.
-fn element_name(element: &str) -> Option<String> {
-    let label = element.split_once("label=")?.1;
-    if label.starts_with("none") {
-        return Some("_".to_owned());
-    }
-    let hex = label.strip_prefix("x\"")?.split_once('"')?.0;
-    if hex.len() % 2 != 0 {
-        return None;
-    }
-    let bytes = (0..hex.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
-        .collect::<Option<Vec<_>>>()?;
-    String::from_utf8(bytes)
-        .ok()
-        .filter(|name| !name.is_empty())
 }
 
 /// One declaration signature as an ordered token stream.

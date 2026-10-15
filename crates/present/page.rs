@@ -19,47 +19,54 @@ use crate::glyph::RelationLabel;
 use crate::identity::{Identity, LineNumber, PackagePath};
 use crate::language::Language;
 use crate::signature::Signature;
-use backend_library::{DeclarationKind, Fragment, SourceExcerptExtent, SymbolKey};
+use backend_library::{DeclarationKind, Fragment, SourceExcerptExtent};
 
 /// One block of producer-captured documentation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Prose {
-    /// A paragraph of readable text.
+    /// A paragraph of readable text. A link's label reads inline, exactly as
+    /// the author wrote it; a line break the author wrote inside the paragraph
+    /// stays a line break.
     Text(String),
     /// A block of code the producer captured as documentation.
     Code(String),
-    /// A link to another declaration.
-    Link {
-        /// Display label.
-        label: String,
-        /// Stable declaration target.
-        target: SymbolKey,
-    },
 }
 
 impl Prose {
-    /// Folds one fragment run into paragraphs, codes, and links.
+    /// Folds one fragment run into paragraphs and code blocks.
     ///
-    /// Consecutive text fragments join into one paragraph; an explicit break
-    /// starts the next one. Empty paragraphs never survive.
+    /// Consecutive text fragments and link labels join into one paragraph. A
+    /// single break is a line break inside it; two breaks in a row (a blank
+    /// line) end it. Consecutive code fragments are one block. Empty
+    /// paragraphs never survive.
     #[must_use]
     pub fn from_fragments(fragments: &[Fragment]) -> Box<[Self]> {
         let mut blocks = Vec::new();
         let mut paragraph = String::new();
+        let mut breaks = 0_usize;
         for fragment in fragments {
             match fragment {
-                Fragment::Text(text) => paragraph.push_str(text),
-                Fragment::Break => flush(&mut paragraph, &mut blocks),
+                Fragment::Text(text) => {
+                    join_paragraph(&mut paragraph, &mut blocks, breaks);
+                    breaks = 0;
+                    paragraph.push_str(text);
+                }
+                Fragment::Link { label, .. } => {
+                    join_paragraph(&mut paragraph, &mut blocks, breaks);
+                    breaks = 0;
+                    paragraph.push_str(label);
+                }
+                Fragment::Break => breaks = breaks.saturating_add(1),
                 Fragment::Code(code) => {
                     flush(&mut paragraph, &mut blocks);
-                    blocks.push(Self::Code(code.clone()));
-                }
-                Fragment::Link { label, target } => {
-                    flush(&mut paragraph, &mut blocks);
-                    blocks.push(Self::Link {
-                        label: label.clone(),
-                        target: *target,
-                    });
+                    match blocks.last_mut() {
+                        Some(Self::Code(block)) => {
+                            block.push_str(&"\n".repeat(breaks.max(1)));
+                            block.push_str(code);
+                        }
+                        _ => blocks.push(Self::Code(code.clone())),
+                    }
+                    breaks = 0;
                 }
             }
         }
@@ -68,12 +75,40 @@ impl Prose {
     }
 }
 
-fn flush(paragraph: &mut String, blocks: &mut Vec<Prose>) {
-    let trimmed = paragraph.trim();
-    if !trimmed.is_empty() {
-        blocks.push(Prose::Text(trimmed.to_owned()));
+/// Starts the next piece of a paragraph after `breaks` breaks: one is a line
+/// break inside it, two or more end it.
+fn join_paragraph(paragraph: &mut String, blocks: &mut Vec<Prose>, breaks: usize) {
+    match breaks {
+        0 => {}
+        1 => {
+            if !paragraph.is_empty() {
+                paragraph.push('\n');
+            }
+        }
+        _ => flush(paragraph, blocks),
     }
+}
+
+/// Ends the paragraph, splitting any blank line the text itself carries into
+/// separate paragraphs and trimming each line's trailing space.
+fn flush(paragraph: &mut String, blocks: &mut Vec<Prose>) {
+    let mut lines = Vec::new();
+    for line in paragraph.lines() {
+        if line.trim().is_empty() {
+            push_paragraph(&mut lines, blocks);
+        } else {
+            lines.push(line.trim_end());
+        }
+    }
+    push_paragraph(&mut lines, blocks);
     paragraph.clear();
+}
+
+fn push_paragraph(lines: &mut Vec<&str>, blocks: &mut Vec<Prose>) {
+    if !lines.is_empty() {
+        blocks.push(Prose::Text(lines.join("\n").trim_start().to_owned()));
+        lines.clear();
+    }
 }
 
 /// One member of a declaration, as one line.

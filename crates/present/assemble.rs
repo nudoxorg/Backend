@@ -29,8 +29,8 @@ use crate::record::{CollapsedExternals, Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
-    Coverage, Document, GraphRelation, HealthReport, Outline, PageContinuation, Row, RowId,
-    SourceAvailability, SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
+    Coverage, DeclarationKind, Document, GraphRelation, HealthReport, Outline, PageContinuation,
+    Row, RowId, SourceAvailability, SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
 };
 use std::collections::BTreeMap;
 
@@ -179,10 +179,49 @@ fn row_identity(row: &Row) -> Identity {
     )
 }
 
+/// Whether a row held by a declaration is a member worth listing under it.
+///
+/// A compiler-backed declaration also holds rows that are bookkeeping rather
+/// than parts:
+///
+/// * a variable that merely restates the declaration's own name (a Python
+///   function's binding of itself);
+/// * the placeholder names a compiler gives results the author never named
+///   (`_`, `_1`, `_2`);
+/// * a variable the compiler found but no written site backs: a parameter,
+///   which the declaration's signature already states, or a local of its body,
+///   which is detail of the body and not something to open (it has no path and
+///   line to open).
+///
+/// Listing them tells a reader about parts that are not there or cannot be
+/// reached. A local the source itself declares (a `const` in a function body)
+/// has a path and line, and stays.
+fn is_listable_member(row: &Row, own_name: Option<&str>) -> bool {
+    let identity = row_identity(row);
+    let name = identity.name();
+    if is_placeholder_name(name) {
+        return false;
+    }
+    row.kind != Some(DeclarationKind::Variable)
+        || (own_name != Some(name) && row.source.captured().is_some())
+}
+
+/// Whether a name is the blank identifier or a synthesized positional name
+/// (`_`, `_0`, `_12`).
+fn is_placeholder_name(name: &str) -> bool {
+    name.strip_prefix('_')
+        .is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
+    let own_name = rows
+        .iter()
+        .find(|row| row.id == RowId::Symbol(parent))
+        .map(|row| row_identity(row).name().to_owned());
     let members = rows
         .iter()
         .filter(|row| row.parent == Some(parent) && row.id != RowId::Symbol(parent))
+        .filter(|row| is_listable_member(row, own_name.as_deref()))
         .map(|row| {
             let identity = row_identity(row);
             let language = identity.language();
@@ -393,13 +432,14 @@ fn merge_lane_twins(records: &mut Vec<Record>) {
     });
 }
 
+/// The first line of a row's prose, links read inline: `A configurable builder
+/// for a [`Regex`].` is one line, not the text up to its first link.
 fn summary_of(row: &Row) -> Option<String> {
-    let text = row
-        .document
+    let text = Prose::from_fragments(&row.document)
         .iter()
-        .find_map(|fragment| match fragment {
-            backend_library::Fragment::Text(text) => Some(text.clone()),
-            _ => None,
+        .find_map(|block| match block {
+            Prose::Text(text) => Some(text.clone()),
+            Prose::Code(_) => None,
         })?;
     let first = text.lines().next().unwrap_or_default().trim().to_owned();
     (!first.is_empty() && first != row.label).then_some(first)

@@ -529,6 +529,24 @@ pub enum ViewError {
     InvalidCoverage,
 }
 
+impl core::fmt::Display for ViewError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::WrongBase => "the transition names another row relation root",
+            Self::WrongBasis => "a row or replacement root names another source basis",
+            Self::WrongViewIdentity => "the transition names another view recipe identity",
+            Self::WrongFrontier => "the source changed while the transition was prepared",
+            Self::IncoherentBase => "the base root or its rows are not coherent",
+            Self::Duplicate => "a replacement would give two rows one stable identity",
+            Self::InvalidIdentity => "a row's identity witness does not match its stable key",
+            Self::Unbounded => "coverage or row growth exceeded the bounded view contract",
+            Self::InvalidRelationDelta => "the relation transition could not be prepared",
+            Self::WrongTarget => "the target version or root did not match the prepared content",
+            Self::InvalidCoverage => "the relation scope could not be admitted as complete",
+        })
+    }
+}
+
 pub(super) fn relation_changes_for_delta(
     base: &ViewRoot,
     delta: &ViewDelta,

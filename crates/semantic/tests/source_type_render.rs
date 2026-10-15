@@ -262,6 +262,10 @@ fn what_cannot_be_named_is_absent_never_encoded() -> Result<(), BuildError> {
     // A reference that did not resolve keeps only the bare name the producer
     // saw (`T` for `testing.T`), which is not the type the author wrote.
     let bare = fixture.spelled_for("T", UnknownReason::UnresolvedExternal)?;
+    // Go spells a foreign type by its bare name even where the model has no
+    // representation for it; only universe types are written.
+    let go_bare = fixture.spelled("T")?;
+    let go_error = fixture.spelled("error")?;
     let ir = fixture.finish()?;
 
     for ty in [unannotated, gap, external, applied, bare] {
@@ -269,6 +273,11 @@ fn what_cannot_be_named_is_absent_never_encoded() -> Result<(), BuildError> {
             assert_eq!(render_source_type(&ir, profile, ty, limits()), None);
         }
     }
+    assert_eq!(render_source_type(&ir, GO, go_bare, limits()), None);
+    assert_eq!(
+        render_source_type(&ir, GO, go_error, limits()).as_deref(),
+        Some("error")
+    );
     // A type that is not callable has no header.
     assert_eq!(render_source_callable(&ir, RUST, "f", byte, limits()), None);
     assert!(matches!(

@@ -1516,16 +1516,13 @@ fn preceding_comments(language: SourceLanguage, node: Node<'_>, source: &str) ->
         // trailing remark about that declaration.
         if candidate
             .prev_named_sibling()
-            .is_some_and(|before| before.end_position().row == candidate.start_position().row)
+            .is_some_and(|before| last_row(before) == candidate.start_position().row)
         {
             break;
         }
-        let end_row = if candidate.end_position().column == 0 {
-            candidate.end_position().row.saturating_sub(1)
-        } else {
-            candidate.end_position().row
-        };
-        if requires_adjacent_documentation(language) && below > end_row.saturating_add(1) {
+        if requires_adjacent_documentation(language)
+            && below > last_row(candidate).saturating_add(1)
+        {
             break;
         }
         below = candidate.start_position().row;
@@ -1535,6 +1532,18 @@ fn preceding_comments(language: SourceLanguage, node: Node<'_>, source: &str) ->
     }
     comments.reverse();
     comments
+}
+
+/// The last row a node occupies. A line comment's range can run through its
+/// newline and end at column zero of the next row, which that row does not
+/// own.
+fn last_row(node: Node<'_>) -> usize {
+    let end = node.end_position();
+    if end.column == 0 && end.row > node.start_position().row {
+        end.row - 1
+    } else {
+        end.row
+    }
 }
 
 /// Whether a blank line between a comment and its declaration detaches it.

@@ -285,7 +285,7 @@ pub fn page_projection(page: &PageProjection<'_>, theme: Theme) -> String {
         lines.push(format!("  {}", signature(value, theme)));
     }
     if let Some(prose) = page.prose().included() {
-        push_prose(&mut lines, prose, theme);
+        push_prose(&mut lines, prose);
     }
     if let Some(members) = page.members().included() {
         push_members(&mut lines, members, page.identity().project(), theme);
@@ -328,21 +328,25 @@ fn meta_line(page: &PageProjection<'_>) -> String {
     parts.join(" · ")
 }
 
-fn push_prose(lines: &mut Lines, prose: &[Prose], theme: Theme) {
+fn push_prose(lines: &mut Lines, prose: &[Prose]) {
     if prose.is_empty() {
         return;
     }
     lines.blank();
-    for block in prose {
+    for (index, block) in prose.iter().enumerate() {
+        if index != 0 {
+            lines.blank();
+        }
         match block {
-            Prose::Text(text) => lines.push(format!("  {text}")),
+            Prose::Text(text) => {
+                for line in text.lines() {
+                    lines.push(format!("  {line}"));
+                }
+            }
             Prose::Code(code) => {
                 for line in code.lines() {
                     lines.push(format!("    {line}"));
                 }
-            }
-            Prose::Link { label, .. } => {
-                lines.push(format!("  {}", theme.paint(Style::Type, label)));
             }
         }
     }
@@ -712,7 +716,7 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     lines.push(format!(
-        "  snapshot {snapshot} · freshness evaluated at {} · {:?}",
+        "  snapshot {snapshot} · freshness evaluated at {} · {}",
         page.evaluated_at_millis(),
         page.result_count()
     ));

@@ -257,7 +257,7 @@ impl RecordList {
         if self.coverage.readiness() == "indexing" {
             return "no rows yet; indexing has not finished for this revision".to_owned();
         }
-        format!("no declaration matches {:?} at this revision", self.query)
+        format!("no declaration matches \"{}\" at this revision", self.query)
     }
 
     /// Marks that the owner holds another page after this one.

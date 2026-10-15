@@ -38,7 +38,7 @@ impl RichGraphSnapshot {
                 GraphNodeId::for_row(row.id),
                 label.clone(),
                 Some(label),
-                row.kind.map(|kind| format!("{kind:?}")),
+                row.kind.map(|kind| kind.name().to_owned()),
                 availability,
                 Some(provenance),
             )?)?;

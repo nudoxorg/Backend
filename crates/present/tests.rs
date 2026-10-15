@@ -1895,7 +1895,7 @@ fn advisory_reply_renders_typed_coverage_and_decision() {
     let view = product_view(&reply);
     assert_eq!(view.heading(), "advisory");
     let summary = view.records().first().expect("decision summary");
-    assert!(summary.tags().iter().any(|tag| tag.contains("Unknown")));
+    assert!(summary.tags().iter().any(|tag| tag.contains("unknown")));
     assert!(summary.tags().iter().any(|tag| tag.contains("warn")));
     assert!(!summary.tags().iter().any(|tag| tag.contains("deny")));
 }
@@ -2443,11 +2443,11 @@ fn import_signatures_read_as_one_line_and_unannotated_signatures_vanish() {
         display_text(import, "from a import b").as_deref(),
         Some("from a import b")
     );
-    // Other declarations keep their signature text exactly.
+    // Other declarations keep their written text, on one line.
     let function = Some(DeclarationKind::Function);
     assert_eq!(
         display_text(function, "fn a(\n    x: u32,\n)").as_deref(),
-        Some("fn a(\n    x: u32,\n)")
+        Some("fn a(x: u32)")
     );
     assert_eq!(display_text(function, "unknown(unannotated)"), None);
     assert_eq!(display_text(function, "  "), None);
@@ -2455,39 +2455,58 @@ fn import_signatures_read_as_one_line_and_unannotated_signatures_vanish() {
 }
 
 #[test]
-fn a_callable_with_only_its_canonical_encoding_reads_as_its_parameter_names() {
+fn the_compilers_canonical_type_encoding_is_never_a_signature() {
     use crate::signature::display_text;
     let function = Some(DeclarationKind::Function);
-    // `appname`, `appauthor`, `version`, `roaming` are spelled in hex by the
-    // producer; an anonymous parameter has no label.
-    let encoded = concat!(
-        "function(parameters=[element(kind=required,label=x\"6170706E616D65\",type=unknown(oracle-gap)),",
-        "element(kind=required,label=x\"617070617574686F72\",type=function(parameters=[element(kind=required,label=x\"6E6F\",type=builtin(u64))],results=[],abi=none)),",
-        "element(kind=required,label=none,type=unknown(oracle-gap)),",
-        "element(kind=required,label=x\"726F616D696E67\",type=unknown(oracle-gap))],",
-        "results=[element(kind=required,label=none,type=unknown(oracle-gap))],abi=none,variadic=none,unsafe=false)"
-    );
-    assert_eq!(
-        display_text(function, encoded).as_deref(),
-        Some("function(appname, appauthor, _, roaming)")
-    );
-    let method = "function(parameters=[element(kind=required,label=x\"73656C66\",type=unknown(oracle-gap))],results=[element(kind=required,label=none,type=unknown(oracle-gap))],abi=none,variadic=none,unsafe=false)";
-    assert_eq!(
-        display_text(function, method).as_deref(),
-        Some("function(self)")
-    );
-    assert_eq!(
-        display_text(function, "function(parameters=[],results=[],abi=none)").as_deref(),
-        Some("function()")
-    );
-    // Anything that does not parse is kept exactly.
+    // `path`, `error`, and `Config` are spelled in hex by the producer; the
+    // whole string is a machine encoding and says nothing a reader can use.
+    for encoded in [
+        "function(parameters=[element(kind=required,label=x\"70617468\",type=builtin(string))],results=[element(kind=required,label=none,type=unknown(unrepresented,x\"6572726F72\"))],abi=none,variadic=none,unsafe=false)",
+        "nominal(entity(family=x\"33B9C42B\",variant=x\"01\",name=x\"436F6C6F72\"))",
+        "pointer(mutability=mutable,target=unknown(unrepresented,x\"54\"))",
+        "applied(external(fragment-entity.fragment=x\"0C4CF206\",ordinal=1,display=x\"566563\"),[builtin(u8)])",
+        "reference(mutability=immutable,lifetime=none,target=builtin(string))",
+        "unknown(oracle-gap)",
+        "unknown(unannotated)",
+        "builtin(none)",
+    ] {
+        assert_eq!(display_text(function, encoded), None, "{encoded}");
+    }
+    // Written signatures that merely resemble a tag are kept.
     for kept in [
-        "function(parameters=[element(kind=required,label=x\"7\",type=u8)],results=[])",
-        "function(parameters=[element(kind=required,label=x\"6162\",type=u8)",
         "def user_data_dir(appname=None):",
+        "function(a, b)",
+        "unknown_value: i32",
+        "builtin_kind(x: u8) -> bool",
     ] {
         assert_eq!(display_text(function, kept).as_deref(), Some(kept));
     }
+}
+
+#[test]
+fn a_header_written_over_several_lines_reads_as_one() {
+    use crate::signature::{display_text, one_line};
+    let function = Some(DeclarationKind::Function);
+    assert_eq!(
+        display_text(function, "async def delete_provider_model(\n    request: Request,\n    url_idx: int,\n    user=Depends(get_admin_user),\n):").as_deref(),
+        Some("async def delete_provider_model(request: Request, url_idx: int, user=Depends(get_admin_user)):")
+    );
+    assert_eq!(
+        display_text(function, "fn a(\n    x: u32,\n)").as_deref(),
+        Some("fn a(x: u32)")
+    );
+    assert_eq!(
+        one_line("pub fn f<T>(x: T)\nwhere\n    T: Clone,"),
+        "pub fn f<T>(x: T) where T: Clone"
+    );
+    // A string literal keeps its text, and a single line is untouched.
+    assert_eq!(
+        one_line("const X = \"a\n  b\"\n;"),
+        "const X = \"a\n  b\" ;"
+    );
+    // A run of spaces, such as the alignment gofmt writes, reads as one.
+    assert_eq!(one_line("zeroEmpty         bool"), "zeroEmpty bool");
+    assert_eq!(one_line("fn a(x: u32)"), "fn a(x: u32)");
 }
 
 #[test]
@@ -2573,6 +2592,15 @@ fn an_import_reads_the_way_its_language_writes_one() {
         display_text_in(import, Language::Python, "namespace\nos.path\npath").as_deref(),
         Some("import os.path as path")
     );
+    // A relative import is recorded with a path-like specifier.
+    assert_eq!(
+        display_text_in(import, Language::Python, "value\n/core\nwhere").as_deref(),
+        Some("from .core import where")
+    );
+    assert_eq!(
+        display_text_in(import, Language::Python, "value\n//pkg/mod\nx").as_deref(),
+        Some("from ..pkg.mod import x")
+    );
     assert_eq!(
         display_text_in(import, Language::TypeScript, "value\n@/lib/x\nf").as_deref(),
         Some("import { f } from \"@/lib/x\"")
@@ -2580,5 +2608,189 @@ fn an_import_reads_the_way_its_language_writes_one() {
     assert_eq!(
         display_text_in(import, Language::Go, value).as_deref(),
         Some("import Alphabet from crate")
+    );
+}
+
+/// The compiler's canonical type encoding, as a producer wrote it into the
+/// signature of a declaration, a variable, and a parameter.
+const ENCODED_SIGNATURES: [&str; 4] = [
+    "function(parameters=[element(kind=required,label=x\"70617468\",type=builtin(string))],results=[element(kind=required,label=none,type=unknown(unrepresented,x\"6572726F72\"))],abi=none,variadic=none,unsafe=false)",
+    "applied(external(fragment-entity.fragment=x\"0C4CF206C6A8\",ordinal=1,display=x\"566563\"),[builtin(u8)])",
+    "nominal(entity(family=x\"BBD7F404\",variant=x\"01\",name=x\"436F6C6F72\"))",
+    "unknown(oracle-gap)",
+];
+
+/// Substrings that only the canonical encoding contains.
+const ENCODING_MARKERS: [&str; 6] = [
+    "function(parameters=",
+    "nominal(entity(",
+    "unknown(unrepresented",
+    "unknown(oracle-gap)",
+    "fragment-entity",
+    "x\"",
+];
+
+#[test]
+fn no_canonical_encoding_reaches_any_rendered_surface() {
+    let centre = symbol_key(DECLARATION);
+    let member = |name: &str, kind: DeclarationKind, signature: &str| {
+        backend_library::Row::new(
+            RowId::Symbol(symbol_key(&format!("/abs/polyglot::src/lib.rs:3::{name}"))),
+            basis(),
+            format!("/abs/polyglot::src/lib.rs:3::{name}"),
+        )
+        .with_parent(centre)
+        .with_kind(kind)
+        .with_signature(signature)
+        .with_source(SourceLocation::new("src/lib.rs", 3).expect("one-based location"))
+    };
+    let own = declaration_row().with_signature(ENCODED_SIGNATURES[0]);
+    let rows = vec![
+        own.clone(),
+        // The declaration's own name, restated as a variable.
+        member("ferris", DeclarationKind::Variable, ENCODED_SIGNATURES[3]),
+        // A placeholder name for a result the author never named.
+        member("_2", DeclarationKind::Variable, ENCODED_SIGNATURES[2]),
+        member("data", DeclarationKind::Variable, ENCODED_SIGNATURES[1]),
+        member("count", DeclarationKind::Variable, "usize"),
+        // A local the compiler found and no written site backs.
+        backend_library::Row::new(
+            RowId::Symbol(symbol_key("local-section")),
+            basis(),
+            "/abs/polyglot::semantic::00::section",
+        )
+        .with_parent(centre)
+        .with_kind(DeclarationKind::Variable)
+        .with_signature("Section"),
+    ];
+    let mut document = Document::new(
+        centre,
+        basis().root,
+        vec![Fragment::Text("Docs.".to_owned())],
+    )
+    .with_location(SourceAvailability::NotCaptured);
+    document.signature = Some(ENCODED_SIGNATURES[0].to_owned());
+    let page = page_from_document(DECLARATION, &document, &rows, &[], Vec::new());
+    let list = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(5)),
+        rows.iter().map(Record::from_row).collect::<Vec<_>>(),
+    );
+
+    let rendered = [
+        text::page(&page, Theme::plain()),
+        markdown::page(&page),
+        text::records(&list, None, Theme::plain()),
+        markdown::records(&list, None),
+        serde_json::to_string(&PageDto::new(&page)).expect("page dto"),
+        serde_json::to_string(&RecordListDto::new(&list)).expect("records dto"),
+    ];
+    for output in &rendered {
+        for marker in ENCODING_MARKERS {
+            assert!(
+                !output.contains(marker),
+                "{marker} reached output:\n{output}"
+            );
+        }
+    }
+    // The real part is listed; the restated name and the placeholder are not.
+    let members = page
+        .members()
+        .iter()
+        .flat_map(MemberGroup::members)
+        .map(|member| member.identity().name().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(members, ["count", "data"]);
+    let count = page
+        .members()
+        .iter()
+        .flat_map(MemberGroup::members)
+        .find(|member| member.identity().name() == "count")
+        .and_then(Member::signature)
+        .map(Signature::text);
+    assert_eq!(count.as_deref(), Some("usize"));
+
+}
+
+#[test]
+fn documentation_reads_as_the_author_wrote_it_with_links_inline() {
+    // A rust-doc line wrapped over three lines, with two intra-doc links, and
+    // a fenced block: the links read inline, a wrapped line stays one
+    // paragraph, a blank line ends it, and the code lines are one block.
+    let target = symbol_key("/abs/polyglot::src/lib.rs:5::Left");
+    let prose = Prose::from_fragments(&[
+        Fragment::Text("Converts `self` into a ".to_owned()),
+        Fragment::Link {
+            label: "Left".to_owned(),
+            target,
+        },
+        Fragment::Text(" variant of".to_owned()),
+        Fragment::Break,
+        Fragment::Link {
+            label: "Either".to_owned(),
+            target,
+        },
+        Fragment::Text(".".to_owned()),
+        Fragment::Break,
+        Fragment::Break,
+        Fragment::Text("Second paragraph.".to_owned()),
+        Fragment::Break,
+        Fragment::Code("let a = 1;".to_owned()),
+        Fragment::Break,
+        Fragment::Break,
+        Fragment::Code("let b = 2;".to_owned()),
+    ]);
+    assert_eq!(
+        prose.as_ref(),
+        [
+            Prose::Text("Converts `self` into a Left variant of\nEither.".to_owned()),
+            Prose::Text("Second paragraph.".to_owned()),
+            Prose::Code("let a = 1;\n\nlet b = 2;".to_owned()),
+        ]
+    );
+    let page = Page::new(
+        Identity::parse(DECLARATION),
+        Some(DeclarationKind::Function),
+        Source::Captured {
+            lines: Box::new([]),
+            site: SourceSite::new(
+                PackagePath::new("src/lib.rs"),
+                LineNumber::new(2).expect("one-based"),
+            ),
+            truncation: Truncation::Complete,
+        },
+    )
+    .with_prose(prose);
+    let markdown = markdown::page(&page);
+    assert!(!markdown.contains("see "), "{markdown}");
+    assert!(
+        markdown.contains("Converts `self` into a Left variant of\nEither.\n\nSecond paragraph."),
+        "{markdown}"
+    );
+    let human = text::page(&page, Theme::plain());
+    assert!(
+        human
+            .contains("  Converts `self` into a Left variant of\n  Either.\n\n  Second paragraph."),
+        "{human}"
+    );
+}
+
+#[test]
+fn a_publish_message_states_coverage_in_words_never_in_rust_syntax() {
+    use backend_library::{
+        IndexOperationSemanticCoverage as Coverage, IndexOperationSemanticUnavailableReason as Why,
+    };
+    assert_eq!(
+        Coverage::Partial {
+            completed: 12,
+            total: 13
+        }
+        .to_string(),
+        "partial coverage (12 of 13 files)"
+    );
+    assert_eq!(Coverage::Complete.to_string(), "complete coverage");
+    assert_eq!(
+        Why::Toolchain.to_string(),
+        "the compiler toolchain is unavailable"
     );
 }

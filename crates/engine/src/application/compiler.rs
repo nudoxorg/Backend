@@ -1935,7 +1935,8 @@ pub enum PackageSemanticError {
     },
     /// One authority, toolchain, lowering, or cancellation terminal occurred.
     #[error(
-        "package semantic compilation failed for {path}: {terminal:?}{host_hint}",
+        "package semantic compilation failed for {path}: {summary}{host_hint}",
+        summary = package_compile_summary(path, terminal),
         host_hint = package_compile_host_hint(terminal)
     )]
     Compile {
@@ -2094,6 +2095,41 @@ fn capture_native_program_sources<'paths>(
         .map_err(PackageSemanticError::NativeProgramSources)?;
     checkpoint(0)?;
     Ok(manifest)
+}
+
+/// Says in words why a package source stopped the compiler.
+///
+/// The library already derives a sanitized, bounded explanation for every
+/// terminal that names a package failure; a terminal that does not is
+/// described by its kind. It is never the terminal's `Debug` form.
+fn package_compile_summary(path: &str, terminal: &CompilerTerminal) -> String {
+    if let Ok(Some(failure)) =
+        backend_library::PackageCompilerFailure::from_package_terminal(path, terminal)
+    {
+        return failure.detail().to_owned();
+    }
+    match terminal {
+        CompilerTerminal::PackageSource { .. } => "the package source was refused",
+        CompilerTerminal::PackageCancelled { .. } | CompilerTerminal::Cancelled { .. } => {
+            "the compilation was cancelled"
+        }
+        CompilerTerminal::Runtime { .. } => "the compiler owner could not finish the request",
+        CompilerTerminal::SourceLength { .. } => "the source is too large to compile",
+        CompilerTerminal::Unavailable { .. } => "no compiler is available for this language",
+        CompilerTerminal::UnsupportedStage { .. } => "the compiler does not support this stage",
+        CompilerTerminal::DeadlineConstruction { .. } => {
+            "the compiler deadline could not be represented"
+        }
+        CompilerTerminal::Toolchain { .. }
+        | CompilerTerminal::ToolingUnavailable { .. }
+        | CompilerTerminal::RequiredTool { .. } => "the required compiler toolchain is unavailable",
+        CompilerTerminal::AuthorityAdmission { .. } => {
+            "the compiler inputs could not be admitted"
+        }
+        CompilerTerminal::Compile { .. } => "the compiler reported a failure",
+        CompilerTerminal::Publication { .. } => "the compiled result could not be published",
+    }
+    .to_owned()
 }
 
 fn package_compile_host_hint(terminal: &CompilerTerminal) -> &'static str {

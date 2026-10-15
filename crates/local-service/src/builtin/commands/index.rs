@@ -524,6 +524,25 @@ pub(super) fn finish_index_scan(
     // commits.
     let mut observed_profiles = live.clone();
     observed_profiles.extend(lost.iter().copied());
+    // Files per compilation profile. A file's own profile is not the one its
+    // package compiles under (a Rust file belongs to the edition its
+    // `Cargo.toml` names), and a profile observed under any other spelling
+    // would count none of its files.
+    let mut files_per_profile = BTreeMap::<LanguageProfile, usize>::new();
+    for (path, profile) in scan
+        .compiler_sources
+        .iter()
+        .map(|source| (source.relative_path.as_str(), source.profile))
+        .chain(
+            scan.reused_compiler_files
+                .iter()
+                .map(|source| (source.relative_path.as_str(), source.profile)),
+        )
+    {
+        let compiled = ingest::compilation_profile(source_root, path, profile);
+        let count = files_per_profile.entry(compiled).or_default();
+        *count = count.saturating_add(1);
+    }
     let mut observations = BTreeMap::new();
     for profile in observed_profiles {
         let coordinate =
@@ -535,17 +554,7 @@ pub(super) fn finish_index_scan(
         )
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let input_digest = semantic_input_digest(&scan, profile);
-        let count = scan
-            .compiler_sources
-            .iter()
-            .filter(|source| source.profile == profile)
-            .count()
-            .saturating_add(
-                scan.reused_compiler_files
-                    .iter()
-                    .filter(|source| source.profile == profile)
-                    .count(),
-            );
+        let count = files_per_profile.get(&profile).copied().unwrap_or(0);
         let count = u64::try_from(count)
             .map_err(|_| BuiltinModelError("semantic source count exceeds u64".to_owned()))?;
         observations.insert(

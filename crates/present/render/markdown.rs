@@ -561,7 +561,10 @@ fn push_prose(lines: &mut Lines, prose: &[Prose]) {
         return;
     }
     lines.blank();
-    for block in prose {
+    for (index, block) in prose.iter().enumerate() {
+        if index != 0 {
+            lines.blank();
+        }
         match block {
             Prose::Text(text) => lines.push(text),
             Prose::Code(code) => {
@@ -569,7 +572,6 @@ fn push_prose(lines: &mut Lines, prose: &[Prose]) {
                 lines.push(code);
                 lines.push("```");
             }
-            Prose::Link { label, .. } => lines.push(format!("see {label}")),
         }
     }
 }
@@ -945,7 +947,7 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     lines.push(format!(
-        "snapshot `{snapshot}` · freshness evaluated at {} · {:?}",
+        "snapshot `{snapshot}` · freshness evaluated at {} · {}",
         page.evaluated_at_millis(),
         page.result_count()
     ));

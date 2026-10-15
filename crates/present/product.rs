@@ -14,6 +14,7 @@
 
 use crate::drive::ContinuationCursor;
 use crate::fault::{Fault, Operand};
+use crate::words::wire_words;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
@@ -1178,7 +1179,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                         None,
                         vec![
                             format!("Project frontier: {file_count} file(s) total"),
-                            format!("exclusions: {exclusions:?}"),
+                            format!("exclusions: {}", wire_words(exclusions)),
                             format!(
                                 "continuation: {}",
                                 if next.is_some() {
@@ -1194,7 +1195,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                             file.path.clone(),
                             Some(file.path.clone()),
                             vec![
-                                format!("{:?}", file.language),
+                                wire_words(&file.language),
                                 format!(
                                     "InputContentSchema v1: {}",
                                     encode_id(&file.content_version)
@@ -1225,8 +1226,9 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 } => ProductView::scalar(
                     "package-source-membership",
                     format!(
-                        "The selected source membership for {} is unavailable: {reason:?}.",
-                        package.as_str()
+                        "The selected source membership for {} is unavailable: {}.",
+                        package.as_str(),
+                        wire_words(reason)
                     ),
                 ),
             };
@@ -1282,7 +1284,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
             let state = match &status.state {
                 backend_library::IndexOperationState::Accepted => "accepted".to_owned(),
                 backend_library::IndexOperationState::Active { stage, .. } => {
-                    format!("active at {}", index_stage(*stage))
+                    format!("active at {}", index_stage_name(*stage))
                 }
                 backend_library::IndexOperationState::Published(receipt) => {
                     let _published_root = receipt.view_root();
@@ -1346,19 +1348,19 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                         }
                         backend_library::IndexOperationSemanticProfileState::Unavailable {
                             reason,
-                        } => format!("unavailable: {reason:?}"),
+                        } => format!("unavailable: {reason}"),
                         backend_library::IndexOperationSemanticProfileState::Failed {
                             prior,
                             reason,
                         } => format!(
-                            "failed: {reason:?}; prior generation {} is retained as stale",
+                            "failed: {reason}; prior generation {} is retained as stale",
                             lower_hex(&prior.generation)
                         ),
                         backend_library::IndexOperationSemanticProfileState::Published {
                             generation,
                             coverage,
                         } => format!(
-                            "published generation {} with {coverage:?} coverage",
+                            "published generation {} with {coverage}",
                             lower_hex(&generation)
                         ),
                     };
@@ -1391,7 +1393,7 @@ fn index_start_view(result: &IndexStartResult) -> ProductView {
                 format!("index job {} started", ticket.id()),
                 Some(index_ticket_json(ticket)),
                 vec![
-                    format!("stage {}", index_stage(*stage)),
+                    format!("stage {}", index_stage_name(*stage)),
                     "poll index_progress".to_owned(),
                 ],
             )],
@@ -1440,7 +1442,7 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
     match observation {
         IndexJobObservation::Pending(page) => {
             let mut tags = vec![
-                format!("stage {}", index_stage(page.stage)),
+                format!("stage {}", index_stage_name(page.stage)),
                 format!("next_sequence {}", page.next_sequence),
             ];
             if page.truncated {
@@ -1458,7 +1460,7 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
                 let mut tags = vec![format!("sequence {}", event.sequence)];
                 let title = match &event.kind {
                     IndexJobProgressKind::StageChanged { stage } => {
-                        format!("stage changed to {}", index_stage(*stage))
+                        format!("stage changed to {}", index_stage_name(*stage))
                     }
                     IndexJobProgressKind::ProfileStarted {
                         profile,
@@ -1525,7 +1527,9 @@ fn index_cancellation_view(status: &IndexCancelStatus) -> ProductView {
     }
 }
 
-fn index_stage(stage: IndexJobStage) -> &'static str {
+/// The word a progress line uses for one indexing stage.
+#[must_use]
+pub fn index_stage_name(stage: IndexJobStage) -> &'static str {
     match stage {
         IndexJobStage::Acquiring => "acquiring",
         IndexJobStage::Staging => "staging",
@@ -1942,7 +1946,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-source-file",
-                    format!("The owner could not read this source file: {reason:?}."),
+                    format!(
+                        "The owner could not read this source file: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
@@ -1956,7 +1963,7 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                         format!("truncated at {limit} paths; additional paths may exist")
                     }
                     backend_library::CargoPackageSourceInventoryCoverageV1::Partial { reason } => {
-                        format!("partial inventory ({reason:?}); additional paths may exist")
+                        format!("partial inventory ({}); additional paths may exist", wire_words(&reason))
                     }
                 };
                 let mut records = Vec::with_capacity(inventory.paths.len().saturating_add(1));
@@ -1988,7 +1995,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 reason, ..
             } => ProductView::scalar(
                 "cargo-source-inventory",
-                format!("The owner could not list this source: {reason:?}."),
+                format!(
+                    "The owner could not list this source: {}.",
+                    wire_words(reason)
+                ),
             ),
         },
         SurfaceReply::CargoPackageReadme(result) => match result {
@@ -1999,10 +2009,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 ProductView::scalar(
                     "cargo-package-readme",
                     format!(
-                        "{:?}/{} · {:?}\nOrigin JSON: {}\n\n{}",
-                        readme.root_scope,
+                        "{}/{} · {}\nOrigin JSON: {}\n\n{}",
+                        wire_words(&readme.root_scope),
                         readme.path.as_str(),
-                        readme.selection,
+                        wire_words(&readme.selection),
                         origin,
                         readme.contents
                     ),
@@ -2011,7 +2021,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeResultV1::Absent { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme",
-                    format!("This exact Cargo package release has no README ({reason:?})."),
+                    format!(
+                        "This exact Cargo package release has no README ({}).",
+                        wire_words(reason)
+                    ),
                 )
             }
             backend_library::CargoPackageReadmeResultV1::Stale { .. } => ProductView::scalar(
@@ -2021,7 +2034,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme",
-                    format!("The owner could not read this package README: {reason:?}."),
+                    format!(
+                        "The owner could not read this package README: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
@@ -2041,7 +2057,8 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             } => ProductView::scalar(
                 "cargo-package-readme-link",
                 format!(
-                    "{root_scope:?}/{}{}\n\n{}",
+                    "{}/{}{}\n\n{}",
+                    wire_words(root_scope),
                     path.as_str(),
                     fragment
                         .as_deref()
@@ -2056,11 +2073,14 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeLinkResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme-link",
-                    format!("The owner could not follow this README link: {reason:?}."),
+                    format!(
+                        "The owner could not follow this README link: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
-        other => ProductView::scalar("surface", format!("{:?}", other.id())),
+        other => ProductView::scalar("surface", backend_library::command_spec(other.id()).name),
     }
 }
 
@@ -2192,10 +2212,7 @@ fn owner_row(record: &RegistryPackageRecord) -> ProductRecord {
         return ProductRecord::new(
             record.name.as_str(),
             Some(record.coordinate.as_str().to_owned()),
-            vec![
-                format!("{:?}", record.ecosystem).to_lowercase(),
-                "indexed file".to_owned(),
-            ],
+            vec![wire_words(&record.ecosystem), "indexed file".to_owned()],
         );
     }
     registry_row(record)
@@ -2350,8 +2367,8 @@ fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductV
                 "requirement: {}",
                 single_line(edge.target.requirement.as_str())
             ),
-            format!("scope: {}", format!("{:?}", edge.scope).to_lowercase()),
-            format!("evidence: {:?}", edge.evidence.authority),
+            format!("scope: {}", wire_words(&edge.scope)),
+            format!("evidence: {}", wire_words(&edge.evidence.authority)),
             format!("frontier: {}", lower_hex(&edge.evidence.frontier)),
             format!("provenance: {}", lower_hex(&edge.evidence.provenance)),
         ];
@@ -2397,9 +2414,9 @@ fn dependency_row(record: &PackageDependencyRecord) -> ProductRecord {
             .as_ref()
             .map(|package| package.as_str().to_owned()),
         vec![
-            format!("{:?}", record.scope).to_lowercase(),
+            wire_words(&record.scope),
             record.target.ecosystem.as_str().to_owned(),
-            format!("authority: {:?}", record.evidence.authority).to_lowercase(),
+            format!("authority: {}", wire_words(&record.evidence.authority)),
         ],
     )
 }
@@ -2413,16 +2430,16 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
         format!("{} {}", record.name.as_str(), record.version.as_str()),
         Some(record.coordinate.as_str().to_owned()),
         vec![
-            format!("{:?}", record.ecosystem).to_lowercase(),
+            wire_words(&record.ecosystem),
             format!("{} byte(s)", record.bytes),
-            format!("release: {:?}", record.standing).to_lowercase(),
+            format!("release: {}", wire_words(&record.standing)),
             registry_authority_tag(record.authority),
-            format!("downloads: {:?}", record.downloads).to_lowercase(),
+            format!("downloads: {}", wire_words(&record.downloads)),
             format!(
-                "advisory: {:?} / {:?}",
-                record.advisory.coverage, record.advisory.freshness
-            )
-            .to_lowercase(),
+                "advisory: {} / {}",
+                wire_words(&record.advisory.coverage),
+                wire_words(&record.advisory.freshness)
+            ),
             native_metadata_tag(record),
         ],
     )
@@ -2622,7 +2639,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             "warn ({})",
             reasons
                 .iter()
-                .map(|reason| format!("{reason:?}"))
+                .map(wire_words)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2630,7 +2647,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             "deny ({})",
             reasons
                 .iter()
-                .map(|reason| format!("{reason:?}"))
+                .map(wire_words)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2640,8 +2657,8 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
         None,
         vec![
             format!("decision: {decision}"),
-            format!("coverage: {:?}", advisory.coverage),
-            format!("freshness: {:?}", advisory.freshness),
+            format!("coverage: {}", wire_words(&advisory.coverage)),
+            format!("freshness: {}", wire_words(&advisory.freshness)),
             format!("yanked: {}", advisory.yanked),
             format!("unlisted: {}", advisory.unlisted),
         ],
@@ -2657,7 +2674,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             let sources = claim
                 .source_ids
                 .iter()
-                .map(|source| format!("{:?}:{}", source.source, source.id))
+                .map(|source| format!("{}:{}", wire_words(&source.source), source.id))
                 .collect::<Vec<_>>()
                 .join(", ");
             let aliases = if claim.aliases.is_empty() {
@@ -2668,7 +2685,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             let affected = claim
                 .affected
                 .iter()
-                .map(|range| format!("{}:{:?}", range.package.name, range.matcher))
+                .map(|range| format!("{}:{}", range.package.name, wire_words(&range.matcher)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let fixed = if claim.fixed_ranges.is_empty() {
@@ -2682,13 +2699,13 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
                 vec![
                     format!("sources: {sources}"),
                     format!("aliases: {aliases}"),
-                    format!("severity: {:?}", claim.severity),
+                    format!("severity: {}", wire_words(&claim.severity)),
                     format!(
                         "categories: {}",
                         claim
                             .categories
                             .iter()
-                            .map(|category| format!("{category:?}"))
+                            .map(wire_words)
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -2701,7 +2718,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
                         }
                     ),
                     format!("fixed: {fixed}"),
-                    format!("statuses: {:?}", claim.statuses),
+                    format!("statuses: {}", wire_words(&claim.statuses)),
                 ],
             )
         }));

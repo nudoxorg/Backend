@@ -537,9 +537,7 @@ impl PageDto {
                 .unwrap_or_default()
                 .iter()
                 .map(|block| match block {
-                    Prose::Text(text) | Prose::Code(text) | Prose::Link { label: text, .. } => {
-                        text.clone()
-                    }
+                    Prose::Text(text) | Prose::Code(text) => text.clone(),
                 })
                 .collect(),
             members: page

@@ -1298,7 +1298,7 @@ impl From<crate::LibraryError> for CommandFailure {
                 expected: expected.into(),
                 observed,
             },
-            crate::LibraryError::View(error) => Self::IncoherentView(format!("{error:?}")),
+            crate::LibraryError::View(error) => Self::IncoherentView(error.to_string()),
             crate::LibraryError::InvalidQuery(message) => Self::InvalidQuery(message),
             crate::LibraryError::SequenceOverflow => Self::SequenceOverflow,
             crate::LibraryError::CursorMismatch => Self::CursorMismatch,

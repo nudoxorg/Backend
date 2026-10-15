@@ -679,7 +679,16 @@ pub enum CapabilityInventoryError {
 
 impl std::fmt::Display for CapabilityInventoryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "invalid capability inventory: {self:?}")
+        formatter.write_str(match self {
+            Self::TooMany => "invalid capability inventory: too many rows",
+            Self::Order => "invalid capability inventory: rows are duplicated or out of order",
+            Self::DuplicateFamily => {
+                "invalid capability inventory: two rows advertise the same family"
+            }
+            Self::Authority => {
+                "invalid capability inventory: family, lifecycle, and authority disagree"
+            }
+        })
     }
 }
 

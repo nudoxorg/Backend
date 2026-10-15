@@ -31,6 +31,21 @@ pub enum ViewProjectionError {
     MissingCoverage,
 }
 
+impl core::fmt::Display for ViewProjectionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Incoherent => "the view root failed its relation, version, or basis checks",
+            Self::UnsupportedSchema => "the view root uses a schema this projection cannot read",
+            Self::CursorMismatch => {
+                "the cursor names a different root, version, recipe, or source stream"
+            }
+            Self::FreshnessMismatch => "the snapshot does not prove an accepted freshness state",
+            Self::BasisMismatch { .. } => "the view root is based on another source relation",
+            Self::MissingCoverage => "a complete projection requires admitted source coverage",
+        })
+    }
+}
+
 /// A root and cursor admitted as one coherent immutable projection.
 ///
 /// The fields are private on purpose.  A caller can keep a digest-only

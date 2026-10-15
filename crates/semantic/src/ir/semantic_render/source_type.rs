@@ -212,6 +212,13 @@ impl<'reader, Reader: SemanticReader + ?Sized> Printer<'reader, Reader> {
                     return None;
                 }
                 let spelling = self.atom(unknown.spelling?)?;
+                // Go spells a type from another package by its bare name
+                // (`T` for `testing.T`), even where the model has no
+                // representation for it. Only the universe types, which are
+                // never qualified, are written.
+                if self.syntax == Syntax::Go && !is_go_universe_type(spelling) {
+                    return None;
+                }
                 self.put(spelling)
             }
         }
@@ -1317,6 +1324,13 @@ impl<'reader, Reader: SemanticReader + ?Sized> Printer<'reader, Reader> {
             }
         }
     }
+}
+
+/// Whether a Go type spelling names a universe type, which no package
+/// qualifies.
+fn is_go_universe_type(spelling: &str) -> bool {
+    matches!(spelling, "error" | "comparable" | "any" | "unsafe.Pointer")
+        || spelling.starts_with("untyped ")
 }
 
 const fn character_text(syntax: Syntax, role: NativeCharacterRole) -> &'static str {

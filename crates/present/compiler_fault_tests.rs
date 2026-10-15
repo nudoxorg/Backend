@@ -458,7 +458,7 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
     );
     assert_eq!(fault.slug().as_str(), "partially-published");
     let sentence = fault.cause().sentence();
-    assert!(sentence.contains("python: published 236 source files with Complete coverage"));
+    assert!(sentence.contains("python: published 236 source files with complete coverage"));
     assert!(sentence.contains("typescript: unavailable"));
     assert!(sentence.contains("requires tsc"));
     assert!(sentence.contains("Set NUDOX_TSC"));
