@@ -3282,3 +3282,60 @@ fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort(
     }
     assert!(grammar.check_envelope_version(32).is_err());
 }
+
+#[test]
+fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_journal_container() {
+    let (library, _) = paged_query_fixture(0);
+    let original = library.view();
+    let basis = original.basis();
+    let root = ViewRoot::new_checked(
+        original.recipe(),
+        basis,
+        original.frontier(),
+        original.rows().to_vec(),
+        vec![
+            crate::Coverage::Complete,
+            crate::Coverage::Gapped {
+                lane: crate::Lane::Semantic,
+            },
+        ],
+        capability(basis.object),
+    )
+    .expect("actual checked gapped projection");
+    let dto = ViewDto::new(
+        1,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+            rich_graph: None,
+        },
+    )
+    .with_certificate(certificate(&root));
+    let bytes = serde_json::to_vec(&dto).expect("DTO31 gapped snapshot");
+    let live = ViewDto::decode_with_certificate(&bytes, Some(capability(basis.object)))
+        .expect("current live certificate admission");
+    assert_eq!(live.snapshot.root, root);
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3)
+        .expect("unchanged journal container");
+    assert_eq!(
+        grammar
+            .decode_snapshot(&bytes, capability(basis.object))
+            .expect("strict persisted proof")
+            .snapshot
+            .root,
+        root
+    );
+    let mut forged: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
+    forged["snapshot"]["root"]["coverage"] = serde_json::json!([]);
+    assert!(
+        grammar
+            .decode_snapshot(
+                &serde_json::to_vec(&forged).expect("tampered wire"),
+                capability(basis.object)
+            )
+            .is_err(),
+        "coverage cannot change without its canonical root certificate"
+    );
+}
