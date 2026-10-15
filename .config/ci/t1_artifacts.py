@@ -174,10 +174,18 @@ def main() -> None:
         with (args.artifact / "runtime.nar").open("rb") as stream:
             subprocess.run(["nix-store", "--import"], stdin=stream, check=True, timeout=300)
     if args.smoke:
-        env = {**manifest["runtime_env"], "LANG": "C.UTF-8"}
-        for surface in ("cli", "mcp", "gui"):
-            subprocess.run([manifest["python"], str(args.artifact / "smoke.py"), surface,
-                            "--bin-dir", str(args.artifact / "bin")], env=env, check=True, timeout=180)
+        # Concourse gives the task cwd its own writable volume. The rootfs
+        # /tmp is an overlay over the imported image/runtime; tiny durable
+        # workspace writes there can wait behind the overlay's journal work.
+        # Keep real file/directory fsyncs, but create smoke state on the task
+        # volume, outside the immutable artifact input. This also keeps the
+        # temporary path local to the consumer rather than exporting a build
+        # machine path or passing its ambient environment to the product.
+        with tempfile.TemporaryDirectory(prefix="nudox-artifact-smoke-", dir=Path.cwd()) as scratch:
+            env = {**manifest["runtime_env"], "LANG": "C.UTF-8", "TMPDIR": scratch}
+            for surface in ("cli", "mcp", "gui"):
+                subprocess.run([manifest["python"], str(args.artifact / "smoke.py"), surface,
+                                "--bin-dir", str(args.artifact / "bin")], env=env, check=True, timeout=180)
     print(f"T1 artifacts verified: {args.source_sha}")
 
 

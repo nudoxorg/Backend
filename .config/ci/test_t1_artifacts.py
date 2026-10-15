@@ -143,6 +143,27 @@ class ArtifactTests(unittest.TestCase):
             self.assertTrue(Path(argv[1]).is_absolute())
             self.assertTrue(Path(argv[-1]).is_absolute())
 
+    def test_smoke_state_is_private_on_consumer_volume_and_cleaned_after_failure(self):
+        import subprocess
+        scratch_paths = []
+        def consume(argv, **kwargs):
+            if argv[0] == "nix-store":
+                return
+            env = kwargs["env"]
+            scratch = Path(env["TMPDIR"])
+            scratch_paths.append(scratch)
+            self.assertEqual(scratch.parent, Path.cwd())
+            self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn("FORGEJO_TOKEN", env)
+            self.assertNotIn(str(self.root), str(scratch))
+            self.assertEqual(kwargs["timeout"], 180)
+            raise subprocess.CalledProcessError(1, argv)
+        with patch("sys.argv", ["t1_artifacts.py", "verify", str(self.root), "--source-sha", SHA, "--smoke"]), patch.object(t1_artifacts.subprocess, "run", side_effect=consume), patch.dict(os.environ, {"FORGEJO_TOKEN": "private"}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                t1_artifacts.main()
+        self.assertEqual(len(scratch_paths), 1)
+        self.assertFalse(scratch_paths[0].exists())
+
     def test_runtime_only_consumer_verifies_then_imports_without_smoke(self):
         with patch("sys.argv", ["t1_artifacts.py", "verify", str(self.root), "--source-sha", SHA, "--import-runtime"]), patch.object(t1_artifacts.subprocess, "run") as run:
             t1_artifacts.main()
