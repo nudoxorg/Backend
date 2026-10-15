@@ -188,7 +188,11 @@ fn selected_native_source() -> (
     (workspace, verified, project)
 }
 
-fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32, u32)]) -> Vec<u8> {
+fn try_image_for(
+    source: &[u8],
+    profile: LanguageProfile,
+    claims: &[(u8, &[u8], u32, u32)],
+) -> Result<Vec<u8>, backend_semantic::ir::BuildError> {
     let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
     let mut builder = IrBuilder::new();
     builder
@@ -277,7 +281,7 @@ fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32,
             links: &[],
         })
         .expect("fixture semantic entities");
-    let ir = builder.finish().expect("fixture IR");
+    let ir = builder.finish()?;
     let mut encoded = vec![
         0;
         backend_semantic::ir::full_semantic_image_len(&ir)
@@ -286,7 +290,11 @@ fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32,
     let written = backend_semantic::ir::encode_full_semantic_image(&ir, &mut encoded)
         .expect("encode provenance-bearing semantic image");
     encoded.truncate(written);
-    encoded
+    Ok(encoded)
+}
+
+fn image_for(source: &[u8], profile: LanguageProfile, claims: &[(u8, &[u8], u32, u32)]) -> Vec<u8> {
+    try_image_for(source, profile, claims).expect("fixture IR")
 }
 
 #[test]
@@ -374,7 +382,7 @@ fn native_sites_require_exact_declared_name_and_suppress_ambiguous_claimants() {
         .identity();
     assert!(overlap_sites.get(&disjoint_identity).is_some());
 
-    let duplicate_identity = image_for(
+    let duplicate_identity = try_image_for(
         source.bytes(),
         source.profile(),
         &[
@@ -382,27 +390,10 @@ fn native_sites_require_exact_declared_name_and_suppress_ambiguous_claimants() {
             (8, b"Widget", SECOND_NAME_START, SECOND_NAME_END),
         ],
     );
-    let duplicate_identity =
-        SemanticImageView::reopen(&duplicate_identity).expect("duplicate-identity image");
-    let duplicate_sites = prove_native_sites(&duplicate_identity, project, &source, 8, 32 * 1024)
-        .expect("duplicate identities are suppressed rather than choosing a site");
-    let duplicate_id = duplicate_identity
-        .entity(backend_semantic::ir::EntityId::new(0))
-        .unwrap()
-        .version
-        .identity();
-    assert!(duplicate_sites.get(&duplicate_id).is_none());
-    assert!(
-        claims
-            .get(
-                &ambiguous
-                    .entity(backend_semantic::ir::EntityId::new(1))
-                    .unwrap()
-                    .version
-                    .identity()
-            )
-            .is_none()
-    );
+    assert!(matches!(
+        duplicate_identity,
+        Err(backend_semantic::ir::BuildError::DuplicateDeclarationIdentity { .. })
+    ));
 }
 
 #[test]
