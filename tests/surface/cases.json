@@ -682,17 +682,17 @@
       ],
       "index_mode": "wait",
       "authored_symbols": {
-        "Nonnull": "javax/annotation/Nonnull.java",
-        "Nullable": "javax/annotation/Nullable.java"
+        "javax.annotation.Nonnull": "javax/annotation/Nonnull.java",
+        "javax.annotation.Nullable": "javax/annotation/Nullable.java"
       },
       "cli": [
         [
           "search",
-          "Nonnull"
+          "javax.annotation.Nonnull"
         ],
         [
           "search",
-          "Nullable"
+          "javax.annotation.Nullable"
         ],
         [
           "outline"
@@ -705,14 +705,14 @@
         {
           "tool": "backend.search",
           "arguments": {
-            "query": "Nonnull",
+            "query": "javax.annotation.Nonnull",
             "limit": 3
           }
         },
         {
           "tool": "backend.search",
           "arguments": {
-            "query": "Nullable",
+            "query": "javax.annotation.Nullable",
             "limit": 3
           }
         },
