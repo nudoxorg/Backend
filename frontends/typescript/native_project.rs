@@ -55,10 +55,13 @@ pub fn build(
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<NativeProgram, String> {
     poll(checkpoint, 0)?;
-    let config = match config_path {
-        Some(path) => tsz::config::load_tsconfig_with_file_system(path, fs)
-            .map_err(|error| error.to_string())?,
-        None => TsConfig::default(),
+    let (config, mut program_diagnostics) = match config_path {
+        Some(path) => {
+            let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(path, fs)
+                .map_err(|error| error.to_string())?;
+            (parsed.config, parsed.diagnostics)
+        }
+        None => (TsConfig::default(), Vec::new()),
     };
     let mut options =
         tsz::config::resolve_compiler_options_embedded(config.compiler_options.as_ref())
@@ -72,7 +75,6 @@ pub fn build(
         None => inferred_roots.to_vec(),
     };
     let mut resolver = ModuleResolver::with_file_system(&options, fs);
-    let mut program_diagnostics = Vec::new();
     let solution = roots.is_empty()
         && config
             .references
@@ -547,8 +549,8 @@ fn select_roots(
         .filter(|pattern| !pattern.is_empty())
         // TSZ's config contract discards invalid recursive terminal selectors;
         // other selectors and explicit files still determine the program.
+        .filter(|pattern| !tsz::config::include_specification_has_trailing_recursion(pattern))
         .map(|pattern| selector_pattern(directory, pattern))
-        .filter(|pattern| pattern.rsplit('/').next() != Some("**"))
         .collect::<Vec<_>>();
     let excludes = excludes
         .iter()

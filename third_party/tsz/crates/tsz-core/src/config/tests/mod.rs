@@ -9,6 +9,7 @@ mod captured_filesystem;
 mod extends_empty_specifier;
 mod extends_missing_target;
 mod files_list_empty;
+mod include_specifications;
 mod module_resolution;
 mod options_parsing;
 mod strict_lib_extends;

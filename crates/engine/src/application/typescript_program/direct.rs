@@ -765,7 +765,8 @@ mod native_web_closure_tests {
         fixture.write("src/explicit.ts", SOURCE);
         fixture.write("valid/selected.ts", SOURCE);
         fixture.write("src/stray.ts", SOURCE);
-        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/explicit.ts"],"include":["src/**","src\\**","valid/**/*"]}"#);
+        const CONFIG: &str = r#"{/* π: preserved diagnostic offsets */ "compilerOptions":{"noLib":true,"types":[]},"files":["src/explicit.ts"],"include":["src/**","src\\**","valid/**/*"]}"#;
+        fixture.write("tsconfig.json", CONFIG);
         let native = fixture.native(&[
             PackageSource::new("src/explicit.ts", SOURCE).unwrap(),
             PackageSource::new("valid/selected.ts", SOURCE).unwrap(),
@@ -776,6 +777,56 @@ mod native_web_closure_tests {
             native.package_membership["src/stray.ts"],
             TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
         );
+        assert_eq!(native.options.program_diagnostics.len(), 2);
+        for (diagnostic, token) in native
+            .options
+            .program_diagnostics
+            .iter()
+            .zip([r#""src/**""#, r#""src\\**""#])
+        {
+            assert_eq!(diagnostic.code, 5010);
+            assert_eq!(diagnostic.file, "tsconfig.json");
+            assert_eq!(diagnostic.start as usize, CONFIG.find(token).unwrap());
+            assert_eq!(diagnostic.length as usize, token.len());
+        }
+        let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+        authority
+            .update(native.sources, native.options, &native.libraries)
+            .unwrap();
+        let project = authority.project().unwrap();
+        assert_eq!(project.program_diagnostics().len(), 2);
+        assert!(!project.source_paths().any(|path| path == "tsconfig.json"));
+        assert!(
+            project
+                .program_diagnostics()
+                .iter()
+                .all(|diagnostic| project.diagnostic_utf8_span(diagnostic).is_none())
+        );
+    }
+
+    #[test]
+    fn native_invalid_includes_retain_diagnostics_without_fabricating_source_roots() {
+        let fixture = Fixture::new();
+        const SOURCE: &str = "export const unselected = 1;";
+        fixture.write("src/unselected.ts", SOURCE);
+        fixture.write(
+            "tsconfig.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/**"]}"#,
+        );
+        let native = fixture.native(&[PackageSource::new("src/unselected.ts", SOURCE).unwrap()]);
+        assert!(native.sources.is_empty());
+        assert!(native.libraries.is_empty());
+        assert!(native.options.module_resolutions.is_empty());
+        assert_eq!(native.options.program_diagnostics.len(), 1);
+        assert_eq!(native.options.program_diagnostics[0].code, 5010);
+        let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+        authority
+            .update(native.sources, native.options, &native.libraries)
+            .unwrap();
+        let project = authority.project().unwrap();
+        assert_eq!(project.source_paths().count(), 0);
+        assert!(project.check_result().file_results.is_empty());
+        assert_eq!(project.diagnostics().count(), 1);
     }
 
     #[test]

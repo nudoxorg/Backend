@@ -12,6 +12,103 @@ pub fn parse_tsconfig(source: &str) -> Result<TsConfig> {
     Ok(config)
 }
 
+/// Includes cannot terminate in a recursive directory wildcard. Use the same
+/// separator and component interpretation for diagnostic recovery and discovery.
+pub fn include_specification_has_trailing_recursion(specification: &str) -> bool {
+    let normalized = specification.replace('\\', "/");
+    Path::new(&normalized)
+        .components()
+        .next_back()
+        .is_some_and(|component| component.as_os_str() == "**")
+}
+
+/// Locate array string tokens in the original JSONC, after serde has established
+/// its structure. The native scanner owns comments, escapes and UTF-8 offsets;
+/// stripping JSONC first would shift diagnostics past comments. As with serde's
+/// object map, the last occurrence of a top-level property wins.
+fn top_level_array_string_spans(source: &str, property: &str) -> Vec<(u32, u32)> {
+    use tsz_scanner::{SyntaxKind, scanner_impl::ScannerState};
+
+    let mut scanner = ScannerState::new(source.to_owned(), true);
+    let mut depth = 0usize;
+    let mut property_state = 0;
+    let mut in_array = false;
+    let mut spans = Vec::new();
+    loop {
+        let token = scanner.scan();
+        if token == SyntaxKind::EndOfFileToken {
+            return spans;
+        }
+        if depth == 1 {
+            property_state = match (property_state, token) {
+                (_, SyntaxKind::StringLiteral) if scanner.get_token_value_ref() == property => 1,
+                (1, SyntaxKind::ColonToken) => 2,
+                (2, SyntaxKind::OpenBracketToken) => {
+                    spans.clear();
+                    in_array = true;
+                    0
+                }
+                _ => 0,
+            };
+        } else if in_array && depth == 2 && token == SyntaxKind::StringLiteral {
+            spans.push((
+                scanner.get_token_start() as u32,
+                (scanner.get_token_end() - scanner.get_token_start()) as u32,
+            ));
+        }
+        match token {
+            SyntaxKind::OpenBraceToken | SyntaxKind::OpenBracketToken => depth += 1,
+            SyntaxKind::CloseBraceToken | SyntaxKind::CloseBracketToken => {
+                if depth == 2 {
+                    in_array = false;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn discard_invalid_include_specifications(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    diagnostics: &mut Vec<Diagnostic>,
+    source: &str,
+    file_path: &str,
+) -> Result<()> {
+    let Some(serde_json::Value::Array(includes)) = object.get_mut("include") else {
+        return Ok(());
+    };
+    if !includes.iter().any(|value| {
+        value
+            .as_str()
+            .is_some_and(include_specification_has_trailing_recursion)
+    }) {
+        return Ok(());
+    }
+    let mut spans = top_level_array_string_spans(source, "include").into_iter();
+    let mut valid = Vec::with_capacity(includes.len());
+    for value in std::mem::take(includes) {
+        let Some(specification) = value.as_str() else {
+            valid.push(value);
+            continue;
+        };
+        let (start, length) = spans.next().context("native include token span mismatch")?;
+        if !include_specification_has_trailing_recursion(specification) {
+            valid.push(value);
+            continue;
+        }
+        diagnostics.push(Diagnostic::from_code(
+            diagnostic_codes::FILE_SPECIFICATION_CANNOT_END_IN_A_RECURSIVE_DIRECTORY_WILDCARD,
+            file_path,
+            start,
+            length,
+            &[specification],
+        ));
+    }
+    *includes = valid;
+    Ok(())
+}
+
 /// A removed-option notice (the TS5102/TS5108 family) held out of
 /// `diagnostics` until the `extends` chain is resolved: tsc runs
 /// `verifyDeprecatedCompilerOptions` ONCE on the merged EFFECTIVE options and
@@ -1292,6 +1389,7 @@ pub fn parse_tsconfig_with_diagnostics_deferred(
         for key in ["include", "exclude", "files", "references"] {
             validate_top_level_array_option(obj, &mut diagnostics, &stripped, file_path, key);
         }
+        discard_invalid_include_specifications(obj, &mut diagnostics, source, file_path)?;
         // `compilerOptions` must be a JSON object; a scalar bypasses every
         // nested option validator and would otherwise surface as a generic
         // serde `invalid type` failure instead of TS5024.
