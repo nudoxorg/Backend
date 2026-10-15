@@ -1128,13 +1128,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
     fn root_admission_uses_revision_only_and_leaves_catalog_to_page_reads() {
         use backend_client::CommandTransport;
-        use backend_library::{Command, Library};
+        use backend_library::Command;
         use std::sync::Mutex;
 
         struct RecordingTransport {
-            library: Library,
+            inner: backend_client::UnixCommandTransport,
             seen: Arc<Mutex<Vec<Command>>>,
         }
         impl CommandTransport for RecordingTransport {
@@ -1146,14 +1147,32 @@ mod tests {
                     .lock()
                     .expect("command record")
                     .push(request.command.clone());
-                Ok(self.library.execute_dto(request))
+                self.inner.request(request)
+            }
+
+            fn interrupt_handle(&self) -> Option<backend_client::TransportInterrupt> {
+                self.inner.interrupt_handle()
             }
         }
 
         let view = super::super::owner::publication_tests::view();
         let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
-        let library =
-            Library::from_view((*view).clone(), cursor).expect("coherent fixture library");
+        let library = backend_library::Library::from_view((*view).clone(), cursor)
+            .expect("coherent fixture library");
+        let (client_stream, mut owner_stream) = backend_replication::LocalStream::pair()
+            .expect("interruptible local transport pair");
+        let owner = std::thread::spawn(move || {
+            let limits = backend_replication::LocalControlLimits::default();
+            let body = backend_replication::read_frame(&mut owner_stream, limits)
+                .expect("Root revision reaches the local fixture");
+            let request = backend_library::decode_command_body(&body)
+                .expect("canonical Root revision request");
+            assert!(matches!(request.command, Command::Revision));
+            let reply = library.execute_dto(request);
+            let body = serde_json::to_vec(&reply).expect("revision DTO");
+            backend_replication::write_frame(&mut owner_stream, &body, limits)
+                .expect("fixture admits the revision reply");
+        });
         let basis = VersionedRoot::from_revision(1, cursor, 0);
         let gate =
             super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
@@ -1170,7 +1189,7 @@ mod tests {
         client.session = Some(Session::from_transport(
             "unused-recording-endpoint",
             RecordingTransport {
-                library,
+                inner: backend_client::UnixCommandTransport::from_stream(client_stream),
                 seen: Arc::clone(&seen),
             },
         ));
@@ -1183,6 +1202,7 @@ mod tests {
                 cancel: CancellationToken::new(),
             })
             .expect("the certified owner revision admits Root");
+        owner.join().expect("revision fixture server completes");
         assert!(matches!(result, EngineDto::Root { catalog: None, .. }));
         assert_eq!(
             *seen.lock().expect("command record"),

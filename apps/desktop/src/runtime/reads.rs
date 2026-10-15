@@ -2002,13 +2002,20 @@ mod tests {
                 .gap()
                 .expect("catalog uncertainty stays visible");
             assert_eq!(gap.reason, crate::model::pages::GapReason::ReadFailed);
-            assert!(gap.detail.to_lowercase().contains("explore"));
-            if matches!(scenario, CatalogReply::WrongShape) {
-                assert!(
-                    gap.detail.contains("Projects"),
-                    "wrong reply shape is diagnosed"
-                );
-            }
+            let expected = match scenario {
+                CatalogReply::Failed => {
+                    ClientError::CommandFailed(CommandFailure::NotFound).to_string()
+                }
+                CatalogReply::WrongShape => format!(
+                    "explore reply changed shape to {:?}",
+                    SurfaceReply::Projects(Box::new([])).id(),
+                ),
+            };
+            assert_eq!(
+                gap.detail.as_ref(),
+                expected,
+                "the original failure or shape diagnostic survives the page mapping",
+            );
         }
     }
 
