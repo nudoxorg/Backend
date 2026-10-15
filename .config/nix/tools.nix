@@ -12,6 +12,13 @@ let
     cargo = toolchains.stable;
     rustc = toolchains.stable;
   };
+  # The pinned nixpkgs cargoBuildHook calls preBuild before it forms
+  # `cargo build -j $NIX_BUILD_CORES`. Bound only our product derivations;
+  # preserve a smaller daemon request and cap its all-cores/large requests.
+  boundedProductCargoPreBuild = ''
+    source "${../scripts/nix-cargo-jobs.sh}"
+    nudox_cap_nix_build_cores || exit $?
+  '';
   # These generated scripts run in checks with an otherwise isolated PATH and
   # are also shipped as runtime entry points. Keep their shell tools in the
   # runtime closure rather than relying on utilities installed on the host.
@@ -257,6 +264,7 @@ let
   backendControl =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
+        preBuild = boundedProductCargoPreBuild;
         cargoBuildFlags = [
           "--package"
           "backend-control"
@@ -308,6 +316,7 @@ let
   guiRuntime =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
+        preBuild = boundedProductCargoPreBuild;
         pname = "nudox-gui-runtime";
         version = "0.1.0";
         src = workspaceSource;
