@@ -564,3 +564,19 @@ sample, not calibrated bands or official T2 acceptance. A repeat exact-head
 comparison and calibration are required before merge. No existing snapshot,
 tolerance or floor was changed. Prior Linux28 had a compiler-owner refusal,
 so a single successful run does not establish stability.
+
+### Blinker external identity review (W2.4, 2026-10-15)
+
+Focused Linux34 at a453e3ff976da05cd951747de3d678a5dd8fd342 captures the
+canonical external-target identity change also observed in automatic851/855.
+External keys are scoped to package and the exact semantic image digest;
+source/image changes can change those keys and derived revision/count fields.
+Independent recursive review confirms the same answer set, authored names,
+source paths, readiness, coverage, kinds, row order and MCP response content
+apart from those exact IDs and mechanically derived byte/token counts.
+
+The golden retains the actual new IDs and counts. No runtime normalizer changed.
+Its existing performance suffix is preserved byte for byte; the new14.86s index
+and5.37s NamedSignal search remain rejected against unchanged4.56s/.74s
+baselines. See reviews/2026-10-15-blinker-external-identities.json. This is a
+reviewed functional answer update, not performance acceptance or T2 green.
