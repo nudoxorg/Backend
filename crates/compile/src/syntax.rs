@@ -709,7 +709,7 @@ impl SyntaxFrontend {
         }
         // Shared extraction semantics changed too: every grammar must retire
         // cached name/line deduplication even when its own query is unchanged.
-        let capture_contract = b"syntax-capture/exact-owner-name-v2\0";
+        let capture_contract = b"syntax-capture/exact-owner-name-source-kinds-macros-docs-v3\0";
         let mut identity =
             Vec::with_capacity(capture_contract.len() + language.name().len() + contract.len() + 1);
         identity.extend_from_slice(capture_contract);

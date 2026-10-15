@@ -77,11 +77,11 @@ mod product;
 mod projection;
 #[cfg(test)]
 mod projection_tests;
+mod readiness;
 #[cfg(test)]
 mod readiness_agreement_tests;
 #[cfg(test)]
 mod readiness_tests;
-mod readiness;
 mod record;
 mod render;
 mod sections;
@@ -121,7 +121,7 @@ pub use coverage::{
 };
 pub use drive::{
     Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, catalog_page_answer,
-    probe_fault,
+    probe_fault, resolve_declaration,
 };
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
