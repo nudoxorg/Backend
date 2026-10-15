@@ -54,6 +54,18 @@ struct StashedParameter {
     cursor: CXCursor,
 }
 
+/// Native TypeRef evidence held only until the live translation unit finishes
+/// collecting one exact parameter type. CXTypes are never exported from the
+/// collector because they become invalid when its TranslationUnit is dropped.
+#[derive(Clone, Copy)]
+struct ParameterTypeReference {
+    parameter_cursor: CXCursor,
+    parameter_span: SourceSpan,
+    owner: Option<SymbolIdentity>,
+    target: SymbolIdentity,
+    native_type: CXType,
+}
+
 /// One maximal, owner-homogeneous run of stashed parameter cursors in visit order.
 struct ParameterRun {
     /// The semantic-parent identity shared by every parameter in the run.
@@ -141,6 +153,10 @@ struct Collector<'unit, 'scratch> {
     includes: usize,
     overrides: usize,
     parameters: Vec<StashedParameter>,
+    parameter_type_references: HashMap<(u32, u32, SymbolIdentity), Vec<ParameterTypeReference>>,
+    parameter_type_reference_count: usize,
+    unknown_native_types: HashMap<u32, CXType>,
+    capture_parameter_unknown_types: bool,
     project_paths: Vec<Box<str>>,
     cancellation: Option<&'unit AtomicBool>,
     failure: Option<CollectError>,
@@ -164,6 +180,10 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             includes: 0,
             overrides: 0,
             parameters: Vec::new(),
+            parameter_type_references: HashMap::new(),
+            parameter_type_reference_count: 0,
+            unknown_native_types: HashMap::new(),
+            capture_parameter_unknown_types: false,
             project_paths: Vec::new(),
             cancellation,
             failure: None,
@@ -180,7 +200,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     }
 
     /// Records one traversal cursor and signals whether libclang should stop visiting children.
-    fn observe(&mut self, cursor: CXCursor) -> bool {
+    fn observe(&mut self, cursor: CXCursor, parent: CXCursor) -> bool {
         if cancelled(self.cancellation) {
             self.failure = Some(CollectError::Cancelled);
             return true;
@@ -188,7 +208,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if self.failure.is_some() {
             return true;
         }
-        if let Err(failure) = self.record_cursor(cursor) {
+        if let Err(failure) = self.record_cursor(cursor, parent) {
             self.failure = Some(failure);
             return true;
         }
@@ -196,7 +216,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     }
 
     /// Retains one cursor under exactly one semantic role determined by libclang's closed kind.
-    fn record_cursor(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
+    fn record_cursor(&mut self, cursor: CXCursor, parent: CXCursor) -> Result<(), CollectError> {
         let kind = TranslationUnit::cursor_kind(cursor);
         if kind == clang_sys::CXCursor_MacroDefinition {
             return self.record_declaration(cursor, DeclarationKind::Macro);
@@ -208,7 +228,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return self.record_declaration(cursor, declaration_kind(kind));
         }
         if let Some(reference_kind) = reference_kind(kind) {
-            return self.record_reference(cursor, reference_kind);
+            return self.record_reference(cursor, parent, reference_kind);
         }
         Ok(())
     }
@@ -289,7 +309,36 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return Ok(());
         };
         let identity = TranslationUnit::cursor_identity(cursor);
-        let type_root = self.collect_type(TranslationUnit::cursor_type(cursor))?;
+        let parameter_owner = (kind == DeclarationKind::Parameter)
+            .then(|| TranslationUnit::semantic_parent(cursor))
+            .flatten();
+        let resolve_type_variables = kind == DeclarationKind::Parameter
+            && parameter_owner.is_some_and(|owner| {
+                self.parameter_type_references
+                    .get(&(span.start, span.end, owner))
+                    .is_some_and(|references| {
+                        references.iter().any(|reference| {
+                            reference.parameter_span == span
+                                && reference.owner == Some(owner)
+                                && TranslationUnit::same_cursor(reference.parameter_cursor, cursor)
+                        })
+                    })
+            });
+        let previous_capture = self.capture_parameter_unknown_types;
+        self.capture_parameter_unknown_types = resolve_type_variables;
+        let type_edges_start = self.type_edges;
+        let type_root_result = self.collect_type(TranslationUnit::cursor_type(cursor));
+        self.capture_parameter_unknown_types = previous_capture;
+        let type_root = type_root_result?;
+        if resolve_type_variables && let Some(root) = type_root {
+            self.resolve_parameter_type_variables(
+                cursor,
+                span,
+                parameter_owner,
+                root,
+                type_edges_start,
+            );
+        }
         let enum_underlying = (kind == DeclarationKind::Enumeration)
             .then(|| self.collect_type(TranslationUnit::enum_underlying_type(cursor)))
             .transpose()?
@@ -398,6 +447,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     fn record_reference(
         &mut self,
         cursor: CXCursor,
+        parent: CXCursor,
         kind: ReferenceKind,
     ) -> Result<(), CollectError> {
         let Some(extent) = self.unit.cursor_span(cursor)? else {
@@ -418,7 +468,32 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if kind == ReferenceKind::Value {
             self.ensure_foreign_value_authority(cursor)?;
         }
-        let target = self.reference_target(TranslationUnit::referenced(cursor))?;
+        let referenced = TranslationUnit::referenced(cursor);
+        if kind == ReferenceKind::Type
+            && !TranslationUnit::is_null_cursor(referenced)
+            && TranslationUnit::cursor_kind(parent) == clang_sys::CXCursor_ParmDecl
+            && TranslationUnit::cursor_kind(referenced) == clang_sys::CXCursor_TemplateTypeParameter
+            && self.parameter_type_reference_count < crate::legacy::facts::MAX_CLANG_REFERENCES
+        {
+            if let (Ok(Some(parameter_span)), Some(owner), Some(target)) = (
+                self.unit.cursor_span(parent),
+                TranslationUnit::semantic_parent(parent),
+                TranslationUnit::cursor_identity(referenced),
+            ) {
+                self.parameter_type_references
+                    .entry((parameter_span.start, parameter_span.end, owner))
+                    .or_default()
+                    .push(ParameterTypeReference {
+                        parameter_cursor: parent,
+                        parameter_span,
+                        owner: Some(owner),
+                        target,
+                        native_type: TranslationUnit::cursor_type(cursor),
+                    });
+                self.parameter_type_reference_count += 1;
+            }
+        }
+        let target = self.reference_target(referenced)?;
         self.push_reference(ReferenceFact {
             kind,
             span,
@@ -557,6 +632,9 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             align_bits: measured_bits(TranslationUnit::type_align_of(type_)),
             is_variadic: kind == TypeKind::Function && TranslationUnit::function_is_variadic(type_),
         })?;
+        if kind == TypeKind::Unknown && self.capture_parameter_unknown_types {
+            self.unknown_native_types.insert(id.raw, type_);
+        }
         self.collect_type_children(id, kind, type_)?;
         Ok(Some(id))
     }
@@ -700,6 +778,128 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             ScratchLane::Types,
             fact,
         )
+    }
+
+    /// Promotes only one unique unknown leaf whose live native type equals a
+    /// direct TypeRef to a template type parameter within this exact parameter
+    /// span and owner. Ambiguous or unsupported comparisons remain Unknown.
+    fn resolve_parameter_type_variables(
+        &mut self,
+        parameter_cursor: CXCursor,
+        parameter_span: SourceSpan,
+        owner: Option<SymbolIdentity>,
+        root: TypeId,
+        type_edges_start: usize,
+    ) {
+        let local_edges = &self.scratch.type_edges[type_edges_start..self.type_edges];
+        let mut children: HashMap<u32, Vec<TypeId>> = HashMap::new();
+        for edge in local_edges {
+            children
+                .entry(edge.source.raw)
+                .or_default()
+                .push(edge.target);
+        }
+        let mut pending = vec![root];
+        let mut unknowns = Vec::new();
+        while let Some(type_id) = pending.pop() {
+            let Some(row) = self.scratch.types.get(type_id.raw as usize) else {
+                continue;
+            };
+            if row.kind == TypeKind::Unknown {
+                unknowns.push(type_id);
+                continue;
+            }
+            if let Some(type_children) = children.get(&type_id.raw) {
+                pending.extend(type_children.iter().copied());
+            }
+        }
+
+        let Some(owner) = owner else {
+            for type_id in unknowns {
+                self.unknown_native_types.remove(&type_id.raw);
+            }
+            return;
+        };
+        let key = (parameter_span.start, parameter_span.end, owner);
+        let bucket = self
+            .parameter_type_references
+            .remove(&key)
+            .unwrap_or_default();
+        let mut candidates = Vec::new();
+        let mut other_parameters = Vec::new();
+        let owned_targets: Vec<SymbolIdentity> = self.scratch.declarations[..self.declarations]
+            .iter()
+            .filter(|fact| {
+                fact.kind == DeclarationKind::TemplateParameter && fact.owner == Some(owner)
+            })
+            .filter_map(|fact| fact.identity)
+            .collect();
+        for reference in bucket {
+            if TranslationUnit::same_cursor(reference.parameter_cursor, parameter_cursor)
+                && reference.parameter_span == parameter_span
+                && reference.owner == Some(owner)
+            {
+                if owned_targets.contains(&reference.target) {
+                    candidates.push(reference);
+                }
+            } else {
+                other_parameters.push(reference);
+            }
+        }
+        if !other_parameters.is_empty() {
+            self.parameter_type_references.insert(key, other_parameters);
+        }
+        if candidates.is_empty() {
+            for type_id in unknowns {
+                self.unknown_native_types.remove(&type_id.raw);
+            }
+            return;
+        }
+
+        let mut targets: HashMap<SymbolIdentity, (TypeId, usize)> = HashMap::new();
+        for type_id in &unknowns {
+            let type_id = *type_id;
+            let Some(native_type) = self.unknown_native_types.get(&type_id.raw).copied() else {
+                continue;
+            };
+            let mut matched_targets = Vec::new();
+            for candidate in &candidates {
+                let matches = TranslationUnit::types_equal(native_type, candidate.native_type)
+                    || TranslationUnit::types_equal_ignoring_qualifiers(
+                        native_type,
+                        candidate.native_type,
+                    ) == Some(true);
+                if matches && !matched_targets.contains(&candidate.target) {
+                    matched_targets.push(candidate.target);
+                }
+            }
+            // If a leaf compares equal to references naming multiple
+            // declarations, it does not prove which template parameter it is.
+            let [target] = matched_targets.as_slice() else {
+                continue;
+            };
+            match targets.get_mut(target) {
+                Some((_, count)) => *count += 1,
+                None => {
+                    targets.insert(*target, (type_id, 1));
+                }
+            }
+        }
+
+        for (target, (type_id, count)) in targets {
+            if count != 1 {
+                continue;
+            }
+            if let Some(row) = self.scratch.types.get_mut(type_id.raw as usize)
+                && row.kind == TypeKind::Unknown
+            {
+                row.kind = TypeKind::Named;
+                row.declaration = Some(target);
+            }
+        }
+        for type_id in unknowns {
+            self.unknown_native_types.remove(&type_id.raw);
+        }
     }
 
     /// Writes one type edge into the next exact caller-provided edge slot.
@@ -850,9 +1050,9 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
 }
 
 /// C callback that never permits a Rust failure to cross the native ABI boundary.
-extern "C" fn visit(cursor: CXCursor, _parent: CXCursor, data: *mut c_void) -> CXChildVisitResult {
+extern "C" fn visit(cursor: CXCursor, parent: CXCursor, data: *mut c_void) -> CXChildVisitResult {
     let stop = ffi::callback_state(data, |collector: &mut Collector<'_, '_>| {
-        collector.observe(cursor)
+        collector.observe(cursor, parent)
     })
     .unwrap_or(true);
     if stop {
