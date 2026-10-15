@@ -113,6 +113,7 @@ def fetch-manifest-graph [manifest: string, --locked] {
 }
 
 export def warm-registry-cache []: nothing -> nothing {
+
     # The Rust frontend's tests resolve this workspace itself offline, for
     # every platform: macOS- and Windows-only dependencies (accesskit_*)
     # included, which a Linux build never downloads. `cargo fetch` with no

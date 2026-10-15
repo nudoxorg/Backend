@@ -1233,8 +1233,29 @@ mod tests {
         let cursor = Cursor::for_view_root_at(&view, 0);
         let library = backend_library::Library::from_view((*view).clone(), cursor)
             .expect("coherent fixture library");
+        #[cfg(unix)]
         let (interrupt_stream, _interrupt_peer) =
             backend_replication::LocalStream::pair().expect("interruptible transport pair");
+        #[cfg(windows)]
+        let (interrupt_stream, _interrupt_peer) = {
+            // Windows exposes AF_UNIX listeners but has no socketpair API.
+            // Keep the same real interrupt capability through a named pair.
+            static PAIRS: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "nx-root-{}-{}.sock",
+                std::process::id(),
+                PAIRS.fetch_add(1, Ordering::Relaxed),
+            ));
+            let listener = backend_replication::LocalListener::bind(&path)
+                .expect("bind interruptible transport pair");
+            let client = backend_replication::LocalStream::connect(&path)
+                .expect("connect interruptible transport pair");
+            let (server, _) = listener.accept().expect("accept interruptible transport pair");
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+            (client, server)
+        };
         let interrupt = backend_client::UnixCommandTransport::from_stream(interrupt_stream)
             .interrupt_handle()
             .expect("actual socket interrupt");
