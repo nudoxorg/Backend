@@ -76,6 +76,29 @@ An explicitly supplied `RUSTC_WRAPPER` is preserved and bypasses this gate.
 The `sccache` cache key still controls whether an external compilation can be
 reused; unsupported rustc modes compile normally.
 
+The default `NUDOX_CARGO_CACHE_DAEMON=shared` mode may start a reusable
+`sccache` server and leaves its lifetime independent of Cargo. A transient
+managed build scope must instead set `NUDOX_CARGO_CACHE_DAEMON=disabled` on
+that job's invocation. This skips endpoint setup, startup election and cache
+client execution, even when a socket exists or disappears during the build.
+It explicitly exports empty `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER`,
+which [Cargo defines as overriding configured wrappers](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
+This disables **all** rustc wrappers for the invocation, including caller
+instrumentation or other custom behavior. It preserves the selected compiler,
+Cargo arguments, build leases, graph/target paths and existing shared cache
+contents. Other values, including an explicitly empty setting, fail with
+status 64 before Cargo or cache startup. Read-only commands keep their existing
+early bypass. The mode does not constrain subprocesses started by build scripts
+or other tools; the managed custodian still owns final scope cleanup.
+
+Do not infer a no-start guarantee from a ready socket: a later cache client
+can start a replacement server after socket loss. Do not stop a shared daemon
+in a per-build exit trap. Enabling `disabled` requires adopting the changed
+wrapper and provenance helper and pinning their new exact hashes in a newly
+reviewed managed workload packet. Changing an environment variable on an older
+immutable wrapper does not activate this contract. No old/frozen packet or
+shared server should be changed to activate it.
+
 Legacy `.local/build/<role>` and `.local/target-<role>` directories are never
 imported or stamped automatically. The exact standard target path
 `<worktree>/.local/target` is treated as worktree-owned even when the Nix shell
@@ -89,7 +112,9 @@ Each compiling invocation writes a private JSON provenance record beneath
 `CARGO_TARGET_DIR/.nudox-provenance/`. It includes the canonical root, HEAD and
 dirty-tree digests, lockfile digest, Cargo/Rust versions, wrapper hashes,
 feature/target selection, effective build and target paths, Cargo exit status,
-and hashes of executable outputs written during that invocation. Failed Cargo
+and hashes of executable outputs written during that invocation. The wrapper
+records the normalized `shared` or `disabled` cache-daemon mode; disabled mode
+records an empty rustc wrapper path and no wrapper hash. Failed Cargo
 commands still receive a record and retain Cargo's exit status.
 
 Lease directories contain the owner PID, process start token, and canonical
@@ -108,6 +133,10 @@ workspace build:
 ```sh
 ./tests/cargo-shared-cache.sh
 ```
+
+`./tests/cargo-shared-cache.sh --managed-lifetime` runs the focused lifetime
+cases using only private fake tools and socket nodes. It checks environment
+inputs observed by fake Cargo; it does not execute Cargo or a real compiler.
 
 They use fake Cargo, git, and sccache processes to prove same-worktree
 serialization and reuse, independent-worktree parallelism, metadata bypass,

@@ -170,7 +170,22 @@ PY
     ;;
 esac
 
-export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}"
+# A transient managed job cannot own a reusable cache daemon. Opt out of
+# both eager startup and Cargo's later lazy startup through any rustc wrapper.
+# Empty wrapper variables also override Cargo configuration; unsetting them
+# would allow a configured wrapper to start a daemon after our socket check.
+cache_daemon="${NUDOX_CARGO_CACHE_DAEMON-shared}"
+case "$cache_daemon" in
+  shared) export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}" ;;
+  disabled) export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER="" ;;
+  *)
+    echo "NUDOX_CARGO_CACHE_DAEMON must be shared or disabled" >&2
+    exit 64
+    ;;
+esac
+export NUDOX_CARGO_CACHE_DAEMON="$cache_daemon"
+
+if [ "$cache_daemon" = shared ]; then
 export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"
 export SCCACHE_CLIENT_SIDE="${SCCACHE_CLIENT_SIDE:-1}"
@@ -209,6 +224,7 @@ sccache_endpoint_key="$(@python3@ -c 'import hashlib, sys; print(hashlib.sha256(
 worktree_lines="$(@git@ -C "$workspace_root" worktree list --porcelain 2>/dev/null || true)"
 worktree_bases="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' | paste -sd: -)"
 export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-${worktree_bases:-$workspace_root}}"
+fi
 
 # `kill -0` alone can mistake a recycled PID for a live owner. `ps lstart`
 # exists on both macOS and Linux; comparing the recorded start token closes
@@ -238,7 +254,7 @@ lock_owner_is_stale() {
 # sccache's lazy daemon start can race when several fresh lanes arrive at the
 # same Unix socket. Elect exactly one starter; peers wait only for the socket,
 # never for compilation or a Cargo build lock.
-if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
+if [ "$cache_daemon" = shared ] && [ ! -S "$SCCACHE_SERVER_UDS" ]; then
   server_lock="$cache_root/locks/sccache-server-$sccache_endpoint_key.lock"
   attempts=0
   while [ ! -S "$SCCACHE_SERVER_UDS" ] && [ "$attempts" -lt 100 ]; do

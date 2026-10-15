@@ -241,6 +241,7 @@ def _begin(arguments: list[str]) -> int:
             "capture_complete": True,
         },
         "wrapper": {
+            "cache_daemon": os.environ.get("NUDOX_CARGO_CACHE_DAEMON"),
             "runtime_path": runtime_wrapper,
             "runtime_sha256": _sha256_path(pathlib.Path(runtime_wrapper)),
             "source_path": source_wrapper,

@@ -4,6 +4,7 @@
 # workspace or evaluate Nix.
 set -eu
 unset CARGO_BUILD_BUILD_DIR CARGO_TARGET_DIR
+unset NUDOX_CARGO_CACHE_DAEMON RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 
 # The script under test serves its cache over a Unix-domain socket from a Python
 # helper, in a mode-0700 per-uid directory under /tmp, and is part of the Nix
@@ -24,6 +25,8 @@ repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/nudox-cargo-cache.XXXXXX")"
 cleanup() {
+  if [ -n "${election_release:-}" ]; then touch "$election_release"; fi
+  if [ -n "${election_owner:-}" ]; then wait "$election_owner" 2>/dev/null || true; fi
   if [ -n "${ceiling_release:-}" ]; then touch "$ceiling_release"; fi
   if [ -n "${ceiling_owner:-}" ]; then wait "$ceiling_owner" 2>/dev/null || true; fi
   if [ -n "${socket_pid:-}" ]; then
@@ -79,6 +82,8 @@ chmod +x "$test_root/bin/git"
 
 printf '%s\n' '#!/bin/sh' \
 'if [ "${1:-}" = --version ]; then printf "cargo 1.97.1-test\\n"; exit 0; fi' \
+'if [ -n "${NUDOX_TEST_REMOVE_SOCKET:-}" ]; then rm -f "$SCCACHE_SERVER_UDS"; fi' \
+'if [ -n "${NUDOX_TEST_WRAPPER_ENV_LOG:-}" ]; then printf "%s|%s|%s|%s|%s\\n" "${NUDOX_CARGO_CACHE_DAEMON:-}" "${RUSTC_WRAPPER-UNSET}" "${RUSTC_WORKSPACE_WRAPPER-UNSET}" "${RUSTC_WRAPPER+x}" "${RUSTC_WORKSPACE_WRAPPER+x}" >> "$NUDOX_TEST_WRAPPER_ENV_LOG"; fi' \
 'if [ -n "${NUDOX_TEST_TOOLCHAIN_LOG:-}" ]; then printf "%s|%s\\n" "$RUSTC" "$RUSTDOC" >> "$NUDOX_TEST_TOOLCHAIN_LOG"; fi' \
 'if [ -n "${NUDOX_TEST_CACHE_ENDPOINT_LOG:-}" ]; then printf "%s|%s\\n" "$SCCACHE_SERVER_UDS" "$SCCACHE_DIR" >> "$NUDOX_TEST_CACHE_ENDPOINT_LOG"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
@@ -124,6 +129,17 @@ chmod +x "$test_root/bin/rustdoc"
 
 printf '%s\n' '#!/bin/sh' \
   'if [ -n "${SCCACHE_TEST_LOG:-}" ]; then printf "%s\\n" "$*" >> "$SCCACHE_TEST_LOG"; fi' \
+  'if [ "${1:-}" = --start-server ] && [ -n "${NUDOX_TEST_START_SOCKET:-}" ]; then' \
+  '  if [ -n "${NUDOX_TEST_START_READY:-}" ]; then' \
+  '    touch "$NUDOX_TEST_START_READY"' \
+  '    attempts=0' \
+  '    while [ ! -f "$NUDOX_TEST_START_RELEASE" ]; do' \
+  '      attempts=$((attempts + 1)); [ "$attempts" -lt 100 ] || exit 46' \
+  '      sleep 0.05' \
+  '    done' \
+  '  fi' \
+  '  python3 -c '\''import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()'\'' "$NUDOX_TEST_START_SOCKET" || exit 47' \
+  'fi' \
   'exit "${SCCACHE_TEST_STATUS:-0}"' > "$test_root/bin/sccache"
 chmod +x "$test_root/bin/sccache"
 
@@ -334,6 +350,122 @@ case "$(tail -n 1 "$rustc_direct_log")" in
   *"$registry_workspace_symlink"*) ;;
   *) fail "symlinked workspace source was not passed directly to rustc" ;;
 esac
+
+# Simulate daemon readiness with private socket nodes only. The fake sccache
+# creates no server process and fake Cargo records inputs without compiling.
+# The ordinary shared path still elects/starts on a cold socket and leaves
+# it intact; explicit custom wrappers remain unchanged in that default mode.
+run_lifetime_wrapper() {
+  lifetime_case="$1";lifetime_socket="$2";shift 2
+  mkdir -p "$test_root/roots/lifetime-$lifetime_case"
+  NUDOX_TEST_WORKTREE="$test_root/roots/lifetime-$lifetime_case" \
+    NUDOX_TEST_LOG="$test_root/lifetime-$lifetime_case.log" \
+    NUDOX_TEST_WRAPPER_ENV_LOG="$test_root/lifetime-$lifetime_case-env.log" \
+    NUDOX_BUILD_CACHE_ROOT="$test_root/lifetime-cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+    NUDOX_CARGO_WORKTREE_WAIT_MS=0 NUDOX_CARGO_SLOT_WAIT_MS=0 \
+    SCCACHE_SERVER_UDS="$lifetime_socket" SCCACHE_DIR="$test_root/lifetime-content" \
+    SCCACHE_TEST_LOG="$test_root/lifetime-sccache.log" \
+    "$test_root/wrapper" "$@"
+}
+lifetime_socket="$test_root/lifetime.sock"
+mkdir -p "$test_root/lifetime-content"
+printf 'keep shared cache contents\n' > "$test_root/lifetime-content/keep"
+NUDOX_TEST_START_SOCKET="$lifetime_socket" run_lifetime_wrapper shared-cold "$lifetime_socket" build --locked
+assert_file_lines "$test_root/lifetime-sccache.log" 1
+assert_eq --start-server "$(cat "$test_root/lifetime-sccache.log")"
+[ -S "$lifetime_socket" ] || fail "shared wrapper removed its ready socket"
+assert_eq "shared|$test_root/rustc-cache-wrapper|UNSET|x|" "$(cat "$test_root/lifetime-shared-cold-env.log")"
+RUSTC_WRAPPER="$test_root/custom-wrapper" RUSTC_WORKSPACE_WRAPPER="$test_root/workspace-wrapper" \
+  run_lifetime_wrapper shared-custom "$lifetime_socket" check
+assert_eq "shared|$test_root/custom-wrapper|$test_root/workspace-wrapper|x|x" "$(cat "$test_root/lifetime-shared-custom-env.log")"
+assert_file_lines "$test_root/lifetime-sccache.log" 1
+
+# Managed mode neither starts nor depends on a daemon, regardless of socket
+# state. Empty exported variables override both inherited and Cargo-configured
+# wrappers per Cargo's documented contract; the fake observes those variables.
+for lifetime_state in absent present disappears; do
+  managed_socket="$test_root/managed-$lifetime_state.sock"
+  if [ "$lifetime_state" != absent ]; then
+    python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$managed_socket"
+  fi
+  remove_socket=""
+  if [ "$lifetime_state" = disappears ]; then remove_socket=1; fi
+  NUDOX_CARGO_CACHE_DAEMON=disabled RUSTC_WRAPPER="$test_root/custom-wrapper" \
+    RUSTC_WORKSPACE_WRAPPER="$test_root/workspace-wrapper" \
+    CARGO_BUILD_RUSTC_WRAPPER="$test_root/configured-wrapper" \
+    CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="$test_root/configured-workspace-wrapper" \
+    NUDOX_TEST_REMOVE_SOCKET="$remove_socket" \
+    run_lifetime_wrapper "disabled-$lifetime_state" "$managed_socket" build --locked
+  assert_eq 'disabled|||x|x' "$(cat "$test_root/lifetime-disabled-$lifetime_state-env.log")"
+  assert_file_lines "$test_root/lifetime-sccache.log" 1
+  if [ "$lifetime_state" = present ]; then
+    [ -S "$managed_socket" ] || fail "managed invocation changed an existing socket"
+  else
+    [ ! -e "$managed_socket" ] || fail "managed invocation created a socket"
+  fi
+done
+
+# A default-mode starter holds its election lock while a managed invocation
+# arrives at that same cold endpoint. The managed job must finish without
+# waiting on, stealing, releasing or otherwise changing the starter's lease.
+election_socket="$test_root/election.sock"
+election_ready="$test_root/election.ready";election_release="$test_root/election.release"
+NUDOX_TEST_START_SOCKET="$election_socket" NUDOX_TEST_START_READY="$election_ready" \
+  NUDOX_TEST_START_RELEASE="$election_release" \
+  run_lifetime_wrapper shared-election "$election_socket" build &
+election_owner="$!"
+attempts=0
+while [ ! -f "$election_ready" ]; do
+  attempts=$((attempts + 1));[ "$attempts" -lt 100 ] || fail "fake cache starter never acquired election"
+  sleep 0.05
+done
+election_key="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:24])' "$election_socket")"
+election_lock="$test_root/lifetime-cache/locks/sccache-server-$election_key.lock"
+election_pid="$(cat "$election_lock/pid")";election_start="$(cat "$election_lock/start")"
+NUDOX_CARGO_CACHE_DAEMON=disabled run_lifetime_wrapper disabled-election "$election_socket" build
+assert_eq "$election_pid" "$(cat "$election_lock/pid")"
+assert_eq "$election_start" "$(cat "$election_lock/start")"
+[ ! -e "$election_socket" ] || fail "managed job started the elected daemon"
+assert_file_lines "$test_root/lifetime-sccache.log" 2
+touch "$election_release";wait "$election_owner";election_owner=""
+[ -S "$election_socket" ] || fail "shared starter did not complete"
+[ ! -d "$election_lock" ] || fail "shared starter did not release election"
+
+# Invalid/empty modes refuse before daemon/Cargo execution. Disabled mode
+# retains the exact Cargo failure, arguments and explicit provenance mode.
+for lifetime_invalid in '' typo; do
+  lifetime_status=0
+  NUDOX_CARGO_CACHE_DAEMON="$lifetime_invalid" \
+    run_lifetime_wrapper invalid "$test_root/invalid.sock" build 2> "$test_root/lifetime-invalid.stderr" || lifetime_status="$?"
+  assert_eq 64 "$lifetime_status"
+  [ ! -e "$test_root/lifetime-invalid.log" ] || fail "invalid mode launched Cargo"
+done
+lifetime_status=0
+NUDOX_CARGO_CACHE_DAEMON=disabled NUDOX_TEST_CARGO_STATUS=23 \
+  run_lifetime_wrapper disabled-failed "$test_root/failed.sock" build --locked --features smoke || lifetime_status="$?"
+assert_eq 23 "$lifetime_status"
+assert_eq 'build --locked --features smoke' "$(cut -d '|' -f 4 "$test_root/lifetime-disabled-failed.log")"
+assert_file_lines "$test_root/lifetime-sccache.log" 2
+assert_eq 'keep shared cache contents' "$(cat "$test_root/lifetime-content/keep")"
+python3 - "$test_root/roots/lifetime-disabled-failed/.local/target/.nudox-provenance" <<'PY'
+import json
+import pathlib
+import sys
+
+manifests = list(pathlib.Path(sys.argv[1]).glob('*.json'))
+assert len(manifests) == 1
+value = json.loads(manifests[0].read_text())
+assert value['wrapper']['cache_daemon'] == 'disabled'
+assert value['wrapper']['rustc_path'] == ''
+assert value['wrapper']['rustc_sha256'] is None
+assert value['cargo_exit_status'] == 23
+assert value['toolchain']['changed_during_build'] is False
+PY
+
+if [ "${1:-}" = --managed-lifetime ]; then
+  echo "cargo-shared-cache: PASS (managed cache lifetime; private fake tools only)"
+  exit 0
+fi
 
 # Metadata and formatting remain unrestricted and do not require a socket or
 # a mutable build directory.
@@ -1092,6 +1224,7 @@ for executable in ("cargo", "rustc", "rustdoc"):
     assert before["resolved_path"] == after["resolved_path"]
 assert len(value["wrapper"]["runtime_sha256"]) == 64
 assert len(value["wrapper"]["source_sha256"]) == 64
+assert value["wrapper"]["cache_daemon"] == "shared"
 assert value["wrapper"]["rustc_path"].endswith("rustc-cache-wrapper")
 assert len(value["wrapper"]["rustc_sha256"]) == 64
 outputs = {item["path"]: item["sha256"] for item in value["outputs"]}
@@ -1204,4 +1337,4 @@ assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint
 [ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
 [ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
 
-echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, daemon protocol isolation, exit propagation, stale worktree recovery)"
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, managed cache lifetime, daemon protocol isolation, exit propagation, stale worktree recovery)"
