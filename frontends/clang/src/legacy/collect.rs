@@ -164,7 +164,7 @@ struct Collector<'unit, 'scratch> {
 
 impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     /// Binds one live native unit to its caller-owned fact destination arrays.
-    const fn new(
+    fn new(
         unit: &'unit TranslationUnit,
         scratch: ClangScratch<'scratch>,
         cancellation: Option<&'unit AtomicBool>,
