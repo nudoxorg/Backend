@@ -80,6 +80,7 @@ use std::{
 };
 use thiserror::Error;
 
+use backend_frontend_java::legacy::harness::JavaSource;
 use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
@@ -2106,6 +2107,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             package_root: &resolved.package_root,
             source_path: &resolved.source_path,
             source: &resolved.bytes,
+            java_sourcepath: &[],
             unit_key: &unit_key,
             profile: application_request.profile,
             toolchain,
@@ -2467,6 +2469,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -2904,6 +2907,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -3045,6 +3049,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
+            let java_sourcepath = if matches!(target.profile, LanguageProfile::Java(_)) {
+                package
+                    .compilation_sources()
+                    .filter(|captured| captured.relative_path() != source.relative_path)
+                    .map(|captured| JavaSource {
+                        name: Path::new(captured.relative_path()),
+                        bytes: captured.source().as_bytes(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let transient_authority = if rust_workspace_authority.is_none()
                 && typescript_project.is_none()
                 && python_project.is_none()
@@ -3055,6 +3071,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             package_root: package.package_root,
                             source_path: &source_path,
                             source: source.source.as_bytes(),
+                            java_sourcepath: &java_sourcepath,
                             unit_key: package.package_target.unit_key(),
                             profile: target.profile,
                             toolchain,
