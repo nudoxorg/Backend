@@ -280,7 +280,10 @@ struct OutlineCacheState {
 
 impl Default for OutlineCacheState {
     fn default() -> Self {
-        Self { entries: VecDeque::new(), epoch: Some(0) }
+        Self {
+            entries: VecDeque::new(),
+            epoch: Some(0),
+        }
     }
 }
 
@@ -306,17 +309,25 @@ impl OutlineCache {
     }
 
     fn permit(&self) -> Option<OutlineCachePermit> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).epoch.map(OutlineCachePermit)
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .epoch
+            .map(OutlineCachePermit)
     }
 
     /// Retain unaffected entries, but fence every older in-flight insert.
     /// A cancelled worker cannot repopulate a same-root obsolete outline.
     fn invalidate(&self, packages: &std::collections::BTreeSet<PackageRef>) {
-        if packages.is_empty() { return; }
+        if packages.is_empty() {
+            return;
+        }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.epoch = state.epoch.and_then(|epoch| epoch.checked_add(1));
         state.entries.retain(|(package, _, _, _)| {
-            !packages.iter().any(|changed| changed.reference() == package.reference())
+            !packages
+                .iter()
+                .any(|changed| changed.reference() == package.reference())
         });
     }
 
@@ -334,7 +345,9 @@ impl OutlineCache {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if permit.is_none_or(|permit| Some(permit.0) != state.epoch) { return; }
+        if permit.is_none_or(|permit| Some(permit.0) != state.epoch) {
+            return;
+        }
         let entries = &mut state.entries;
         entries.retain(|(cached, _, _, _)| *cached != package);
         entries.push_front((package, root, index, bytes));
@@ -985,9 +998,13 @@ fn outline(
         return Err(Gap::new(GapReason::ReadFailed, "cancelled"));
     }
     if complete {
-        context
-            .outlines
-            .put(permit, package.clone(), root, Arc::clone(&index), retained_bytes);
+        context.outlines.put(
+            permit,
+            package.clone(),
+            root,
+            Arc::clone(&index),
+            retained_bytes,
+        );
     }
     Ok(index)
 }
@@ -1889,6 +1906,129 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn orbit_reads_catalog_on_its_page_lane_after_root_admission() {
+        struct CatalogEngine {
+            surfaces: Vec<SurfaceCommand>,
+        }
+        impl Engine for CatalogEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Err(ClientError::Protocol(
+                    "no package snapshot in fixture".to_owned(),
+                ))
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                self.surfaces.push(command.clone());
+                match command {
+                    SurfaceCommand::Explore {
+                        query: None,
+                        limit: EXPLORE_LIMIT,
+                    } => Ok(SurfaceReply::Explored(Box::new([]))),
+                    _ => Err(ClientError::Protocol("unused Orbit source".to_owned())),
+                }
+            }
+        }
+
+        let mut engine = CatalogEngine {
+            surfaces: Vec::new(),
+        };
+        let cancel = CancellationToken::new();
+        let outlines = OutlineCache::default();
+        let context = ReadContext {
+            worker: 0,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: None,
+        };
+        let page = compose_orbit(&mut engine, &context)
+            .expect("an available Explore reply is enough for a partial Orbit page");
+
+        assert!(matches!(page, PageValue::Orbit(_)));
+        assert!(
+            engine.surfaces.iter().any(|command| matches!(
+                command,
+                SurfaceCommand::Explore {
+                    query: None,
+                    limit: EXPLORE_LIMIT
+                }
+            )),
+            "Orbit remains the lazy reader for the optional catalog",
+        );
+    }
+
+    #[test]
+    fn orbit_keeps_explore_failures_and_wrong_shapes_as_typed_gaps() {
+        #[derive(Clone, Copy)]
+        enum CatalogReply {
+            Failed,
+            WrongShape,
+        }
+        struct CatalogEngine(CatalogReply);
+        impl Engine for CatalogEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Err(ClientError::Protocol(
+                    "package snapshot unavailable".to_owned(),
+                ))
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                match command {
+                    SurfaceCommand::Projects => Ok(SurfaceReply::Projects(Box::new([]))),
+                    SurfaceCommand::Explore {
+                        query: None,
+                        limit: EXPLORE_LIMIT,
+                    } => match self.0 {
+                        CatalogReply::Failed => {
+                            Err(ClientError::CommandFailed(CommandFailure::NotFound))
+                        }
+                        CatalogReply::WrongShape => Ok(SurfaceReply::Projects(Box::new([]))),
+                    },
+                    _ => Err(ClientError::Protocol("unused Orbit source".to_owned())),
+                }
+            }
+        }
+
+        for scenario in [CatalogReply::Failed, CatalogReply::WrongShape] {
+            let mut engine = CatalogEngine(scenario);
+            let cancel = CancellationToken::new();
+            let outlines = OutlineCache::default();
+            let context = ReadContext {
+                worker: 0,
+                cancel: &cancel,
+                outlines: &outlines,
+                progress: None,
+            };
+            let PageValue::Orbit(page) = compose_orbit(&mut engine, &context)
+                .expect("other Orbit sources still produce a partial page")
+            else {
+                panic!("Orbit reader returned another page family");
+            };
+            let gap = page
+                .explore
+                .gap()
+                .expect("catalog uncertainty stays visible");
+            assert_eq!(gap.reason, crate::model::pages::GapReason::ReadFailed);
+            assert!(gap.detail.to_lowercase().contains("explore"));
+            if matches!(scenario, CatalogReply::WrongShape) {
+                assert!(
+                    gap.detail.contains("Projects"),
+                    "wrong reply shape is diagnosed"
+                );
+            }
+        }
+    }
+
     struct ExactRegistryTree {
         root: PathBuf,
         release: Release,
@@ -2099,7 +2239,8 @@ mod tests {
     fn cargo_source_reply_requires_current_exact_file_proof_and_marks_semantics_unindexed() {
         use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_library::CargoPackageSourceAuthorityStateV1;
-        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
+        let input =
+            crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let row = input
             .packages
             .iter()
@@ -2201,7 +2342,8 @@ mod tests {
         use backend_advisory::{AdvisoryAuthority, normalize_package};
         use backend_library::CargoPackageSourceAuthorityStateV1;
         use backend_library::browse::{ProjectTree, build_tree};
-        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
+        let input =
+            crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let advisories = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
             let package = normalize_package("cargo", name).expect("identity");
@@ -2215,8 +2357,11 @@ mod tests {
             &tree.root,
         )
         .expect("owner fixture binding");
-        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
-        let row = tree.package(PACKAGE_NAME, PACKAGE_VERSION).expect("exact row");
+        tree.observation =
+            Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
+        let row = tree
+            .package(PACKAGE_NAME, PACKAGE_VERSION)
+            .expect("exact row");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
             panic!("metadata receipt")
         };
@@ -2275,7 +2420,10 @@ mod tests {
                         } = &self.current
                         {
                             assert_eq!(&request.package, current);
-                            assert_eq!(Some(request.request_binding), self.tree.retained_request_binding());
+                            assert_eq!(
+                                Some(request.request_binding),
+                                self.tree.retained_request_binding()
+                            );
                         }
                         Ok(SurfaceReply::CargoPackageSourceFile(self.current.clone()))
                     }
@@ -2315,16 +2463,31 @@ mod tests {
         assert_eq!(engine.seen, ["file", "tree", "file"]);
 
         let mut display_tree = engine.tree.clone();
-        display_tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
-        assert!(display_tree.has_admissible_shape(), "display-only is a readable exact Tree");
-        let mut display = ColdEngine { tree: display_tree, current: engine.current.clone(), seen: Vec::new() };
-        assert!(matches!(compose_cargo_source(&mut display, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
-        assert_eq!(display.seen, ["file", "tree"], "display-only never triggers a source retry even with the same exact binding and package receipts");
+        display_tree.observation =
+            Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
+        assert!(
+            display_tree.has_admissible_shape(),
+            "display-only is a readable exact Tree"
+        );
+        let mut display = ColdEngine {
+            tree: display_tree,
+            current: engine.current.clone(),
+            seen: Vec::new(),
+        };
+        assert!(
+            matches!(compose_cargo_source(&mut display, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing)
+        );
+        assert_eq!(
+            display.seen,
+            ["file", "tree"],
+            "display-only never triggers a source retry even with the same exact binding and package receipts"
+        );
 
         let mut changed_tree = engine.tree.clone();
         let mut binding = changed_tree.retained_request_binding().expect("binding");
         binding.requested_root_digest = [4; 32];
-        changed_tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
+        changed_tree.observation =
+            Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         let mut changed = ColdEngine {
             tree: changed_tree,
             current: engine.current.clone(),
@@ -2369,7 +2532,8 @@ mod tests {
             CargoPackageSourceAuthorityStateV1, CargoPackageSourceInventoryCoverageV1,
             CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryV1,
         };
-        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
+        let input =
+            crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let row = input
             .packages
             .iter()
@@ -2609,25 +2773,44 @@ mod tests {
         cache.put(previous, other.clone(), root, Arc::clone(&old), 1);
         cache.invalidate(&std::collections::BTreeSet::from([changed.clone()]));
         assert!(cache.get(&changed, root).is_none());
-        assert!(Arc::ptr_eq(&cache.get(&other, root).expect("unaffected cached outline"), &old));
+        assert!(Arc::ptr_eq(
+            &cache.get(&other, root).expect("unaffected cached outline"),
+            &old
+        ));
         cache.put(previous, changed.clone(), root, Arc::clone(&old), 1);
-        assert!(cache.get(&changed, root).is_none(), "an obsolete worker cannot restore the complete cached miss");
+        assert!(
+            cache.get(&changed, root).is_none(),
+            "an obsolete worker cannot restore the complete cached miss"
+        );
         let fresh = Arc::new(OutlineIndex::new(Vec::new(), true));
         cache.put(cache.permit(), changed.clone(), root, Arc::clone(&fresh), 1);
-        assert!(Arc::ptr_eq(&cache.get(&changed, root).expect("fresh outline"), &fresh));
+        assert!(Arc::ptr_eq(
+            &cache.get(&changed, root).expect("fresh outline"),
+            &fresh
+        ));
     }
 
     #[test]
     fn outline_publication_fence_exhaustion_never_reopens_old_insert_authority() {
         let cache = OutlineCache::default();
-        cache.state.lock().unwrap_or_else(PoisonError::into_inner).epoch = Some(u64::MAX);
+        cache
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .epoch = Some(u64::MAX);
         let old = cache.permit();
         let package = PackageRef::parse("pkg:cargo/fail@0.5.1").expect("release");
         cache.invalidate(&std::collections::BTreeSet::from([package.clone()]));
         assert!(cache.permit().is_none());
         let root = backend_library::view_state_root(&[]);
         for permit in [old, cache.permit()] {
-            cache.put(permit, package.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 1);
+            cache.put(
+                permit,
+                package.clone(),
+                root,
+                Arc::new(OutlineIndex::new(Vec::new(), true)),
+                1,
+            );
             assert!(cache.get(&package, root).is_none());
         }
     }
