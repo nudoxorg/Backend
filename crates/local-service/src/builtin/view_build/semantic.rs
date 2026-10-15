@@ -31,6 +31,15 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
+
+static C_FRESHNESS_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn c_freshness_diagnostics_enabled() -> bool {
+    *C_FRESHNESS_DIAGNOSTICS_ENABLED.get_or_init(|| {
+        std::env::var_os("NUDOX_DEBUG_C_FRESHNESS").is_some_and(|value| value == "1")
+    })
+}
 
 fn package_manifest_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
     super::super::local_manifest::indexed_package_manifest_name(label, workspace)
@@ -713,6 +722,69 @@ fn semantic_rows(
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
+            if matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+            ) && !decision.stale_paths.is_empty()
+                && c_freshness_diagnostics_enabled()
+            {
+                let current_paths = current_paths.get(&target).unwrap_or(&empty);
+                let current_identities = current_identities.get(&target);
+                eprintln!(
+                    "NUDOX_C_FRESHNESS coordinate={:?} claim={:?} profile={:?} identity_decisive={} path_sets_differ={} stale_count={} compiled_count={} current_count={}",
+                    key.coordinate().as_str(),
+                    claim,
+                    key.profile(),
+                    decision.identity_decisive,
+                    decision.path_sets_differ,
+                    decision.stale_paths.len(),
+                    compiled_sources.len(),
+                    current_paths.len(),
+                );
+                for path in decision.stale_paths.iter().take(64) {
+                    let compiled = decision.compiled.get(path);
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale path={path:?} compiled={:?} current={:?}",
+                        compiled.map(|identity| identity.as_ref()),
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if decision.stale_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale_paths_omitted={}",
+                        decision.stale_paths.len() - 64
+                    );
+                }
+                for image in opened.iter().take(64) {
+                    let (path, identity) = match image {
+                        super::image_rows::CompiledImage::Resident { path, identity, .. }
+                        | super::image_rows::CompiledImage::Opened { path, identity, .. } => {
+                            (path, identity)
+                        }
+                    };
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS image path={path:?} identity={:?}",
+                        identity.as_ref(),
+                    );
+                }
+                if opened.len() > 64 {
+                    eprintln!("NUDOX_C_FRESHNESS images_omitted={}", opened.len() - 64);
+                }
+                for path in current_paths.iter().take(64) {
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current path={path:?} identity={:?}",
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if current_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current_paths_omitted={}",
+                        current_paths.len() - 64
+                    );
+                }
+            }
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
             let mut group_by_path = BTreeMap::<String, usize>::new();
             for (index, image) in opened.iter().enumerate() {

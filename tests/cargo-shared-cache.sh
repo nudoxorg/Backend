@@ -65,7 +65,7 @@ printf '%s\n' '#!/bin/sh' \
 '  if [ -n "$git_directory" ] && [ -n "${NUDOX_TEST_MANIFEST_WORKTREE:-}" ]; then' \
 '    case "$git_directory" in' \
 '      "$NUDOX_TEST_MANIFEST_WORKTREE"|"$NUDOX_TEST_MANIFEST_WORKTREE"/*) printf "%s\\n" "$NUDOX_TEST_MANIFEST_WORKTREE" ;;' \
-'      *) printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}" ;;' \
+'      *) if [ "${NUDOX_TEST_ALL_MANIFESTS_EXTERNAL:-0}" = 1 ]; then printf "%s\\n" "$NUDOX_TEST_MANIFEST_WORKTREE"; else printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}"; fi ;;' \
 '    esac' \
 '  else' \
 '    printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}"' \
@@ -86,6 +86,7 @@ printf '%s\n' '#!/bin/sh' \
 'if [ -n "${NUDOX_TEST_TOOLCHAIN_LOG:-}" ]; then printf "%s|%s\\n" "$RUSTC" "$RUSTDOC" >> "$NUDOX_TEST_TOOLCHAIN_LOG"; fi' \
 'if [ -n "${NUDOX_TEST_CACHE_ENDPOINT_LOG:-}" ]; then printf "%s|%s\\n" "$SCCACHE_SERVER_UDS" "$SCCACHE_DIR" >> "$NUDOX_TEST_CACHE_ENDPOINT_LOG"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
+'if [ -n "${NUDOX_TEST_WARM_SENTINEL:-}" ] && [ "$*" = "fetch --locked" ]; then printf "pooled graph stays warm\\n" > "$CARGO_BUILD_BUILD_DIR/$NUDOX_TEST_WARM_SENTINEL"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
   '  if [ -n "${NUDOX_TEST_REQUIRE_BUILD_MARKER:-}" ]; then' \
   '    required_marker="$CARGO_BUILD_BUILD_DIR/$NUDOX_TEST_REQUIRE_BUILD_MARKER"' \
@@ -1267,5 +1268,54 @@ assert_eq "$protocol_socket_a|$protocol_cache/sccache" "$(sed -n '1p' "$endpoint
 assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint_log")"
 [ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
 [ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
+
+# Exercise the real warmup function through the managed Cargo wrapper. The fake
+# git classifies every manifest root as external, while the first root fetch
+# marks the pooled Backend graph. Any manifest fetch that omits its disposable
+# explicit graph will therefore evict the sentinel.
+warm_repo="${NUDOX_LINUX_CI_REPO:-$repo_root}"
+warm_home="$test_root/warm-cargo-home"
+warm_worktree="$test_root/roots/warmup"
+warm_external_root="$test_root/roots/external-manifests"
+warm_cache="$test_root/warm-cache"
+warm_log="$test_root/warmup-cargo.log"
+warm_sentinel="backend-pooled-sentinel.rmeta"
+warm_copy="$test_root/managed-bin"
+mkdir -p "$warm_home/registry/src/test-index/toml-0.5.11" \
+  "$warm_home/registry/src/test-index/anyhow-1.0.104" \
+  "$warm_home/registry/src/test-index/log-0.4.34" \
+  "$warm_worktree" "$warm_external_root" "$warm_copy"
+for release in toml-0.5.11 anyhow-1.0.104 log-0.4.34; do
+  printf '[package]\nname = "warm-%s"\nversion = "0.0.0"\n' "$release" \
+    > "$warm_home/registry/src/test-index/$release/Cargo.toml"
+done
+cp "$test_root/wrapper" "$warm_copy/cargo"
+chmod +x "$warm_copy/cargo"
+if ! (cd "$warm_repo" && \
+  PATH="$warm_copy:$PATH" CARGO_HOME="$warm_home" HOME="$test_root/home" \
+  NUDOX_TEST_WORKTREE="$warm_worktree" NUDOX_TEST_MANIFEST_WORKTREE="$warm_external_root" \
+  NUDOX_TEST_ALL_MANIFESTS_EXTERNAL=1 NUDOX_TEST_WARM_SENTINEL="$warm_sentinel" \
+  NUDOX_TEST_LOG="$warm_log" NUDOX_BUILD_CACHE_ROOT="$warm_cache" \
+  NUDOX_CARGO_BUILD_SLOTS=1 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  CARGO_TARGET_DIR="$warm_worktree/.local/target" \
+  nu -c 'source .config/ci/linux.nu; warm-registry-cache'); then
+  fail "warm-registry-cache mocked managed-Cargo run failed"
+fi
+assert_file_lines "$warm_log" 7
+warm_pooled_graph="$(cut -d '|' -f 2 "$warm_log" | sed -n '1p')"
+[ -f "$warm_pooled_graph/$warm_sentinel" ] || fail "manifest warmup evicted the checkout pooled graph"
+assert_eq "$warm_worktree" "$(cat "$warm_cache/affinity/slot-0.owner")"
+while IFS='|' read -r worktree build_dir target_dir command jobs wrapper; do
+  case "$command" in
+    *--manifest-path*)
+      [ -n "$build_dir" ] || fail "manifest fetch lacked an explicit build graph: $command"
+      [ "$build_dir" != "$warm_pooled_graph" ] || fail "manifest fetch reused the checkout pooled graph: $command"
+      ;;
+    "fetch --locked")
+      [ "$build_dir" = "$warm_pooled_graph" ] || fail "root workspace fetch did not use its pooled graph"
+      ;;
+    *) fail "unexpected Cargo command in registry warmup: $command" ;;
+  esac
+done < "$warm_log"
 
 echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, daemon protocol isolation, exit propagation, stale worktree recovery)"
