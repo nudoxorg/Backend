@@ -15,6 +15,7 @@
 
 mod cargo_metadata;
 
+use crate::builtin::registry::archive_witness::CrateArchiveWitness;
 use backend_library::browse::{
     ProjectTree, TreeInput, TreeInputPackage, TreeSource, build_tree, lockfile_input,
     metadata_input_with_stable_source_witness,
@@ -267,6 +268,10 @@ struct CacheEntry {
     /// Exact source authority digest to package-row index; `None` means an
     /// impossible duplicate digest was observed and is never selected.
     package_rows: HashMap<[u8; 32], Option<usize>>,
+    /// Exact regular-file members of selected locked registry archives. This
+    /// stays private to the owner and is charged to the same bounded cache as
+    /// the tree whose source routes it authenticates.
+    registry_archives: Vec<cargo_metadata::RegistryArchiveWitness>,
     /// Bounded exact request roots that admitted this immutable observation.
     request_bindings: HashMap<RequestBindingKey, CachedRequestBinding>,
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
@@ -305,6 +310,36 @@ struct BrowseCacheCounters {
 }
 
 impl BrowseCache {
+    fn registry_archive_for_root(
+        &self,
+        context: &BrowseContextKey,
+        package_root: &Path,
+    ) -> Option<&cargo_metadata::RegistryArchiveWitness> {
+        self.entries
+            .get(context)?
+            .registry_archives
+            .iter()
+            .find(|archive| archive.package_root == package_root)
+    }
+
+    fn archive_member_matches(
+        &self,
+        context: &BrowseContextKey,
+        package_root: &Path,
+        relative_path: &str,
+        contents: &[u8],
+    ) -> Option<bool> {
+        let archive = self.registry_archive_for_root(context, package_root)?;
+        let mut checkpoint =
+            || observation_budget().map_err(|_| "observation cancelled".to_owned());
+        Some(
+            archive
+                .witness
+                .matches_checked(relative_path, contents, &mut checkpoint)
+                .unwrap_or(false),
+        )
+    }
+
     /// Reads the tree of the Cargo project containing `root`.
     pub(super) fn project_tree(
         &mut self,
@@ -491,6 +526,18 @@ impl BrowseCache {
                 return unavailable_source_file(Some(package), Some(request_binding), reason);
             }
         };
+        if self.archive_member_matches(
+            &bound_request.context,
+            &package_root,
+            path.as_str(),
+            &contents,
+        ) == Some(false)
+        {
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
+        }
         let contents = match String::from_utf8(contents) {
             Ok(contents) if !contents.as_bytes().contains(&0) => contents,
             _ => {
@@ -542,7 +589,13 @@ impl BrowseCache {
                 };
             }
         };
-        if second.as_slice() != contents.as_bytes()
+        if self.archive_member_matches(
+            &bound_request.context,
+            &package_root,
+            path.as_str(),
+            &second,
+        ) == Some(false)
+            || second.as_slice() != contents.as_bytes()
             || !self.has_current_binding(&bound_request.context, request_binding)
         {
             return CargoPackageSourceFileResultV1::Stale {
@@ -662,7 +715,10 @@ impl BrowseCache {
             );
         }
         let authority = authority.clone();
-        let declaration = match package_readme_manifest(&package_root) {
+        let declaration = match package_readme_manifest_verified(&package_root, |bytes| {
+            self.archive_member_matches(&bound_request.context, &package_root, "Cargo.toml", bytes)
+                != Some(false)
+        }) {
             Ok(declaration) => declaration,
             Err(reason) => {
                 return unavailable_package_readme(Some(package), Some(request_binding), reason);
@@ -678,6 +734,16 @@ impl BrowseCache {
                 return unavailable_package_readme(Some(package), Some(request_binding), reason);
             }
         };
+        if self
+            .registry_archive_for_root(&bound_request.context, &package_root)
+            .is_some_and(|archive| !selected_readme_matches_archive(&selected, &archive.witness))
+        {
+            return unavailable_package_readme(
+                Some(package),
+                Some(request_binding),
+                CargoPackageReadmeFailureV1::SourceObservationUnavailable,
+            );
+        }
 
         // Revalidate all manifests/configuration after the bounded file read.
         let current = match self.input(&bound_request.request_root) {
@@ -696,7 +762,10 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let current_declaration = match package_readme_manifest(&package_root) {
+        let current_declaration = match package_readme_manifest_verified(&package_root, |bytes| {
+            self.archive_member_matches(&bound_request.context, &package_root, "Cargo.toml", bytes)
+                != Some(false)
+        }) {
             Ok(declaration) => declaration,
             Err(_) => {
                 return CargoPackageReadmeResultV1::Stale {
@@ -718,7 +787,14 @@ impl BrowseCache {
                 };
             }
         };
-        if current_declaration != declaration || current_selected != selected {
+        if self
+            .registry_archive_for_root(&bound_request.context, &package_root)
+            .is_some_and(|archive| {
+                !selected_readme_matches_archive(&current_selected, &archive.witness)
+            })
+            || current_declaration != declaration
+            || current_selected != selected
+        {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
@@ -917,6 +993,13 @@ impl BrowseCache {
                 return CargoPackageReadmeLinkResultV1::Stale { origin };
             }
         };
+        if self
+            .registry_archive_for_root(&bound_request.context, &package_root)
+            .is_some()
+            && target_root != package_root
+        {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        }
         let first = match read_source_file_under_limit(
             &target_root,
             &path,
@@ -951,6 +1034,15 @@ impl BrowseCache {
                 );
             }
         };
+        if self.archive_member_matches(
+            &bound_request.context,
+            &package_root,
+            path.as_str(),
+            contents.as_bytes(),
+        ) == Some(false)
+        {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        }
 
         // Repeat the manifest-selected README check after following the link;
         // a changed manifest, source authority, or tree request invalidates
@@ -982,6 +1074,12 @@ impl BrowseCache {
             _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
         };
         if contents.as_bytes() != second.as_slice()
+            || self.archive_member_matches(
+                &bound_request.context,
+                &package_root,
+                path.as_str(),
+                &second,
+            ) == Some(false)
             || !self.has_current_binding(&bound_request.context, origin.request_binding)
         {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
@@ -1100,6 +1198,14 @@ impl BrowseCache {
             }
         };
         if first != second {
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
+        }
+        if let Some(archive) = self.registry_archive_for_root(&bound_request.context, &package_root)
+            && !source_inventory_matches_archive(&package_root, &first, &archive.witness)
+        {
             return CargoPackageSourceInventoryResultV1::Stale {
                 package,
                 request_binding,
@@ -1277,6 +1383,8 @@ impl BrowseCache {
             &input,
             &package_rows,
             read.tool_witness_reuse.as_ref(),
+            &read.registry_archives,
+            read.registry_archives.capacity(),
         );
         if retained_bytes <= self.byte_budget {
             while !self.workspace_cache_limit_allows(&workspace)
@@ -1332,6 +1440,7 @@ impl BrowseCache {
                         input: Arc::clone(&input),
                         retained_bytes,
                         package_rows,
+                        registry_archives: read.registry_archives,
                         request_bindings: HashMap::new(),
                         tool_witness_reuse: read.tool_witness_reuse,
                         last_used,
@@ -1763,6 +1872,8 @@ fn browse_entry_retained_bytes(
     input: &TreeInput,
     package_rows: &HashMap<[u8; 32], Option<usize>>,
     tool_reuse: Option<&CargoToolWitnessReuse>,
+    registry_archives: &[cargo_metadata::RegistryArchiveWitness],
+    registry_archives_capacity: usize,
 ) -> usize {
     // Each admitted request binding retains a workspace path clone in the
     // direct binding index. The cache-wide reserve accounts for all bounded
@@ -1786,6 +1897,10 @@ fn browse_entry_retained_bytes(
         .saturating_add(input.packages.capacity() * size_of::<TreeInputPackage>())
         .saturating_add(input.edges.capacity() * size_of::<backend_library::browse::TreeEdge>())
         .saturating_add(package_rows.capacity().saturating_mul(256))
+        .saturating_add(
+            registry_archives_capacity
+                .saturating_mul(size_of::<cargo_metadata::RegistryArchiveWitness>()),
+        )
         .saturating_add(watched_capacity.saturating_mul(size_of::<PathBuf>()));
     match &input.source {
         TreeSource::Cargo { host } => bytes = bytes.saturating_add(host.capacity()),
@@ -1801,6 +1916,12 @@ fn browse_entry_retained_bytes(
         for file in &tool_reuse.files {
             bytes = bytes.saturating_add(file.canonical_path.capacity());
         }
+    }
+    for archive in registry_archives {
+        bytes = bytes
+            .saturating_add(size_of_val(archive))
+            .saturating_add(archive.package_root.capacity())
+            .saturating_add(archive.witness.retained_bytes());
     }
     for package in &input.packages {
         bytes = bytes
@@ -1866,6 +1987,48 @@ fn source_inventory_under(
     scan.paths.sort();
     scan.paths.dedup();
     Ok(scan)
+}
+
+fn source_inventory_matches_archive(
+    package_root: &Path,
+    inventory: &SourceInventoryScan,
+    archive: &CrateArchiveWitness,
+) -> bool {
+    let mut listed = BTreeSet::new();
+    for path in &inventory.paths {
+        let text = path.as_str();
+        if !archive.members().contains_key(text) {
+            return false;
+        }
+        let Ok(Some(contents)) =
+            read_source_file_under_limit(package_root, path, MAX_CARGO_OBSERVATION_FILE_BYTES)
+        else {
+            return false;
+        };
+        let mut checkpoint =
+            || observation_budget().map_err(|_| "observation cancelled".to_owned());
+        if !archive
+            .matches_checked(text, &contents, &mut checkpoint)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        listed.insert(text.to_owned());
+    }
+    if matches!(
+        inventory.coverage,
+        CargoPackageSourceInventoryCoverageV1::Complete
+    ) {
+        let expected = archive
+            .members()
+            .keys()
+            .filter(|path| supported_source_path(path))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        listed == expected
+    } else {
+        true
+    }
 }
 
 fn walk_source_inventory(
@@ -2058,6 +2221,13 @@ enum SelectedPackageReadme {
 fn package_readme_manifest(
     package_root: &Path,
 ) -> Result<CargoPackageReadmeManifestV1, CargoPackageReadmeFailureV1> {
+    package_readme_manifest_verified(package_root, |_| true)
+}
+
+fn package_readme_manifest_verified(
+    package_root: &Path,
+    verify: impl FnOnce(&[u8]) -> bool,
+) -> Result<CargoPackageReadmeManifestV1, CargoPackageReadmeFailureV1> {
     let manifest_path = CargoPackageSourcePathV1::new("Cargo.toml")
         .map_err(|_| CargoPackageReadmeFailureV1::PackageManifestMalformed)?;
     let bytes = read_source_file_under_limit(
@@ -2072,6 +2242,9 @@ fn package_readme_manifest(
         _ => CargoPackageReadmeFailureV1::PackageManifestUnavailable,
     })?
     .ok_or(CargoPackageReadmeFailureV1::PackageManifestUnavailable)?;
+    if !verify(&bytes) {
+        return Err(CargoPackageReadmeFailureV1::PackageManifestUnavailable);
+    }
     let manifest = std::str::from_utf8(&bytes)
         .ok()
         .and_then(|manifest| toml::from_str::<toml::Value>(manifest).ok())
@@ -2098,6 +2271,30 @@ fn package_readme_manifest(
             Ok(CargoPackageReadmeManifestV1::WorkspaceInherited)
         }
         _ => Err(CargoPackageReadmeFailureV1::PackageManifestMalformed),
+    }
+}
+
+fn selected_readme_matches_archive(
+    selected: &SelectedPackageReadme,
+    archive: &CrateArchiveWitness,
+) -> bool {
+    match selected {
+        SelectedPackageReadme::Read {
+            root_scope: CargoPackageReadmeRootScopeV1::Package,
+            path,
+            contents,
+            ..
+        } => archive.matches(path.as_str(), contents),
+        SelectedPackageReadme::Read {
+            root_scope: CargoPackageReadmeRootScopeV1::EffectiveWorkspace,
+            ..
+        } => false,
+        SelectedPackageReadme::Absent(CargoPackageReadmeAbsenceV1::ManifestDisabled) => true,
+        SelectedPackageReadme::Absent(CargoPackageReadmeAbsenceV1::NoCargoDefault) => {
+            ["README.md", "README.txt", "README"]
+                .iter()
+                .all(|path| !archive.members().contains_key(*path))
+        }
     }
 }
 
@@ -2360,6 +2557,10 @@ fn read_source_file_under_limit(
 
 struct InputObservation {
     digest: [u8; 32],
+    /// Exact aggregate bytes read by the bounded base observation. Archive
+    /// inputs share this same total-byte ceiling rather than adding a second
+    /// independent allowance.
+    observed_bytes: usize,
     /// Path commitments for candidates absent at the sampling instant.
     /// Required metadata-listed manifests are checked against this set;
     /// optional configs remain valid absences in the witness.
@@ -2378,6 +2579,7 @@ struct ProjectInputRead {
     lock_origin_witness: [u8; 32],
     no_deps_witness: [u8; 32],
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
+    registry_archives: Vec<cargo_metadata::RegistryArchiveWitness>,
 }
 
 impl ProjectInputRead {
@@ -2505,6 +2707,7 @@ struct CoherentMetadata {
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
     lockfile: Option<String>,
     watched: Vec<PathBuf>,
+    registry_archives: Vec<cargo_metadata::RegistryArchiveWitness>,
 }
 
 impl CoherentMetadata {
@@ -2618,6 +2821,7 @@ fn observation_witness_with_context(
     hasher.update(&tool);
     Ok(InputObservation {
         digest: *hasher.finalize().as_bytes(),
+        observed_bytes: total,
         missing_path_keys,
         tool_witness_reuse: None,
         lockfile,
@@ -3938,9 +4142,8 @@ fn recognized_nix_parallel_cargo(
     // complete allowlisted body, permitting only that exact generator framing;
     // never trim whitespace or ignore a trailing shell statement. The direct
     // form remains supported for previously admitted unframed launchers.
-    let substitutions = match_nix_path_template(template, source).or_else(|| {
-        match_nix_path_template(template, source.strip_suffix(b"\n")?)
-    })?;
+    let substitutions = match_nix_path_template(template, source)
+        .or_else(|| match_nix_path_template(template, source.strip_suffix(b"\n")?))?;
     let cargo = substitutions.get("cargo")?.clone();
     let git = substitutions.get("git")?.clone();
     let sccache = substitutions.get("sccache")?;
@@ -5070,6 +5273,7 @@ fn read_project(
                 lock_origin_witness,
                 no_deps_witness: [0; 32],
                 tool_witness_reuse: observed.tool_witness_reuse,
+                registry_archives: Vec::new(),
             }))
         }
     }
@@ -5099,6 +5303,7 @@ fn project_input_from_metadata(
         lock_origin_witness: observed.lock_origin_witness,
         no_deps_witness: observed.no_deps_witness,
         tool_witness_reuse: observed.tool_witness_reuse,
+        registry_archives: observed.registry_archives,
     })
 }
 
@@ -5814,6 +6019,7 @@ mod tests {
             lock_origin_witness: [0; 32],
             no_deps_witness: [0; 32],
             tool_witness_reuse,
+            registry_archives: Vec::new(),
         }
     }
 
@@ -5849,6 +6055,8 @@ mod tests {
             &input,
             &package_rows,
             None,
+            &[],
+            0,
         );
         cache.remove_context(&context);
         cache.cached_bytes = cache.cached_bytes.saturating_add(retained_bytes);
@@ -5860,6 +6068,7 @@ mod tests {
                 input,
                 retained_bytes,
                 package_rows,
+                registry_archives: Vec::new(),
                 request_bindings: HashMap::new(),
                 tool_witness_reuse: None,
                 last_used: 1,
@@ -6681,7 +6890,9 @@ mod tests {
             .and_then(Option::as_ref)
             .cloned()
             .expect("exact source-qualified path package row");
-        let binding = tree.retained_request_binding().expect("exact project tree request");
+        let binding = tree
+            .retained_request_binding()
+            .expect("exact project tree request");
         let readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding));
         assert!(
             readme.has_admissible_shape(),
@@ -6781,7 +6992,9 @@ mod tests {
         assert!(changed_link);
         assert_eq!(alias.canonicalize().expect("updated request symlink"), b);
         assert_eq!(tree_a.root, a.to_string_lossy().into_owned());
-        let binding_a = tree_a.retained_request_binding().expect("retained A request binding");
+        let binding_a = tree_a
+            .retained_request_binding()
+            .expect("retained A request binding");
         assert_eq!(
             binding_a,
             backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&alias, &tree_a.root)
@@ -6828,9 +7041,17 @@ mod tests {
             .project_tree(&alias, None)
             .expect("later request follows the changed symlink to B");
         assert_eq!(tree_b.root, b.to_string_lossy().into_owned());
-        let binding_b = tree_b.retained_request_binding().expect("retained B request binding");
-        assert_eq!(binding_a.requested_root_digest, binding_b.requested_root_digest);
-        assert_ne!(binding_a.effective_workspace_root_digest, binding_b.effective_workspace_root_digest);
+        let binding_b = tree_b
+            .retained_request_binding()
+            .expect("retained B request binding");
+        assert_eq!(
+            binding_a.requested_root_digest,
+            binding_b.requested_root_digest
+        );
+        assert_ne!(
+            binding_a.effective_workspace_root_digest,
+            binding_b.effective_workspace_root_digest
+        );
         assert!(matches!(
             owner.source_file(
                 request_a,
@@ -6870,6 +7091,7 @@ mod tests {
             lock_origin_witness: [2; 32],
             no_deps_witness: [0; 32],
             tool_witness_reuse: None,
+            registry_archives: Vec::new(),
         };
         let mut fallback = Some(fallback);
         let mut owner = BrowseCache::default();
@@ -7082,7 +7304,8 @@ mod tests {
             .and_then(Option::as_ref)
             .cloned()
             .expect("Cargo's exact helper authority");
-        let request = backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
+        let request =
+            backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
         let path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
         assert!(matches!(
             owner.source_file(request.clone(), path.clone()),
@@ -7292,7 +7515,9 @@ mod tests {
         let tree_a = owner
             .project_tree(&a, None)
             .expect("real Cargo observation for workspace A");
-        let binding_a = tree_a.retained_request_binding().expect("A request binding");
+        let binding_a = tree_a
+            .retained_request_binding()
+            .expect("A request binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let root_context_a = owner
             .bindings
@@ -7401,7 +7626,9 @@ mod tests {
         let refreshed_root = owner
             .project_tree(&a, None)
             .expect("re-admit the changed workspace context");
-        let binding_a = refreshed_root.retained_request_binding().expect("refreshed A binding");
+        let binding_a = refreshed_root
+            .retained_request_binding()
+            .expect("refreshed A binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let refreshed_member = owner
             .project_tree(&member_root_a, None)
@@ -7450,7 +7677,9 @@ mod tests {
         let tree_b = owner
             .project_tree(&b, None)
             .expect("real Cargo observation for workspace B");
-        let binding_b = tree_b.retained_request_binding().expect("B request binding");
+        let binding_b = tree_b
+            .retained_request_binding()
+            .expect("B request binding");
         let request_b = request_for(&owner, &b, "cache-shared", binding_b);
         assert_ne!(
             request_a.package, request_b.package,
@@ -7594,7 +7823,9 @@ mod tests {
             let tree = owner
                 .project_tree(&requested, None)
                 .expect("real Cargo member request in workspace A");
-            let binding = tree.retained_request_binding().expect("additional request binding");
+            let binding = tree
+                .retained_request_binding()
+                .expect("additional request binding");
             assert_eq!(
                 binding.effective_workspace_root_digest,
                 binding_a.effective_workspace_root_digest

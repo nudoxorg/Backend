@@ -5,6 +5,8 @@
 //! breaker, leases, and immutable source receipt; the registry owner remains
 //! the protocol adapter for feed journal phases and 64 KiB archive streaming.
 
+pub(super) mod archive_witness;
+
 use crate::process::{AdvisoryConfig, AdvisorySourceConfig, RegistryConfig};
 use backend_engine::acquisition::{
     AcquisitionOutcome as TypedAcquisitionOutcome, AcquisitionRequest, AcquisitionService,
