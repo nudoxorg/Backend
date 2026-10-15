@@ -11,6 +11,7 @@ use super::{
 use flate2::bufread::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io::{Cursor, Read};
 
 const MAX_ARCHIVE_BYTES: usize = MAX_EXTRACTED_TOTAL_BYTES;
@@ -23,21 +24,39 @@ const PARSER_SCRATCH_ACCOUNTING_BYTES: usize = 6 * (MAX_MEMBER_PATH_BYTES + 1);
 const WITNESS_HASH_DOMAIN: &[u8] = b"nudox.cargo-crate-archive-witness.v1\0";
 
 /// Bounded error while constructing or checking a registry archive witness.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::builtin) enum CrateArchiveWitnessError {
     /// The bytes do not match the exact checksum recorded by Cargo.lock.
-    #[error("Cargo registry archive SHA-256 does not match the lockfile")]
     ArchiveDigestMismatch,
     /// The archive is malformed, ambiguous, unsafe, or outside supported tar forms.
-    #[error("Cargo registry archive is malformed or unsupported")]
     InvalidArchive,
     /// A count, path, retained witness, expansion, or payload exceeded its limit.
-    #[error("Cargo registry archive witness exceeded a bound")]
     Bounds,
     /// The caller's cancellation or owner-budget checkpoint stopped processing.
-    #[error("Cargo registry archive witness was interrupted: {0}")]
     Interrupted(String),
 }
+
+impl fmt::Display for CrateArchiveWitnessError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArchiveDigestMismatch => {
+                formatter.write_str("Cargo registry archive SHA-256 does not match the lockfile")
+            }
+            Self::InvalidArchive => {
+                formatter.write_str("Cargo registry archive is malformed or unsupported")
+            }
+            Self::Bounds => formatter.write_str("Cargo registry archive witness exceeded a bound"),
+            Self::Interrupted(reason) => {
+                write!(
+                    formatter,
+                    "Cargo registry archive witness was interrupted: {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CrateArchiveWitnessError {}
 
 /// Immutable identities of regular files in one exact Cargo registry archive.
 ///
@@ -107,7 +126,14 @@ impl CrateArchiveWitness {
         let root = crate_root(crate_name, version)?;
         let tar = decompress_gzip(archive, max_working_bytes, checkpoint)?;
         admit_expansion(archive.len(), tar.len()).map_err(map_parent_error)?;
-        let members = parse_tar(&root, &tar, archive.len(), max_working_bytes, checkpoint)?;
+        let members = parse_tar(
+            &root,
+            &tar,
+            tar.capacity(),
+            archive.len(),
+            max_working_bytes,
+            checkpoint,
+        )?;
         let retained_bytes =
             members
                 .iter()
@@ -277,6 +303,7 @@ fn decompress_gzip(
 fn parse_tar(
     root: &str,
     bytes: &[u8],
+    bytes_capacity: usize,
     archive_len: usize,
     max_working_bytes: usize,
     checkpoint: &mut impl FnMut() -> Result<(), String>,
@@ -289,7 +316,7 @@ fn parse_tar(
     let mut source_bytes = 0usize;
     let mut terminated = false;
     let mut working_bytes = archive_len
-        .checked_add(bytes.capacity())
+        .checked_add(bytes_capacity)
         .and_then(|bytes| bytes.checked_add(WITNESS_BASE_ACCOUNTING_BYTES))
         .and_then(|bytes| bytes.checked_add(PARSER_SCRATCH_ACCOUNTING_BYTES))
         .ok_or(CrateArchiveWitnessError::Bounds)?;
@@ -600,7 +627,7 @@ fn validate_pax_path_records(
 fn map_has_descendant(paths: &BTreeMap<String, [u8; 32]>, path: &str) -> bool {
     let prefix = format!("{path}/");
     paths
-        .range::<str, _>(prefix.as_str()..)
+        .range(prefix.clone()..)
         .next()
         .is_some_and(|(candidate, _)| candidate.starts_with(&prefix))
 }
@@ -608,7 +635,7 @@ fn map_has_descendant(paths: &BTreeMap<String, [u8; 32]>, path: &str) -> bool {
 fn set_has_descendant(paths: &BTreeSet<String>, path: &str) -> bool {
     let prefix = format!("{path}/");
     paths
-        .range::<str, _>(prefix.as_str()..)
+        .range(prefix.clone()..)
         .next()
         .is_some_and(|candidate| candidate.starts_with(&prefix))
 }
@@ -706,6 +733,12 @@ mod tests {
         header[148..156].copy_from_slice(checksum.as_bytes());
     }
 
+    fn first_tar_header(bytes: &mut [u8]) -> &mut [u8; TAR_BLOCK_BYTES] {
+        (&mut bytes[..TAR_BLOCK_BYTES])
+            .try_into()
+            .expect("tar header block")
+    }
+
     fn tar(entries: &[(&str, u8, &[u8])]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for (path, kind, payload) in entries {
@@ -776,11 +809,36 @@ mod tests {
     }
 
     #[test]
+    fn witness_validates_committed_equivalent_archive_and_known_member_digest() {
+        const ARCHIVE_SHA256: [u8; 32] = [
+            0x87, 0x7a, 0x4a, 0xce, 0x87, 0x13, 0xb0, 0xbc, 0xf2, 0xa4, 0xe7, 0xee, 0xc8, 0x25,
+            0x29, 0xc0, 0x29, 0xf1, 0xd0, 0x61, 0x98, 0x86, 0xd1, 0x81, 0x45, 0xfe, 0xa9, 0x6c,
+            0x3f, 0xfe, 0x5c, 0x0f,
+        ];
+        const SRC_LIB_SHA256: [u8; 32] = [
+            0x1d, 0xd8, 0x43, 0x63, 0xf5, 0x61, 0xb3, 0x0b, 0x1d, 0xa7, 0x13, 0x48, 0x6c, 0x6b,
+            0x58, 0x39, 0x00, 0x35, 0x3e, 0x62, 0xc5, 0x69, 0xd7, 0xba, 0x1d, 0xd8, 0x4e, 0xb2,
+            0xc0, 0x4f, 0x1a, 0x14,
+        ];
+        let archive = include_bytes!("fixtures/equivalent-1.0.2.crate");
+        let mut checkpoint = || Ok(());
+        let witness = CrateArchiveWitness::capture(
+            "equivalent",
+            "1.0.2",
+            archive,
+            ARCHIVE_SHA256,
+            &mut checkpoint,
+        )
+        .expect("committed real Cargo archive matches the locked checksum");
+        assert_eq!(witness.archive_sha256(), &ARCHIVE_SHA256);
+        assert_eq!(witness.member_digest("src/lib.rs"), Some(&SRC_LIB_SHA256));
+    }
+
+    #[test]
     fn witness_decodes_gnu_metadata_and_rejects_lossy_or_unknown_headers() {
         let path = "equivalent-1.0.2/src/lib.rs";
         let mut gnu = tar(&[(path, b'0', b"source")]);
-        let header: &mut [u8; TAR_BLOCK_BYTES] =
-            gnu[..TAR_BLOCK_BYTES].try_into().expect("tar header block");
+        let header = first_tar_header(&mut gnu);
         header[257..263].copy_from_slice(b"ustar ");
         header[263..265].copy_from_slice(b" \0");
         header[345..500].fill(0xff);
@@ -791,9 +849,7 @@ mod tests {
 
         let mut non_utf8 = tar(&[(path, b'0', b"source")]);
         non_utf8[0] = 0xff;
-        let header: &mut [u8; TAR_BLOCK_BYTES] = non_utf8[..TAR_BLOCK_BYTES]
-            .try_into()
-            .expect("tar header block");
+        let header = first_tar_header(&mut non_utf8);
         update_tar_checksum(header);
         let archive = gzip(&non_utf8);
         assert_eq!(
@@ -802,9 +858,7 @@ mod tests {
         );
 
         let mut non_ascii_size = tar(&[(path, b'0', b"")]);
-        let header: &mut [u8; TAR_BLOCK_BYTES] = non_ascii_size[..TAR_BLOCK_BYTES]
-            .try_into()
-            .expect("tar header block");
+        let header = first_tar_header(&mut non_ascii_size);
         header[124] = 0xff;
         update_tar_checksum(header);
         let archive = gzip(&non_ascii_size);
@@ -815,9 +869,7 @@ mod tests {
         );
 
         let mut unknown = tar(&[(path, b'0', b"source")]);
-        let header: &mut [u8; TAR_BLOCK_BYTES] = unknown[..TAR_BLOCK_BYTES]
-            .try_into()
-            .expect("tar header block");
+        let header = first_tar_header(&mut unknown);
         header[257..263].copy_from_slice(b"bogus!");
         update_tar_checksum(header);
         let archive = gzip(&unknown);
@@ -970,7 +1022,15 @@ mod tests {
         let limit = working_base + one_member;
         let mut checkpoint = || Ok(());
         assert_eq!(
-            parse_tar("equivalent-1.0.2", &tar_bytes, 0, limit, &mut checkpoint,).unwrap_err(),
+            parse_tar(
+                "equivalent-1.0.2",
+                &tar_bytes,
+                tar_bytes.capacity(),
+                0,
+                limit,
+                &mut checkpoint,
+            )
+            .unwrap_err(),
             CrateArchiveWitnessError::Bounds,
             "the second indexed member must be rejected before insertion"
         );
