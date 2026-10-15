@@ -77,6 +77,8 @@ pub enum ParentageAuthority {
 /// finalized [`crate::ir::Ir`] images retain its fields in cold, aligned columns.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EntityAuthorityFacts {
+    /// Whether this image owns the declaration or retains it as support.
+    pub publication: DeclarationPublicationRole,
     /// Exact containment truth, not inferred from the owned `parent` field.
     pub parentage: ParentageAuthority,
     /// Primary declaration source span availability.
@@ -96,6 +98,33 @@ pub struct EntityAuthorityFacts {
     pub attributes: FactAvailability,
     /// Language-specific extension-plane availability.
     pub language_extension: FactAvailability,
+}
+
+/// Producer-owned publication role, independent of optional source spans.
+/// Legacy absence never proves that an entity is an owned declaration.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum DeclarationPublicationRole {
+    /// The producer or legacy format supplied no ownership observation.
+    #[default]
+    Unavailable = 0,
+    /// The compiler owns this declaration in this image's primary source.
+    PrimaryOwned = 1,
+    /// Retained for canonical types, members and references, without ownership.
+    ReferenceOnly = 2,
+}
+
+impl DeclarationPublicationRole {
+    /// Admits only the closed persisted role grammar.
+    #[must_use]
+    pub const fn from_byte(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Unavailable),
+            1 => Some(Self::PrimaryOwned),
+            2 => Some(Self::ReferenceOnly),
+            _ => None,
+        }
+    }
 }
 
 /// Atom-backed package/file scope retained by a compiled semantic image.
@@ -186,6 +215,8 @@ impl Default for ImageProvenance {
 /// semantic value.
 #[derive(Clone, Copy, Debug)]
 pub struct EntityAuthorityColumns<'ir> {
+    /// Image ownership observed by the producer, including explicit absence.
+    pub publication: &'ir [DeclarationPublicationRole],
     /// Containment authority for each entity ordinal.
     pub parentage: &'ir [ParentageAuthority],
     /// Availability of the primary source span for each entity ordinal.
@@ -297,6 +328,7 @@ pub enum AuthorityFactFault {
 /// remains coupled to the matching entity insertion in [`crate::ir::IrBuilder`].
 #[derive(Default)]
 pub(crate) struct AuthorityColumns {
+    publication: Vec<DeclarationPublicationRole>,
     parentage: Vec<ParentageAuthority>,
     source: Vec<FactAvailability>,
     source_file: Vec<FactAvailability>,
@@ -314,6 +346,7 @@ impl AuthorityColumns {
     }
 
     pub(crate) fn reserve(&mut self, additional: usize) {
+        self.publication.reserve(additional);
         self.parentage.reserve(additional);
         self.source.reserve(additional);
         self.source_file.reserve(additional);
@@ -326,6 +359,7 @@ impl AuthorityColumns {
     }
 
     pub(crate) fn push(&mut self, facts: EntityAuthorityFacts) {
+        self.publication.push(facts.publication);
         self.parentage.push(facts.parentage);
         self.source.push(facts.source);
         self.source_file.push(facts.source_file);
@@ -339,6 +373,7 @@ impl AuthorityColumns {
 
     pub(crate) fn facts(&self, index: usize) -> Option<EntityAuthorityFacts> {
         Some(EntityAuthorityFacts {
+            publication: *self.publication.get(index)?,
             parentage: *self.parentage.get(index)?,
             source: *self.source.get(index)?,
             source_file: *self.source_file.get(index)?,
@@ -353,6 +388,7 @@ impl AuthorityColumns {
 
     pub(crate) fn view(&self) -> EntityAuthorityColumns<'_> {
         EntityAuthorityColumns {
+            publication: &self.publication,
             parentage: &self.parentage,
             source: &self.source,
             source_file: &self.source_file,
@@ -367,6 +403,7 @@ impl AuthorityColumns {
 
     pub(crate) fn aligned(&self, count: usize) -> bool {
         self.parentage.len() == count
+            && self.publication.len() == count
             && self.source.len() == count
             && self.source_file.len() == count
             && self.members.len() == count

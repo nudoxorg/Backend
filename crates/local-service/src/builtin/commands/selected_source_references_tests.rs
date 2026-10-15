@@ -141,6 +141,11 @@ fn local_call_image(
         .intern_atom(path.as_bytes())
         .map_err(|error| error.to_string())?;
     let authority = EntityAuthorityFacts {
+        publication: if matches!(key.profile(), LanguageProfile::Go(_)) {
+            backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned
+        } else {
+            backend_semantic::ir::DeclarationPublicationRole::Unavailable
+        },
         parentage: ParentageAuthority::Root,
         source: FactAvailability::Captured,
         source_file: FactAvailability::Captured,
@@ -273,7 +278,7 @@ fn projected_view(
     let (initial, _) = crate::builtin::initial_view().map_err(|error| error.to_string())?;
     let mut rows = Vec::new();
     for image in images {
-        for entity in DocumentationSession::new(image).canonical_entities() {
+        for entity in DocumentationSession::new(image).publication_entities() {
             let entity = entity.map_err(|error| error.to_string())?;
             let identity = entity.entity.version.identity();
             rows.push(backend_engine::Row::in_package(

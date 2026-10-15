@@ -581,6 +581,7 @@ fn semantic_rows(
     let mut rows = Vec::new();
     let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let mut complete = BTreeSet::new();
+    let mut incomplete_ownership = BTreeSet::new();
     let mut stale_paths = ProfileStalePaths::new();
     let mut activated_publications = BTreeSet::new();
     let mut ledger = ProjectionLedger::default();
@@ -729,6 +730,7 @@ fn semantic_rows(
                 current_identities.get(&target),
             );
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
+            let mut ownership_complete = true;
             let mut group_by_path = BTreeMap::<String, usize>::new();
             for (index, image) in opened.iter().enumerate() {
                 let path = match image {
@@ -792,6 +794,7 @@ fn semantic_rows(
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
+                        ownership_complete: &mut ownership_complete,
                         exact_sites: &mut exact_sites,
                         initial,
                         symbols: &mut symbols,
@@ -843,8 +846,15 @@ fn semantic_rows(
             if matches!(
                 coverage,
                 backend_engine::builtin::SemanticPublicationCoverage::Complete
-            ) {
+            ) && ownership_complete && !incomplete_ownership.contains(&target) {
                 complete.insert(target);
+            }
+            if !ownership_complete {
+                incomplete_ownership.insert(target);
+                complete.remove(&target);
+                for path in compiled_sources.keys() {
+                    targets.partial_artifacts.insert((target.0, target.1, path.clone()));
+                }
             }
             if matches!(
                 coverage,
@@ -1025,6 +1035,7 @@ pub(crate) fn compiled_source_path(
 }
 
 pub(super) struct SemanticRowSink<'a> {
+    pub(super) ownership_complete: &'a mut bool,
     pub(super) exact_sites: &'a mut super::exact_sites::ExactDeclarationSites,
     pub(super) initial: &'a ViewRoot,
     pub(super) symbols: &'a mut BTreeSet<RowId>,
@@ -1161,7 +1172,7 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
     let language = backend_semantic::vocabulary::Language::from(profile);
     let mut derived = BTreeMap::new();
     let mut pairing = Vec::new();
-    for entity in session.canonical_entities() {
+    for entity in session.publication_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let identity = entity.entity.version.identity();
@@ -1246,7 +1257,7 @@ pub(super) fn project_image_rows(
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
     let canonical_identities = session
-        .canonical_entities()
+        .publication_entities()
         .map(|entity| {
             entity
                 .map(|entity| entity.entity.version.identity())
@@ -1256,7 +1267,7 @@ pub(super) fn project_image_rows(
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
     let mut projected = Vec::new();
-    for entity in session.canonical_entities() {
+    for entity in session.publication_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let name = super::semantic_display_name(entity.name)?;
@@ -1338,12 +1349,14 @@ pub(super) fn project_image_rows(
                 .entity(parent)
                 .map_err(|error| BuiltinModelError(format!("project semantic parent: {error}")))?;
             let parent_identity = parent.entity.version.identity();
-            if !canonical_identities.contains(&parent_identity) {
-                return Err(BuiltinModelError(
-                    "project semantic parent is outside the canonical entity closure".to_owned(),
-                ));
+            if session.owns_declaration(&parent.entity) {
+                if !canonical_identities.contains(&parent_identity) {
+                    return Err(BuiltinModelError(
+                        "project semantic parent is outside the canonical entity closure".to_owned(),
+                    ));
+                }
+                row = row.with_parent(semantic_symbol(project.package, parent_identity));
             }
-            row = row.with_parent(semantic_symbol(project.package, parent_identity));
         }
         projected.push(ProjectedRow {
             exact_binding: kinds.exact.get(&identity).copied(),
@@ -1398,7 +1411,10 @@ pub(super) fn project_image_rows(
             });
         }
     }
-    Ok(ProjectedImage { rows: projected })
+    Ok(ProjectedImage {
+        rows: projected,
+        ownership_complete: session.publication_ownership_available(),
+    })
 }
 
 /// Projects one image and admits those rows into `sink`.
@@ -1650,6 +1666,11 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
             (Fragment::Break, None)
         }
         DocumentationFragment::Link { label, target } => {
+            if let backend_engine::application::DocumentationTarget::Local(target) = target {
+                if !DocumentationSession::new(reader).owns_declaration(&target.entity) {
+                    return Ok((Fragment::Text(label.to_owned()), None));
+                }
+            }
             let (target, external) = match target {
                 backend_engine::application::DocumentationTarget::Local(target) => (
                     semantic_symbol(package, target.entity.version.identity()),

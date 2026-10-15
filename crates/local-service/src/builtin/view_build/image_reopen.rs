@@ -70,6 +70,7 @@ fn project_rows(bytes: &[u8]) -> Vec<backend_engine::Row> {
     let mut rows = Vec::new();
     let mut remaining = usize::MAX;
     let mut sink = SemanticRowSink {
+        ownership_complete: &mut true,
         exact_sites: &mut Default::default(),
         initial: &initial,
         symbols: &mut symbols,

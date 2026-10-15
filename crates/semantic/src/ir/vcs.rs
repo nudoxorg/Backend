@@ -159,6 +159,8 @@ impl FacetChange {
 pub struct EntityFacetChanges {
     /// Declaration kind, shape, name, or other core declaration facts.
     pub declaration_shape: FacetChange,
+    /// Declaration ownership and whether the producer observed it.
+    pub publication: FacetChange,
     /// Documentation content and its capture state.
     pub documentation: FacetChange,
     /// Visibility value and its capture state.
@@ -176,6 +178,7 @@ impl EntityFacetChanges {
     #[must_use]
     pub const fn requires_change(self) -> bool {
         self.declaration_shape.requires_change()
+            || self.publication.requires_change()
             || self.documentation.requires_change()
             || self.visibility.requires_change()
             || self.attributes.requires_change()
@@ -514,6 +517,19 @@ fn compare_entity_facets<Before: SemanticReader + ?Sized, After: SemanticReader 
         },
     );
 
+    let publication_coverage = |role| {
+        if role == crate::ir::DeclarationPublicationRole::Unavailable {
+            FacetCoverage::Unavailable
+        } else {
+            FacetCoverage::Complete
+        }
+    };
+    let publication = facet_change(
+        publication_coverage(before.authority.publication),
+        publication_coverage(after.authority.publication),
+        Some(before.authority.publication == after.authority.publication),
+    );
+
     let documentation = facet_change(
         availability_coverage(before.authority.documentation),
         availability_coverage(after.authority.documentation),
@@ -578,6 +594,7 @@ fn compare_entity_facets<Before: SemanticReader + ?Sized, After: SemanticReader 
 
     EntityFacetChanges {
         declaration_shape,
+        publication,
         documentation,
         visibility,
         attributes,
@@ -2807,8 +2824,7 @@ mod tests {
         Visibility,
     };
 
-    #[test]
-    fn captured_extension_coverage_without_a_row_is_semantically_empty() {
+    fn plain_image() -> Ir {
         let mut builder = IrBuilder::new();
         let versions = [EntityVersion {
             family: DeclarationFamilyId::from_raw([1; 16]),
@@ -2839,7 +2855,43 @@ mod tests {
                 links: &[],
             })
             .expect("plain test declaration is valid");
-        let ir = builder.finish().expect("plain test IR is valid");
+        builder.finish().expect("plain test IR is valid")
+    }
+
+    #[test]
+    fn publication_changes_have_their_own_coverage_and_leave_shape_unchanged() {
+        use crate::ir::DeclarationPublicationRole as Role;
+        let ir = plain_image();
+        let mut before = ir.canonical_entities().next().expect("plain entity");
+        let mut after = before;
+        let legacy = compare_entity_facets(&ir, before, &ir, after);
+        assert_eq!(legacy.publication.comparison, FacetComparison::Unavailable);
+        after.authority.publication = Role::PrimaryOwned;
+        let gained = compare_entity_facets(&ir, before, &ir, after);
+        assert_eq!(
+            gained.declaration_shape.comparison,
+            FacetComparison::Unchanged
+        );
+        assert_eq!(
+            gained.publication.coverage,
+            Delta::Changed {
+                before: FacetCoverage::Unavailable,
+                after: FacetCoverage::Complete
+            }
+        );
+        before.authority.publication = Role::ReferenceOnly;
+        let changed = compare_entity_facets(&ir, before, &ir, after);
+        assert_eq!(changed.publication.coverage, Delta::Unchanged);
+        assert_eq!(changed.publication.comparison, FacetComparison::Changed);
+        assert_eq!(
+            changed.declaration_shape.comparison,
+            FacetComparison::Unchanged
+        );
+    }
+
+    #[test]
+    fn captured_extension_coverage_without_a_row_is_semantically_empty() {
+        let ir = plain_image();
         let mut entity = ir
             .canonical_entities()
             .next()

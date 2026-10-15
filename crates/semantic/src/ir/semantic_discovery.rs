@@ -33,9 +33,22 @@ pub struct ParentageCensus {
     pub unrepresented_authority_owner: usize,
 }
 
+/// Exact producer declaration-publication distribution.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeclarationPublicationCensus {
+    /// Rows with no producer ownership observation.
+    pub unavailable: usize,
+    /// Declarations owned by the image's primary source.
+    pub primary_owned: usize,
+    /// Canonical supporting rows that own no publication declaration.
+    pub reference_only: usize,
+}
+
 /// Exact availability distribution for every common declaration fact plane.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EntityAuthorityCensus {
+    /// Distribution of producer declaration ownership observations.
+    pub publication: DeclarationPublicationCensus,
     /// Distribution of containment states across entity rows.
     pub parentage: ParentageCensus,
     /// Distribution of captured/unavailable primary source-span facts.
@@ -177,6 +190,11 @@ impl<'image, Reader: SemanticReader + ?Sized> SemanticImageDiscovery<'image, Rea
         let entities = self.reader.canonical_entities();
         let entity_count = entities.len();
         for entity in entities {
+            match entity.authority.publication {
+                crate::ir::DeclarationPublicationRole::Unavailable => entity_authority.publication.unavailable += 1,
+                crate::ir::DeclarationPublicationRole::PrimaryOwned => entity_authority.publication.primary_owned += 1,
+                crate::ir::DeclarationPublicationRole::ReferenceOnly => entity_authority.publication.reference_only += 1,
+            }
             observe_parentage(&mut entity_authority.parentage, entity.authority.parentage);
             observe_availability(&mut entity_authority.source, entity.authority.source);
             observe_availability(

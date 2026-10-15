@@ -432,6 +432,7 @@ fn source_span(file: AtomId, start: u32) -> SourceSpan {
 
 fn complete_entity_authority() -> EntityAuthorityFacts {
     EntityAuthorityFacts {
+        publication: backend_semantic::ir::DeclarationPublicationRole::Unavailable,
         parentage: ParentageAuthority::Root,
         source: FactAvailability::Captured,
         source_file: FactAvailability::Captured,

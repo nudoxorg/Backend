@@ -465,6 +465,7 @@ pub fn execute() {}
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = super::SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &initial,
             symbols: &mut symbols,
@@ -581,6 +582,7 @@ pub fn execute() {}
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = super::SemanticRowSink {
+            ownership_complete: &mut true,
             exact_sites: &mut Default::default(),
             initial: &initial,
             symbols: &mut symbols,
@@ -698,6 +700,7 @@ pub fn execute() {}
             DocInput::Text("Deprecated: use New."),
         ];
         let documented = EntityAuthorityFacts {
+            publication: backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned,
             documentation: FactAvailability::Captured,
             ..fixture_authority(ParentageAuthority::Root)
         };
@@ -722,6 +725,7 @@ pub fn execute() {}
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: EntityAuthorityFacts {
+                    publication: backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned,
                     documentation: FactAvailability::Captured,
                     ..fixture_authority(fixture_identity(1))
                 },

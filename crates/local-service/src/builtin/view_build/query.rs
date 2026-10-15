@@ -165,6 +165,15 @@ fn append_compiler_query_facts(
     }
 
     let opened = open_query_publications(&pending)?;
+    for publication in &opened {
+        if publication
+            .images
+            .iter()
+            .any(|image| !DocumentationSession::new(&image.view).publication_ownership_available())
+        {
+            complete.remove(&(publication.package.to_bytes(), publication.profile));
+        }
+    }
     let sites = super::semantic::StructuralSites::of(sources)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
@@ -238,7 +247,7 @@ fn append_compiler_query_facts(
             let image_digest = opened_image.digest;
             let mut external_targets =
                 BTreeMap::<String, (ExternalTargetIdentity, ExternalId)>::new();
-            for entity in session.canonical_entities() {
+            for entity in session.publication_entities() {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -256,6 +265,7 @@ fn append_compiler_query_facts(
                 let parent = entity
                     .entity
                     .parent
+                    .filter(|parent| image.entity(*parent).is_some_and(|parent| session.owns_declaration(&parent)))
                     .map(|parent| {
                         let parent = session.entity(parent).map_err(|error| {
                             BuiltinModelError(format!(
@@ -282,7 +292,7 @@ fn append_compiler_query_facts(
                                 ));
                             };
                             let target = target.version.identity();
-                            if identities.contains(&target) {
+                            if published.contains(&target) {
                                 related.push(query_semantic_id(package, target));
                             }
                         }
@@ -470,7 +480,7 @@ fn open_query_publications<'a>(
             let digest = bytes.content_digest();
             let mut identities = BTreeSet::new();
             let session = DocumentationSession::new(&view);
-            for entity in session.canonical_entities() {
+            for entity in session.publication_entities() {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -653,7 +663,7 @@ fn index_open_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> {
         let path = compiled_source_path(&view)?;
         let digest = *blake3::hash(bytes).as_bytes();
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;
@@ -675,7 +685,7 @@ fn index_reopened_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> 
         let view = SemanticImageView::reopen(bytes)
             .map_err(|error| BuiltinModelError(format!("reopen semantic query image: {error}")))?;
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;
@@ -691,7 +701,7 @@ fn index_reopened_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> 
         let path = compiled_source_path(&view)?;
         let digest = *blake3::hash(bytes).as_bytes();
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;

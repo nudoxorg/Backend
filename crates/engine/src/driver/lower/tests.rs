@@ -508,6 +508,7 @@ fn owned_authority_projection(facts: &FactSet<'_>) -> Result<Vec<EntityAuthority
     }
     Ok((0..columns.row_count())
         .map(|index| EntityAuthorityFacts {
+            publication: columns.publication[index],
             parentage: columns.parentage[index],
             source: columns.source[index],
             source_file: columns.source_file[index],

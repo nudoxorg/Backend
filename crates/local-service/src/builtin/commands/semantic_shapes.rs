@@ -10,7 +10,7 @@ use super::super::{
     read_package_sources,
 };
 use super::semantic_query::for_package_publications;
-use backend_engine::application::LocalCompilerClient;
+use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_library::{
     CommandFailure, CommandReply, SemanticArrayShape, SemanticCallableCarrierBindings,
@@ -380,10 +380,16 @@ pub(super) fn execute_semantic_shapes(
                 BuiltinModelError(format!("reopen selected semantic shape image: {error}"))
             })?;
             let entities = image.canonical_entities();
+            let session = DocumentationSession::new(&image);
             let image_entity_count = entities.len();
             let remaining = MAX_SEMANTIC_SHAPE_SCAN_ENTITIES.saturating_sub(scanned_entities);
             for entity in entities.take(remaining) {
                 scanned_entities += 1;
+                // The ceiling still counts every visited row, including support.
+                // Only owned declarations can answer a product-symbol lookup.
+                if !session.owns_declaration(&entity) {
+                    continue;
+                }
                 let identity = entity.version.identity();
                 let symbol = view_build::semantic_symbol(package, identity);
                 if requested_symbols.contains(&symbol) {

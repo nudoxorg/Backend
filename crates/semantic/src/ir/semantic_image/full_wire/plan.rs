@@ -135,7 +135,14 @@ impl<'image> FullSemanticImagePlan<'image> {
             ir.semantic_entity(row.entity)
                 .is_some_and(|entity| entity.name.anonymous_callable_anchor().is_some())
         });
-        let schema = if has_anonymous_callable {
+        let has_publication_roles = semantic.entities.rows.iter().any(|row| {
+            ir.semantic_entity(row.entity).is_some_and(|entity| {
+                entity.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable
+            })
+        });
+        let schema = if has_publication_roles {
+            super::wire::SCHEMA_PUBLICATION_ROLES
+        } else if has_anonymous_callable {
             super::wire::SCHEMA_TYPED_NAMES
         } else if signature_carrier_binding_ranges.is_some() {
             super::wire::SCHEMA_CARRIER_BINDINGS
@@ -1045,6 +1052,7 @@ fn write_core_entity(
         crate::ir::ItemName::Named(_) => 0,
         crate::ir::ItemName::AnonymousCallable(_) => 1,
     };
+    output[33] = entity.authority.publication as u8;
     put_u16_array(output, 4, u16::from(entity.kind));
     output[6] = visibility_code(entity.visibility);
     output[7] = parentage_code(entity.authority.parentage);

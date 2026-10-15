@@ -695,6 +695,15 @@ fn emit_document<Reader: SemanticReader + ?Sized>(
     }
     write_text(entity, output, ",parentage=")?;
     emit_parentage(entity, output, row.authority.parentage)?;
+    match row.authority.publication {
+        crate::ir::DeclarationPublicationRole::Unavailable => {}
+        crate::ir::DeclarationPublicationRole::PrimaryOwned => {
+            write_text(entity, output, ",publication=primary-owned")?
+        }
+        crate::ir::DeclarationPublicationRole::ReferenceOnly => {
+            write_text(entity, output, ",publication=reference-only")?
+        }
+    }
     write_text(entity, output, ",extension=")?;
     let present = extension_present(reader, language, entity);
     validate_availability(
