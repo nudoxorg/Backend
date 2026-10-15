@@ -3,6 +3,7 @@
 use super::super::{
     ClosureId, FileStore, Hash, ObjectId, StoreError, TypedObject, fs, io_error, map_read_error,
 };
+use super::super::object_batch::DurableBatch;
 use super::{ManifestDescriptor, NODE_MAX_COUNT};
 use crate::closure::{ClosureManifest, ManifestRelation};
 use backend_version::{CheckedCanonicalRoot, IdContext, SchemaIdentity, UntrustedId};
@@ -130,6 +131,7 @@ impl FileStore {
     pub(in crate::durable) fn write_manifest_publication(
         &self,
         manifest: &ClosureManifest,
+        batch: &mut DurableBatch,
     ) -> Result<ObjectId, StoreError> {
         fs::create_dir_all(self.root.join("nodes")).map_err(|error| io_error(&error))?;
         let schema = SchemaIdentity::of_relation::<ManifestRelation>();
@@ -142,11 +144,11 @@ impl FileStore {
         if incremental {
             let frontier = manifest.tree_frontier().ok_or(StoreError::Corrupt)?;
             for node in frontier {
-                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false)?;
+                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false, batch)?;
             }
-            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, false)
+            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, false, batch)
         } else {
-            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, true)
+            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, true, batch)
         }
     }
 

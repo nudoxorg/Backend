@@ -402,6 +402,22 @@ pub fn flush_concurrently<T: Sync>(
     items: &[T],
     flush: impl Fn(&T) -> io::Result<()> + Sync,
 ) -> io::Result<()> {
+    flush_concurrently_bounded(items, MAX_CONCURRENT_FLUSHES, flush)
+}
+
+/// Like [`flush_concurrently`] with a caller-chosen number of flushes in flight.
+///
+/// A writer that holds many independent files (a staged batch of immutable objects) keeps more
+/// flushes in flight than the default, because every flush of the group queues behind the same
+/// device cache flush anyway. `max_in_flight` is clamped to at least one.
+///
+/// # Errors
+/// Returns the error of the first failing item in input order after every flush has finished.
+pub fn flush_concurrently_bounded<T: Sync>(
+    items: &[T],
+    max_in_flight: usize,
+    flush: impl Fn(&T) -> io::Result<()> + Sync,
+) -> io::Result<()> {
     match items {
         [] => return Ok(()),
         [only] => return flush(only),
@@ -409,7 +425,7 @@ pub fn flush_concurrently<T: Sync>(
     }
     let flush = &flush;
     let mut outcomes = Vec::with_capacity(items.len());
-    for batch in items.chunks(MAX_CONCURRENT_FLUSHES) {
+    for batch in items.chunks(max_in_flight.max(1)) {
         let batch_outcomes = std::thread::scope(|scope| {
             let started = batch
                 .iter()
@@ -505,6 +521,36 @@ mod tests {
         assert_eq!(result.expect_err("a flush failed").to_string(), "flush 3 failed");
 
         fs::remove_dir_all(&directory).expect("remove scratch directory");
+    }
+
+    #[test]
+    fn bounded_flushes_never_exceed_their_limit_and_still_cover_every_item() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let in_flight = AtomicUsize::new(0);
+        let highest = AtomicUsize::new(0);
+        let finished = AtomicUsize::new(0);
+        let items = (0..25_usize).collect::<Vec<_>>();
+        super::flush_concurrently_bounded(&items, 4, |_| {
+            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            highest.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            finished.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("bounded flush");
+        assert_eq!(finished.load(Ordering::SeqCst), 25);
+        assert!(highest.load(Ordering::SeqCst) <= 4, "the limit bounds the flushes in flight");
+        assert!(highest.load(Ordering::SeqCst) > 1, "flushes of one group run together");
+        // A zero limit still performs every flush, one at a time.
+        let done = AtomicUsize::new(0);
+        super::flush_concurrently_bounded(&items, 0, |_| {
+            done.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("zero limit");
+        assert_eq!(done.load(Ordering::SeqCst), 25);
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod gc;
 mod layout;
 mod membership_lease;
 mod nodes;
+mod object_batch;
 mod objects;
 mod publication;
 mod publication_api;
@@ -62,6 +63,7 @@ pub use nodes::{
     OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,
     TreeReadStats, TreeWriteStats,
 };
+pub use object_batch::ObjectBatch;
 pub use objects::{ObjectWriteReceipt, VerifiedObjectView};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
@@ -77,8 +79,7 @@ pub(crate) fn set_test_fault(point: u8) {
 }
 
 use self::objects::{
-    decode_pack_file, encode_object, encode_pack_file, write_immutable,
-    write_immutable_file_with_status, write_immutable_with_status,
+    decode_pack_file, encode_object, encode_pack_file, write_immutable, write_immutable_with_status,
 };
 use self::recovery::{base_matches, descriptor_matches_base};
 pub(super) const PACK_MAGIC: &[u8] = b"LUNA_PACK_V1\0";

@@ -1,7 +1,9 @@
 //! Schema-parametric relation-node admission and reference indexing.
 
+use super::super::object_batch::DurableBatch;
 use super::super::{
-    FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, sync_directory,
+    FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error,
+    relation_object_limit,
 };
 use super::{TreeWriteStats, wire};
 use crate::UntrustedObjectId;
@@ -134,12 +136,13 @@ impl FileStore {
     pub(in crate::durable) fn write_root_relation_batch(
         &self,
         objects: &[TypedObject],
+        batch: &mut DurableBatch,
     ) -> Result<(), StoreError> {
         let relation_objects = objects
             .iter()
             .filter(|object| self.relation_registry.contains_schema(object.schema()))
             .collect::<Vec<_>>();
-        let batch = relation_objects
+        let members = relation_objects
             .iter()
             .map(|object| (object.schema(), *object.version()))
             .collect::<BTreeSet<_>>();
@@ -151,7 +154,7 @@ impl FileStore {
                 object.bytes(),
             )?;
             for child in &decoded.children {
-                if !batch.contains(&(object.schema(), *child))
+                if !members.contains(&(object.schema(), *child))
                     && !self.relation_ref_matches(object.schema(), child)?
                 {
                     return Err(StoreError::Corrupt);
@@ -160,9 +163,14 @@ impl FileStore {
         }
         let mut stats = NodeWriteCounters::default();
         for object in relation_objects {
-            self.write_relation_object(object, object.schema(), object.version(), &mut stats)?;
+            self.write_relation_object(
+                object,
+                object.schema(),
+                object.version(),
+                &mut stats,
+                batch,
+            )?;
         }
-        sync_directory(&self.root.join("nodes"))?;
         Ok(())
     }
 
@@ -202,7 +210,10 @@ impl FileStore {
         let schema = SchemaIdentity::of_relation::<R>();
         let mut counters = NodeWriteCounters::default();
         let mut seen = HashSet::new();
-        let root = self.write_relation_node_view(root, schema, &mut counters, &mut seen)?;
+        let mut batch = DurableBatch::new();
+        let root =
+            self.write_relation_node_view(root, schema, &mut counters, &mut seen, &mut batch)?;
+        batch.commit()?;
         Ok(super::RelationNodeWriteStats {
             root,
             nodes_written: counters.nodes_written,
@@ -337,6 +348,7 @@ impl FileStore {
         let mut counters = NodeWriteCounters::default();
         let mut root_object = None;
         let mut seen = HashSet::new();
+        let mut batch = DurableBatch::new();
         for node in update.changed_nodes() {
             let version = node.commitment().to_bytes();
             if !seen.insert(version) {
@@ -344,7 +356,7 @@ impl FileStore {
             }
             let object = TypedObject::from_state_root(node.commitment(), node)?;
             let (object_id, _) =
-                self.write_relation_object(&object, schema, &version, &mut counters)?;
+                self.write_relation_object(&object, schema, &version, &mut counters, &mut batch)?;
             if version == target {
                 root_object = Some(object_id);
             }
@@ -358,9 +370,12 @@ impl FileStore {
             // durable root node so its closure descriptor survives reopen.
             let object =
                 TypedObject::from_state_root(update.target().root(), update.target().node())?;
-            self.write_relation_object(&object, schema, &target, &mut counters)?
+            self.write_relation_object(&object, schema, &target, &mut counters, &mut batch)?
                 .0
         };
+        // The nodes and their references are flushed before the caller names the root in a
+        // closure descriptor.
+        batch.commit()?;
         Ok(super::RelationNodeWriteStats {
             root,
             nodes_written: counters.nodes_written,
@@ -415,6 +430,7 @@ impl FileStore {
         schema: SchemaIdentity,
         stats: &mut NodeWriteCounters,
         seen: &mut HashSet<Hash>,
+        batch: &mut DurableBatch,
     ) -> Result<ObjectId, StoreError> {
         let version = node.state_root().to_bytes();
         if !seen.insert(version) {
@@ -424,13 +440,13 @@ impl FileStore {
         if object.schema() != schema || object.version() != &version {
             return Err(StoreError::Corrupt);
         }
-        self.write_relation_object(&object, schema, &version, stats)?;
+        self.write_relation_object(&object, schema, &version, stats, batch)?;
         for child in node.children() {
             let child_version = child.id().to_bytes();
             if self.relation_ref_matches(schema, &child_version)? {
                 continue;
             }
-            self.write_relation_node_view(child, schema, stats, seen)?;
+            self.write_relation_node_view(child, schema, stats, seen, batch)?;
         }
         Ok(object.id())
     }
@@ -442,6 +458,7 @@ impl FileStore {
         stats: &mut TreeWriteStats,
         seen: &mut HashSet<Hash>,
         recurse: bool,
+        batch: &mut DurableBatch,
     ) -> Result<ObjectId, StoreError> {
         let version = node.id().to_bytes();
         if !seen.insert(version) {
@@ -451,14 +468,14 @@ impl FileStore {
         if object.schema() != schema || object.version() != &version {
             return Err(StoreError::Corrupt);
         }
-        self.write_relation_object_for_tree(&object, schema, &version, stats)?;
+        self.write_relation_object_for_tree(&object, schema, &version, stats, batch)?;
         if recurse {
             for child in node.children() {
                 let child_version = child.id().to_bytes();
                 if self.relation_ref_matches(schema, &child_version)? {
                     continue;
                 }
-                self.write_relation_node_handle(&child, schema, &mut *stats, seen, true)?;
+                self.write_relation_node_handle(&child, schema, &mut *stats, seen, true, batch)?;
             }
         }
         Ok(object.id())
@@ -470,33 +487,21 @@ impl FileStore {
         schema: SchemaIdentity,
         version: &Hash,
         stats: &mut NodeWriteCounters,
+        batch: &mut DurableBatch,
     ) -> Result<(ObjectId, bool), StoreError> {
-        let receipt = self.write_relation_object_with_receipt(object)?;
-        if receipt.created() {
+        let (id, created, encoded_len) =
+            self.batch_object(batch, object, relation_object_limit()?)?;
+        if created {
             stats.nodes_written = stats
                 .nodes_written
                 .checked_add(1)
                 .ok_or(StoreError::Bounds)?;
             stats.bytes_written = stats
                 .bytes_written
-                .checked_add(usize::try_from(receipt.bytes()).map_err(|_| StoreError::Bounds)?)
+                .checked_add(encoded_len)
                 .ok_or(StoreError::Bounds)?;
         }
-        let index_path = self.relation_ref_path(schema, version);
-        let index_created = if index_path.is_file() {
-            if self.read_relation_ref(schema, version)? != object.id() {
-                return Err(StoreError::Corrupt);
-            }
-            false
-        } else {
-            wire::write_relation_ref(
-                &index_path,
-                schema,
-                version,
-                object.id(),
-                &self.root.join("nodes"),
-            )?
-        };
+        let index_created = self.batch_relation_ref(batch, schema, version, id)?;
         if index_created {
             stats.bytes_written = stats
                 .bytes_written
@@ -507,43 +512,55 @@ impl FileStore {
         Ok((object.id(), index_created))
     }
 
+    /// Adds the reference index entry for a relation node to `batch`, or checks the existing one.
+    /// Returns whether this call staged a new entry.
+    fn batch_relation_ref(
+        &self,
+        batch: &mut DurableBatch,
+        schema: SchemaIdentity,
+        version: &Hash,
+        object: ObjectId,
+    ) -> Result<bool, StoreError> {
+        let index_path = self.relation_ref_path(schema, version);
+        if index_path.is_file() {
+            if self.read_relation_ref(schema, version)? != object {
+                return Err(StoreError::Corrupt);
+            }
+            return Ok(false);
+        }
+        batch.add(
+            &self.root.join("nodes"),
+            index_path,
+            &wire::encode_relation_ref(schema, version, object),
+            true,
+        )
+    }
+
     pub(super) fn write_relation_object_for_tree(
         &self,
         object: &TypedObject,
         schema: SchemaIdentity,
         version: &Hash,
         stats: &mut TreeWriteStats,
+        batch: &mut DurableBatch,
     ) -> Result<(), StoreError> {
         stats.nodes_visited = stats
             .nodes_visited
             .checked_add(1)
             .ok_or(StoreError::Bounds)?;
-        let receipt = self.write_relation_object_with_receipt(object)?;
-        if receipt.created() {
+        let (id, created, encoded_len) =
+            self.batch_object(batch, object, relation_object_limit()?)?;
+        if created {
             stats.nodes_written = stats
                 .nodes_written
                 .checked_add(1)
                 .ok_or(StoreError::Bounds)?;
             stats.bytes_written = stats
                 .bytes_written
-                .checked_add(usize::try_from(receipt.bytes()).map_err(|_| StoreError::Bounds)?)
+                .checked_add(encoded_len)
                 .ok_or(StoreError::Bounds)?;
         }
-        let index_path = self.relation_ref_path(schema, version);
-        let index_created = if index_path.is_file() {
-            if self.read_relation_ref(schema, version)? != object.id() {
-                return Err(StoreError::Corrupt);
-            }
-            false
-        } else {
-            wire::write_relation_ref(
-                &index_path,
-                schema,
-                version,
-                object.id(),
-                &self.root.join("nodes"),
-            )?
-        };
+        let index_created = self.batch_relation_ref(batch, schema, version, id)?;
         if index_created {
             stats.bytes_written = stats
                 .bytes_written

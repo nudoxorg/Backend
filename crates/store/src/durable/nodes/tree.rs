@@ -3,6 +3,7 @@
 use super::super::{
     FileStore, Hash, LayoutId, PackId, RawRelation, StateRoot, StoreError, io_error,
 };
+use super::super::object_batch::DurableBatch;
 use super::{TreePackDescriptor, TreePublication, TreeReadStats, TreeWriteStats, wire};
 use crate::{OrderedMap, StoredValue, digest};
 use backend_version::{CheckedCanonicalRoot, IdContext, SchemaIdentity, UntrustedId};
@@ -182,9 +183,17 @@ impl FileStore {
         let mut stats = TreeWriteStats::default();
         let schema = SchemaIdentity::of_relation::<RawRelation>();
         let mut seen = HashSet::new();
+        let mut batch = DurableBatch::new();
         if let Some(frontier) = publication.frontier.as_deref() {
             for node in frontier {
-                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false)?;
+                self.write_relation_node_handle(
+                    node,
+                    schema,
+                    &mut stats,
+                    &mut seen,
+                    false,
+                    &mut batch,
+                )?;
             }
         } else {
             self.write_relation_node_handle(
@@ -193,8 +202,11 @@ impl FileStore {
                 &mut stats,
                 &mut seen,
                 true,
+                &mut batch,
             )?;
         }
+        // The nodes are flushed before the descriptor that names the tree is written.
+        batch.commit()?;
         let descriptor = TreePackDescriptor {
             id: publication.id,
             layout: publication.layout,

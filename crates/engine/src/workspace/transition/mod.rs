@@ -825,6 +825,10 @@ impl PreparedTransition {
         // logical closure's point of view but may not yet exist in this
         // physical store. Relation roots and descendants keep using the
         // path-copied relation writer below.
+        //
+        // The objects are admitted as one batch whose files and directory are flushed together;
+        // the batch is committed before the pack and publication that name them are written.
+        let mut batch = store.object_batch();
         for object_id in self.auxiliary_object_ids() {
             let object = self
                 .closure
@@ -837,7 +841,7 @@ impl PreparedTransition {
                         "workspace auxiliary object {object_id:?} is absent from the checked target closure"
                     ))
                 })?;
-            store.write_object(object).map_err(|error| {
+            batch.write(object).map_err(|error| {
                 let relation_schema = store
                     .relation_registry()
                     .contains_schema(object.schema());
@@ -849,6 +853,11 @@ impl PreparedTransition {
                 ))
             })?;
         }
+        batch.commit().map_err(|error| {
+            WorkspaceError::Store(format!(
+                "flush workspace auxiliary objects (stage=object batch commit): {error:?}"
+            ))
+        })?;
         // The physical pack is an authenticated index of the checked closure.
         // Object bytes are written once by the store's closure typestate;
         // `verify_workspace_pack` repeats the fixed index derivation on every

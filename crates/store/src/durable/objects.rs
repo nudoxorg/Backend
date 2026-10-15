@@ -78,20 +78,41 @@ impl<'a> VerifiedObjectView<'a> {
     }
 }
 
+/// How long a temporary file named for this very process still counts as an in-flight write.
+///
+/// A writer of this process flushes and links its temporary files within seconds. Without this
+/// window a reader that opens the store's state, from any thread, would delete the temporary
+/// files of a batch that is still being written, since the files carry only the creating
+/// process's identity. A file of this process older than the window is an abandoned leftover
+/// (a process that crashed and was replaced by one with the same identity).
+const LIVE_TEMP_WINDOW: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Removes crash-orphaned files only from the store writer's private temp namespace.
 pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
     let mut removed = 0usize;
+    let own_process = std::process::id().to_string();
     for name in ["packs", "objects", "closures"] {
         let directory = root.join(name);
         let mut removed_here = false;
         for entry in fs::read_dir(&directory).map_err(|error| io_error(&error))? {
             let entry = entry.map_err(|error| io_error(&error))?;
-            if !is_store_temp_name(&entry.file_name()) {
+            let file_name = entry.file_name();
+            let Some(process) = store_temp_process(&file_name) else {
                 continue;
-            }
+            };
             let kind = entry.file_type().map_err(|error| io_error(&error))?;
             if !kind.is_file() {
                 return Err(StoreError::Corrupt);
+            }
+            if process == own_process
+                && entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_none_or(|age| age < LIVE_TEMP_WINDOW)
+            {
+                continue;
             }
             fs::remove_file(entry.path()).map_err(|error| io_error(&error))?;
             removed = removed.checked_add(1).ok_or(StoreError::Bounds)?;
@@ -104,26 +125,18 @@ pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
     Ok(removed)
 }
 
-fn is_store_temp_name(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let Some(body) = name
-        .strip_prefix('.')
-        .and_then(|name| name.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
+/// Returns the creating process's identity when `name` is a store-owned temporary file name.
+fn store_temp_process(name: &OsStr) -> Option<&str> {
+    let name = name.to_str()?;
+    let body = name.strip_prefix('.')?.strip_suffix(".tmp")?;
     let mut parts = body.rsplitn(3, '.');
-    let (Some(counter), Some(process), Some(target)) = (parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    !target.is_empty()
+    let (counter, process, target) = (parts.next()?, parts.next()?, parts.next()?);
+    (!target.is_empty()
         && !process.is_empty()
         && !counter.is_empty()
         && process.bytes().all(|byte| byte.is_ascii_digit())
-        && counter.bytes().all(|byte| byte.is_ascii_digit())
+        && counter.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(process)
 }
 
 /// Receipt returned after admitting one immutable object into the durable CAS.
@@ -174,30 +187,12 @@ pub(super) fn write_immutable(
 /// Links one immutable file into the store and reports whether this call
 /// created the physical object.  An existing equal file is a successful
 /// structural-share hit; a different file at the same content address is
-/// corruption.
+/// corruption.  The file is flushed before it is linked and the directory
+/// after, so the content address never names unflushed bytes.
 pub(super) fn write_immutable_with_status(
     path: &Path,
     bytes: &[u8],
     directory: &Path,
-) -> Result<bool, StoreError> {
-    write_immutable_with_status_inner(path, bytes, Some(directory))
-}
-
-/// Writes one immutable file while leaving directory synchronization to a
-/// caller that is batching a publication.  The file itself is always synced
-/// before it is linked into the CAS; the final directory sync must happen
-/// before the caller exposes a closure or root that references this object.
-pub(super) fn write_immutable_file_with_status(
-    path: &Path,
-    bytes: &[u8],
-) -> Result<bool, StoreError> {
-    write_immutable_with_status_inner(path, bytes, None)
-}
-
-fn write_immutable_with_status_inner(
-    path: &Path,
-    bytes: &[u8],
-    directory: Option<&Path>,
 ) -> Result<bool, StoreError> {
     if let Ok(existing) = fs::read(path) {
         return if existing == bytes {
@@ -223,9 +218,7 @@ fn write_immutable_with_status_inner(
         return Err(io_error(&error));
     }
     let result = match fs::hard_link(&temporary, path) {
-        Ok(()) => directory.map_or(Ok(true), |directory| {
-            sync_directory(directory).map(|()| true)
-        }),
+        Ok(()) => sync_directory(directory).map(|()| true),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => match fs::read(path) {
             Ok(existing) if existing == bytes => Ok(false),
             Ok(_) => Err(StoreError::Corrupt),
@@ -285,7 +278,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], directory: &Path) -> Resul
     sync_directory(directory)
 }
 
-fn create_temp(path: &Path) -> Result<(PathBuf, File), StoreError> {
+pub(super) fn create_temp(path: &Path) -> Result<(PathBuf, File), StoreError> {
     loop {
         let temporary = unique_temp(path);
         match OpenOptions::new()

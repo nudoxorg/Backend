@@ -136,7 +136,11 @@ pub(super) fn relation_ref_encoded_len() -> usize {
     RELATION_REF_MAGIC.len() + 1 + 2 + 1 + 32 + 32 + 32
 }
 
-fn encode_relation_ref(schema: SchemaIdentity, version: &Hash, object: ObjectId) -> Vec<u8> {
+pub(super) fn encode_relation_ref(
+    schema: SchemaIdentity,
+    version: &Hash,
+    object: ObjectId,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(relation_ref_encoded_len());
     bytes.extend_from_slice(RELATION_REF_MAGIC);
     bytes.push(schema.domain());
@@ -193,7 +197,9 @@ pub(super) fn write_relation_ref(
     directory: &Path,
 ) -> Result<bool, StoreError> {
     let bytes = encode_relation_ref(schema, version, object);
-    write_immutable_descriptor_with_status(path, &bytes, directory)
+    // A reference is sealed read-only before its flush, like an object: its first read then
+    // needs no permission change and no second flush.
+    write_immutable_descriptor_with_status(path, &bytes, directory, true)
 }
 
 pub(super) fn write_immutable_descriptor(
@@ -201,13 +207,14 @@ pub(super) fn write_immutable_descriptor(
     bytes: &[u8],
     directory: &Path,
 ) -> Result<(), StoreError> {
-    write_immutable_descriptor_with_status(path, bytes, directory).map(|_| ())
+    write_immutable_descriptor_with_status(path, bytes, directory, false).map(|_| ())
 }
 
 fn write_immutable_descriptor_with_status(
     path: &Path,
     bytes: &[u8],
     directory: &Path,
+    read_only: bool,
 ) -> Result<bool, StoreError> {
     if let Ok(existing) = fs::read(path) {
         return if existing == bytes {
@@ -229,7 +236,17 @@ fn write_immutable_descriptor_with_status(
         .create_new(true)
         .open(&temporary)
         .map_err(|error| io_error(&error))?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+    let written = file.write_all(bytes).and_then(|()| {
+        #[cfg(unix)]
+        if read_only {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(fs::Permissions::from_mode(0o400))?;
+        }
+        #[cfg(not(unix))]
+        let _ = read_only;
+        file.sync_all()
+    });
+    if let Err(error) = written {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(&error));
     }

@@ -1272,6 +1272,7 @@ impl DirectoryCapability {
         if depth > 8 {
             return Err(invalid("directory tree is nested too deeply"));
         }
+        let mut removed = false;
         for entry in self.entries(maximum_entries.saturating_sub(*visited))? {
             *visited = (*visited)
                 .checked_add(1)
@@ -1287,17 +1288,38 @@ impl DirectoryCapability {
                 .to_str()
                 .ok_or_else(|| invalid("non-UTF-8 child name"))?;
             match entry.kind {
-                EntryKind::File => self.remove_file(name)?,
+                EntryKind::File => self.unlink_unflushed(name, false)?,
                 EntryKind::Directory => {
                     let child = self.open_dir(name)?;
                     child.remove_contents(depth + 1, visited, maximum_entries)?;
-                    self.remove_dir(name)?;
+                    self.unlink_unflushed(name, true)?;
                 }
                 EntryKind::Link | EntryKind::Special => {
                     return Err(invalid("directory tree contains a link or special file"));
                 }
             }
+            removed = true;
         }
+        // One flush covers every removal in this directory; a crash part-way leaves a smaller
+        // tree that the next cleanup removes, exactly as after the earlier per-entry flushes.
+        if removed {
+            self.sync_all()?;
+        }
+        Ok(())
+    }
+
+    /// Removes one direct entry without flushing this directory.
+    #[cfg(unix)]
+    fn unlink_unflushed(&self, name: &str, directory: bool) -> io::Result<()> {
+        use rustix::fs::{AtFlags, unlinkat};
+        self.ensure_writable()?;
+        validate_component(name)?;
+        let flags = if directory {
+            AtFlags::REMOVEDIR
+        } else {
+            AtFlags::empty()
+        };
+        unlinkat(self.handle.as_ref(), name, flags)?;
         Ok(())
     }
 }

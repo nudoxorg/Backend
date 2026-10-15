@@ -18,6 +18,9 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 const PAGE_BYTES: usize = 64 * 1024;
+/// Pages admitted into the CAS together: their files are flushed concurrently and the
+/// directories naming them once, instead of four device flushes for every page in turn.
+const PAGE_BATCH: usize = 32;
 const PAGE_HEADER: usize = 4 + 8 + 32;
 const MANIFEST_BYTES: usize = 4 + 8 * 2 + 32 * 4 + 3 * (32 + 8 + 8);
 
@@ -136,16 +139,29 @@ pub(super) struct StagePool {
 }
 
 impl StagePool {
+    /// Admits a batch of staged pages into the CAS under the allocation quota.
+    ///
+    /// The batch is the unit of durability. Quota markers (empty files naming a pending
+    /// allocation) are created first and their directory is flushed once; only then are the
+    /// pages written as one [`backend_store::ObjectBatch`], whose files are flushed together and
+    /// whose directory is flushed once. A marker is therefore always durable before the page it
+    /// accounts for can exist under its content address, exactly as when each page was written
+    /// alone, but the batch pays for those barriers together instead of in sequence. The caller
+    /// must not treat any page as staged (compose the closure, publish the manifest) until this
+    /// returns.
     #[cfg(unix)]
-    fn write_object(
+    fn write_objects(
         &self,
         store: &FileStore,
-        object: &TypedObject,
-    ) -> Result<ObjectId, StoreError> {
+        objects: &[TypedObject],
+    ) -> Result<(), StoreError> {
         use std::{
             fs::{self, OpenOptions},
             os::unix::fs::MetadataExt,
         };
+        if objects.is_empty() {
+            return Ok(());
+        }
         let quota = store.root().join("staged-ingest-quota");
         let markers = quota.join("members");
         for directory in [&quota, &markers] {
@@ -254,70 +270,100 @@ impl StagePool {
                 Err(error) => return Err(StoreError::Io(error.to_string())),
             }
         }
-        let id = object.id();
-        let name = id
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let marker = markers.join(&name);
-        let already_counted = marker.is_file();
-        let target = store.root().join("objects").join(format!("{name}.object"));
-        let addition = if marker.is_file() {
-            0
-        } else if let Ok(metadata) = fs::symlink_metadata(&target) {
-            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
-                return Err(StoreError::Corrupt);
+        // Reserve the whole batch before any marker or page is created.
+        let mut reserved = BTreeSet::new();
+        let mut created_markers = Vec::new();
+        let mut counted = Vec::new();
+        let mut added = 0_u64;
+        for object in objects {
+            let id = object.id();
+            if !reserved.insert(id) {
+                continue;
             }
-            metadata
-                .blocks()
-                .checked_mul(512)
-                .ok_or(StoreError::Bounds)?
-        } else {
-            let bytes = u64::try_from(object.bytes().len())
-                .map_err(|_| StoreError::Bounds)?
-                .checked_add(4096 + 128)
+            let name = id
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let marker = markers.join(&name);
+            let already_counted = marker.is_file();
+            let target = store.root().join("objects").join(format!("{name}.object"));
+            let addition = if already_counted {
+                0
+            } else if let Ok(metadata) = fs::symlink_metadata(&target) {
+                if !metadata.is_file()
+                    || metadata.file_type().is_symlink()
+                    || metadata.nlink() != 1
+                {
+                    return Err(StoreError::Corrupt);
+                }
+                metadata
+                    .blocks()
+                    .checked_mul(512)
+                    .ok_or(StoreError::Bounds)?
+            } else {
+                let bytes = u64::try_from(object.bytes().len())
+                    .map_err(|_| StoreError::Bounds)?
+                    .checked_add(4096 + 128)
+                    .ok_or(StoreError::Bounds)?;
+                bytes
+                    .div_ceil(4096)
+                    .checked_mul(4096)
+                    .ok_or(StoreError::Bounds)?
+            };
+            added = added.checked_add(addition).ok_or(StoreError::Bounds)?;
+            if allocated.checked_add(added).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
+                return Err(StoreError::Bounds);
+            }
+            if !already_counted {
+                counted.push(target);
+            }
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)
+            {
+                Ok(_) => created_markers.push(marker),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(StoreError::Io(error.to_string())),
+            }
+        }
+        if !created_markers.is_empty() {
+            // A marker is an empty file: the directory entry is all there is to flush. It must be
+            // durable before any page it accounts for can be named in the CAS.
+            fs::File::open(&markers)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+        }
+        let mut batch = store.object_batch();
+        for object in objects {
+            batch.write(object)?;
+        }
+        batch.commit()?;
+        let mut actual = 0_u64;
+        for target in &counted {
+            actual = actual
+                .checked_add(
+                    fs::symlink_metadata(target)
+                        .map_err(|e| StoreError::Io(e.to_string()))?
+                        .blocks()
+                        .checked_mul(512)
+                        .ok_or(StoreError::Bounds)?,
+                )
                 .ok_or(StoreError::Bounds)?;
-            bytes
-                .div_ceil(4096)
-                .checked_mul(4096)
-                .ok_or(StoreError::Bounds)?
-        };
-        if allocated.checked_add(addition).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
+        }
+        if allocated.checked_add(actual).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
             return Err(StoreError::Bounds);
         }
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(file) => file.sync_all().map_err(|e| StoreError::Io(e.to_string()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(StoreError::Io(error.to_string())),
-        }
-        let written = store.write_object(object)?;
-        let actual = fs::symlink_metadata(&target)
-            .map_err(|e| StoreError::Io(e.to_string()))?
-            .blocks()
-            .checked_mul(512)
-            .ok_or(StoreError::Bounds)?;
-        if !already_counted
-            && allocated.checked_add(actual).ok_or(StoreError::Bounds)? > self.max_reserved_bytes
-        {
-            return Err(StoreError::Bounds);
-        }
-        std::fs::File::open(&markers)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| StoreError::Io(e.to_string()))?;
-        Ok(written)
+        Ok(())
     }
 
     #[cfg(not(unix))]
-    fn write_object(
+    fn write_objects(
         &self,
         _store: &FileStore,
-        _object: &TypedObject,
-    ) -> Result<ObjectId, StoreError> {
+        _objects: &[TypedObject],
+    ) -> Result<(), StoreError> {
         // This policy requires real physical-allocation accounting. A platform
         // without that adapter cannot silently replace it with logical bytes.
         Err(StoreError::Bounds)
@@ -398,6 +444,7 @@ impl StagePool {
             chains: [Chain::default(); 3],
             pending: std::array::from_fn(|_| Vec::new()),
             ids: Vec::new(),
+            queued: Vec::new(),
             payload_bytes: 0,
             poisoned: false,
             _pin: pin,
@@ -434,6 +481,8 @@ pub(super) struct StageWriter {
     chains: [Chain; 3],
     pending: [Vec<u8>; 3],
     ids: Vec<ObjectId>,
+    /// Encoded pages and the manifest not yet admitted into the CAS; see [`PAGE_BATCH`].
+    queued: Vec<TypedObject>,
     payload_bytes: u64,
     poisoned: bool,
     _pin: GcPinGuard,
@@ -509,12 +558,28 @@ impl StageWriter {
         bytes.extend_from_slice(&chain.pages.to_be_bytes());
         bytes.extend_from_slice(&chain.tail);
         bytes.extend_from_slice(payload);
-        let id = self.pool.write_object(&self.store, &kind.object(&bytes))?;
-        self.ids.push(id);
+        // The page's identity is a function of its bytes, so the next page can name it as its
+        // predecessor before the page itself has reached the CAS.
+        let object = kind.object(&bytes);
+        let id = object.id();
         chain.tail = *id.as_bytes();
         chain.pages += 1;
         chain.bytes += payload.len() as u64;
+        self.ids.push(id);
+        self.queue(object)
+    }
+    /// Queues one object for admission; a full batch is admitted (made durable) together.
+    fn queue(&mut self, object: TypedObject) -> Result<(), StoreError> {
+        self.queued.push(object);
+        if self.queued.len() >= PAGE_BATCH {
+            self.admit_queued()?;
+        }
         Ok(())
+    }
+    /// Admits every queued object into the CAS and returns only once they are all durable.
+    fn admit_queued(&mut self) -> Result<(), StoreError> {
+        let queued = std::mem::take(&mut self.queued);
+        self.pool.write_objects(&self.store, &queued)
     }
     pub(super) fn finish(mut self) -> Result<StagedEvidence, StoreError> {
         if self.poisoned {
@@ -531,9 +596,12 @@ impl StageWriter {
             }
         }
         let manifest = encode_manifest(self.basis, self.chains);
-        let manifest_id = self
-            .pool
-            .write_object(&self.store, &typed::<StagedManifest>(&manifest))?;
+        let manifest_object = typed::<StagedManifest>(&manifest);
+        let manifest_id = manifest_object.id();
+        self.queue(manifest_object)?;
+        // Every page and the manifest are durable before the closure that names them is
+        // composed: nothing committed from here on refers to an unflushed page.
+        self.admit_queued()?;
         let mut edits = self
             .ids
             .iter()
@@ -920,6 +988,71 @@ mod tests {
             Err(StoreError::WrongBase)
         ));
     }
+    #[test]
+    fn a_stage_larger_than_one_batch_is_durable_complete_and_replays_identically() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pages = PAGE_BATCH * 3 + 5;
+        let pool = StagePool::new(
+            1,
+            64 * 1024 * 1024,
+            pages * 2 + 8,
+            StagePool::metadata_required(pages * 2 + 8).unwrap(),
+        );
+        let big = ArtifactBudget::new(pages * 2 + 8, pages * 2 + 9, 64 * 1024 * 1024, PAGE_BYTES, 4096);
+        let source: Vec<u8> = (0..PAGE_BYTES * pages + 17).map(|i| (i % 251) as u8).collect();
+        let facts: Vec<u8> = (0..PAGE_BYTES * 2 + 1).map(|i| (i % 13) as u8).collect();
+        let stage = |pool: &StagePool| {
+            let mut writer = pool.begin(&store, basis(), 32 * 1024 * 1024).unwrap();
+            writer
+                .append(EvidenceKind::RawSource, &mut source.as_slice())
+                .unwrap();
+            writer
+                .append(EvidenceKind::CompleteFacts, &mut facts.as_slice())
+                .unwrap();
+            writer.finish().unwrap()
+        };
+        let staged = stage(&pool);
+        let mut got = [Vec::new(), Vec::new(), Vec::new()];
+        visit_staged(
+            &store,
+            staged.manifest_id,
+            &staged.receipt,
+            basis(),
+            big,
+            |kind, bytes| {
+                got[kind.slot()].extend_from_slice(bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(got[0], source);
+        assert_eq!(got[2], facts);
+        // Every page is a durable, fully linked object: no batch temporary is left behind, and
+        // every pending allocation has its quota marker.
+        let temporaries = std::fs::read_dir(directory.path().join("objects"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            })
+            .count();
+        assert_eq!(temporaries, 0);
+        let markers = std::fs::read_dir(directory.path().join("staged-ingest-quota/members"))
+            .unwrap()
+            .count();
+        // pages + 1 source pages, 3 fact pages, and the manifest.
+        assert_eq!(markers, pages + 5, "one marker per page and for the manifest");
+        let manifest_id = staged.manifest_id;
+        let closure = staged.receipt.receipt().closure();
+        drop(staged);
+        // Staging the same evidence again admits the same objects and the same closure.
+        let replay = stage(&pool);
+        assert_eq!(replay.manifest_id, manifest_id);
+        assert_eq!(replay.receipt.receipt().closure(), closure);
+    }
+
     #[test]
     fn reservations_partial_failure_and_release() {
         let directory = Directory::new();

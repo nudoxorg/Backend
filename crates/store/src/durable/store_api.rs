@@ -8,9 +8,10 @@ use super::{
     Arc, ClosureId, ClosureManifest, DurableManifest, DurableTree, FileStore, Mutex, ObjectEdge,
     ObjectId, ObjectWriteReceipt, Pack, PackId, Path, RawRelation, RelationAdmissionRegistry,
     SelectedHead, StoreError, TreeWriteStats, TypedObject, decode_pack_file, encode_object,
-    encode_pack_file, envelope_limit, fs, io_error, map_read_error, relation_object_limit,
-    sync_directory, write_immutable, write_immutable_file_with_status, write_immutable_with_status,
+    encode_pack_file, envelope_limit, fs, io_error, map_read_error,
+    write_immutable, write_immutable_with_status,
 };
+use super::object_batch::DurableBatch;
 use crate::{UntrustedObjectId, WorkspaceClosure};
 use std::collections::{BTreeSet, HashSet};
 use std::io::Read as _;
@@ -169,44 +170,17 @@ impl FileStore {
         self.write_object_with_limit(object, envelope_limit(self.max_pack_bytes)?)
     }
 
-    pub(super) fn write_relation_object_with_receipt(
-        &self,
-        object: &TypedObject,
-    ) -> Result<ObjectWriteReceipt, StoreError> {
-        self.write_object_with_limit(object, relation_object_limit()?)
-    }
-
     fn write_object_with_limit(
         &self,
         object: &TypedObject,
         limit: usize,
-    ) -> Result<ObjectWriteReceipt, StoreError> {
-        self.write_object_with_limit_and_sync(object, limit, true)
-    }
-
-    fn write_object_without_directory_sync(
-        &self,
-        object: &TypedObject,
-    ) -> Result<ObjectWriteReceipt, StoreError> {
-        self.write_object_with_limit_and_sync(object, envelope_limit(self.max_pack_bytes)?, false)
-    }
-
-    fn write_object_with_limit_and_sync(
-        &self,
-        object: &TypedObject,
-        limit: usize,
-        sync_parent: bool,
     ) -> Result<ObjectWriteReceipt, StoreError> {
         object.verify_wire_version(&self.relation_registry)?;
         self.verify_object_value_targets(object)?;
         let encoded = encode_object(object, limit)?;
         let id = object.id();
         let path = self.object_path(id);
-        let created = if sync_parent {
-            write_immutable_with_status(&path, &encoded, &self.root.join("objects"))?
-        } else {
-            write_immutable_file_with_status(&path, &encoded)?
-        };
+        let created = write_immutable_with_status(&path, &encoded, &self.root.join("objects"))?;
         Ok(ObjectWriteReceipt::new(
             id,
             created,
@@ -215,6 +189,17 @@ impl FileStore {
     }
 
     fn verify_object_value_targets(&self, object: &TypedObject) -> Result<(), StoreError> {
+        self.verify_object_value_targets_in(object, None)
+    }
+
+    /// Checks that every value an object names is present, counting the objects of `batch` as
+    /// present: the batch makes them durable before it returns, and a caller reaches the
+    /// referencing object only through that same commit.
+    pub(super) fn verify_object_value_targets_in(
+        &self,
+        object: &TypedObject,
+        batch: Option<&DurableBatch>,
+    ) -> Result<(), StoreError> {
         if !self.relation_registry.contains_schema(object.schema()) {
             return Ok(());
         }
@@ -229,6 +214,9 @@ impl FileStore {
             .map_err(|_| StoreError::Bounds)?;
         for reference in references.value_references {
             if !checked.insert(reference) {
+                continue;
+            }
+            if batch.is_some_and(|batch| batch.has_object(ObjectId::from_bytes(reference))) {
                 continue;
             }
             self.verify_object_claim(UntrustedObjectId::from_bytes(reference))?;
@@ -336,14 +324,21 @@ impl FileStore {
         // whose physical CAS differs (for example a derived catalog joined
         // after source publication). Ensure that bounded metadata frontier is
         // present without traversing any relation descendants.
+        //
+        // Every object, relation node, reference and manifest node of this closure joins one
+        // batch. Its files are flushed together and each directory is flushed once, and the
+        // commit below completes before the closure descriptor that makes them reachable is
+        // written.
+        let mut batch = DurableBatch::new();
+        let limit = envelope_limit(self.max_pack_bytes)?;
         for object in manifest.objects() {
             if !self.relation_registry.contains_schema(object.schema()) {
-                self.write_object_without_directory_sync(object)?;
+                self.batch_object(&mut batch, object, limit)?;
             }
         }
-        self.write_root_relation_batch(&changed)?;
-        sync_directory(&self.root.join("objects"))?;
-        let root = self.write_manifest_publication(manifest)?;
+        self.write_root_relation_batch(&changed, &mut batch)?;
+        let root = self.write_manifest_publication(manifest, &mut batch)?;
+        batch.commit()?;
         let count = manifest.root_handle().summary().len;
         let bytes = nodes::encode_manifest_descriptor(manifest.id(), root, count)?;
         let path = self.closure_path(manifest.id());

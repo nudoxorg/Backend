@@ -1791,6 +1791,43 @@ fn reopen_scavenges_only_store_owned_immutable_temps() {
 }
 
 #[test]
+fn reopen_keeps_this_process_s_fresh_temporaries_and_removes_its_stale_ones() {
+    let path = std::env::temp_dir().join(format!(
+        "backend-store-live-temp-{}-{}",
+        std::process::id(),
+        state_byte(34)
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8_192));
+    drop(store);
+    let process = std::process::id();
+    for directory in ["objects", "closures"] {
+        let directory = path.join(directory);
+        // A writer of this process that is mid-batch: its temporary must survive another
+        // thread opening the store's state.
+        let live = directory.join(format!(".artifact.{process}.1.tmp"));
+        must(std::fs::write(&live, b"batch in flight"));
+        // The same identity but long untouched is a leftover of an earlier process.
+        let stale = directory.join(format!(".artifact.{process}.2.tmp"));
+        must(std::fs::write(&stale, b"left behind"));
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60);
+        must(must(std::fs::File::options().write(true).open(&stale)).set_modified(old));
+        // Another process's identity is orphaned work.
+        let foreign = directory.join(".artifact.4242.3.tmp");
+        must(std::fs::write(&foreign, b"interrupted"));
+    }
+    let reopened = must(FileStore::open(&path, 8_192));
+    drop(reopened);
+    for directory in ["objects", "closures"] {
+        let directory = path.join(directory);
+        assert!(directory.join(format!(".artifact.{process}.1.tmp")).exists());
+        assert!(!directory.join(format!(".artifact.{process}.2.tmp")).exists());
+        assert!(!directory.join(".artifact.4242.3.tmp").exists());
+    }
+    must(std::fs::remove_dir_all(path));
+}
+
+#[test]
 fn every_atomic_head_boundary_reopens_the_journal_selected_publication() {
     for point in 5..=8 {
         let path = std::env::temp_dir().join(format!(
