@@ -4324,7 +4324,9 @@ mod tests {
             || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
             || bindings[0].position != 0
         {
-            return Err(TestError::Missing("generic helper single parameter binding"));
+            return Err(TestError::Missing(
+                "generic helper single parameter binding",
+            ));
         }
         let rows = type_facts(&view)?;
         let reference = row_for_entity(&view, bindings[0].carrier)?.record;
@@ -4332,7 +4334,9 @@ mod tests {
             || reference.payload0 != super::SHAPE_CXX_LVALUE_REFERENCE
             || reference.children.length != 1
         {
-            return Err(TestError::Missing("generic helper lvalue-reference parameter"));
+            return Err(TestError::Missing(
+                "generic helper lvalue-reference parameter",
+            ));
         }
         let reference_children = local_type_children(&view, reference)?;
         let [qualified_id] = reference_children.as_slice() else {
