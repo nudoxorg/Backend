@@ -466,8 +466,8 @@ fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations()
         let names = image
             .image
             .declarations()
-            .map(|declaration| declaration.name.bytes)
-            .collect::<Vec<_>>();
+            .map(|declaration| declaration.map(|value| value.name.bytes))
+            .collect::<Result<Vec<_>, _>>()?;
         assert!(names.iter().any(|name| *name == b"CheckForNull"));
         assert!(!names.iter().any(|name| *name == b"Nonnull"));
 
@@ -486,8 +486,8 @@ fn captured_sourcepath_resolves_exact_bytes_without_merging_image_declarations()
         let names = image
             .image
             .declarations()
-            .map(|declaration| declaration.name.bytes)
-            .collect::<Vec<_>>();
+            .map(|declaration| declaration.map(|value| value.name.bytes))
+            .collect::<Result<Vec<_>, _>>()?;
         assert!(names.iter().any(|name| *name == b"CheckForNull"));
         assert!(!names.iter().any(|name| *name == b"Nonnull"));
 
