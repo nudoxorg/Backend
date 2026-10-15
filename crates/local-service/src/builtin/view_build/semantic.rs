@@ -105,7 +105,8 @@ pub(crate) fn rows_for_indexed_sources(
                 "workspace semantic declarations exceed the rebuild row bound".to_owned(),
             )
         })?;
-    let structural_plan = StructuralProjectionPlan::of(sources, &semantics.complete)?;
+    let mut structural_plan = StructuralProjectionPlan::of(sources, &semantics.complete)?;
+    structural_plan.unify_exact_sites(sources, &semantics.exact_sites)?;
     let mut projection = SourceRowProjection::new(
         initial,
         sources,
@@ -263,16 +264,18 @@ impl<'a> SourceRowProjection<'a> {
         let mut index = 0usize;
         super::structural::visit_complete_declarations(self.sources, record, |declaration| {
             let prepared = self.structural_plan.declaration(file_key, index)?;
-            let row = self.declaration_row(
-                declaration,
-                path,
-                file_key,
-                project_key,
-                package,
-                language,
-                prepared,
-            )?;
-            self.rows.push(row);
+            if !prepared.compiler_twin {
+                let row = self.declaration_row(
+                    declaration,
+                    path,
+                    file_key,
+                    project_key,
+                    package,
+                    language,
+                    prepared,
+                )?;
+                self.rows.push(row);
+            }
             index = index.checked_add(1).ok_or_else(|| {
                 BuiltinModelError("structural declaration count overflow".to_owned())
             })?;
@@ -497,6 +500,7 @@ fn targets_unavailable_cause(
 
 struct SemanticRows {
     rows: Vec<Row>,
+    exact_sites: super::exact_sites::ExactDeclarationSites,
     complete: BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     /// Current paths, per profile, whose published images no longer match
     /// their persisted content identity (or that no image compiled at all).
@@ -575,6 +579,7 @@ fn semantic_rows(
     let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
     let mut rows = Vec::new();
+    let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let mut complete = BTreeSet::new();
     let mut stale_paths = ProfileStalePaths::new();
     let mut activated_publications = BTreeSet::new();
@@ -769,12 +774,21 @@ fn semantic_rows(
                 let owned_site_declarations = if stale {
                     Vec::new()
                 } else {
-                    sites.declarations(key.package_key().as_bytes(), &path)?
+                    match decision.compiled.get(&path) {
+                        Some(source) if image_indices.iter().all(|index| {
+                            match &opened[*index] {
+                                super::image_rows::CompiledImage::Opened { identity, .. }
+                                | super::image_rows::CompiledImage::Resident { identity, .. } => identity == source,
+                            }
+                        }) => sites.declarations_of_source(key.package_key().as_bytes(), &path, *source)?,
+                        _ => Vec::new(),
+                    }
                 };
                 let site_declarations = owned_site_declarations.iter().collect::<Vec<_>>();
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
+                        exact_sites: &mut exact_sites,
                         initial,
                         symbols: &mut symbols,
                         rows: &mut rows,
@@ -860,6 +874,7 @@ fn semantic_rows(
     }
     Ok(SemanticRows {
         rows,
+        exact_sites,
         complete,
         stale_paths,
         activated: activated_publications,
@@ -1006,6 +1021,7 @@ pub(crate) fn compiled_source_path(
 }
 
 pub(super) struct SemanticRowSink<'a> {
+    pub(super) exact_sites: &'a mut super::exact_sites::ExactDeclarationSites,
     pub(super) initial: &'a ViewRoot,
     pub(super) symbols: &'a mut BTreeSet<RowId>,
     pub(super) rows: &'a mut Vec<Row>,
@@ -1101,6 +1117,7 @@ pub(super) struct EntityKinds<'site> {
     derived: BTreeMap<DeclarationIdentity, backend_compile::DeclarationKind>,
     /// Each entity's written declaration, when one is known.
     sites: BTreeMap<DeclarationIdentity, &'site backend_compile::SourceDeclaration>,
+    pub(super) exact: BTreeMap<DeclarationIdentity, backend_compile::SourceBinding>,
 }
 
 impl EntityKinds<'_> {
@@ -1177,8 +1194,27 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
             start: entity.entity.source.map(|span| span.start()),
         });
     }
-    let sites = kinds::pair_sites(language, &pairing, declarations);
-    Ok(EntityKinds { derived, sites })
+    let exact = match reader.image_facts().provenance {
+        backend_semantic::ir::ImageProvenance::Captured { scope, .. } => {
+            match reader.atom(scope.path).and_then(|path| std::str::from_utf8(path).ok()) {
+                Some(path) => super::exact_sites::go_sites(profile, reader, session, path, declarations)?,
+                None => BTreeMap::new(),
+            }
+        }
+        _ => BTreeMap::new(),
+    };
+    let sites = if language == backend_semantic::vocabulary::Language::Go {
+        let written = declarations.iter().filter_map(|site| {
+            match site.binding_identity() {
+                backend_compile::SourceBindingIdentity::Exact(capture) => Some((capture.binding(), *site)),
+                _ => None,
+            }
+        }).collect::<BTreeMap<_, _>>();
+        exact.iter().filter_map(|(identity, binding)| written.get(binding).map(|site| (*identity, *site))).collect()
+    } else {
+        kinds::pair_sites(language, &pairing, declarations)
+    };
+    Ok(EntityKinds { derived, sites, exact })
 }
 
 pub(super) struct SemanticRowContent {
@@ -1306,6 +1342,7 @@ pub(super) fn project_image_rows(
             row = row.with_parent(semantic_symbol(project.package, parent_identity));
         }
         projected.push(ProjectedRow {
+            exact_binding: kinds.exact.get(&identity).copied(),
             row,
             duplicate: DuplicatePolicy::Error,
             charges,
@@ -1345,6 +1382,7 @@ pub(super) fn project_image_rows(
                     .as_bytes(),
             );
             projected.push(ProjectedRow {
+                exact_binding: None,
                 row: Row::new(RowId::Symbol(symbol), basis, label)
                     .with_document(Box::<[Fragment]>::default())
                     .try_with_identity_preimage(&preimage)

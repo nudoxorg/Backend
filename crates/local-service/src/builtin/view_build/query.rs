@@ -63,6 +63,7 @@ pub(in crate::builtin) fn semantic_query_corpus(
         ));
     }
 
+    let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let complete = append_compiler_query_facts(
         snapshot,
         compiler,
@@ -70,8 +71,10 @@ pub(in crate::builtin) fn semantic_query_corpus(
         &mut facts,
         generations,
         image_rows,
+        &mut exact_sites,
     )?;
-    let structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
+    let mut structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
+    structural_plan.unify_exact_sites(sources, &exact_sites)?;
     append_structural_query_facts(sources, &structural_plan, &mut facts)?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -99,6 +102,7 @@ fn append_compiler_query_facts(
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::image_rows::ImageRowResidence,
+    exact_sites: &mut super::exact_sites::ExactDeclarationSites,
 ) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError>
 {
     let relation = snapshot
@@ -226,6 +230,10 @@ fn append_compiler_query_facts(
             )?;
             let declarations = declarations.iter().collect::<Vec<_>>();
             let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
+            for (identity, binding) in &kinds.exact {
+                exact_sites.record(package, caller_path, *binding,
+                    RowId::Symbol(super::identity::semantic_symbol(package, *identity)));
+            }
             let identities = &opened_image.identities;
             let image_digest = opened_image.digest;
             let mut external_targets =
@@ -522,6 +530,12 @@ pub(super) fn append_structural_query_facts(
         let mut index = 0usize;
         super::structural::visit_complete_declarations(sources, record, |declaration| {
             let prepared = structural_plan.declaration(*file_key, index)?;
+            if prepared.compiler_twin {
+                index = index.checked_add(1).ok_or_else(|| {
+                    BuiltinModelError("structural declaration count overflow".to_owned())
+                })?;
+                return Ok(());
+            }
             let id = prepared.id.stable_key();
             let coordinate = prepared.coordinate.clone();
             let documentation = if prepared.is_file_module {

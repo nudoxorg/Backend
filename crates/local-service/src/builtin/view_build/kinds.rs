@@ -269,6 +269,7 @@ fn pairing_families(item: ItemKind, kind: DeclarationKind, language: Language) -
 fn container_name(declaration: &SourceDeclaration) -> &str {
     match declaration.container() {
         Container::Module => "",
+        Container::Binding { .. } => "",
         Container::Enclosing { name, .. } | Container::Attached { type_name: name } => name,
     }
 }
