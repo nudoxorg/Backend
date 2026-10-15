@@ -672,3 +672,86 @@ fn cleanup_start_refusal_retains_exact_attempts_and_cancelled_outcome_for_explic
         }
     ));
 }
+
+#[test]
+fn source_edit_after_durable_prepared_barrier_is_refused_before_final_grant() {
+    let mut wire = SourceWire::start(TestStage::BeforeFinalization, false);
+    wire.wait_at_source();
+    let (entered, observed) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    {
+        let mut commands = wire.commands.lock().expect("same adapter");
+        commands.publication_test_hook = Some(TestHook {
+            stage: TestStage::BeforeGrantValidation,
+            run: Box::new(move || {
+                entered.send(()).expect("observe actual post-barrier seam");
+                released
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("bounded release");
+            }),
+        });
+    }
+    wire.release();
+    observed
+        .recv_timeout(Duration::from_secs(10))
+        .expect("final Prepared before validation");
+    let journal_path = wire
+        .fixture
+        .root
+        .0
+        .join("workspace/index-operations-v1.turso");
+    let journal =
+        IndexOperationJournal::open(journal_path).expect("independent durable receipt read");
+    let Some(JournalEntry::Retained(entry)) =
+        journal.entry(wire.operation).expect("fresh durable read")
+    else {
+        panic!("same original operation");
+    };
+    assert!(
+        matches!(entry.state, StoredOperationState::Prepared { .. }),
+        "the held seam follows the actual durable barrier"
+    );
+    let original_capture = entry
+        .source_capture
+        .expect("source capture already coherent");
+    let mut client = LocalSubscriptionTransport::connect_with_timeouts(
+        &wire.endpoint,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect("separate lease client");
+    let mut admitted = client
+        .acquire_publications(Arc::new(wire.old_view.clone()), wire.cursor, &|| false)
+        .expect("actual source-capture admission");
+    client
+        .resume_publications(&mut admitted, &|| false)
+        .expect("poll while final validation held");
+    fs::write(&wire.source, "export const edited_after_barrier = 111;\n")
+        .expect("real post-barrier edit");
+    release.send(()).expect("allow final validation");
+    wire.wait_terminal();
+    let commands = wire.commands.lock().expect("original adapter");
+    let Some(JournalEntry::Retained(entry)) = commands
+        .index_operations
+        .entry(wire.operation)
+        .expect("receipt")
+    else {
+        panic!("exact operation retained");
+    };
+    assert!(
+        matches!(entry.state, StoredOperationState::Failed { .. }),
+        "changed input cannot record Published after the barrier"
+    );
+    let capture = entry
+        .source_capture
+        .expect("same independently captured source");
+    assert_eq!(
+        capture.request_identity(),
+        original_capture.request_identity()
+    );
+    assert_eq!(capture.operation_key(), original_capture.operation_key());
+    assert!(matches!(
+        commands.index_terminals.back().expect("terminal").outcome,
+        backend_library::IndexJobOutcome::Failed(_)
+    ));
+}

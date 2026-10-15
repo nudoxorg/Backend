@@ -97,6 +97,7 @@ pub(super) enum TestStage {
     BeforeViewPreparation,
     BeforeClusterCompile,
     BeforeClusterFallback,
+    BeforeGrantValidation,
     AfterGrant,
     AfterSelection,
     AfterReceipt,
@@ -602,12 +603,6 @@ impl PublicationWork {
             self.semantic.as_mut().expect("original semantic writer").authority_mut()
                 .commit_product_selection_changes(self.prepared.selected.clone(), removals, || {
                     if matches!(head, Head::Writer(_)) {
-                        if let Some(fence) = fence.as_ref()
-                            && !super::super::super::ingest::compiler_revision_is_current_with_cancellation(
-                                fence, Some(cancellation.as_ref()),
-                            ).map_err(BuiltinModelError)? {
-                            return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
-                        }
                         #[cfg(test)]
                         observed.phase("publication-barrier");
                         if !source_capture && !cleanup_phase {
@@ -619,6 +614,25 @@ impl PublicationWork {
                                 }
                                 FinishAddError::Failed(e) => e,
                             })?;
+                        }
+                    }
+                    if matches!(head, Head::Writer(_)) {
+                        #[cfg(test)]
+                        if test_hook.as_ref().is_some_and(|hook| hook.stage == TestStage::BeforeGrantValidation) {
+                            let hook = test_hook.take().expect("one-shot post-barrier validation seam");
+                            (hook.run)();
+                        }
+                        // The durable Prepared barrier may block. Revalidate
+                        // after it, immediately before asking for the grant.
+                        // This proves freshness at this validation instant,
+                        // not atomic exclusion of external filesystem writes
+                        // during the asynchronous owner-grant handoff. The
+                        // selected candidate still owns exact captured bytes.
+                        if let Some(fence) = fence.as_ref()
+                            && !super::super::super::ingest::compiler_revision_is_current_with_cancellation(
+                                fence, Some(cancellation.as_ref()),
+                            ).map_err(BuiltinModelError)? {
+                            return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
                         }
                     }
                     select_head(head, candidate, events, grant_accepted,
