@@ -731,6 +731,26 @@ mod native_web_closure_tests {
             TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
         );
     }
+
+    #[test]
+    fn native_terminal_recursive_include_keeps_explicit_and_valid_config_roots() {
+        let fixture = Fixture::new();
+        const SOURCE: &str = "export const value = 1;";
+        fixture.write("src/explicit.ts", SOURCE);
+        fixture.write("valid/selected.ts", SOURCE);
+        fixture.write("src/stray.ts", SOURCE);
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/explicit.ts"],"include":["src/**","valid/**/*"]}"#);
+        let native = fixture.native(&[
+            PackageSource::new("src/explicit.ts", SOURCE).unwrap(),
+            PackageSource::new("valid/selected.ts", SOURCE).unwrap(),
+            PackageSource::new("src/stray.ts", SOURCE).unwrap(),
+        ]);
+        assert_eq!(native.sources.len(), 2);
+        assert_eq!(
+            native.package_membership["src/stray.ts"],
+            TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+        );
+    }
     #[test]
     fn native_vite_client_types_use_package_declarations_after_primary_type_lookup() {
         let fixture = Fixture::new();

@@ -309,25 +309,26 @@ pub fn build(
                     });
                 }
             }
-            for directive in reference_directives(&text) {
+            for directive in
+                tsz::checker::triple_slash_validator::reference_directives(&text, checkpoint)
+            {
+                let directive = directive
+                    .map_err(|stop| format!("native TSZ directive scan stopped: {stop:?}"))?;
                 poll(checkpoint, 1)?;
-                if let Some(lib) = directive.attributes.get("lib") {
-                    source_lib_references.insert(lib.clone());
+                if let Some(lib) = directive.lib {
+                    source_lib_references.insert(lib.text.to_owned());
                 }
                 if options.no_resolve {
                     continue;
                 }
-                if let Some(reference) = directive.attributes.get("path") {
+                if let Some(reference) = directive.path {
                     pending.push_back(normalize(
-                        &path.parent().unwrap_or(Path::new("")).join(reference),
+                        &path.parent().unwrap_or(Path::new("")).join(reference.text),
                     ));
                 }
-                if let Some(reference) = directive.attributes.get("types") {
-                    let mode = match directive
-                        .attributes
-                        .get("resolution-mode")
-                        .map(String::as_str)
-                    {
+                if let Some(reference) = directive.types {
+                    let reference = reference.text;
+                    let mode = match directive.resolution_mode.map(|value| value.text) {
                         None => None,
                         Some("import") => Some(ImportingModuleKind::Esm),
                         Some("require") => Some(ImportingModuleKind::CommonJs),
@@ -482,16 +483,16 @@ fn select_roots(
     {
         excludes.push(out_dir.to_string_lossy().into_owned());
     }
-    if includes.iter().any(|pattern| {
-        absolute_selector(directory, pattern)
-            .file_name()
-            .is_some_and(|last| last == "**")
-    }) {
-        return Err("native TSZ include cannot end in a recursive directory wildcard".into());
-    }
     let includes = includes
         .iter()
         .filter(|pattern| !pattern.is_empty())
+        // TSZ's config contract discards invalid recursive terminal selectors;
+        // other selectors and explicit files still determine the program.
+        .filter(|pattern| {
+            !absolute_selector(directory, pattern)
+                .file_name()
+                .is_some_and(|last| last == "**")
+        })
         .map(|pattern| selector_pattern(directory, pattern))
         .collect::<Vec<_>>();
     let excludes = excludes
@@ -742,82 +743,6 @@ fn segment_matches(
     Ok(current[path.len()])
 }
 
-struct ReferenceDirective {
-    attributes: BTreeMap<String, String>,
-}
-
-fn reference_directives(source: &str) -> Vec<ReferenceDirective> {
-    leading_comments(source)
-        .into_iter()
-        .filter_map(|(block, body)| {
-            if block {
-                return None;
-            }
-            let reference = body
-                .strip_prefix('/')?
-                .trim_start()
-                .strip_prefix("<reference")?;
-            if !reference.starts_with(char::is_whitespace) {
-                return None;
-            }
-            let mut attributes = BTreeMap::new();
-            let mut rest = reference;
-            loop {
-                rest = rest.trim_start();
-                if rest.starts_with("/>") || rest.starts_with('>') {
-                    break;
-                }
-                let end = rest.find(|character: char| {
-                    !character.is_ascii_alphanumeric() && character != '-'
-                })?;
-                if end == 0 {
-                    return None;
-                }
-                let name = &rest[..end];
-                rest = rest[end..].trim_start().strip_prefix('=')?.trim_start();
-                let quote = rest.chars().next()?;
-                if !matches!(quote, '\'' | '"') {
-                    return None;
-                }
-                rest = &rest[1..];
-                let end = rest.find(quote)?;
-                attributes.insert(name.to_owned(), rest[..end].to_owned());
-                rest = &rest[end + 1..];
-            }
-            Some(ReferenceDirective { attributes })
-        })
-        .collect()
-}
-
-/// Leading comment bodies from the exact native source bytes. The scanner stops
-/// at the first source token and accepts BOM/Unicode whitespace without treating
-/// directive-looking strings in code or block comments as triple-slash references.
-fn leading_comments(source: &str) -> Vec<(bool, &str)> {
-    let mut rest = source.trim_start_matches('\u{feff}');
-    let mut output = Vec::new();
-    loop {
-        rest = rest.trim_start_matches(|character: char| {
-            character.is_whitespace() || character == '\u{feff}'
-        });
-        if let Some(comment) = rest.strip_prefix("/*") {
-            let Some(end) = comment.find("*/") else {
-                break;
-            };
-            output.push((true, &comment[..end]));
-            rest = &comment[end + 2..];
-        } else if let Some(comment) = rest.strip_prefix("//") {
-            let end = comment
-                .find(['\n', '\r', '\u{2028}', '\u{2029}'])
-                .unwrap_or(comment.len());
-            output.push((false, &comment[..end]));
-            rest = &comment[end..];
-        } else {
-            break;
-        }
-    }
-    output
-}
-
 fn jsx_runtime_specifier(options: &TszCheckerOptions, source: &str) -> Option<String> {
     use tsz_common::checker_options::JsxMode;
     let pragma_source = tsz::checker::jsx::program_import_source_pragma(source);
@@ -972,13 +897,14 @@ mod tests {
     }
     #[test]
     fn reference_directives_are_leading_trivia_with_exact_attribute_names_and_modes() {
-        let references = reference_directives(
+        let references = tsz::checker::triple_slash_validator::reference_directives(
             "\u{feff}/* /// <reference types=\"wrong\" /> */\n/// <reference types = 'node' resolution-mode = 'require' />\n/// <reference path = './ambient.d.ts' />\nexport const text = '/// <reference types=\"wrong\" />';\n/// <reference types=\"late\" />",
-        );
+            &Unlimited,
+        ).collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(references.len(), 2);
-        assert_eq!(references[0].attributes["types"], "node");
-        assert_eq!(references[0].attributes["resolution-mode"], "require");
-        assert_eq!(references[1].attributes["path"], "./ambient.d.ts");
+        assert_eq!(references[0].types.unwrap().text, "node");
+        assert_eq!(references[0].resolution_mode.unwrap().text, "require");
+        assert_eq!(references[1].path.unwrap().text, "./ambient.d.ts");
     }
     #[test]
     fn automatic_jsx_runtime_honors_source_pragma_and_classic_override() {

@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn captured_directives_borrow_shebang_prologue_values_with_exact_offsets() {
+    struct Unlimited;
+    impl ExecutionCheckpoint for Unlimited {
+        fn checkpoint(&self, _: u64) -> Result<(), ProjectExecutionStop> {
+            Ok(())
+        }
+    }
+    let source = "#!/usr/bin/env node\r\n/* ignored */\n/// <reference types='node' resolution-mode='require' />\u{2028}/// <reference path='./env.d.ts' />\nexport {};\n/// <reference types='late' />";
+    let directives = reference_directives(source, &Unlimited)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(directives.len(), 2);
+    let types = directives[0].types.unwrap();
+    assert_eq!(types.text, "node");
+    assert_eq!(
+        &source[types.offset..types.offset + types.text.len()],
+        "node"
+    );
+    assert_eq!(directives[0].resolution_mode.unwrap().text, "require");
+    assert_eq!(directives[1].path.unwrap().text, "./env.d.ts");
+}
+
+#[test]
+fn captured_directive_scan_stops_inside_one_large_comment() {
+    use std::cell::Cell;
+    struct Limited(Cell<u64>);
+    impl ExecutionCheckpoint for Limited {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.0.set(self.0.get() + work);
+            if self.0.get() > 128 {
+                Err(ProjectExecutionStop::WorkBudgetExhausted)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for prefix in ["/*", "//", "/// "] {
+        let source = format!(
+            "{prefix}{}\n/// <reference types='late' />",
+            " ".repeat(4096)
+        );
+        let checkpoint = Limited(Cell::new(0));
+        let result = reference_directives(&source, &checkpoint).collect::<Result<Vec<_>, _>>();
+        assert!(matches!(
+            result,
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        ));
+        assert!(checkpoint.0.get() < source.len() as u64);
+    }
+}
+
+#[test]
 fn test_extract_reference_paths() {
     let source = r#"
 /// <reference path="./types.d.ts" />

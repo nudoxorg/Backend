@@ -389,7 +389,7 @@ pub(crate) fn try_file_with_suffixes(path: &Path, suffixes: &[String]) -> Option
 pub(crate) fn try_file_with_suffixes_with(
     path: &Path,
     suffixes: &[String],
-    is_file: impl FnMut(&Path) -> bool,
+    mut is_file: impl FnMut(&Path) -> bool,
 ) -> Option<PathBuf> {
     let (base, extension) = split_path_extension(path)?;
     try_file_with_suffixes_and_extension_with(&base, extension, suffixes, is_file)
