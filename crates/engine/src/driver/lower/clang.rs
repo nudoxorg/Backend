@@ -3467,7 +3467,7 @@ mod tests {
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
         ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape,
-        SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
+        SemanticReader, SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
     };
     use backend_semantic::vocabulary::{
         CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
@@ -4335,8 +4335,28 @@ mod tests {
                 "generic helper single parameter binding",
             ));
         }
+        let fragment_bindings = match view.signature_carrier_bindings(generic) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => {
+                return Err(TestError::Missing(
+                    "generic helper fragment signature bindings",
+                ));
+            }
+        };
+        if fragment_bindings.len() != 1
+            || fragment_bindings[0].owner != generic
+            || fragment_bindings[0].role
+                != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || fragment_bindings[0].position != 0
+        {
+            return Err(TestError::Missing(
+                "generic helper fragment parameter binding",
+            ));
+        }
         let rows = type_facts(&view)?;
-        let reference = row_for_entity(&view, bindings[0].carrier)?.record;
+        let reference = row_for_entity(&view, fragment_bindings[0].carrier)?.record;
         if reference.tag != SemanticTypeTag::Primitive
             || reference.payload0 != super::SHAPE_CXX_LVALUE_REFERENCE
             || reference.children.length != 1
@@ -4396,7 +4416,28 @@ mod tests {
         {
             return Err(TestError::Missing("echo parameter and result bindings"));
         }
-        let echo_parameter_row = row_for_entity(&view, bindings[0].carrier)?;
+        let echo_fragment_owner = entity_of(&view, b"echo", EntityKind::Function)?;
+        let echo_fragment_bindings = match view.signature_carrier_bindings(echo_fragment_owner) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("echo fragment signature bindings")),
+        };
+        if echo_fragment_bindings.len() != 2
+            || echo_fragment_bindings[0].owner != echo_fragment_owner
+            || echo_fragment_bindings[0].role
+                != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || echo_fragment_bindings[0].position != 0
+            || echo_fragment_bindings[1].owner != echo_fragment_owner
+            || echo_fragment_bindings[1].role
+                != backend_semantic::ir::SignatureCarrierBindingRole::Result
+            || echo_fragment_bindings[1].position != 0
+        {
+            return Err(TestError::Missing(
+                "echo fragment parameter and result bindings",
+            ));
+        }
+        let echo_parameter_row = row_for_entity(&view, echo_fragment_bindings[0].carrier)?;
         if echo_parameter_row.record.tag != SemanticTypeTag::TypeVar
             || echo_parameter_row.record.text != Some(&b"T"[..])
         {
