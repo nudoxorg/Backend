@@ -310,27 +310,14 @@ pub enum Coverage {
 }
 
 impl Reason {
-    /// Returns whether this lane was never part of the declared scope.
+    /// Returns whether this reason proves a lane was outside declared scope.
     ///
-    /// `Unconfigured` is the one reason that is a fact about the *deployment*
-    /// rather than about this revision's work: no timer, retry, or further
-    /// indexing will change it, and nothing was left undone. Every other
-    /// reason describes work that could have produced rows for this revision
-    /// and did not.
-    ///
-    /// A surface needs this distinction to answer "is this project ready" with
-    /// one word. Treating an unconfigured lane as a failure makes an owner
-    /// that has completed every lane it has report a fault forever, which is
-    /// the same fabricated state as reporting a partial fraction that can
-    /// never advance — it just fails in the other direction. The lane itself
-    /// must still be *shown* as unavailable with its reason; it simply must
-    /// not hold the summary word hostage.
+    /// No lane reason proves that: `Unconfigured` can describe a missing
+    /// compiler for requested source. Optional vector setup is represented by
+    /// `SemanticSearchStatus` and must not certify compiler completeness.
     #[must_use]
     pub const fn is_outside_declared_scope(self) -> bool {
-        match self {
-            Self::Unconfigured => true,
-            Self::NoIndex | Self::Offline | Self::Cancelled | Self::Incomplete => false,
-        }
+        false
     }
 }
 
@@ -343,8 +330,8 @@ impl Coverage {
 
     /// Returns whether this lane failed work it was asked to do.
     ///
-    /// A lane the deployment never configured is unavailable but not failed;
-    /// see [`Reason::is_outside_declared_scope`].
+    /// Every unavailable compiler lane represents unmet declared coverage.
+    /// Optional vector setup is reported separately by `SemanticSearchStatus`.
     #[must_use]
     pub const fn is_failed_lane(self) -> bool {
         match self {

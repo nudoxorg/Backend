@@ -457,18 +457,13 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(
         thin.render(),
-        "~lanes exact✓12 names✓12 graph◐3/7 semantic✓12"
+        "~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured"
     );
-    // The graph lane is still working, so that is what the reader is waiting
-    // on. Optional vectors remain absent in the typed model but do not
-    // produce a failed semantic lane in the human statement.
-    assert_eq!(thin.readiness(), "indexing");
-    assert!(!thin.has_unavailable());
-    assert!(!thin.has_failed_lane());
+    assert_eq!(thin.readiness(), "unavailable");
+    assert!(thin.has_unavailable());
+    assert!(thin.has_failed_lane());
 
-    // Every lane the deployment declared finished; one it never configured did
-    // not. That owner is ready, and saying otherwise leaves a healthy project
-    // reporting a fault for the life of the deployment.
+    // A missing compiler is unavailable even when optional vectors are absent.
     let unconfigured = CoverageLine::new(
         &[
             Coverage::Complete,
@@ -481,14 +476,13 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
     );
     assert_eq!(
         unconfigured.render(),
-        "~lanes exact✓12 names✓12 graph✓12 semantic✓12"
+        "~lanes exact✓12 names✓12 graph✓12 semantic✗ unconfigured"
     );
-    assert_eq!(unconfigured.readiness(), "ready");
-    assert!(!unconfigured.has_unavailable());
-    assert!(!unconfigured.has_failed_lane());
+    assert_eq!(unconfigured.readiness(), "unavailable");
+    assert!(unconfigured.has_unavailable());
+    assert!(unconfigured.has_failed_lane());
+    assert!(!unconfigured.is_complete());
 
-    // A lane that was asked to answer and could not is a different statement
-    // and must never be folded into the one above.
     let failed = CoverageLine::new(
         &[
             Coverage::Complete,

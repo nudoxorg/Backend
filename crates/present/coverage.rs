@@ -18,16 +18,9 @@
 //! and the two never share a word: `indexing` means work is running,
 //! `partial` means it finished and left gaps.
 //!
-//! The `semantic` lane is the *compiler's* coverage of the project. Optional
-//! vector search (embeddings) is a separate capability: a project whose compiler
-//! lane is complete and whose embeddings were never configured is a complete
-//! project, and its line says `semantic✓`, never `semantic✗`. The owner reports
-//! that one fact through the same lane entry (`Unavailable`, `Unconfigured`),
-//! which stays in the typed model for consumers that show it; this module reads
-//! it back out for the line: a lane unavailable for a reason outside its
-//! declared scope marks like a complete one and never reads as a failure.
-//! Per-query vector status rides separately, and is mentioned only when it
-//! failed.
+//! The `semantic` lane reports compiler coverage. Optional vector search is
+//! carried separately by SemanticSearchStatus; an unconfigured compiler lane
+//! remains unavailable and never renders a completeness checkmark.
 //!
 //! A lane that the reply never mentioned renders `·`: not covered, not
 //! failed, simply not observed. That distinction is the whole point — an empty
@@ -119,12 +112,6 @@ impl LaneCoverage {
             LaneState::Complete => rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}")),
             LaneState::Partial { completed, total } => format!("◐{completed}/{total}"),
             LaneState::Gapped => "◐ partial".to_owned(),
-            // A lane unavailable for a reason outside its declared scope (the
-            // optional vector feature was never configured) covered everything
-            // it was asked to: it marks like a complete lane, never as a ✗.
-            LaneState::Unavailable { reason } if reason.is_outside_declared_scope() => {
-                rows.map_or_else(|| "✓".to_owned(), |rows| format!("✓{rows}"))
-            }
             LaneState::Unavailable { reason } => format!("✗ {}", reason_name(reason)),
             LaneState::Unobserved => "·".to_owned(),
         }
@@ -216,13 +203,8 @@ impl CoverageLine {
         let lanes = std::array::from_fn(|index| {
             let earlier = self.lanes[index];
             let later = next.lanes[index];
-            // Unconfigured is outside the declared scope and counts as
-            // complete; it must never erase a partial or failed observation.
             let gravity = |state: LaneState| match state {
-                LaneState::Complete
-                | LaneState::Unavailable {
-                    reason: Reason::Unconfigured,
-                } => 0,
+                LaneState::Complete => 0,
                 LaneState::Unobserved => 1,
                 LaneState::Gapped => 2,
                 LaneState::Partial { .. } => 3,
@@ -294,10 +276,8 @@ impl CoverageLine {
 
     /// Returns whether any lane failed work it was asked to do.
     ///
-    /// A lane the deployment never configured is unavailable without having
-    /// failed. It is still rendered `✗ unconfigured` on the `~lanes` line, and
-    /// [`Self::has_unavailable`] still reports it; it just does not make the
-    /// one-word summary claim that something went wrong.
+    /// An unconfigured compiler cannot cover declared source. Optional vector
+    /// setup remains separate and does not count as a compiler failure.
     #[must_use]
     pub fn has_failed_lane(&self) -> bool {
         self.lanes.iter().any(|lane| match lane.state {
@@ -317,13 +297,13 @@ impl CoverageLine {
 
     /// Returns whether every lane covered its declared scope.
     ///
-    /// A lane the deployment never configured has no declared scope to cover,
-    /// so it neither completes nor withholds completeness.
+    /// Every compiler lane must be complete. Optional unconfigured vector
+    /// search does not withhold compiler completeness.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.lanes.iter().all(|lane| match lane.state {
             LaneState::Complete => true,
-            LaneState::Unavailable { reason } => reason.is_outside_declared_scope(),
+            LaneState::Unavailable { .. } => false,
             LaneState::Partial { .. } | LaneState::Gapped | LaneState::Unobserved => false,
         }) && self.semantic_search.is_none_or(|status| match status {
             SemanticSearchStatus::Available => true,
@@ -488,28 +468,24 @@ mod page_tests {
 
     #[test]
     fn optional_vectors_stay_typed_while_requested_compiler_refusal_stays_visible() {
-        let optional = CoverageLine::new(
-            &[
-                Coverage::Complete,
-                Coverage::Unavailable {
-                    lane: Lane::Semantic,
-                    reason: Reason::Unconfigured,
-                },
-            ],
-            Some(12),
-        )
-        .with_semantic_search_status(SemanticSearchStatus::Unavailable {
-            reason: SemanticSearchReason::Unconfigured,
-        });
+        let optional = CoverageLine::new(&[Coverage::Complete], Some(12))
+            .with_semantic_search_status(SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::Unconfigured,
+            });
         assert!(optional.is_quiet());
-        assert!(matches!(
-            optional.lanes()[3].state(),
-            LaneState::Unavailable {
-                reason: Reason::Unconfigured
-            }
-        ));
-        assert!(!optional.render().contains("✗"));
-        assert!(!optional.render().contains("embedding-setup"));
+        assert!(optional.is_complete());
+        assert_eq!(optional.lanes()[3].state(), LaneState::Complete);
+        assert!(optional.render().contains("semantic✓12"));
+        assert_eq!(optional.semantic_search_status(), Some(SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::Unconfigured,
+        }));
+        let missing = CoverageLine::new(&[Coverage::Complete, Coverage::Unavailable {
+            lane: Lane::Semantic, reason: Reason::Unconfigured,
+        }], Some(12));
+        assert!(!missing.is_complete());
+        assert_eq!(missing.state(), ReadinessState::Unavailable);
+        assert!(missing.render().contains("semantic✗ unconfigured"));
+        assert!(!missing.render().contains("semantic✓"));
         let refused = CoverageLine::new(
             &[
                 Coverage::Complete,

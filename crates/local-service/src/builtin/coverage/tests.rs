@@ -4,7 +4,7 @@
 //! reason. Counting entries would pass for a vector that reports the wrong
 //! shape entirely, which is exactly the defect these tests exist to pin.
 
-use super::{ActivatedProfiles, SemanticDeployment, SemanticTally};
+use super::{ActivatedProfiles, SemanticTally};
 use backend_engine::builtin::{
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticUnavailableReason,
@@ -97,7 +97,7 @@ fn terminal_rows_report_an_unconfigured_lane_and_never_a_fraction() {
             )
         })
         .collect();
-    let coverage = tally(&rows, &ActivatedProfiles::new()).coverage(SemanticDeployment::Configured);
+    let coverage = tally(&rows, &ActivatedProfiles::new()).coverage();
     assert_eq!(
         coverage,
         vec![
@@ -131,11 +131,11 @@ fn rejected_declared_scope_outranks_missing_project_authority() {
             ),
         ),
     ];
-    let forward = tally(&rows, &ActivatedProfiles::new()).coverage(SemanticDeployment::Configured);
+    let forward = tally(&rows, &ActivatedProfiles::new()).coverage();
     let mut reversed = rows;
     reversed.reverse();
     let backward =
-        tally(&reversed, &ActivatedProfiles::new()).coverage(SemanticDeployment::Configured);
+        tally(&reversed, &ActivatedProfiles::new()).coverage();
     assert_eq!(
         forward,
         vec![
@@ -162,7 +162,7 @@ fn published_rows_still_report_their_exact_in_flight_fraction() {
         (waiting, published(b"coverage-pending")),
     ];
     assert_eq!(
-        tally(&rows, &activated(&[&done])).coverage(SemanticDeployment::Configured),
+        tally(&rows, &activated(&[&done])).coverage(),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Partial {
@@ -194,7 +194,7 @@ fn terminal_rows_do_not_inflate_an_in_flight_denominator() {
         ),
     ];
     assert_eq!(
-        tally(&rows, &activated(&[&done])).coverage(SemanticDeployment::Configured),
+        tally(&rows, &activated(&[&done])).coverage(),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Partial {
@@ -215,9 +215,9 @@ fn a_workspace_finishing_its_publications_transitions_from_partial_to_complete()
         (first.clone(), published(b"coverage-transition-first")),
         (second.clone(), published(b"coverage-transition-second")),
     ];
-    let before = tally(&rows, &activated(&[&first])).coverage(SemanticDeployment::Configured);
+    let before = tally(&rows, &activated(&[&first])).coverage();
     let after =
-        tally(&rows, &activated(&[&first, &second])).coverage(SemanticDeployment::Configured);
+        tally(&rows, &activated(&[&first, &second])).coverage();
     assert_eq!(
         before,
         vec![
@@ -240,7 +240,7 @@ fn a_workspace_finishing_its_publications_transitions_from_partial_to_complete()
 #[test]
 fn an_empty_semantic_relation_reports_only_the_source_lane() {
     assert_eq!(
-        SemanticTally::default().coverage(SemanticDeployment::Configured),
+        SemanticTally::default().coverage(),
         vec![ViewCoverage::Complete],
         "an empty semantic relation qualified the semantic lane"
     );
@@ -256,67 +256,33 @@ fn immutable_generation_rows_are_never_counted() {
     let history = key.for_generation(claim.binding().identity);
     assert_eq!(
         tally(&[(history, record.clone())], &ActivatedProfiles::new())
-            .coverage(SemanticDeployment::Configured),
+            .coverage(),
         vec![ViewCoverage::Complete],
         "an immutable generation row was projected as selected coverage"
     );
 }
 
 #[test]
-fn an_unconfigured_deployment_reports_the_lane_once_and_terminally() {
+fn completed_native_scope_is_complete_without_optional_embeddings() {
     let done = selected_key("configured-complete");
     let rows = vec![(done.clone(), published(b"coverage-deployment"))];
-    let coverage = tally(&rows, &activated(&[&done])).coverage(SemanticDeployment::Unconfigured);
-    assert_eq!(
-        coverage,
-        vec![
-            ViewCoverage::Complete,
-            ViewCoverage::Unavailable {
-                lane: Lane::Semantic,
-                reason: Reason::Unconfigured,
-            },
-        ],
-        "an unconfigured embedding lane was reported as complete"
-    );
-    assert_eq!(
-        super::reconcile_semantic_lane(&coverage, SemanticDeployment::Unconfigured),
-        coverage,
-        "reconciliation double-emitted the semantic lane"
-    );
+    let coverage = tally(&rows, &activated(&[&done])).coverage();
+    assert_eq!(coverage, vec![ViewCoverage::Complete]);
 }
 
 #[test]
-fn reconciliation_adds_the_deployment_terminal_only_when_the_lane_is_silent() {
-    let complete = vec![ViewCoverage::Complete];
-    assert_eq!(
-        super::reconcile_semantic_lane(&complete, SemanticDeployment::Unconfigured),
-        vec![
+fn missing_native_authority_with_a_published_sibling_is_a_settled_gap() {
+    let done = selected_key("native-complete");
+    for reason in [SemanticUnavailableReason::Toolchain, SemanticUnavailableReason::ProjectAuthority] {
+        let rows = vec![
+            (done.clone(), published(b"native-complete")),
+            (selected_key("native-missing"), ProductSemanticPublicationRecord::Unavailable(reason)),
+        ];
+        assert_eq!(tally(&rows, &activated(&[&done])).coverage(), vec![
             ViewCoverage::Complete,
-            ViewCoverage::Unavailable {
-                lane: Lane::Semantic,
-                reason: Reason::Unconfigured,
-            },
-        ],
-        "an unconfigured embedding lane was dropped from a complete reply"
-    );
-    assert_eq!(
-        super::reconcile_semantic_lane(&complete, SemanticDeployment::Configured),
-        complete,
-        "a configured deployment invented a semantic terminal"
-    );
-    let in_flight = vec![
-        ViewCoverage::Complete,
-        ViewCoverage::Partial {
-            lane: Lane::Semantic,
-            completed: 1,
-            total: 2,
-        },
-    ];
-    assert_eq!(
-        super::reconcile_semantic_lane(&in_flight, SemanticDeployment::Unconfigured),
-        in_flight,
-        "reconciliation replaced live in-flight work with a terminal reason"
-    );
+            ViewCoverage::Gapped { lane: Lane::Semantic },
+        ]);
+    }
 }
 
 #[test]
@@ -324,6 +290,8 @@ fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_movi
     for reason in [
         SemanticUnavailableReason::Rejected,
         SemanticUnavailableReason::Cancelled,
+        SemanticUnavailableReason::Toolchain,
+        SemanticUnavailableReason::ProjectAuthority,
     ] {
         let refused = selected_key("native-refused");
         let pending = selected_key("native-pending");
@@ -353,42 +321,28 @@ fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_movi
                 &ActivatedProfiles::new(),
             )
             .unwrap();
-        for deployment in [
-            SemanticDeployment::Configured,
-            SemanticDeployment::Unconfigured,
-        ] {
-            assert_eq!(
-                moving.coverage(deployment),
-                vec![
-                    ViewCoverage::Complete,
-                    ViewCoverage::Partial {
-                        lane: Lane::Semantic,
-                        completed: 0,
-                        total: 1
-                    }
-                ]
-            );
-        }
-        let expected = if reason == SemanticUnavailableReason::Cancelled {
-            Reason::Cancelled
-        } else {
-            Reason::Incomplete
-        };
-        for deployment in [
-            SemanticDeployment::Configured,
-            SemanticDeployment::Unconfigured,
-        ] {
-            assert_eq!(
-                observed.coverage(deployment),
-                vec![
-                    ViewCoverage::Complete,
-                    ViewCoverage::Unavailable {
-                        lane: Lane::Semantic,
-                        reason: expected
-                    }
-                ]
-            );
-        }
+        assert_eq!(
+            moving.coverage(),
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Partial {
+                    lane: Lane::Semantic,
+                    completed: 0,
+                    total: 1
+                }
+            ]
+        );
+        let expected = super::terminal_reason(reason);
+        assert_eq!(
+            observed.coverage(),
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: expected
+                }
+            ]
+        );
     }
 }
 
@@ -412,7 +366,7 @@ fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture
         )
         .unwrap();
     assert_eq!(
-        pending.coverage(SemanticDeployment::Configured),
+        pending.coverage(),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Partial {
@@ -437,12 +391,12 @@ fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture
             )
             .unwrap();
         assert_eq!(
-            failed.coverage(SemanticDeployment::Unconfigured),
+            failed.coverage(),
             vec![
                 ViewCoverage::Complete,
                 ViewCoverage::Unavailable {
                     lane: Lane::Semantic,
-                    reason: Reason::Incomplete
+                    reason: if reason == SemanticUnavailableReason::Rejected { Reason::Incomplete } else { Reason::Unconfigured }
                 }
             ]
         );
@@ -503,7 +457,7 @@ fn published_capture_requires_exact_selected_claim_and_coverage() {
         )
         .unwrap();
     assert_eq!(
-        observed.coverage(SemanticDeployment::Configured),
+        observed.coverage(),
         vec![ViewCoverage::Complete]
     );
 }
@@ -536,20 +490,15 @@ fn published_partial_scope_is_settled_usable_and_never_a_failure() {
     // A publication whose authority checked only part of the declared scope
     // is readable. It is reported as a settled gap, not as an unavailable
     // lane, and never as a fraction that tells the reader to wait.
-    for deployment in [
-        SemanticDeployment::Configured,
-        SemanticDeployment::Unconfigured,
-    ] {
-        assert_eq!(
-            observed.coverage(deployment),
-            vec![
-                ViewCoverage::Complete,
-                ViewCoverage::Gapped {
-                    lane: Lane::Semantic
-                }
-            ]
-        );
-    }
+    assert_eq!(
+        observed.coverage(),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Gapped {
+                lane: Lane::Semantic
+            }
+        ]
+    );
     assert_eq!(
         super::capture_row_state(ProductSemanticCaptureOutcome::Published {
             coverage,
@@ -593,7 +542,7 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
         )
         .unwrap();
     assert_eq!(
-        mixed.coverage(SemanticDeployment::Configured),
+        mixed.coverage(),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Gapped {
@@ -616,7 +565,7 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
             .unwrap();
     }
     assert_eq!(
-        total.coverage(SemanticDeployment::Configured),
+        total.coverage(),
         vec![
             ViewCoverage::Complete,
             ViewCoverage::Unavailable {
@@ -677,20 +626,7 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             &activated(&[&key]),
         )
         .unwrap();
-    assert_eq!(
-        observed.coverage(SemanticDeployment::Configured),
-        vec![ViewCoverage::Complete]
-    );
-    assert_eq!(
-        observed.coverage(SemanticDeployment::Unconfigured),
-        vec![
-            ViewCoverage::Complete,
-            ViewCoverage::Unavailable {
-                lane: Lane::Semantic,
-                reason: Reason::Unconfigured
-            }
-        ]
-    );
+    assert_eq!(observed.coverage(), vec![ViewCoverage::Complete]);
     let mut pending = SemanticTally::default();
     pending
         .observe_current(
@@ -700,26 +636,21 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             &activated(&[&key]),
         )
         .unwrap();
-    for deployment in [
-        SemanticDeployment::Configured,
-        SemanticDeployment::Unconfigured,
-    ] {
-        assert_eq!(
-            pending.coverage(deployment),
-            vec![
-                ViewCoverage::Complete,
-                ViewCoverage::Partial {
-                    lane: Lane::Semantic,
-                    completed: 0,
-                    total: 1
-                }
-            ]
-        );
-    }
+    assert_eq!(
+        pending.coverage(),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Partial {
+                lane: Lane::Semantic,
+                completed: 0,
+                total: 1
+            }
+        ]
+    );
 }
 
 #[test]
-fn legacy_package_scope_retains_native_refusal_and_optional_configuration() {
+fn legacy_package_scope_never_treats_missing_native_authority_as_ready() {
     use backend_engine::RowState;
     for reason in [
         SemanticUnavailableReason::Rejected,
@@ -736,7 +667,7 @@ fn legacy_package_scope_retains_native_refusal_and_optional_configuration() {
     ] {
         assert_eq!(
             super::publication_row_state(&ProductSemanticPublicationRecord::Unavailable(reason)),
-            RowState::Ready
+            RowState::Failed
         );
         assert_eq!(
             super::capture_row_state(
@@ -823,7 +754,7 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
                 let state = super::capture_row_state(outcome);
                 row = Some(row.map_or(state, |prior| super::merge_package_state(prior, state)));
             }
-            let lane = tally.coverage(SemanticDeployment::Configured);
+            let lane = tally.coverage();
             let lane = lane
                 .iter()
                 .copied()

@@ -172,7 +172,7 @@ mod local_manifest;
 mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
 mod search_source_page;
-use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
+use coverage::{SemanticDeployment, view_coverage};
 #[path = "builtin/lanes.rs"]
 mod lanes;
 use lanes::{FileLane, ProjectionLedger, SemanticFreshness, StructuralCause};

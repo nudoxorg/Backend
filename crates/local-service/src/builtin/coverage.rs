@@ -20,7 +20,7 @@ pub(super) type ActivatedProfiles = BTreeSet<(
     backend_semantic::vocabulary::LanguageProfile,
 )>;
 
-/// Whether this deployment configured the embedding half of the semantic lane.
+/// Whether this deployment configured optional vector search.
 ///
 /// The embedding provider is read from the environment once at startup and
 /// never changes while the owner runs, so an absent provider is a terminal
@@ -232,8 +232,10 @@ impl SemanticTally {
     ///    make it `Gapped`: usable, and nothing further will change it.
     /// 3. With no readable publication, a refused or stale scope is
     ///    `Unavailable`.
-    /// 4. Otherwise only missing optional configuration remains.
-    pub(super) fn coverage(self, deployment: SemanticDeployment) -> Vec<ViewCoverage> {
+    /// 4. With no native refusal, the observed compiler scope is complete.
+    /// Optional vector configuration has its own SemanticSearchStatus and
+    /// never changes this compiler tally.
+    pub(super) fn coverage(self) -> Vec<ViewCoverage> {
         let mut coverage = vec![ViewCoverage::Complete];
         if self.completed < self.published {
             coverage.push(ViewCoverage::Partial {
@@ -243,11 +245,7 @@ impl SemanticTally {
             });
             return coverage;
         }
-        let refused = self.incomplete
-            || matches!(
-                self.terminal,
-                Some(SemanticUnavailableReason::Rejected | SemanticUnavailableReason::Cancelled)
-            );
+        let refused = self.incomplete || self.terminal.is_some();
         if self.published > 0 {
             if self.gapped || refused {
                 coverage.push(ViewCoverage::Gapped {
@@ -256,34 +254,14 @@ impl SemanticTally {
                 return coverage;
             }
         } else if refused {
-            let reason = if self.incomplete {
-                Reason::Incomplete
-            } else {
-                match self.terminal {
-                    Some(SemanticUnavailableReason::Cancelled) => Reason::Cancelled,
-                    _ => Reason::Incomplete,
-                }
-            };
+            let reason = self.terminal.map(terminal_reason).unwrap_or(Reason::Incomplete);
             coverage.push(ViewCoverage::Unavailable {
                 lane: Lane::Semantic,
                 reason,
             });
             return coverage;
         }
-        if let Some(reason) = self.terminal_reason(deployment) {
-            coverage.push(ViewCoverage::Unavailable {
-                lane: Lane::Semantic,
-                reason,
-            });
-        }
         coverage
-    }
-
-    /// Native outcomes qualify declared scope even without embeddings.
-    fn terminal_reason(self, deployment: SemanticDeployment) -> Option<Reason> {
-        self.terminal.map(terminal_reason).or_else(|| {
-            matches!(deployment, SemanticDeployment::Unconfigured).then_some(Reason::Unconfigured)
-        })
     }
 }
 
@@ -360,13 +338,8 @@ fn captured_package_state(
 fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_engine::RowState {
     use backend_engine::RowState;
     match record {
-        ProductSemanticPublicationRecord::Unavailable(
-            SemanticUnavailableReason::Rejected | SemanticUnavailableReason::Cancelled,
-        ) => RowState::Failed,
-        ProductSemanticPublicationRecord::Published { .. }
-        | ProductSemanticPublicationRecord::Unavailable(
-            SemanticUnavailableReason::Toolchain | SemanticUnavailableReason::ProjectAuthority,
-        ) => RowState::Ready,
+        ProductSemanticPublicationRecord::Unavailable(_) => RowState::Failed,
+        ProductSemanticPublicationRecord::Published { .. } => RowState::Ready,
     }
 }
 
@@ -560,6 +533,7 @@ pub(super) fn qualify_package_rows(
 }
 
 /// Returns whether one coverage entry qualifies the semantic lane.
+#[cfg(test)]
 fn is_semantic_lane(coverage: ViewCoverage) -> bool {
     matches!(
         coverage,
@@ -575,30 +549,6 @@ fn is_semantic_lane(coverage: ViewCoverage) -> bool {
     )
 }
 
-/// Folds the deployment's embedding terminal into a coverage vector produced
-/// elsewhere, leaving the semantic lane with at most one entry.
-///
-/// The vector already carries the deployment terminal when it came from
-/// [`view_coverage`]; this reconciliation exists so a reply assembled from any
-/// other path cannot silently drop the fact that no embedding lane is
-/// configured, and so the lane can never be described twice.
-pub(super) fn reconcile_semantic_lane(
-    coverage: &[ViewCoverage],
-    deployment: SemanticDeployment,
-) -> Vec<ViewCoverage> {
-    let mut reconciled = coverage.to_vec();
-    if matches!(deployment, SemanticDeployment::Configured)
-        || reconciled.iter().copied().any(is_semantic_lane)
-    {
-        return reconciled;
-    }
-    reconciled.push(ViewCoverage::Unavailable {
-        lane: Lane::Semantic,
-        reason: Reason::Unconfigured,
-    });
-    reconciled
-}
-
 /// Reads the selected semantic publication rows and reports the view coverage.
 ///
 /// # Errors
@@ -607,7 +557,7 @@ pub(super) fn reconcile_semantic_lane(
 pub(super) fn view_coverage(
     snapshot: &WorkspaceSnapshot,
     activated: &ActivatedProfiles,
-    deployment: SemanticDeployment,
+    _deployment: SemanticDeployment,
 ) -> Result<Vec<ViewCoverage>, BuiltinModelError> {
     let relation = snapshot
         .relation::<super::BuiltinSemanticRelation>()
@@ -665,7 +615,7 @@ pub(super) fn view_coverage(
             after = Some(next);
         }
     }
-    Ok(tally.coverage(deployment))
+    Ok(tally.coverage())
 }
 
 #[cfg(test)]

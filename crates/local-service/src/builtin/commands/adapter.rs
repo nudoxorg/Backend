@@ -6361,16 +6361,9 @@ fn semantic_readiness(
     let capabilities = remote
         .inventory(&local)
         .map_err(|error| BuiltinModelError(format!("project semantic readiness: {error}")))?;
-    // A deployment that configured no embedding provider has a terminally
-    // unavailable semantic lane, and a health reply must say so instead of
-    // dropping the fact on the floor. The published view root already folds the
-    // same classification in, so this reconciliation is a fixed point for every
-    // reply the owner certifies: `readiness_certificate` rejects a report whose
-    // coverage differs from that root, and the lane is described exactly once.
-    let coverage = super::super::reconcile_semantic_lane(
-        report.coverage(),
-        super::super::SemanticDeployment::from_remote(remote),
-    );
+    // Compiler coverage is the committed native tally. Optional vector
+    // availability is reported separately by the capability inventory.
+    let coverage = report.coverage().to_vec();
     // Progress is read out of the committed source relation rather than out of
     // a counter the scan kept, so it describes the revision this very report
     // names. `readiness_certificate` compares revision, basis, coverage, and
