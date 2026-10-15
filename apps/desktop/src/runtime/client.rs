@@ -1131,12 +1131,73 @@ mod tests {
     #[cfg(any(unix, windows))]
     fn root_admission_uses_revision_only_and_leaves_catalog_to_page_reads() {
         use backend_client::CommandTransport;
-        use backend_library::Command;
-        use std::sync::Mutex;
+        use backend_library::{
+            AuthorityScopeClaim, Basis, Command, CoverageCapability, Cursor, Frontier,
+            ProducerObservationClaims, ProducerObservationVerifier, ScopeRoot,
+            UntrustedProducerObservation, ViewRoot, admit_complete_scope,
+            admit_producer_observation, object_version, view_key, view_state_root,
+        };
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        struct FixtureVerifier;
+        impl ProducerObservationVerifier for FixtureVerifier {
+            type Error = &'static str;
+
+            fn verify(
+                &self,
+                observation: &UntrustedProducerObservation,
+            ) -> Result<ProducerObservationClaims, Self::Error> {
+                if observation.evidence() != b"root-revision-fixture" {
+                    return Err("wrong fixture evidence");
+                }
+                Ok(ProducerObservationClaims::new(
+                    observation.producer_identity(),
+                    observation.scope_root(),
+                    observation.context(),
+                    *blake3::hash(observation.evidence()).as_bytes(),
+                ))
+            }
+        }
+
+        let basis = Basis::new(view_state_root(&[]), object_version(b"library-source-v1"));
+        let scope = ScopeRoot::from_bytes(basis.object.to_bytes());
+        let observation = admit_producer_observation(
+            UntrustedProducerObservation::new(
+                [0x71; 32],
+                scope,
+                [0x72; 32],
+                b"root-revision-fixture".to_vec(),
+            ),
+            &FixtureVerifier,
+        )
+        .expect("fixture producer observation");
+        let coverage = CoverageCapability::from_authorized_with_evidence(
+            admit_complete_scope(
+                AuthorityScopeClaim::from_object_version(basis.object),
+                observation,
+            )
+            .expect("fixture complete coverage"),
+            b"root-revision-fixture".to_vec(),
+        )
+        .expect("fixture coverage capability");
+        let view = Arc::new(
+            ViewRoot::empty_checked(
+                view_key(b"library-view-v1"),
+                basis,
+                Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+                coverage,
+            )
+            .expect("coverage-bearing fixture root"),
+        );
 
         struct RecordingTransport {
-            inner: backend_client::UnixCommandTransport,
+            library: backend_library::Library,
             seen: Arc<Mutex<Vec<Command>>>,
+            cancelled: Arc<AtomicBool>,
+            interrupt: TransportInterrupt,
         }
         impl CommandTransport for RecordingTransport {
             fn request(
@@ -1147,32 +1208,36 @@ mod tests {
                     .lock()
                     .expect("command record")
                     .push(request.command.clone());
-                self.inner.request(request)
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
+                    ));
+                }
+                // Use the real coverage-bearing owner reply. A raw LocalStream
+                // has no authenticated peer verifier, so decoding its wire
+                // certificate would correctly refuse this fixture's producer.
+                let reply = self.library.execute_dto(request);
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
+                    ));
+                }
+                Ok(reply)
             }
 
-            fn interrupt_handle(&self) -> Option<backend_client::TransportInterrupt> {
-                self.inner.interrupt_handle()
+            fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+                Some(self.interrupt.clone())
             }
         }
 
-        let view = super::super::owner::publication_tests::view();
-        let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+        let cursor = Cursor::for_view_root_at(&view, 0);
         let library = backend_library::Library::from_view((*view).clone(), cursor)
             .expect("coherent fixture library");
-        let (client_stream, mut owner_stream) = backend_replication::LocalStream::pair()
-            .expect("interruptible local transport pair");
-        let owner = std::thread::spawn(move || {
-            let limits = backend_replication::LocalControlLimits::default();
-            let body = backend_replication::read_frame(&mut owner_stream, limits)
-                .expect("Root revision reaches the local fixture");
-            let request = backend_library::decode_command_body(&body)
-                .expect("canonical Root revision request");
-            assert!(matches!(request.command, Command::Revision));
-            let reply = library.execute_dto(request);
-            let body = serde_json::to_vec(&reply).expect("revision DTO");
-            backend_replication::write_frame(&mut owner_stream, &body, limits)
-                .expect("fixture admits the revision reply");
-        });
+        let (interrupt_stream, _interrupt_peer) =
+            backend_replication::LocalStream::pair().expect("interruptible transport pair");
+        let interrupt = backend_client::UnixCommandTransport::from_stream(interrupt_stream)
+            .interrupt_handle()
+            .expect("actual socket interrupt");
         let basis = VersionedRoot::from_revision(1, cursor, 0);
         let gate =
             super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
@@ -1182,15 +1247,24 @@ mod tests {
             super::super::owner::PublicationAdmission::Admitted,
         );
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
         let project = LocalProjectId::new("/fixture/root-with-lazy-catalog").expect("project");
         let mut client = LocalEngineClient::gated("unused-recording-endpoint", project, gate);
         client.attached_epoch = Some(attachment);
         client.active_cancel = Some(CancellationToken::new());
+        let cancel_flag = Arc::clone(&cancelled);
+        let _cancel_flag_wake = client
+            .active_cancel
+            .as_ref()
+            .expect("active request cancellation")
+            .on_cancel(move || cancel_flag.store(true, Ordering::Release));
         client.session = Some(Session::from_transport(
             "unused-recording-endpoint",
             RecordingTransport {
-                inner: backend_client::UnixCommandTransport::from_stream(client_stream),
+                library,
                 seen: Arc::clone(&seen),
+                cancelled,
+                interrupt,
             },
         ));
 
@@ -1202,7 +1276,6 @@ mod tests {
                 cancel: CancellationToken::new(),
             })
             .expect("the certified owner revision admits Root");
-        owner.join().expect("revision fixture server completes");
         assert!(matches!(result, EngineDto::Root { catalog: None, .. }));
         assert_eq!(
             *seen.lock().expect("command record"),
