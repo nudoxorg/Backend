@@ -43,6 +43,7 @@ MAX_SNAPSHOT_ARG_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_ARG_PROCESSES = 512
 MAX_REPORTED_ARGS = 64
 MAX_REPORTED_CARGO_ENTRIES = 512
+MAX_REPORTED_PROCESS_ISSUES = 64
 MAX_ANCESTRY_DEPTH = 64
 # proc_pidpath rejects buffers above PROC_PIDPATHINFO_MAXSIZE (4*MAXPATHLEN).
 MAX_PATH_BYTES = 4 * 1024
@@ -67,6 +68,21 @@ class CensusError(RuntimeError):
 
 class _LinuxProcRace(OSError):
     """A proc row changed without evidence that the pinned task exited."""
+
+    def __init__(
+        self,
+        error_number: int,
+        message: str,
+        filename: str | bytes | None = None,
+        *,
+        start_ticks: str | None = None,
+        cause_errno: int | None = None,
+        pidfd_ready: bool | None = None,
+    ) -> None:
+        super().__init__(error_number, message, filename)
+        self.start_ticks = start_ticks
+        self.cause_errno = cause_errno
+        self.pidfd_ready = pidfd_ready
 
 
 class _LinuxProcessExitedDuringRead(Exception):
@@ -476,11 +492,15 @@ def _capture_linux_proc_pid(
             def prove_exit(error: OSError) -> _LinuxProcessExitedDuringRead:
                 if not _linux_proc_path_absence(error):
                     raise error
-                if proc.pidfd_ready() is not True:
+                pidfd_ready = proc.pidfd_ready()
+                if pidfd_ready is not True:
                     raise _LinuxProcRace(
                         errno.ESTALE,
                         "proc-path-missing-without-pidfd-exit-proof",
                         getattr(error, "filename", None),
+                        start_ticks=first.start_ticks,
+                        cause_errno=error.errno,
+                        pidfd_ready=pidfd_ready,
                     ) from error
                 try:
                     last = proc.read_stat()
@@ -612,6 +632,8 @@ class ProcessSnapshot:
     captured_argv_bytes: int
     captured_argv_processes: int
     argv_budget_exhausted: bool
+    issue_details: tuple[Mapping[str, Any], ...] = ()
+    issue_details_omitted_count: int = 0
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1141,8 +1163,14 @@ def _snapshot_now() -> ProcessSnapshot:
     effective_uid = os.geteuid()
     rows = _host_process_rows()
     argv_budget = _ArgvBudget()
+    issue_details: list[dict[str, Any]] = []
     if sys.platform.startswith("linux"):
-        records, issues, races = _linux_processes(effective_uid, rows, argv_budget)
+        records, issues, races = _linux_processes(
+            effective_uid,
+            rows,
+            argv_budget,
+            issue_details=issue_details,
+        )
     else:
         records, issues, races = _darwin_processes(effective_uid, rows, argv_budget)
     finished = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
@@ -1158,6 +1186,8 @@ def _snapshot_now() -> ProcessSnapshot:
         argv_budget.captured_bytes,
         argv_budget.captured_processes,
         argv_budget.exhausted,
+        tuple(issue_details),
+        max(0, sum(issues.values()) - len(issue_details)) if sys.platform.startswith("linux") else 0,
     )
 
 
@@ -1445,6 +1475,53 @@ def _unknown_runtime_owner_candidate(row: _PsRow) -> ProcessRecord:
     )
 
 
+def _linux_process_issue_detail(
+    row: _PsRow,
+    boot_id: str,
+    category: str,
+    error: BaseException,
+) -> dict[str, Any]:
+    filename = getattr(error, "filename", None)
+    basename: str | None = None
+    if isinstance(filename, (str, bytes, os.PathLike)):
+        basename = pathlib.PurePosixPath(os.fsdecode(filename)).name
+    path_classes = {
+        "cmdline": ("read-command-line", "proc-command-line"),
+        "exe": ("read-executable-link", "proc-executable-link"),
+        "stat": ("read-process-stat", "proc-stat"),
+        "status": ("read-process-status", "proc-status"),
+    }
+    if basename is None:
+        stage, path_class = "capture-process-record", None
+    else:
+        stage, path_class = path_classes.get(basename, ("capture-process-record", "other-proc-path"))
+    start_ticks = getattr(error, "start_ticks", None)
+    start_token = None
+    if start_ticks is not None and str(start_ticks).isdigit():
+        start_token = f"linux:{boot_id}:{start_ticks}"
+    cause = error.__cause__
+    cause_errno = getattr(error, "cause_errno", None)
+    if cause_errno is None:
+        cause_errno = getattr(cause, "errno", None)
+    reason = getattr(error, "strerror", None) or "non-os-error"
+    return {
+        "category": category,
+        "pid": row.pid,
+        "ps_started": row.started,
+        "start_token": start_token,
+        "stage": stage,
+        "path_class": path_class,
+        "error_kind": type(error).__name__,
+        "errno": getattr(error, "errno", None),
+        "errno_name": errno.errorcode.get(getattr(error, "errno", None)),
+        "cause_kind": type(cause).__name__ if isinstance(cause, OSError) else None,
+        "cause_errno": cause_errno,
+        "cause_errno_name": errno.errorcode.get(cause_errno),
+        "pidfd_ready": getattr(error, "pidfd_ready", None),
+        "reason": str(reason)[:160],
+    }
+
+
 def _linux_processes(
     effective_uid: int,
     rows: list[_PsRow],
@@ -1452,6 +1529,7 @@ def _linux_processes(
     *,
     proc_root: pathlib.Path = pathlib.Path("/proc"),
     proc_factory: Any = _LinuxProcDirectory,
+    issue_details: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[int, ProcessRecord], dict[str, int], dict[str, int]]:
     try:
         boot_id = (proc_root / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
@@ -1460,6 +1538,12 @@ def _linux_processes(
     records: dict[int, ProcessRecord] = {}
     issues: dict[str, int] = {}
     races: dict[str, int] = {}
+
+    def record_issue(category: str, row: _PsRow, error: BaseException) -> None:
+        issues[category] = issues.get(category, 0) + 1
+        if issue_details is not None and len(issue_details) < MAX_REPORTED_PROCESS_ISSUES:
+            issue_details.append(_linux_process_issue_detail(row, boot_id, category, error))
+
     deadline = time.monotonic() + NATIVE_SCAN_TIMEOUT_SECONDS
     for row in rows:
         if time.monotonic() >= deadline:
@@ -1500,7 +1584,7 @@ def _linux_processes(
             else:
                 race = "pid-exited-before-identity"
             races[race] = races.get(race, 0) + 1
-        except FileNotFoundError:
+        except FileNotFoundError as error:
             if cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
             elif compiler_hint:
@@ -1508,8 +1592,8 @@ def _linux_processes(
             elif runtime_hint:
                 records[row.pid] = _unknown_runtime_owner_candidate(row)
             elif same_uid:
-                issues["same-uid-process-snapshot-incomplete"] = issues.get("same-uid-process-snapshot-incomplete", 0) + 1
-        except PermissionError:
+                record_issue("same-uid-process-snapshot-incomplete", row, error)
+        except PermissionError as error:
             if same_uid and (cargo_hint or compiler_hint or runtime_hint):
                 records[row.pid] = (
                     _unknown_cargo_candidate(row)
@@ -1519,14 +1603,14 @@ def _linux_processes(
                     else _unknown_runtime_owner_candidate(row)
                 )
             elif same_uid:
-                issues["same-uid-process-unreadable"] = issues.get("same-uid-process-unreadable", 0) + 1
+                record_issue("same-uid-process-unreadable", row, error)
             elif cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
             elif compiler_hint:
                 records[row.pid] = _unknown_compiler_candidate(row)
             elif runtime_hint:
                 records[row.pid] = _unknown_runtime_owner_candidate(row)
-        except (OSError, ValueError, IndexError):
+        except (OSError, ValueError, IndexError) as error:
             if same_uid and (cargo_hint or compiler_hint or runtime_hint):
                 records[row.pid] = (
                     _unknown_cargo_candidate(row)
@@ -1536,7 +1620,7 @@ def _linux_processes(
                     else _unknown_runtime_owner_candidate(row)
                 )
             elif same_uid:
-                issues["same-uid-process-snapshot-incomplete"] = issues.get("same-uid-process-snapshot-incomplete", 0) + 1
+                record_issue("same-uid-process-snapshot-incomplete", row, error)
             elif cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
             elif compiler_hint:
@@ -1919,6 +2003,9 @@ def main(argv: list[str] | None = None) -> int:
         "slot_reserved": False,
         "processes_signaled": [],
     }
+    if sys.platform.startswith("linux"):
+        output["snapshot_issue_details"] = [dict(detail) for detail in snapshot.issue_details]
+        output["snapshot_issue_details_omitted_count"] = snapshot.issue_details_omitted_count
     if args.fleet_resources:
         output["resource_snapshot_complete"] = resource_snapshot is not None
         output["resource_snapshot"] = resource_snapshot
