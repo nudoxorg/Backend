@@ -99,6 +99,11 @@ impl Timing {
     }
 
     pub(super) fn begin(&mut self, phase: Phase) {
+        // Trace only the closed phase vocabulary, never paths or credentials.
+        // A blocked phase has no completion receipt yet.
+        if std::env::var_os("NUDOX_TRACE").is_some() {
+            eprintln!("backend-local-service: owner startup phase {phase:?}");
+        }
         self.begin_at(phase, Instant::now());
     }
 
