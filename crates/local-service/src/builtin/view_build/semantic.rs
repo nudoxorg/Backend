@@ -1071,6 +1071,7 @@ impl<'a> StructuralSites<'a> {
 fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     session: &DocumentationSession<'_, Reader>,
     declarations: &[&'a backend_compile::SourceDeclaration],
+    profile: backend_semantic::vocabulary::LanguageProfile,
 ) -> Result<BTreeMap<DeclarationIdentity, &'a backend_compile::SourceDeclaration>, BuiltinModelError>
 {
     let mut sites = BTreeMap::new();
@@ -1110,7 +1111,8 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
             // Structural declarations have no anonymous callable identifier.
             continue;
         };
-        semantic.entry((name.to_vec(), family)).or_default().push((
+        let name = semantic_source_name(profile, family, name);
+        semantic.entry((name, family)).or_default().push((
             entity.entity.source.map(|span| span.start()),
             entity.entity.version.identity(),
         ));
@@ -1145,6 +1147,24 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     Ok(sites)
 }
 
+/// Java's semantic type names are qualified while its structural tags capture
+/// the declared identifier. Restrict this projection to Java's type family;
+/// the existing count and span checks below decide whether the simple name is
+/// unique enough to attach a source site.
+fn semantic_source_name(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    family: u8,
+    name: &[u8],
+) -> Vec<u8> {
+    if profile.language() == backend_semantic::vocabulary::Language::Java
+        && family == 1
+        && let Ok(name) = std::str::from_utf8(name)
+    {
+        return name.rsplit('.').next().unwrap_or(name).as_bytes().to_vec();
+    }
+    name.to_vec()
+}
+
 pub(super) struct SemanticRowContent {
     pub(super) document: Vec<Fragment>,
     pub(super) signature: Option<String>,
@@ -1167,7 +1187,7 @@ pub(super) fn project_image_rows(
     site_declarations: &[&backend_compile::SourceDeclaration],
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let sites = semantic_sites(&session, site_declarations)?;
+    let sites = semantic_sites(&session, site_declarations, profile)?;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
