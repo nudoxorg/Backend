@@ -203,7 +203,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v6/exact-binding-owner-v2",
+        b"tree-sitter-typescript-0.23.2/tags-v7-let-variables/exact-binding-owner-v2",
         vec![
             backend_compile::GrammarVariant::new(
                 &["ts", "mts", "cts", "js", "mjs", "cjs"],
