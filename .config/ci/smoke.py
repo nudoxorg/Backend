@@ -206,12 +206,13 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     trace = home / "trace.jsonl"
     env["NUDOX_TRACE"] = str(trace)
     log = open(home / "desktop.log", "w")
+    server_log = open(home / "xvfb.log", "w")
     server = subprocess.Popen(
         [xvfb, "-displayfd", str(write_fd), "-screen", "0", "1600x1000x24", "-nolisten", "tcp"],
         env=env,
         pass_fds=(write_fd,),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=server_log,
         start_new_session=True,
     )
     os.close(write_fd)
@@ -255,7 +256,14 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                 try:
                     code = app.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    return fail("desktop did not shut down within 10s after Quit")
+                    log.flush()
+                    server_log.flush()
+                    details = "\n".join(
+                        f"{name}:\n{(home / name).read_text(errors='replace')[-3000:]}"
+                        for name in ("desktop.log", "xvfb.log", "trace.jsonl")
+                        if (home / name).is_file()
+                    )
+                    return fail(f"desktop did not shut down within 10s after Quit\n{details}")
                 if code != 0:
                     return fail(f"desktop quit with exit {code}")
                 print(f"gui: visible window and first frame after {first_frame:.1f}s; clean Quit")
@@ -273,6 +281,7 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
         stop(server)
         os.close(read_fd)
         log.close()
+        server_log.close()
 
 
 def main() -> int:
