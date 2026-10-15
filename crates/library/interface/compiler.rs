@@ -746,7 +746,10 @@ pub enum CompilerCause {
     /// `Fragment` remains for older callers that only have a phase. Compiler
     /// driver failures use this variant so source errors and their operands
     /// remain inspectable through library and transport boundaries.
-    FragmentFailure(CompilerFragmentFailure),
+    // Retain the complete typed IR fault in one cold allocation. Its largest
+    // variant carries bounded source text and must not widen every successful
+    // compiler reply or allocation-free unavailable terminal.
+    FragmentFailure(Box<CompilerFragmentFailure>),
 }
 
 /// One cold owner for a lowering terminal whose largest language projection
