@@ -178,7 +178,10 @@ impl OwnerRecovery {
         );
         let result = match (held_start, &command, result) {
             (Some(_), SurfaceCommand::IndexOperationStart { operation_key, .. }, Err(cause))
-                if !matches!(cause, ClientError::RequestCancelled(_) | ClientError::CommandFailed(_)) =>
+                if !matches!(
+                    cause,
+                    ClientError::RequestCancelled(_) | ClientError::CommandFailed(_)
+                ) =>
             {
                 Err(ClientError::IndexOperationDeliveryUnknown {
                     operation_key: *operation_key,

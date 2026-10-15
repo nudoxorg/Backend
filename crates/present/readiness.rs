@@ -263,8 +263,7 @@ mod tests {
     #[test]
     fn indexing_carries_the_published_count_only_when_it_is_known_and_attributable() {
         let known = facts(&[Coverage::Complete], 539);
-        let Readiness::Indexing { rows } =
-            project_readiness(RowState::Loading, "/p", &known, true)
+        let Readiness::Indexing { rows } = project_readiness(RowState::Loading, "/p", &known, true)
         else {
             panic!("a loading row reads indexing");
         };
@@ -296,6 +295,11 @@ mod tests {
                 path: "/p".to_owned()
             }
         );
-        assert!(fault.cause().sentence().contains("interrupted by an owner restart"));
+        assert!(
+            fault
+                .cause()
+                .sentence()
+                .contains("interrupted by an owner restart")
+        );
     }
 }

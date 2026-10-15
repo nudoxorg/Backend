@@ -3254,14 +3254,15 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
 fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort() {
     assert_eq!(DTO_VERSION, 31);
     // Use the real strict coverage projection, rather than a hand-written field.
-    let coverage = super::reply_coverage::coverage_to_wire(Coverage::Gapped {
-        lane: Lane::Semantic,
+    let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
+        lane: crate::Lane::Semantic,
     });
     let projected = serde_json::to_value(coverage).expect("new strict variant");
     let current = serde_json::to_vec(&serde_json::json!({
         "version": DTO_VERSION,
         "reply": {"coverage": projected, "unknown_future_field": true}
-    })).expect("cohort envelope");
+    }))
+    .expect("cohort envelope");
     let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
         .expect_err("old peer stops before decoding a gapped variant");
     assert!(old_peer.contains("reply DTO version 31"));
@@ -3275,7 +3276,9 @@ fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort(
     assert!(!error.contains("unknown field"));
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
     for version in 21..=31 {
-        grammar.check_envelope_version(version).expect("explicit maintained history");
+        grammar
+            .check_envelope_version(version)
+            .expect("explicit maintained history");
     }
     assert!(grammar.check_envelope_version(32).is_err());
 }

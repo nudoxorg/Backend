@@ -54,7 +54,9 @@ impl JournalViewGrammarV3 {
     /// # Errors
     /// Refuses unknown and incompatible persisted envelope versions.
     pub fn check_envelope_version(self, version: u16) -> Result<(), String> {
-        if version == DTO_VERSION || matches!(version, 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30) {
+        if version == DTO_VERSION
+            || matches!(version, 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30)
+        {
             Ok(())
         } else {
             Err(format!(
