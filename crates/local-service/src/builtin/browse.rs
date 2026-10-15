@@ -5977,6 +5977,102 @@ mod tests {
         )))
     }
 
+    fn synthetic_crate_archive(package: &str, version: &str, members: &[(&str, &[u8])]) -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        const TAR_BLOCK_BYTES: usize = 512;
+        let root = format!("{package}-{version}");
+        let mut tar = Vec::new();
+        for (relative, contents) in members {
+            let path = format!("{root}/{relative}");
+            assert!(path.len() <= 100, "fixture tar path must fit USTAR name");
+            let mut header = [0_u8; TAR_BLOCK_BYTES];
+            header[..path.len()].copy_from_slice(path.as_bytes());
+            header[100..108].copy_from_slice(b"0000644\0");
+            header[108..116].copy_from_slice(b"0000000\0");
+            header[116..124].copy_from_slice(b"0000000\0");
+            let size = format!("{:011o}\0", contents.len());
+            header[124..136].copy_from_slice(size.as_bytes());
+            header[136..148].copy_from_slice(b"00000000000\0");
+            header[148..156].fill(b' ');
+            header[156] = b'0';
+            header[257..263].copy_from_slice(b"ustar\0");
+            header[263..265].copy_from_slice(b"00");
+            let checksum = header.iter().map(|byte| usize::from(*byte)).sum::<usize>();
+            let checksum = format!("{checksum:06o}\0 ");
+            header[148..156].copy_from_slice(checksum.as_bytes());
+            tar.extend_from_slice(&header);
+            tar.extend_from_slice(contents);
+            let padded = contents.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+            tar.resize(tar.len() + padded.saturating_sub(contents.len()), 0);
+        }
+        tar.resize(tar.len() + TAR_BLOCK_BYTES * 2, 0);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&tar)
+            .expect("write synthetic crate archive");
+        encoder.finish().expect("finish synthetic crate archive")
+    }
+
+    fn attach_synthetic_registry_archive(
+        owner: &mut BrowseCache,
+        workspace: &Path,
+        package_root: &Path,
+        archive: &[u8],
+        package: &str,
+        version: &str,
+    ) {
+        use sha2::{Digest, Sha256};
+
+        let digest: [u8; 32] = Sha256::digest(archive).into();
+        let mut checkpoint = || Ok(());
+        let witness =
+            CrateArchiveWitness::capture(package, version, archive, digest, &mut checkpoint)
+                .expect("capture synthetic archive witness");
+        let context = BrowseContextKey {
+            workspace: workspace.to_path_buf(),
+            invocation_root: workspace.to_path_buf(),
+        };
+        let previous_retained_bytes = {
+            let entry = owner
+                .entries
+                .get_mut(&context)
+                .expect("fixture project-tree cache entry");
+            entry
+                .registry_archives
+                .retain(|archive| archive.package_root != package_root);
+            entry
+                .registry_archives
+                .push(cargo_metadata::RegistryArchiveWitness {
+                    package_root: package_root.to_path_buf(),
+                    witness,
+                });
+            let previous = entry.retained_bytes;
+            entry.retained_bytes = browse_entry_retained_bytes(
+                &context.workspace,
+                &context.invocation_root,
+                &entry.watched,
+                entry.watched.capacity(),
+                &entry.input,
+                &entry.package_rows,
+                entry.tool_witness_reuse.as_ref(),
+                &entry.registry_archives,
+                entry.registry_archives.capacity(),
+            );
+            previous
+        };
+        let current_retained_bytes = owner
+            .entries
+            .get(&context)
+            .expect("fixture project-tree cache entry")
+            .retained_bytes;
+        owner.cached_bytes = owner
+            .cached_bytes
+            .saturating_sub(previous_retained_bytes)
+            .saturating_add(current_retained_bytes);
+    }
+
     fn fixture_member_input(workspace: &Path, member: &Path, id: &str) -> TreeInput {
         TreeInput {
             source: TreeSource::Cargo {
@@ -6845,7 +6941,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_follows_readme_links_only_from_the_current_metadata_admitted_release() {
+    fn owner_archive_witness_controls_source_readme_link_and_inventory_surfaces() {
         let scratch = scratch("backend-package-readme-link-owner");
         let project = scratch.0.join("project");
         let helper = scratch.0.join("helper");
@@ -6868,15 +6964,15 @@ mod tests {
             "[package]\nname = \"readme-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\nreadme = \"docs/README.md\"\n",
         )
         .expect("helper manifest");
-        std::fs::write(helper.join("src/lib.rs"), "").expect("helper library");
-        std::fs::write(
-            helper.join("docs/README.md"),
-            "# helper\n\n[guide](../guide.md#entry) [top](#helper)\n",
-        )
-        .expect("declared helper README");
-        std::fs::write(helper.join("guide.md"), "# entry\nowner bytes\n")
-            .expect("linked helper document");
+        let source = "pub fn helper() { }\n";
+        std::fs::write(helper.join("src/lib.rs"), source).expect("helper library");
+        let readme_contents = "# helper\n\n[guide](../guide.md#entry) [top](#helper)\n";
+        std::fs::write(helper.join("docs/README.md"), readme_contents)
+            .expect("declared helper README");
+        let guide_contents = "# entry\nowner bytes\n";
+        std::fs::write(helper.join("guide.md"), guide_contents).expect("linked helper document");
         let project = project.canonicalize().expect("canonical project root");
+        let helper = helper.canonicalize().expect("canonical helper root");
 
         let mut owner = BrowseCache::default();
         let tree = owner
@@ -6893,6 +6989,63 @@ mod tests {
         let binding = tree
             .retained_request_binding()
             .expect("exact project tree request");
+        let source_request =
+            backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
+        let source_path = CargoPackageSourcePathV1::new("src/lib.rs").expect("helper source path");
+        assert!(matches!(
+            owner.source_file(source_request.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Read { ref contents, .. }
+                if contents.as_ref() == source
+        ));
+        assert!(matches!(
+            owner.source_inventory(source_request.clone()),
+            CargoPackageSourceInventoryResultV1::Listed(_)
+        ));
+        let baseline_readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+            package.clone(),
+            binding,
+        ));
+        assert!(baseline_readme.has_admissible_shape());
+        let baseline_origin = CargoPackageReadmeOriginV1::from_result(&baseline_readme)
+            .expect("baseline package README origin");
+        assert!(matches!(
+            owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+                origin: baseline_origin,
+                href: "../guide.md#entry".to_owned(),
+            }),
+            CargoPackageReadmeLinkResultV1::Read { .. }
+        ));
+
+        // The synthetic archive is attached only to drive the public browse
+        // checks. Cargo metadata above admits a local path package; registry
+        // admission itself is covered by the cargo_metadata tests.
+        let manifest = std::fs::read(helper.join("Cargo.toml")).expect("helper manifest bytes");
+        let archive_members: [(&str, &[u8]); 4] = [
+            ("Cargo.toml", manifest.as_slice()),
+            ("src/lib.rs", source.as_bytes()),
+            ("docs/README.md", readme_contents.as_bytes()),
+            ("guide.md", guide_contents.as_bytes()),
+        ];
+        let archive = synthetic_crate_archive("readme-helper", "0.1.0", &archive_members);
+        attach_synthetic_registry_archive(
+            &mut owner,
+            &project,
+            &helper,
+            &archive,
+            "readme-helper",
+            "0.1.0",
+        );
+
+        assert!(matches!(
+            owner.source_file(source_request.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Read { ref contents, .. }
+                if contents.as_ref() == source
+        ));
+        assert!(matches!(
+            owner.source_inventory(source_request.clone()),
+            CargoPackageSourceInventoryResultV1::Listed(_)
+        ));
+
         let readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding));
         assert!(
             readme.has_admissible_shape(),
@@ -6919,6 +7072,62 @@ mod tests {
             } if path.as_str() == "guide.md"
                 && contents.as_ref() == "# entry\nowner bytes\n"
                 && fragment.as_deref() == Some("entry")
+        ));
+
+        std::fs::write(helper.join("guide.md"), "# entry\nchanged target\n")
+            .expect("mutate witnessed link target");
+        assert!(matches!(
+            owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+                origin: origin.clone(),
+                href: "../guide.md#entry".to_owned(),
+            }),
+            CargoPackageReadmeLinkResultV1::Stale { .. }
+        ));
+        std::fs::write(helper.join("guide.md"), guide_contents)
+            .expect("restore witnessed link target");
+
+        std::fs::write(helper.join("src/lib.rs"), "pub fn changed() {}\n")
+            .expect("mutate witnessed source");
+        assert!(matches!(
+            owner.source_file(source_request.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        std::fs::write(helper.join("src/lib.rs"), source).expect("restore witnessed source");
+
+        std::fs::write(helper.join("docs/README.md"), "# changed README\n")
+            .expect("mutate witnessed README");
+        assert!(matches!(
+            owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+                origin.package.clone(),
+                binding,
+            )),
+            CargoPackageReadmeResultV1::Stale { .. }
+        ));
+        std::fs::write(helper.join("docs/README.md"), readme_contents)
+            .expect("restore witnessed README");
+
+        let with_missing_member = synthetic_crate_archive(
+            "readme-helper",
+            "0.1.0",
+            &[
+                ("Cargo.toml", manifest.as_slice()),
+                ("src/lib.rs", source.as_bytes()),
+                ("src/ghost.rs", b"pub fn absent() {}\n"),
+                ("docs/README.md", readme_contents.as_bytes()),
+                ("guide.md", guide_contents.as_bytes()),
+            ],
+        );
+        attach_synthetic_registry_archive(
+            &mut owner,
+            &project,
+            &helper,
+            &with_missing_member,
+            "readme-helper",
+            "0.1.0",
+        );
+        assert!(matches!(
+            owner.source_inventory(source_request.clone()),
+            CargoPackageSourceInventoryResultV1::Stale { .. }
         ));
 
         let escaped = owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
