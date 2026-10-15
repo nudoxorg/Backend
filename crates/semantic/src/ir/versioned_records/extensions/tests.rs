@@ -402,6 +402,57 @@ fn clang_versioned_v2_wire_retains_captured_declared_name_file_and_bounds() {
         MAXIMUM_BYTES,
     )
     .expect("wire row matches the captured reader's exact span");
+
+    let segment = payloads.first().expect("Clang extension segment");
+    let segment_view = decode_semantic_plane_segment(
+        segment.kind(),
+        &segment.metadata().expect("descriptor"),
+        segment.bytes(),
+    )
+    .expect("Clang segment decodes");
+    let record = segment_view.records().next().expect("Clang row");
+    let kind = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(profile));
+    let mut reversed_span = record.payload().to_vec();
+    let len = reversed_span.len();
+    let start_offset = len.checked_sub(8).expect("name span has two bounds");
+    let end_offset = len.checked_sub(4).expect("name span has an end bound");
+    reversed_span
+        .get_mut(start_offset..end_offset)
+        .expect("encoded start cell")
+        .copy_from_slice(&9_u32.to_be_bytes());
+    reversed_span
+        .get_mut(end_offset..len)
+        .expect("encoded end cell")
+        .copy_from_slice(&8_u32.to_be_bytes());
+    assert!(matches!(
+        validate_record(kind, record.key(), record.tag(), &reversed_span),
+        Err(SemanticPlaneRecordError::RowGrammar)
+    ));
+
+    let span_suffix_bytes = 1 + 4 + path.len() + 8;
+    let legacy_payload_len = record
+        .payload()
+        .len()
+        .checked_sub(span_suffix_bytes)
+        .expect("v2 row has the complete optional name-span suffix");
+    let legacy_payload = record
+        .payload()
+        .get(..legacy_payload_len)
+        .expect("legacy row ends before the v2 name-span suffix");
+    let legacy_key = super::wire::legacy_clang_extension_row_key(
+        profile,
+        version(7).identity(),
+        super::wire::CLANG_TAG,
+    );
+    assert!(validate_record(kind, legacy_key, record.tag(), legacy_payload).is_ok());
+    assert!(matches!(
+        validate_record(kind, record.key(), record.tag(), legacy_payload),
+        Err(SemanticPlaneRecordError::StableKeyMismatch)
+    ));
+    assert!(matches!(
+        validate_record(kind, legacy_key, record.tag(), record.payload()),
+        Err(SemanticPlaneRecordError::StableKeyMismatch)
+    ));
 }
 
 fn typescript_pair(reverse: bool) -> Ir {
