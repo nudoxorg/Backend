@@ -166,10 +166,7 @@ impl<'bytes> OccurrenceLane<'bytes> {
 
     /// Like [`Self::admit`], while also returning the rejected row ordinal
     /// for callers that retain it separately from the exact fault.
-    pub(crate) fn admit_indexed(
-        &self,
-        entity_count: u32,
-    ) -> Result<(), (u32, OccurrenceFault)> {
+    pub(crate) fn admit_indexed(&self, entity_count: u32) -> Result<(), (u32, OccurrenceFault)> {
         for (position, input) in self.inputs.iter().enumerate() {
             let ordinal = u32::try_from(position).unwrap_or(u32::MAX);
             if input.owner.raw >= entity_count {
