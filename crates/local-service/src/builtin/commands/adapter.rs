@@ -2634,6 +2634,7 @@ impl CommandAdapter {
             Default::default(),
             base.clone(),
             daemon.engine().daemon().library().view().clone(),
+            daemon.engine().daemon().library().cursor(),
             self.compiler.clone(),
             super::super::SemanticDeployment::from_remote(&self.remote_semantic),
             PathBuf::new(),
@@ -2728,7 +2729,7 @@ impl CommandAdapter {
             );
         }
         if matches!(work.head, index_publication_worker::Head::Moving) {
-            work.head = index_publication_worker::Head::Writer(
+            work.head = index_publication_worker::Head::Unprepared(
                 daemon
                     .engine_mut()
                     .daemon_mut()
@@ -2755,6 +2756,7 @@ impl CommandAdapter {
     ) -> Result<index_publication_worker::Retired, ()> {
         use index_publication_worker::{Disposition, Head, Retired};
         let work = &mut completion.work;
+        let unprepared = matches!(work.head, Head::Unprepared(_));
         let semantic = match work.semantic.take() {
             Some(writer) => match self.semantic_authority.prepare_index_writer_return(
                 daemon.engine().daemon().owner().snapshot().root(),
@@ -2794,7 +2796,32 @@ impl CommandAdapter {
             },
             None => None,
         };
-        let head = if matches!(
+        let head = if matches!(completion.disposition, Disposition::Refreshed) {
+            let published = match std::mem::replace(&mut work.head, Head::Moving) {
+                Head::Refreshed(published) => published,
+                retained => {
+                    work.head = retained;
+                    work.projection = projection.map(|r| r.into_writer());
+                    work.journal = journal.map(|r| r.into_writer());
+                    work.semantic = semantic.map(|r| r.into_writer());
+                    return Err(());
+                }
+            };
+            match daemon
+                .engine_mut()
+                .daemon_mut()
+                .install_read_head_refresh(published)
+            {
+                Ok(retired) => Some(retired),
+                Err((published, _)) => {
+                    work.head = Head::Refreshed(published);
+                    work.projection = projection.map(|r| r.into_writer());
+                    work.journal = journal.map(|r| r.into_writer());
+                    work.semantic = semantic.map(|r| r.into_writer());
+                    return Err(());
+                }
+            }
+        } else if matches!(
             completion.disposition,
             Disposition::Ready | Disposition::SourceCaptured
         ) {
@@ -2849,7 +2876,11 @@ impl CommandAdapter {
             match result {
                 Ok(retired) => Some(retired),
                 Err((writer, _)) => {
-                    work.head = Head::Writer(writer);
+                    work.head = if unprepared {
+                        Head::Unprepared(writer)
+                    } else {
+                        Head::Writer(writer)
+                    };
                     work.projection = projection.map(|r| r.into_writer());
                     work.journal = journal.map(|r| r.into_writer());
                     work.semantic = semantic.map(|r| r.into_writer());
@@ -2885,7 +2916,7 @@ impl CommandAdapter {
         }
         if matches!(
             completion.disposition,
-            Disposition::Ready | Disposition::SourceCaptured
+            Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
         ) {
             retired.roots = std::mem::replace(&mut self.published, work.roots.take());
         }
@@ -2894,7 +2925,7 @@ impl CommandAdapter {
         if self.search_preparation_eager
             && matches!(
                 completion.disposition,
-                Disposition::Ready | Disposition::SourceCaptured
+                Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
             )
         {
             self.warm_queries(daemon);
@@ -2910,9 +2941,7 @@ impl CommandAdapter {
         legacy_reply: &mut Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> Option<backend_library::IndexJobOutcome> {
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Publishing);
-        if prepared.intent.is_some()
-            && (!prepared.selected.is_empty() || prepared.profile_refusals.is_empty())
-        {
+        if !prepared.selected.is_empty() || prepared.profile_refusals.is_empty() {
             return self
                 .start_index_publication(daemon, indexing, prepared)
                 .err()
@@ -3360,6 +3389,33 @@ impl CommandAdapter {
                                     .grant_workspace_candidate(claim, cancellation.as_ref());
                                 let _ = reply.send(grant);
                             }
+                            Some(Event::RefreshApproval {
+                                base_root,
+                                base_sequence,
+                                base_view_root,
+                                base_cursor,
+                                cancellation,
+                                reply,
+                            }) => {
+                                let owner = daemon.engine().daemon().owner();
+                                let library = daemon.engine().daemon().library();
+                                let approved = if cancellation.load(Ordering::Acquire) {
+                                    Err(BuiltinModelError(
+                                        super::super::ingest::INDEX_SCAN_CANCELLED.to_owned(),
+                                    ))
+                                } else if owner.head().root().as_bytes() != &base_root
+                                    || owner.head().sequence() != base_sequence
+                                    || library.view().root().as_bytes() != &base_view_root
+                                    || library.cursor() != base_cursor
+                                {
+                                    Err(BuiltinModelError(
+                                        "admitted base changed before view refresh".to_owned(),
+                                    ))
+                                } else {
+                                    Ok(())
+                                };
+                                let _ = reply.send(approved);
+                            }
                             Some(Event::Complete(done)) => completion = Some(done),
                             None => {}
                         }
@@ -3468,7 +3524,7 @@ impl CommandAdapter {
                                         indexing.captures.clear();
                                     }
                                     let outcome = match done.disposition {
-                                        Disposition::Ready => done
+                                        Disposition::Ready | Disposition::Refreshed => done
                                             .work
                                             .outcome
                                             .take()

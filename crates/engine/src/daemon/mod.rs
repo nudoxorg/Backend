@@ -111,6 +111,6 @@ pub use protocol::{
 pub use query::{QueryState, ViewBinding, ViewBindingAdmission, ViewBindingState, ViewPersistence};
 
 pub use read_head::{
-    PublishedReadHead, ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead,
-    SelectedReadHead,
+    PreparedReadHeadRefresh, PublishedReadHead, PublishedReadHeadRefresh,
+    ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead, SelectedReadHead,
 };

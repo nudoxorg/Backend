@@ -45,9 +45,23 @@ impl SourceWire {
         cluster: bool,
         refuse_start: bool,
     ) -> Self {
+        Self::start_kind(stage, panic_after_release, cluster, refuse_start, false)
+    }
+
+    fn start_kind(
+        stage: TestStage,
+        panic_after_release: bool,
+        cluster: bool,
+        refuse_start: bool,
+        structural: bool,
+    ) -> Self {
         let mut fixture = AdapterFixture::new();
         let (package, label) = fixture.add_target();
-        let source = Path::new(&label).join("changed.ts");
+        let source = Path::new(&label).join(if structural {
+            "notes.txt"
+        } else {
+            "changed.ts"
+        });
         fs::write(&source, "export const original = 7;\n").expect("real source input");
         // Two actual admitted package rows force a multipage reset at credit 1.
         let (adapter, daemon) = fixture.parts();
@@ -754,4 +768,132 @@ fn source_edit_after_durable_prepared_barrier_is_refused_before_final_grant() {
         commands.index_terminals.back().expect("terminal").outcome,
         backend_library::IndexJobOutcome::Failed(_)
     ));
+}
+
+#[test]
+fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
+    let mut wire = SourceWire::start_kind(
+        TestStage::BeforeSourcePreparation,
+        false,
+        false,
+        false,
+        true,
+    );
+    wire.wait_at_source();
+    wire.release();
+    wire.wait_terminal();
+    let first = {
+        let commands = wire.commands.lock().expect("same original adapter");
+        let Some(JournalEntry::Retained(entry)) = commands
+            .index_operations
+            .entry(wire.operation)
+            .expect("first receipt")
+        else {
+            panic!("first operation retained");
+        };
+        let StoredOperationState::Published { receipt, .. } = entry.state else {
+            panic!("structural first operation published");
+        };
+        receipt
+    };
+    let mut client = LocalSubscriptionTransport::connect_with_timeouts(
+        &wire.endpoint,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect("independent public lease");
+    let mut observed = client
+        .acquire_publications(Arc::new(wire.old_view.clone()), wire.cursor, &|| false)
+        .expect("admit first structural publication");
+    let before_cursor = observed.cursor();
+    let before_view = observed.root();
+    let (entered, at_view) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    {
+        let mut commands = wire.commands.lock().expect("original adapter");
+        // Reproduce a missing optimization witness; the actual admitted
+        // immutable workspace/view remain owned by the production daemon.
+        commands.published = None;
+        commands.publication_test_hook = Some(TestHook {
+            stage: TestStage::BeforeViewPreparation,
+            run: Box::new(move || {
+                entered.send(()).expect("actual no-op hydration seam");
+                released
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("bounded release");
+            }),
+        });
+    }
+    wire.release = Some(release);
+    wire.operation =
+        backend_library::IndexOperationKey::from_bytes([0xc2; 32]).expect("second key");
+    let package = backend_library::PackageReference::parse(
+        wire.source
+            .parent()
+            .expect("source root")
+            .to_str()
+            .expect("UTF8")
+            .to_owned(),
+    )
+    .expect("same package");
+    Session::connect(&wire.endpoint)
+        .expect("actual no-op start session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStart {
+            operation_key: wire.operation,
+            package,
+            execution_intent: CompileExecutionIntent::Interactive,
+        })
+        .expect("admit unchanged real scan");
+    at_view
+        .recv_timeout(Duration::from_secs(10))
+        .expect("no-op reaches worker view preparation");
+    client
+        .resume_publications(&mut observed, &|| false)
+        .expect("quiet poll during no-op hydration");
+    client
+        .renew_publications(&mut observed)
+        .expect("renew during no-op hydration");
+    let mut sibling = LocalSubscriptionTransport::connect_with_timeouts(
+        &wire.endpoint,
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .expect("sibling Open while actual hydration held");
+    let term = backend_client::lease_contract::PUBLICATION_LEASE.get();
+    let LocalSubscriptionResponse::Opened { lease, .. } = sibling
+        .open_lease(Some(before_cursor), 1, term)
+        .expect("responsive Open during no-op preparation")
+    else {
+        panic!("unchanged admitted root");
+    };
+    sibling
+        .resume_lease(lease, before_cursor, 1, term)
+        .expect("sibling quiet poll");
+    sibling.cancel_lease(lease).expect("release sibling lease");
+    wire.release();
+    wire.wait_terminal();
+    client
+        .resume_publications(&mut observed, &|| false)
+        .expect("quiet after coherent refresh");
+    assert_eq!(observed.cursor(), before_cursor);
+    assert_eq!(observed.root().root(), before_view.root());
+    let commands = wire.commands.lock().expect("original writers returned");
+    let Some(JournalEntry::Retained(entry)) = commands
+        .index_operations
+        .entry(wire.operation)
+        .expect("second receipt")
+    else {
+        panic!("same second operation");
+    };
+    let StoredOperationState::Published { receipt, .. } = entry.state else {
+        panic!("no-op refresh publishes only its operation receipt");
+    };
+    assert_eq!(receipt.workspace_root(), first.workspace_root());
+    assert_eq!(receipt.workspace_sequence(), first.workspace_sequence());
+    assert_eq!(receipt.commit_identity(), first.commit_identity());
+    assert!(
+        receipt.request_identity().is_none(),
+        "no synthetic workspace request"
+    );
+    assert!(!commands.index_operations.publication_writer_reserved());
 }

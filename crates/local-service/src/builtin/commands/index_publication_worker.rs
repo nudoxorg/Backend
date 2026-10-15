@@ -10,9 +10,9 @@ use crate::builtin::view_build::ImageRowResidence;
 use crate::builtin::view_publish::PublishedRoots;
 use crate::builtin::{BuiltinViewAdmission, PreparedBuiltinView, prepare_builtin_view};
 use backend_engine::{
-    PreparedWorkspaceCandidate, PublishGrant, PublishedReadHead, ReadHeadPublicationFailure,
-    ReadHeadWriter, RetiredReadHead, UnselectedWorkspaceCandidate, WorkspaceCandidateClaim,
-    WorkspaceError, WorkspaceSnapshot,
+    PreparedReadHeadRefresh, PreparedWorkspaceCandidate, PublishGrant, PublishedReadHead,
+    PublishedReadHeadRefresh, ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceError, WorkspaceSnapshot,
 };
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread::JoinHandle;
@@ -34,6 +34,7 @@ pub(super) struct PublicationWork {
     source_attempts: Vec<backend_extension_turso::CandidateAttempt>,
     base: WorkspaceSnapshot,
     current: backend_engine::ViewRoot,
+    current_cursor: backend_engine::Cursor,
     compiler: LocalCompilerClient,
     deployment: crate::builtin::SemanticDeployment,
     workspace: std::path::PathBuf,
@@ -109,14 +110,20 @@ pub(super) struct TestHook {
 }
 
 pub(super) enum Head {
+    /// Original reservation with no candidate or grant.
+    Unprepared(ReadHeadWriter<BuiltinModel>),
     Writer(ReadHeadWriter<BuiltinModel>),
     Pending(ReadHeadPublicationFailure<BuiltinModel>),
     Published(PublishedReadHead<BuiltinModel>),
+    Refresh(PreparedReadHeadRefresh<BuiltinModel>),
+    Refreshed(PublishedReadHeadRefresh<BuiltinModel>),
     Moving,
 }
 
 pub(super) enum Disposition {
     Ready,
+    /// A durable derived-view refresh of the unchanged workspace base.
+    Refreshed,
     /// A checked source-only plan that needs no intermediate capture.
     SourcePrepared,
     /// The independent source/Pending capture is coherent; no terminal
@@ -138,6 +145,14 @@ pub(super) enum Event {
         claim: WorkspaceCandidateClaim,
         reply: SyncSender<Result<PublishGrant, WorkspaceError>>,
         cancellation: Arc<AtomicBool>,
+    },
+    RefreshApproval {
+        base_root: [u8; 32],
+        base_sequence: u64,
+        base_view_root: [u8; 32],
+        base_cursor: backend_engine::Cursor,
+        cancellation: Arc<AtomicBool>,
+        reply: SyncSender<Result<(), BuiltinModelError>>,
     },
     Complete(Completion),
 }
@@ -213,6 +228,7 @@ impl PublicationWork {
         generations: SemanticGenerationResidence,
         base: WorkspaceSnapshot,
         current: backend_engine::ViewRoot,
+        current_cursor: backend_engine::Cursor,
         compiler: LocalCompilerClient,
         deployment: crate::builtin::SemanticDeployment,
         workspace: std::path::PathBuf,
@@ -233,7 +249,7 @@ impl PublicationWork {
             projection,
             image_rows,
             generations,
-            head: read_head.map_or(Head::Moving, Head::Writer),
+            head: read_head.map_or(Head::Moving, Head::Unprepared),
             proof: None,
             roots: None,
             outcome: None,
@@ -241,6 +257,7 @@ impl PublicationWork {
             source_attempts,
             base,
             current,
+            current_cursor,
             compiler,
             deployment,
             workspace,
@@ -427,6 +444,59 @@ impl PublicationWork {
                 _ => unreachable!("checked owned preparation"),
             }
         }
+        if self.prepared.intent.is_none() {
+            if !matches!(self.preparation, Preparation::Publication { refusal: None })
+                || !self.prepared.selected.is_empty()
+                || !self.prepared.profile_refusals.is_empty()
+            {
+                return Err(BuiltinModelError(
+                    "view-only refresh cannot select compiler outcomes".to_owned(),
+                ));
+            }
+            let loader = self
+                .semantic
+                .as_ref()
+                .expect("original semantic writer")
+                .authority()
+                .capture_image_loader()?;
+            self.generations.install_selected_loader(loader);
+            #[cfg(test)]
+            self.run_test_hook(TestStage::BeforeViewPreparation);
+            let view = prepare_builtin_view(
+                self.base.clone(),
+                self.current.clone(),
+                &self.compiler,
+                self.deployment,
+                &self.workspace,
+                self.prior.as_ref(),
+                None,
+                &mut self.image_rows,
+                &mut self.generations,
+            )?;
+            let admission = BuiltinViewAdmission {
+                workspace_root: self.base.root(),
+                source_root: view.view.basis().root,
+            };
+            let Head::Unprepared(writer) = std::mem::replace(&mut self.head, Head::Moving) else {
+                return Err(BuiltinModelError(
+                    "view refresh lost its original writer".to_owned(),
+                ));
+            };
+            self.head = match writer.prepare_refresh_view(
+                view.view.clone(),
+                backend_engine::Cursor::for_view_root(&view.view),
+                &admission,
+                view.event.clone(),
+            ) {
+                Ok(refresh) => Head::Refresh(refresh),
+                Err((writer, error)) => {
+                    self.head = Head::Unprepared(writer);
+                    return Err(BuiltinModelError(format!("prepare view refresh: {error}")));
+                }
+            };
+            self.view = Some(view);
+            return Ok(());
+        }
         let original = self.prepared.intent.as_ref().ok_or_else(|| {
             BuiltinModelError("publication worker requires an actual source intent".to_owned())
         })?;
@@ -477,16 +547,26 @@ impl PublicationWork {
                 .map(|f| f.canonical_root()),
             Arc::clone(&self.cancellation),
         )?;
-        let Head::Writer(writer) = &mut self.head else {
-            return Err(BuiltinModelError(
-                "private publication was already selected".to_owned(),
-            ));
-        };
         #[cfg(test)]
         self.observed.phase("prepare-workspace");
-        let candidate = writer
-            .prepare(staged.intent.clone())
-            .map_err(|e| BuiltinModelError(format!("prepare index workspace: {e}")))?;
+        let candidate = {
+            let Head::Unprepared(writer) = &mut self.head else {
+                return Err(BuiltinModelError(
+                    "private publication already prepared or selected".to_owned(),
+                ));
+            };
+            writer
+                .prepare(staged.intent.clone())
+                .map_err(|e| BuiltinModelError(format!("prepare index workspace: {e}")))?
+        };
+        // Enter prepared custody before subsequent fallible snapshot work.
+        let Head::Unprepared(writer) = std::mem::replace(&mut self.head, Head::Moving) else {
+            unreachable!("original unprepared reservation")
+        };
+        self.head = Head::Writer(writer);
+        let Head::Writer(writer) = &mut self.head else {
+            unreachable!("prepared original writer")
+        };
         #[cfg(test)]
         self.observed.phase("open-candidate");
         let snapshot = writer
@@ -570,6 +650,9 @@ impl PublicationWork {
 
     fn attempt(&mut self, events: &Sender<Event>) -> Result<(), FinishAddError> {
         self.prepare()?;
+        if matches!(self.head, Head::Refresh(_) | Head::Refreshed(_)) {
+            return self.attempt_refresh(events);
+        }
         if matches!(self.preparation, Preparation::SourcePrepared(_)) {
             return Ok(());
         }
@@ -845,6 +928,127 @@ impl PublicationWork {
         Ok(())
     }
 
+    fn attempt_refresh(&mut self, events: &Sender<Event>) -> Result<(), FinishAddError> {
+        if !self.grant_accepted {
+            prepare_publication_barrier(
+                self.journal
+                    .as_mut()
+                    .expect("original receipt writer")
+                    .journal_mut(),
+                self.operation_key,
+                None,
+                *self.base.root().as_bytes(),
+                self.base.sequence(),
+                None,
+            )?;
+            #[cfg(test)]
+            self.run_test_hook(TestStage::BeforeGrantValidation);
+            if let Some(fence) = self.prepared.revision_fence.as_ref()
+                && !super::super::super::ingest::compiler_revision_is_current_with_cancellation(
+                    fence,
+                    Some(self.cancellation.as_ref()),
+                )
+                .map_err(BuiltinModelError)?
+            {
+                return Err(BuiltinModelError(
+                    "source changed before view refresh approval".to_owned(),
+                )
+                .into());
+            }
+            let (reply, received) = std::sync::mpsc::sync_channel(1);
+            events
+                .send(Event::RefreshApproval {
+                    base_root: *self.base.root().as_bytes(),
+                    base_sequence: self.base.sequence(),
+                    base_view_root: *self.current.root().as_bytes(),
+                    base_cursor: self.current_cursor,
+                    cancellation: Arc::clone(&self.cancellation),
+                    reply,
+                })
+                .map_err(|_| {
+                    BuiltinModelError("owner retired before view refresh approval".to_owned())
+                })?;
+            received.recv().map_err(|_| {
+                BuiltinModelError("owner retired without view refresh approval".to_owned())
+            })??;
+            // Cancellation loses at the actor's approval load. This approves
+            // only the derived view for an already-selected immutable base.
+            self.grant_accepted = true;
+        }
+        if matches!(self.head, Head::Refresh(_)) {
+            let Head::Refresh(refresh) = std::mem::replace(&mut self.head, Head::Moving) else {
+                unreachable!("checked refresh")
+            };
+            match refresh.persist() {
+                Ok(published) => self.head = Head::Refreshed(published),
+                Err((refresh, error)) => {
+                    self.head = Head::Refresh(refresh);
+                    return Err(BuiltinModelError(format!("persist view refresh: {error}")).into());
+                }
+            }
+        }
+        let view = self.view.as_ref().expect("exact refreshed view");
+        if !self.projected {
+            project_snapshot_view_deltas(
+                self.projection
+                    .as_mut()
+                    .expect("original SQL writer")
+                    .projection_mut(),
+                &view.view,
+                &view.outcome.deltas,
+            )?;
+            self.semantic
+                .as_mut()
+                .expect("original semantic writer")
+                .authority_mut()
+                .mark_projections_current()?;
+            self.projected = true;
+        }
+        if let Some(key) = self.operation_key {
+            let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
+                None,
+                *self.base.commit().id().as_bytes(),
+                *self.base.root().as_bytes(),
+                self.base.sequence(),
+                &view.view,
+                backend_engine::Cursor::for_view_root(&view.view),
+            )
+            .map_err(|e| BuiltinModelError(format!("exact refreshed-view receipt: {e}")))?;
+            let journal = self
+                .journal
+                .as_mut()
+                .expect("original receipt writer")
+                .journal_mut();
+            match journal
+                .entry(key)
+                .map_err(|e| BuiltinModelError(format!("read refreshed-view receipt: {e}")))?
+            {
+                Some(JournalEntry::Retained(StoredOperation {
+                    state:
+                        StoredOperationState::Published {
+                            receipt: stored, ..
+                        },
+                    ..
+                })) if stored == receipt => {}
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Prepared { .. },
+                    ..
+                })) => journal.published(key, receipt).map_err(|e| {
+                    BuiltinModelError(format!("record refreshed-view receipt: {e}"))
+                })?,
+                _ => {
+                    return Err(BuiltinModelError(
+                        "view refresh lost its exact Prepared receipt".to_owned(),
+                    )
+                    .into());
+                }
+            }
+        }
+        self.roots = Some(view.outcome.roots.clone());
+        self.outcome = Some(backend_library::IndexJobOutcome::Published);
+        Ok(())
+    }
+
     #[cfg(test)]
     fn run_test_hook(&mut self, stage: TestStage) {
         if self
@@ -879,7 +1083,9 @@ impl PublicationWork {
         });
         let error = match result {
             Ok(()) => {
-                return if matches!(self.preparation, Preparation::SourceCaptured { .. }) {
+                return if matches!(self.head, Head::Refreshed(_)) {
+                    Disposition::Refreshed
+                } else if matches!(self.preparation, Preparation::SourceCaptured { .. }) {
                     Disposition::SourceCaptured
                 } else if matches!(self.preparation, Preparation::SourcePrepared(_)) {
                     Disposition::SourcePrepared
@@ -900,6 +1106,28 @@ impl PublicationWork {
             // unresolved attempt retirement or synthesizing another terminal.
             return Disposition::Pending(error);
         }
+        if !self.grant_accepted && matches!(self.head, Head::Refresh(_)) {
+            let Head::Refresh(refresh) = std::mem::replace(&mut self.head, Head::Moving) else {
+                unreachable!("checked unapproved refresh")
+            };
+            self.head = Head::Unprepared(refresh.into_writer());
+        }
+        if matches!(self.head, Head::Unprepared(_)) {
+            // No candidate/grant was ever prepared. Existing owner return
+            // validates the same ungranted reservation without manufacturing
+            // a physical candidate proof for the writer's Ready state.
+            self.settlement_only = true;
+            self.unselected_error.get_or_insert_with(|| error.clone());
+            return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.record_unselected_outcome(&error)
+            })) {
+                Ok(Ok(())) => Disposition::Unselected(error),
+                Ok(Err(error)) => Disposition::Pending(error),
+                Err(_) => Disposition::Pending(BuiltinModelError(
+                    "unprepared failure settlement unwound; original writers retained".to_owned(),
+                )),
+            };
+        }
         // Physical selection, not cancellation or a best-effort notification,
         // decides whether this attempt can become an ordinary failed terminal.
         let writer = match &mut self.head {
@@ -910,6 +1138,9 @@ impl PublicationWork {
             ) => Some(writer),
             Head::Pending(ReadHeadPublicationFailure::SelectedPending { .. })
             | Head::Published(_)
+            | Head::Unprepared(_)
+            | Head::Refresh(_)
+            | Head::Refreshed(_)
             | Head::Moving => None,
         };
         if let Some(writer) = writer {
@@ -1027,7 +1258,10 @@ impl PublicationWork {
         !self.is_cleanup()
             && !self.settlement_only
             && !self.grant_accepted
-            && matches!(self.head, Head::Writer(_))
+            && matches!(
+                self.head,
+                Head::Unprepared(_) | Head::Writer(_) | Head::Refresh(_)
+            )
     }
 
     pub(super) fn cancellation_won(&self) -> bool {
@@ -1036,7 +1270,7 @@ impl PublicationWork {
 
     pub(super) fn take_unselected_writer(&mut self) -> Option<ReadHeadWriter<BuiltinModel>> {
         match std::mem::replace(&mut self.head, Head::Moving) {
-            Head::Writer(writer) => Some(writer),
+            Head::Unprepared(writer) | Head::Writer(writer) => Some(writer),
             Head::Pending(ReadHeadPublicationFailure::Rejected {
                 writer,
                 candidate,
@@ -1130,7 +1364,9 @@ fn select_head(
                 rejected @ ReadHeadPublicationFailure::Rejected { .. } => Err(rejected),
             }
         }
-        Head::Published(_) => unreachable!(),
+        Head::Unprepared(_) | Head::Published(_) | Head::Refresh(_) | Head::Refreshed(_) => {
+            unreachable!()
+        }
         Head::Moving => {
             return Err(BuiltinModelError(
                 "publication capability transfer incomplete".to_owned(),
@@ -1295,6 +1531,7 @@ impl PublicationWorker {
             while let Ok(event) = self.events.recv() {
                 match event {
                     Event::Grant { reply, .. } => drop(reply),
+                    Event::RefreshApproval { reply, .. } => drop(reply),
                     Event::Complete(completion) => {
                         self.retire(completion.work, Retired::default());
                         break;

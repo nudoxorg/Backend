@@ -167,6 +167,20 @@ pub struct PublishedReadHead<M: WorkspaceModel> {
     selected: SelectedReadHead<M>,
 }
 
+/// A view-only preparation against the same original unselected workspace
+/// writer. No workspace candidate, grant, commit or sequence is manufactured.
+#[must_use = "persist or return the original writer"]
+pub struct PreparedReadHeadRefresh<M: WorkspaceModel> {
+    writer: ReadHeadWriter<M>,
+    prepared: PreparedView,
+    workspace: backend_version::WorkspaceRoot,
+}
+
+#[must_use = "install this durable refresh or retain it for retry"]
+pub struct PublishedReadHeadRefresh<M: WorkspaceModel> {
+    refresh: PreparedReadHeadRefresh<M>,
+}
+
 /// Every refusal retains the unique authority at its actual publication stage.
 #[must_use = "the retained writer must be settled or installed"]
 pub enum ReadHeadPublicationFailure<M: WorkspaceModel> {
@@ -201,6 +215,8 @@ macro_rules! debug_capability {
 debug_capability!(ReadHeadWriter);
 debug_capability!(SelectedReadHead);
 debug_capability!(PublishedReadHead);
+debug_capability!(PreparedReadHeadRefresh);
+debug_capability!(PublishedReadHeadRefresh);
 impl<M: WorkspaceModel> std::fmt::Debug for ReadHeadPublicationFailure<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -235,6 +251,52 @@ impl std::fmt::Debug for RetiredReadHead {
 }
 
 impl<M: WorkspaceModel> ReadHeadWriter<M> {
+    /// Uses the checked view grammar against this reservation's admitted base,
+    /// without preparing or selecting an empty workspace transition.
+    pub fn prepare_refresh_view(
+        self,
+        view: ViewRoot,
+        cursor: Cursor,
+        admission: &dyn ViewBindingAdmission,
+        event: Option<CursorEvent>,
+    ) -> Result<PreparedReadHeadRefresh<M>, (Self, DaemonError)> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.view.prepared.is_some() {
+                return Err(DaemonError::ViewAdmission(
+                    "a candidate view is already prepared".to_owned(),
+                ));
+            }
+            let workspace = self
+                .workspace
+                .snapshot_for_view_refresh()
+                .map_err(DaemonError::from)?;
+            let prepared = prepare_view(
+                &workspace,
+                &self.view.base,
+                self.view.notifications.clone(),
+                self.view.credit,
+                view,
+                cursor,
+                admission,
+                event,
+            )?;
+            Ok((workspace.root(), prepared))
+        }))
+        .unwrap_or_else(|_| {
+            Err(DaemonError::ViewAdmission(
+                "view refresh preparation unwound; original writer retained".to_owned(),
+            ))
+        });
+        match result {
+            Ok((workspace, prepared)) => Ok(PreparedReadHeadRefresh {
+                writer: self,
+                prepared,
+                workspace,
+            }),
+            Err(error) => Err((self, error)),
+        }
+    }
+
     /// Prepares privately durable workspace bytes on the worker.
     pub fn prepare(
         &mut self,
@@ -360,6 +422,41 @@ impl<M: WorkspaceModel> ReadHeadWriter<M> {
                 writer: Self { workspace, view },
                 error,
             }),
+        }
+    }
+}
+
+impl<M: WorkspaceModel> PreparedReadHeadRefresh<M> {
+    /// Returns the original ungranted writer; large private preparation is
+    /// discarded by this caller, which must remain on its owned worker.
+    pub fn into_writer(self) -> ReadHeadWriter<M> {
+        self.writer
+    }
+
+    /// Persists only the view for the already selected immutable workspace.
+    /// A sink panic/error retains this exact preparation and original writer.
+    pub fn persist(mut self) -> Result<PublishedReadHeadRefresh<M>, (Self, DaemonError)> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(persistence) = self.writer.view.persistence.as_mut() {
+                persistence
+                    .persist(
+                        self.workspace,
+                        self.prepared.library.view(),
+                        self.prepared.library.cursor(),
+                        self.prepared.event.as_ref(),
+                    )
+                    .map_err(DaemonError::ViewAdmission)?;
+            }
+            Ok(())
+        }))
+        .unwrap_or_else(|_| {
+            Err(DaemonError::ViewAdmission(
+                "view refresh persistence unwound; original writer retained".to_owned(),
+            ))
+        });
+        match result {
+            Ok(()) => Ok(PublishedReadHeadRefresh { refresh: self }),
+            Err(error) => Err((self, error)),
         }
     }
 }
@@ -511,6 +608,56 @@ where
         self.view_persistence = view.persistence.take();
         Ok(RetiredReadHead {
             _workspace: Some(retired),
+            _view: Some(old),
+            _reservation: Some(view),
+        })
+    }
+
+    /// Installs a persisted view refresh while returning the same unselected
+    /// workspace writer. Every check is a fixed-size admitted commitment;
+    /// existing owner return validates reservation, epoch and source closure.
+    pub fn install_read_head_refresh(
+        &mut self,
+        published: PublishedReadHeadRefresh<M>,
+    ) -> Result<RetiredReadHead, (PublishedReadHeadRefresh<M>, DaemonError)> {
+        let refresh = &published.refresh;
+        let base = &refresh.writer.view.base;
+        if self.view_persistence.is_some()
+            || self.owner.head().root() != refresh.workspace
+            || self.library.cursor() != base.cursor()
+            || self.library.view().root() != base.view().root()
+            || self.library.view().version() != base.view().version()
+        {
+            return Err((published, DaemonError::CursorInvalid));
+        }
+        let PreparedReadHeadRefresh {
+            writer,
+            prepared,
+            workspace,
+        } = published.refresh;
+        let ReadHeadWriter {
+            workspace: writer,
+            mut view,
+        } = writer;
+        if let Err((writer, error)) = self.owner.return_unselected_writer(writer) {
+            return Err((
+                PublishedReadHeadRefresh {
+                    refresh: PreparedReadHeadRefresh {
+                        writer: ReadHeadWriter {
+                            workspace: writer,
+                            view,
+                        },
+                        prepared,
+                        workspace,
+                    },
+                },
+                DaemonError::from(error),
+            ));
+        }
+        let old = self.install_prepared_view(prepared, workspace);
+        self.view_persistence = view.persistence.take();
+        Ok(RetiredReadHead {
+            _workspace: None,
             _view: Some(old),
             _reservation: Some(view),
         })
