@@ -1,34 +1,36 @@
-# Installed TypeScript projects
+# Direct native TypeScript projects
 
-Nudox uses the TypeScript compiler API from the project’s installed `typescript` package. A
-project does not need a globally installed `tsc` or a `NUDOX_TSC` setting. Install TypeScript in
-the project or its workspace using the package manager already used there:
+The default local TypeScript authority is the TSZ compiler linked into Nudox. It loads project
+configuration, selects roots, resolves modules and checks the resulting programs in Rust. A
+project does not need a separately configured `tsc`, Compiler API helper, Node runtime, or an
+installed `typescript` package to activate this authority. Install the project's declared
+application dependencies with its existing package manager so imported packages and declarations
+are present.
 
-```sh
-npm install --save-dev typescript
-pnpm add --save-dev typescript
-yarn add --dev typescript
-```
+Standard library declarations are versioned data linked with TSZ. Their exact bytes, resolved
+compiler options and native compiler implementation identity participate in each admitted
+program's semantic identity. A host/global TypeScript installation cannot replace that compiler.
+An explicitly selected external compiler/report-program configuration retains its separate
+compatibility path and strict portable identity checks.
 
-The selected project must also have a Node runtime supported by its TypeScript release. An
-explicit `NUDOX_TYPESCRIPT_NODE` value takes precedence. Otherwise, a recognized Nudox macOS app
-launch admits the bundled Node only after the app manifest binds both the running executable and
-Node payload by size and digest. Other launches resolve `node` from the process `PATH`, then check
-finite platform locations. Setup canonicalizes the executable, records its version and bytes, and
-rechecks that identity before publishing compiler results. Nudox does not install Node or override
-the TypeScript release’s runtime compatibility checks. Compiler child processes receive only the
-admitted Node path, not the host’s `PATH` or shell environment.
+For npm and Yarn workspaces, discovery uses the nearest `package.json` declaring `workspaces`.
+For pnpm, it uses the nearest valid `pnpm-workspace.yaml`. Modules, package metadata and symlink
+realpaths are admitted through the captured workspace filesystem capability, including hoisted
+and pnpm dependencies within that workspace. Resolution does not search beyond its admitted
+boundary. Yarn Plug'n'Play remains outside the supported node_modules resolution model.
 
-For npm and Yarn workspaces, Nudox stops project discovery at the nearest `package.json` that
-declares `workspaces`. For pnpm, it uses the nearest valid `pnpm-workspace.yaml`. It looks for the
-workspace’s installed `node_modules/typescript` and uses the package’s direct `bin/tsc` script; it
-never executes `node_modules/.bin/tsc`. A bounded regular package-manager shim is only a discovery
-marker. Yarn Plug’n’Play projects are reported as unsupported until PnP resolution is implemented.
+Distinct `tsconfig*.json` files remain separate program candidates. Angular `angular.json` build
+targets and configurations retain their explicit `tsConfig` candidates. TSZ loads relative and
+installed-package `extends`, compiler options, `files`/`include`/`exclude` roots and exact module
+requests. Project references retain separate program nodes and solution containers. Configured
+exclusion retains the captured source's provenance without granting semantic authority to it.
 
-Project configuration files are captured and checked as part of admission. Distinct `tsconfig*.json`
-files remain separate program candidates, and relative or installed-package `extends` and project
-reference configs are captured with their parent edges. For Angular workspaces, the `tsConfig`
-selected by each build target and build configuration in `angular.json` is also retained as an
-explicit candidate. Configuration and source files resolved by the compiler must remain inside
-the admitted workspace or compiler module root; changes to those files or to the selected Node or
-TypeScript package invalidate the admitted project before its result can be published.
+Every program retains its positive file reads, missing paths, directory enumerations and realpath
+observations. The compiler revalidates that closure before publication. Changed configuration,
+dependency metadata, source bytes or standard library data invalidates its semantic identity.
+Cancellation, deadline and finite per-file work allowances remain checked; an interrupted image
+cannot supply a fresh query session or be relabeled complete.
+
+The 2026-10-15 direct-authority source controls are authored but **UNRUN** until the gated native
+build and regression execution produce receipts. This document describes the source contract and
+does not establish deployment, runtime equivalence, performance or full-report recovery.
