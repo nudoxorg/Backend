@@ -10,6 +10,7 @@ mod compiler;
 mod compiler_go;
 mod compiler_typescript;
 mod compiler_typescript_admission;
+mod compiler_typescript_cause;
 mod execution;
 mod index_sync;
 mod local_query;
@@ -55,6 +56,7 @@ pub use compiler_typescript_admission::{
     TypeScriptCompilerAdmissionCause, TypeScriptCompilerAdmissionDetail,
     TypeScriptCompilerApiExport, TypeScriptCompilerPackageRole, TypeScriptCompilerVersion,
 };
+pub use compiler_typescript_cause::TypeScriptFailureCause;
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,
     CompleteLocalSelection, DemandSelection, DisposableProjection, EffectiveSearchDocument,
