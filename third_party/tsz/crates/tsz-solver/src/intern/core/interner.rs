@@ -599,7 +599,11 @@ pub struct TypeInterner {
     /// interner — the one shared type universe — instead of any per-checker
     /// `QueryCache`, and survive across files and child checkers. Values hold
     /// no `TypeId`s, only `Variance` bitmasks and `DefId`s.
-    pub(super) def_variance_masks: DashMap<DefId, SharedDefVariance, FxBuildHasher>,
+    ///
+    /// Keyed by definition and the variance mode that produced the mask (`0` for the
+    /// declared mask; the effective modes carry their option bits, see
+    /// `VarianceMode::store_tag`).
+    pub(super) def_variance_masks: DashMap<(DefId, u8), SharedDefVariance, FxBuildHasher>,
     /// Unique identifier scoping this interner's entries in the thread-local
     /// lookup/intern cache. See `NEXT_INTERNER_INSTANCE_ID` for context.
     pub(super) instance_id: u32,

@@ -507,7 +507,11 @@ impl<O: OwnerService> UnixListenerService<O> {
                 self.accept_available()?;
                 let made_progress = self.drain_owner_once();
                 let active = self.active.load(Ordering::Acquire);
-                if made_progress || active != 0 {
+                // Admitted work running off this loop (an index compile) reports no
+                // progress until it finishes, and the client that asked for it may
+                // have stopped waiting. It is activity: the idle window restarts when
+                // the work ends, never in the middle of it.
+                if made_progress || active != 0 || self.service.owner().has_inflight_work() {
                     last_progress = Instant::now();
                 }
                 if active == 0 && self.idle_window_elapsed(last_progress) {
@@ -2146,6 +2150,70 @@ mod tests {
         );
         drop(listener);
         assert!(!path.exists(), "a retiring listener must unlink its socket");
+    }
+
+    /// An index compile runs off the owner loop for longer than the idle window
+    /// and reports no progress; the client that asked for it has stopped waiting.
+    /// The owner must not retire in the middle of that job: the window restarts
+    /// only once the work has ended.
+    #[test]
+    fn an_owner_with_inflight_work_is_never_retired_mid_job() {
+        struct Compiling(Arc<AtomicBool>);
+        impl OwnerService for Compiling {
+            fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+                Ok(body.to_vec())
+            }
+            fn engine(&mut self, _: u64, _: EngineRequest) -> Result<EngineStatus, ProtocolError> {
+                Ok(EngineStatus::Accepted)
+            }
+            fn serve_one(&mut self) -> bool {
+                false
+            }
+            fn has_inflight_work(&self) -> bool {
+                self.0.load(Ordering::Acquire)
+            }
+            fn close(&mut self) {}
+        }
+        let path = socket_path("idle-inflight");
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_millis(250),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: Some(Duration::from_millis(150)),
+        };
+        let inflight = Arc::new(AtomicBool::new(true));
+        let service = LocaldService::new(Compiling(Arc::clone(&inflight)), config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let finisher = {
+            let inflight = Arc::clone(&inflight);
+            thread::spawn(move || {
+                // Three idle windows pass with the job running.
+                thread::sleep(Duration::from_millis(450));
+                inflight.store(false, Ordering::Release);
+            })
+        };
+        let started = Instant::now();
+        listener
+            .run()
+            .unwrap_or_else(|error| panic!("run: {error}"));
+        let _ = finisher.join();
+        assert!(
+            started.elapsed() >= Duration::from_millis(450 + 150),
+            "the listener retired while an admitted job was still running: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            listener.is_shutdown(),
+            "once the job ended, an idle owner retires as before"
+        );
+        drop(listener);
+        assert!(!path.exists());
     }
 
     /// The owner holds locks that a replacement candidate needs. A candidate

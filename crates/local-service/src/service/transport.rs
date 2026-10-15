@@ -84,6 +84,15 @@ pub trait OwnerService {
     /// idle-retirement timer resets.
     fn serve_one(&mut self) -> bool;
 
+    /// Whether the owner has admitted work that is running off the owner loop
+    /// right now (an index job's compile). Such work reports no progress while it
+    /// runs, and a client that stopped waiting for it is no longer connected, so
+    /// the listener must count it as activity: retiring an owner mid-job would
+    /// discard the job's whole publication.
+    fn has_inflight_work(&self) -> bool {
+        false
+    }
+
     /// Handles one command body, or takes it and replies later under
     /// `ticket` ([`Self::poll_deferred`]). An owner that never defers
     /// answers every command now.

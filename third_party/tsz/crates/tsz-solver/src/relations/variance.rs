@@ -285,6 +285,7 @@ pub fn compute_effective_type_param_variances_with_resolver_cached(
         && let Some((variances, incomplete)) =
             session.effective_variance_get(key, resolver_generation)
     {
+        DBG_HITS.with(|c| c.set(c.get() + 1));
         return Some(EffectiveVarianceOutcome {
             variances,
             incomplete,
@@ -296,7 +297,28 @@ pub fn compute_effective_type_param_variances_with_resolver_cached(
         strict_function_types,
         disable_method_bivariance,
     );
-    let variances = computer.compute_def_variances(def_id)?;
+    let dbg_t0 = std::time::Instant::now();
+    let (d0, v0) = (DBG_DEFS.with(|c| c.get()), DBG_VISITS.with(|c| c.get()));
+    let dbg_roots = DBG_ROOTS.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    });
+    let variances = computer.compute_def_variances(def_id);
+    let dbg_us = dbg_t0.elapsed().as_micros();
+    if dbg_us > 20_000 || dbg_roots % 5000 == 0 {
+        let name = resolver
+            .get_def_name(def_id)
+            .map(|a| db.resolve_atom_ref(a).to_string())
+            .unwrap_or_default();
+        eprintln!(
+            "EFFVAR root#{dbg_roots} def={} name={name} defs={} visits={} us={dbg_us} gen={resolver_generation} hits={}",
+            def_id.0,
+            DBG_DEFS.with(|c| c.get()) - d0,
+            DBG_VISITS.with(|c| c.get()) - v0,
+            DBG_HITS.with(|c| c.get())
+        );
+    }
+    let variances = variances?;
     let outcome = EffectiveVarianceOutcome {
         variances,
         incomplete: !computer.gap_log.is_empty() || computer.opaque_gaps != 0,
@@ -437,6 +459,21 @@ enum VarianceMode {
 }
 
 impl VarianceMode {
+    /// Key of this mode in the universe-shared mask store, or `None` when its
+    /// masks are never shared. The declared mask is `0`; an effective mask
+    /// carries the two options that change its value, so masks computed under
+    /// different `strictFunctionTypes` / method-bivariance settings never mix.
+    const fn store_tag(self) -> Option<u8> {
+        match self {
+            Self::Declared => Some(0),
+            Self::Actual => None,
+            Self::Effective {
+                strict_function_types,
+                disable_method_bivariance,
+            } => Some(1 + strict_function_types as u8 + 2 * disable_method_bivariance as u8),
+        }
+    }
+
     const fn uses_declared_variance(self) -> bool {
         !matches!(self, Self::Actual)
     }
@@ -495,9 +532,10 @@ struct VarianceComputer<'a> {
     /// A frame that observed one is opaque and never reaches the shared store.
     opaque_gaps: u64,
     /// Whether canonical, resolution-clean masks may be read from / written to
-    /// the universe-shared interner store (`TypeDatabase::shared_def_variance`).
-    /// Only declared-mode computers use it; effective masks are resolver- and
-    /// option-sensitive and stay in the evaluation-session cache.
+    /// the universe-shared interner store (`TypeDatabase::shared_def_variance`),
+    /// under the computer's [`VarianceMode::store_tag`]. Declared and effective
+    /// computers use it (an effective mask is keyed by the options that shape
+    /// it); the raw `Actual` computer never does.
     use_shared_store: bool,
     /// Optional session-persistent declared-variance cache.
     ///
@@ -561,7 +599,7 @@ impl<'a> VarianceComputer<'a> {
             min_inflight_dep: usize::MAX,
             gap_log: Vec::new(),
             opaque_gaps: 0,
-            use_shared_store: false,
+            use_shared_store: variance_cache_enabled() && !tsz_common::nofix("varshare"),
             session_cache: None,
         }
     }
@@ -656,7 +694,8 @@ impl<'a> VarianceComputer<'a> {
         // fingerprint against the current resolver, replay it into the
         // current frame on success, and recompute on mismatch.
         if self.use_shared_store
-            && let Some((mask, gaps)) = self.db.shared_def_variance(def_id)
+            && let Some(tag) = self.mode.store_tag()
+            && let Some((mask, gaps)) = self.db.shared_def_variance(def_id, tag)
         {
             let valid = gaps.iter().all(|d| {
                 self.resolver
@@ -699,6 +738,7 @@ impl<'a> VarianceComputer<'a> {
             return Some(cached);
         }
 
+        DBG_DEFS.with(|c| c.set(c.get() + 1));
         let my_depth = self.active_stack.len();
         self.active_defs.insert(def_id, my_depth);
         self.active_stack.push(def_id);
@@ -802,11 +842,12 @@ impl<'a> VarianceComputer<'a> {
             && !opaque
             && !fingerprint_overflow
             && self.use_shared_store
+            && let Some(tag) = self.mode.store_tag()
             && let Some(variances) = result.as_ref()
         {
             let gaps = shared_gaps.clone().unwrap_or_else(|| Arc::from([]));
             self.db
-                .insert_shared_def_variance(def_id, variances.clone(), gaps);
+                .insert_shared_def_variance(def_id, tag, variances.clone(), gaps);
         }
 
         let dep = if canonical {
@@ -906,7 +947,12 @@ enum VarianceTarget {
     ThisType,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Everything a visit's contribution depends on besides the visited type: the
+/// visitor context flags and the type-parameter names bound by the enclosing
+/// generic signatures and mapped types (a bound name is skipped as a target
+/// occurrence and as a constraint). Two visits of one type under equal keys add
+/// exactly the same bits, so the second is redundant.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct VarianceVisitKey {
     type_id: TypeId,
     polarity: bool,
@@ -915,6 +961,7 @@ struct VarianceVisitKey {
     inside_mapped: bool,
     inside_unreliable_application: bool,
     inside_effective_bivariant_param: bool,
+    bound_type_params: smallvec::SmallVec<[Atom; 2]>,
 }
 
 impl<'a, 'b> VarianceVisitor<'a, 'b> {
@@ -1012,6 +1059,7 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
 
     /// Core recursive step with polarity tracking.
     fn visit_with_polarity(&mut self, type_id: TypeId, polarity: bool) {
+        DBG_VISITS.with(|c| c.set(c.get() + 1));
         // Fast path: intrinsic types contribute no variance information —
         // they have no nested type parameters anywhere inside them. The
         // visitor's `visit_intrinsic` handler is `{}`, so the guard
@@ -1023,7 +1071,10 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
         }
 
         let completed_key = self.completed_key(type_id, polarity);
-        if completed_key.is_some_and(|key| self.completed.contains(&key)) {
+        if completed_key
+            .as_ref()
+            .is_some_and(|key| self.completed.contains(key))
+        {
             return;
         }
 
@@ -1054,7 +1105,7 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
     }
 
     fn completed_key(&self, type_id: TypeId, polarity: bool) -> Option<VarianceVisitKey> {
-        if !self.bound_type_params.is_empty() {
+        if !self.bound_type_params.is_empty() && tsz_common::nofix("varmemo") {
             return None;
         }
         Some(VarianceVisitKey {
@@ -1065,6 +1116,7 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
             inside_mapped: self.inside_mapped_depth > 0,
             inside_unreliable_application: self.inside_unreliable_application > 0,
             inside_effective_bivariant_param: self.inside_effective_bivariant_param > 0,
+            bound_type_params: self.bound_type_params.clone(),
         })
     }
 
@@ -1925,4 +1977,15 @@ impl<'a, 'b> TypeVisitor for VarianceVisitor<'a, 'b> {
 
     /// Module namespace: not handled.
     fn visit_module_namespace(&mut self, _symbol_ref: u32) {}
+}
+
+#[cfg(test)]
+#[path = "variance_work_tests.rs"]
+mod variance_work_tests;
+
+thread_local! {
+    pub(crate) static DBG_DEFS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static DBG_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static DBG_ROOTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static DBG_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }

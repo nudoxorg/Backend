@@ -163,6 +163,11 @@ impl<R: TypeResolver> TypeEvaluator<'_, R> {
             .map(|(&node, &node_result)| (node, node_result))
             .collect();
         for (node, node_result) in entries {
+            // Committing a large evaluation re-publishes every node it computed; a
+            // stopped execution has nothing left to publish.
+            if !tsz_common::ambient_poll() {
+                return;
+            }
             // A non-authoritative (resolver-backed) evaluator may write only a
             // closed `Conditional` that *resolved* to a definite branch. If the
             // result is itself a `Conditional`, branch selection was deferred —

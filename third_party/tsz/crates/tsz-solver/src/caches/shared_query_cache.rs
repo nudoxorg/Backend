@@ -115,6 +115,10 @@ impl SharedQueryCache {
         result: TypeId,
     ) {
         let old_result = self.application_eval_cache.insert(key.clone(), result);
+        // An identical rewrite leaves the entry's dependency edges as they are.
+        if old_result == Some(result) {
+            return;
+        }
         if let Some(old_result) = old_result {
             self.remove_application_eval_dependencies(&key, old_result);
         }
@@ -199,6 +203,10 @@ impl SharedQueryCache {
         old_result: Option<TypeId>,
         result: TypeId,
     ) {
+        // An identical rewrite leaves the entry's dependency edges as they are.
+        if old_result == Some(result) {
+            return;
+        }
         if let Some(old_result) = old_result {
             self.remove_eval_dependencies(key, old_result);
         }

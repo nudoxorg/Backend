@@ -148,6 +148,23 @@ pub enum RecursionProfile {
 }
 
 impl RecursionProfile {
+    /// Whether work under this profile already polls the explicit execution
+    /// checkpoint at its entry points (`TypeEvaluator::evaluate`,
+    /// `SubtypeChecker::check_subtype_inner`, and the checker's per-node
+    /// `get_type_of_node_with_request`, which every checker recursion guard
+    /// wraps), so its guard need not also poll the ambient checkpoint.
+    pub const fn polls_explicit_checkpoint(self) -> bool {
+        matches!(
+            self,
+            Self::SubtypeCheck
+                | Self::TypeEvaluation
+                | Self::ExpressionCheck
+                | Self::TypeNodeCheck
+                | Self::CallResolution
+                | Self::CheckerRecursion
+        )
+    }
+
     /// Maximum recursion depth for this profile.
     pub const fn max_depth(self) -> u32 {
         match self {
@@ -293,6 +310,12 @@ pub struct RecursionGuard<K: Hash + Eq + Copy> {
     max_depth: u32,
     max_iterations: u32,
     max_visiting: u32,
+    /// Whether every `enter` also polls the thread-ambient execution checkpoint.
+    ///
+    /// Guards whose entry points already poll the explicit checkpoint
+    /// (see `RecursionProfile::polls_explicit_checkpoint`) opt out so one unit of work is not
+    /// charged twice. Every other guard is an unmetered hot loop by itself.
+    ambient_poll: bool,
     /// Sticky verdict recording which limit class, if any, has fired.
     limit_state: RecursionLimitState,
 }
@@ -309,13 +332,16 @@ impl<K: Hash + Eq + Copy> RecursionGuard<K> {
             max_depth,
             max_iterations,
             max_visiting: 10_000,
+            ambient_poll: true,
             limit_state: RecursionLimitState::Clear,
         }
     }
 
     /// Create a guard from a named [`RecursionProfile`].
     pub fn with_profile(profile: RecursionProfile) -> Self {
-        Self::new(profile.max_depth(), profile.max_iterations())
+        let mut guard = Self::new(profile.max_depth(), profile.max_iterations());
+        guard.ambient_poll = !profile.polls_explicit_checkpoint();
+        guard
     }
 
     /// Builder: set a custom max visiting-set size.
@@ -341,6 +367,14 @@ impl<K: Hash + Eq + Copy> RecursionGuard<K> {
     pub fn enter(&mut self, key: K) -> RecursionResult {
         // Saturating add prevents overflow with very high max_iterations.
         self.iterations = self.iterations.saturating_add(1);
+
+        // A stopped execution is an exhausted iteration budget: every caller already
+        // unwinds a denied entry conservatively, and the sticky limit state keeps
+        // limit-truncated results out of caches.
+        if self.ambient_poll && !tsz_common::ambient_poll() {
+            self.limit_state = RecursionLimitState::IterationExceeded;
+            return RecursionResult::IterationExceeded;
+        }
 
         if self.iterations > self.max_iterations {
             self.limit_state = RecursionLimitState::IterationExceeded;

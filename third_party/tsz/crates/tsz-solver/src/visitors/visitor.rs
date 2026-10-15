@@ -448,6 +448,11 @@ pub(crate) fn walk_referenced_types_with_policy<F>(
     stack.push(root);
 
     while let Some(current) = stack.pop() {
+        // Referenced-type closures of library graphs reach thousands of nodes and
+        // are walked once per cache entry: a stopped execution abandons the walk.
+        if !tsz_common::ambient_poll() {
+            break;
+        }
         match ReferencedTypeWalkState::enter(visited, current) {
             ReferencedTypeWalkState::Entered => {}
             ReferencedTypeWalkState::AlreadyVisited => continue,

@@ -1717,6 +1717,10 @@ impl<'a> ParallelCheckPlan<'a> {
             &dyn tsz_solver::construction::TypeDatabase,
         ) -> Output,
     ) -> Output {
+        // Everything the file query runs on this thread (solver walks over library
+        // graphs included) observes the same checkpoint, not only the code that
+        // happens to hold the query cache.
+        let _ambient = checkpoint.map(tsz_common::enter_ambient_checkpoint);
         let query_cache = self.make_query_cache_with(checkpoint);
         let mut checker = self.configured_file_checker(file_idx, file, &query_cache);
 
@@ -1867,6 +1871,7 @@ impl<'a> ParallelCheckPlan<'a> {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
 
+        let _ambient = self.execution_control().map(tsz_common::enter_ambient_checkpoint);
         let query_cache = self.make_query_cache();
 
         let lib_bound_file = build_lib_bound_file_for_interface_checks(
@@ -1979,6 +1984,7 @@ impl<'a> ParallelCheckPlan<'a> {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
 
+        let _ambient = self.execution_control().map(tsz_common::enter_ambient_checkpoint);
         let query_cache = self.make_lib_baseline_query_cache();
 
         let mut checker = CheckerState::with_options(

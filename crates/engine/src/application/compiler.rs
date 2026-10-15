@@ -3518,6 +3518,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     })?;
                 authority_owner.input(&source_path)
             };
+            let dbg_started = std::time::Instant::now(); // TEMP-LOCAL-AID
             let lowered = self.stage_prepared(
                 application_request,
                 source_authority,
@@ -3529,6 +3530,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &mut scratch.fragment_output,
                 progress,
             );
+            if let (Some((_, dbg_path)), Some(dbg_budget)) = (typescript_owner, tsz_budget.as_ref()) { // TEMP-LOCAL-AID
+                eprintln!("LOWER {dbg_path} ms={} ok={} units={}", dbg_started.elapsed().as_millis(), lowered.is_ok(), dbg_budget.dbg_charged());
+            }
             if let Some((program, program_path)) = typescript_owner {
                 let file_exhaustion = tsz_sessions
                     .get(program)

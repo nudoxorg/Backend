@@ -153,6 +153,15 @@ pub struct TypeInstantiator<'a> {
     substitution: &'a TypeSubstitution,
     /// Track visited types to handle cycles
     visiting: FxHashMap<TypeId, InstantiationMemoEntry>,
+    /// Results for subtrees that no environment can change: they mention no type
+    /// parameter, `infer` placeholder or polymorphic `this`, so what instantiating
+    /// them produces depends only on the walk's fixed options (and the
+    /// declaration-preservation mode, part of the key). Unlike `visiting`, these
+    /// entries survive generic shadowing scopes: a scope advances the environment
+    /// epoch and rolls its completed entries back on exit, which made every sibling
+    /// generic signature re-walk the same shared closed subtrees (a library class's
+    /// methods all mention the same large closed types).
+    closed_results: FxHashMap<(TypeId, bool), TypeId>,
     /// Transactional undo log for `visiting`, enabling O(mutations) shadowing
     /// scope entry/exit instead of an O(|visiting|) full-map clone. Each entry
     /// is a `(key, prior_value)` pair captured just before a mutation performed
@@ -234,6 +243,7 @@ impl<'a> TypeInstantiator<'a> {
             query_db: None,
             substitution,
             visiting: FxHashMap::default(),
+            closed_results: FxHashMap::default(),
             visiting_undo_log: Vec::new(),
             undo_recording: 0,
             shadowed: Vec::new(),
@@ -827,6 +837,13 @@ impl<'a> TypeInstantiator<'a> {
             return type_id;
         }
 
+        // A stopped execution ends the walk like an exhausted depth budget: the
+        // sticky flag keeps the truncated result out of every instantiation cache.
+        if !tsz_common::ambient_poll() {
+            self.mark_depth_exceeded();
+            return self.bail_value(type_id);
+        }
+
         if matches!(
             self.walk_state.enter_frame(),
             InstantiationFrameState::DepthExceeded
@@ -899,7 +916,22 @@ impl<'a> TypeInstantiator<'a> {
             .unwrap_or(type_id)
     }
 
+    /// Whether instantiating `type_id` can depend on the walk's environment
+    /// (shadowing scopes, local bindings): only a type parameter, an `infer`
+    /// placeholder or a polymorphic `this` reads it. Both answers are memoized per
+    /// `TypeId` project-wide, so after the first query this is two hash probes.
+    fn is_environment_independent(&self, type_id: TypeId) -> bool {
+        !crate::type_queries::contains_param_or_infer_db(self.interner, type_id)
+            && !crate::type_queries::contains_this_type_db(self.interner, type_id)
+    }
+
     fn instantiate_inner(&mut self, type_id: TypeId) -> TypeId {
+        if let Some(&result) = self
+            .closed_results
+            .get(&(type_id, self.preserve_unsubstituted_type_params))
+        {
+            return result;
+        }
         // Check if we're already processing this type (cycle detection)
         if let Some(entry) = self.visiting.get(&type_id).copied() {
             let cached = match entry {
@@ -948,6 +980,19 @@ impl<'a> TypeInstantiator<'a> {
         self.visiting_insert(type_id, InstantiationMemoEntry::Active);
 
         let result = self.instantiate_key(type_id, &key);
+
+        // A closed subtree's result cannot change with the environment: keep it for
+        // the whole walk, but never a result cut short by a depth or frame bail.
+        if !tsz_common::nofix("instclosed") // TEMP-LOCAL-AID
+            && !self.walk_state.has_depth_exceeded()
+            && !self.ambient_frame_exhausted
+            && self.is_environment_independent(type_id)
+        {
+            self.closed_results.insert(
+                (type_id, self.preserve_unsubstituted_type_params),
+                result,
+            );
+        }
 
         // Update the cache with the actual result
         self.visiting_insert(

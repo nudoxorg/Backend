@@ -14,6 +14,13 @@ pub mod id;
 
 /// Shared cooperative cancellation/deadline/work budget for one project run.
 pub mod execution_budget;
+/// Thread-ambient checkpoint polled by solver and checker hot loops.
+pub mod ambient_checkpoint;
+pub use ambient_checkpoint::nofix; // TEMP-LOCAL-AID
+pub use ambient_checkpoint::{
+    AMBIENT_POLLS_PER_UNIT, AmbientCheckpointScope, ambient_checkpoint_installed, ambient_poll, ambient_stopped,
+    enter_ambient_checkpoint,
+};
 pub use execution_budget::{
     ExecutionCheckpoint, ExecutionWorkMeter, FileWorkSlice, LatchedExecutionCheckpoint, ProjectExecutionBudget,
     ProjectExecutionIdentity, ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,

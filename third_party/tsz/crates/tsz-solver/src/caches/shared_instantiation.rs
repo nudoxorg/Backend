@@ -59,6 +59,12 @@ fn collect_def_dependencies(
     };
 
     while let Some(def_id) = pending.pop() {
+        // The transitive closure of a library definition spans thousands of
+        // definitions and is recomputed for every cache entry: a stopped
+        // execution abandons the walk, and its owner discards the results.
+        if !tsz_common::ambient_poll() {
+            break;
+        }
         let canonical = store.canonical_def_id(def_id);
         if canonical != def_id {
             push_def_dependency(canonical, &mut seen, &mut deps, &mut pending);

@@ -1404,3 +1404,71 @@ fn remove_nullish_is_bounded_by_the_solver_frame_breaker() {
     held.clear();
     assert_eq!(solver_stack_frame_depth(), 0);
 }
+
+// ===================================================================
+// Ambient execution checkpoint
+// ===================================================================
+
+/// A checkpoint that refuses every charge, like a spent file slice.
+struct Spent;
+
+impl tsz_common::ExecutionCheckpoint for Spent {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+    }
+}
+
+#[test]
+fn a_stopped_ambient_checkpoint_denies_entry_like_an_exhausted_iteration_budget() {
+    let spent = Spent;
+    let _ambient = tsz_common::enter_ambient_checkpoint(&spent);
+    let mut guard: RecursionGuard<u32> = RecursionGuard::with_profile(RecursionProfile::Variance);
+    // The stop surfaces within one read batch (64 polls); no entry may be admitted
+    // after it, and a denied entry must leave nothing to `leave`.
+    let mut denied_at = None;
+    for key in 0..200_u32 {
+        if guard.enter(key) == RecursionResult::IterationExceeded {
+            denied_at = Some(key);
+            break;
+        }
+        guard.leave(key);
+    }
+    let denied_at = denied_at.expect("a stopped checkpoint must end the walk");
+    assert!(denied_at < 64, "the stop took {denied_at} entries to surface");
+    assert!(guard.is_exceeded());
+    assert!(guard.iteration_exceeded());
+    assert_eq!(guard.depth(), 0);
+    assert_eq!(guard.enter(1_000), RecursionResult::IterationExceeded);
+}
+
+#[test]
+fn guards_whose_entry_points_poll_explicitly_ignore_the_ambient_checkpoint() {
+    let spent = Spent;
+    let _ambient = tsz_common::enter_ambient_checkpoint(&spent);
+    for profile in [
+        RecursionProfile::SubtypeCheck,
+        RecursionProfile::TypeEvaluation,
+        RecursionProfile::ExpressionCheck,
+        RecursionProfile::TypeNodeCheck,
+        RecursionProfile::CallResolution,
+        RecursionProfile::CheckerRecursion,
+    ] {
+        assert!(profile.polls_explicit_checkpoint());
+        let mut guard: RecursionGuard<u32> = RecursionGuard::with_profile(profile);
+        for key in 0..200_u32 {
+            assert_eq!(guard.enter(key), RecursionResult::Entered);
+            guard.leave(key);
+        }
+        assert!(!guard.is_exceeded());
+    }
+}
+
+#[test]
+fn guards_run_unchanged_when_no_ambient_checkpoint_is_installed() {
+    let mut guard: RecursionGuard<u32> = RecursionGuard::with_profile(RecursionProfile::Variance);
+    for key in 0..1_000_u32 {
+        assert_eq!(guard.enter(key), RecursionResult::Entered);
+        guard.leave(key);
+    }
+    assert!(!guard.is_exceeded());
+}

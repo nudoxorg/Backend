@@ -395,3 +395,11 @@ mod tests {
         assert_eq!(budget.checkpoint(0), Err(TszProjectExecutionStop::Deadline));
     }
 }
+
+// TEMP-LOCAL-AID: remove before commit.
+impl ObservedTypeScriptBudget<'_> {
+    /// Work charged to the program so far.
+    pub(super) fn dbg_charged(&self) -> u64 {
+        self.initial_work.saturating_sub(self.budget.remaining_work_units())
+    }
+}

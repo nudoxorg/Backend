@@ -2550,20 +2550,26 @@ impl<'a> TypeResolver for CheckerContext<'a> {
         if let Some((file_idx, sym_id)) = global_root {
             self.register_symbol_file_target(sym_id, file_idx);
         }
-        let all_binders_root = self.all_binders.as_ref().and_then(|binders| {
-            binders.iter().enumerate().find_map(|(file_idx, binder)| {
-                let sym_id = binder.file_locals.get(root_name)?;
-                let symbol = binder.get_symbol(sym_id)?;
-                (!symbol.has_any_flags(tsz_binder::symbol_flags::ALIAS))
-                    .then_some((file_idx, sym_id))
+        // The scan visits every binder of the program (library and dependency
+        // declaration files included), so it runs only when the program-wide index
+        // found no declaration: a hit there decides the root, and this lookup is on the
+        // path of every unresolved application base the evaluator meets.
+        let all_binders_root = global_root.is_none().then(|| {
+            self.all_binders.as_ref().and_then(|binders| {
+                binders.iter().enumerate().find_map(|(file_idx, binder)| {
+                    let sym_id = binder.file_locals.get(root_name)?;
+                    let symbol = binder.get_symbol(sym_id)?;
+                    (!symbol.has_any_flags(tsz_binder::symbol_flags::ALIAS))
+                        .then_some((file_idx, sym_id))
+                })
             })
         });
-        if let Some((file_idx, sym_id)) = all_binders_root {
+        if let Some(Some((file_idx, sym_id))) = all_binders_root {
             self.register_symbol_file_target(sym_id, file_idx);
         }
         let mut current_sym = global_root
             .map(|(_, sym)| sym)
-            .or_else(|| all_binders_root.map(|(_, sym)| sym))
+            .or_else(|| all_binders_root.flatten().map(|(_, sym)| sym))
             .or_else(|| self.binder.file_locals.get(root_name))
             .or_else(|| {
                 self.lib_contexts

@@ -1119,13 +1119,24 @@ impl TypeDatabase for QueryCache<'_> {
         self.interner.type_application(id)
     }
 
-    fn shared_def_variance(&self, def_id: DefId) -> Option<(Arc<[Variance]>, Arc<[DefId]>)> {
-        self.interner.shared_def_variance(def_id)
+    fn shared_def_variance(
+        &self,
+        def_id: DefId,
+        mode: u8,
+    ) -> Option<(Arc<[Variance]>, Arc<[DefId]>)> {
+        self.interner.shared_def_variance(def_id, mode)
     }
 
-    fn insert_shared_def_variance(&self, def_id: DefId, mask: Arc<[Variance]>, gaps: Arc<[DefId]>) {
+    fn insert_shared_def_variance(
+        &self,
+        def_id: DefId,
+        mode: u8,
+        mask: Arc<[Variance]>,
+        gaps: Arc<[DefId]>,
+    ) {
         if !self.execution_stopped() {
-            self.interner.insert_shared_def_variance(def_id, mask, gaps);
+            self.interner
+                .insert_shared_def_variance(def_id, mode, mask, gaps);
         }
     }
 

@@ -3514,6 +3514,14 @@ impl CommandAdapter {
         self.with_browse_completions(daemon, ready)
     }
 
+    /// Whether an admitted index job is still running its scan, compile, or
+    /// publication. The job reports no progress to the owner loop while a worker
+    /// runs, so idle retirement consults this instead of mistaking a long compile
+    /// whose client stopped waiting for an abandoned owner.
+    pub(in crate::builtin) fn has_inflight_index_job(&self) -> bool {
+        self.indexing.is_some()
+    }
+
     /// Releases a transport response registration only. Commands already in
     /// the writer queue remain queued and accepted index work keeps running.
     pub(in crate::builtin) fn abandon_reply(&mut self, ticket: u64) {

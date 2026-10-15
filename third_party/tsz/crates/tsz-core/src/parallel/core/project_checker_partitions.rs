@@ -545,6 +545,13 @@ impl ParallelCheckPlan<'_> {
                     observed_file,
                 );
                 if self.checks_file_semantics(file) && !skipped {
+                    // The file's slice (or the program checkpoint) is observed by every
+                    // solver walk of this check, not only by code holding the query cache.
+                    let _ambient = slice
+                        .as_ref()
+                        .map(|slice| slice as &dyn tsz_common::ExecutionCheckpoint)
+                        .or_else(|| self.execution_control())
+                        .map(tsz_common::enter_ambient_checkpoint);
                     checker.check_source_file(file.source_file);
                 }
                 span.returned();

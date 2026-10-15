@@ -306,9 +306,14 @@ pub trait TypeDatabase:
     /// before replaying the mask. Databases that do not wrap an
     /// interner-backed store return `None` (the variance computer then simply
     /// recomputes).
+    ///
+    /// `mode` names the variance computation that produced the mask: `0` is the
+    /// declared mask, and the effective computations carry the options that
+    /// shape their value, so masks of different modes never mix.
     fn shared_def_variance(
         &self,
         _def_id: crate::def::DefId,
+        _mode: u8,
     ) -> Option<crate::intern::SharedDefVariance> {
         None
     }
@@ -322,6 +327,7 @@ pub trait TypeDatabase:
     fn insert_shared_def_variance(
         &self,
         _def_id: crate::def::DefId,
+        _mode: u8,
         _mask: Arc<[Variance]>,
         _gaps: Arc<[crate::def::DefId]>,
     ) {
@@ -847,17 +853,19 @@ impl TypeDatabase for TypeInterner {
     fn shared_def_variance(
         &self,
         def_id: crate::def::DefId,
+        mode: u8,
     ) -> Option<crate::intern::SharedDefVariance> {
-        Self::shared_def_variance(self, def_id)
+        Self::shared_def_variance(self, def_id, mode)
     }
 
     fn insert_shared_def_variance(
         &self,
         def_id: crate::def::DefId,
+        mode: u8,
         mask: Arc<[Variance]>,
         gaps: Arc<[crate::def::DefId]>,
     ) {
-        Self::insert_shared_def_variance(self, def_id, mask, gaps);
+        Self::insert_shared_def_variance(self, def_id, mode, mask, gaps);
     }
 
     fn literal_string(&self, value: &str) -> TypeId {
