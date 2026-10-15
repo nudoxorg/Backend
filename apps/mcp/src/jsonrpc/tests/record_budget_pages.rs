@@ -399,9 +399,11 @@ fn actual_searxng_three_row_pages_are_admitted_with_their_exact_owned_resume_cal
     }
 }
 
+const CATALOG_SUMMARY_UNIT: &str = "λאב🙂[]{}\\\"!";
+
 fn wide_catalog(count: usize, repetitions: usize, dense_centre: bool) -> backend_library::Library {
     let centre = if dense_centre {
-        module_row().with_document([Fragment::Text("λאב🙂[]{}\\\"!".repeat(repetitions))])
+        module_row().with_document([Fragment::Text(CATALOG_SUMMARY_UNIT.repeat(repetitions))])
     } else {
         module_row()
     };
@@ -415,7 +417,7 @@ fn wide_catalog(count: usize, repetitions: usize, dense_centre: bool) -> backend
             coordinate,
         )
         .with_parent(symbol_key(MODULE))
-        .with_document([Fragment::Text("λאב🙂[]{}\\\"!".repeat(repetitions))])
+        .with_document([Fragment::Text(CATALOG_SUMMARY_UNIT.repeat(repetitions))])
     }));
     let view = root(rows);
     let cursor = backend_library::Cursor::for_view_root(&view);
@@ -546,7 +548,28 @@ fn measured_catalog_page(
 #[test]
 fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_continuations() {
     let mut irreducible_cases = 0;
-    let mut original_graph_child_refusals = 0;
+    let mut graph_child_refusals = 0;
+    // Include JSON quotes and every UTF-8/escape byte. One complete source
+    // summary alone must exceed the unchanged response budget, independently
+    // of preview fitting, cursor overhead or token-count variation.
+    let unit_json_bytes = serde_json::to_vec(CATALOG_SUMMARY_UNIT)
+        .expect("exact source-summary JSON")
+        .len()
+        - 2;
+    let refusal_repetitions = (DEFAULT_RESPONSE_BUDGET_BYTES - 2) / unit_json_bytes + 1;
+    let refusal_summary = CATALOG_SUMMARY_UNIT.repeat(refusal_repetitions);
+    assert_eq!(
+        refusal_summary.len(),
+        CATALOG_SUMMARY_UNIT.len() * refusal_repetitions
+    );
+    let refusal_json_bytes = serde_json::to_vec(&refusal_summary)
+        .expect("whole source-summary JSON")
+        .len();
+    assert_eq!(
+        refusal_json_bytes,
+        2 + unit_json_bytes * refusal_repetitions
+    );
+    assert!(refusal_json_bytes > DEFAULT_RESPONSE_BUDGET_BYTES);
     for tool in ["backend.search", "backend.resolve", "backend.graph"] {
         for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
             let count = 12;
@@ -559,29 +582,47 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
             let arguments = arguments
                 .as_object()
                 .expect("original full-detail arguments");
-            // Preserve the original 450-repeat pressure. Native 3081 search
-            // refused even its final one-row page at 15,543 ordinary cl100k
-            // tokens. A bounded fault frame is not evidence that the page fits.
-            let minimum = measured_catalog_page(
-                wide_catalog(count, 450, false),
-                tool,
-                arguments,
-                exposure,
-                1,
-                &id,
-                tool == "backend.graph",
-            );
-            if tool == "backend.graph" {
+            // The original 450-repeat case now fits after preview fitting.
+            // Measure both actual native minima, then replay every coordinate
+            // below rather than treating an admitted thin centre as child proof.
+            for successor in [false, true] {
                 assert!(
-                    minimum.as_ref().is_none_or(|page| !page.fits()),
-                    "the original thin-centre/450-repeat graph child minimum must refuse independently of the positive fixture"
+                    measured_catalog_page(
+                        wide_catalog(count, 450, false),
+                        tool,
+                        arguments,
+                        exposure,
+                        1,
+                        &id,
+                        successor,
+                    )
+                    .is_some_and(|page| page.fits()),
+                    "the original complete first and successor minima fit"
                 );
-                original_graph_child_refusals += 1;
             }
-            if minimum.as_ref().is_none_or(|page| !page.fits()) {
-                irreducible_cases += 1;
+            // Measure the derived pressure at both real native frontiers too.
+            // Only the graph's document-free centre can fit; its actual issued
+            // same-limit child must refuse, just like each search/resolve row.
+            for successor in [false, true] {
+                let page = measured_catalog_page(
+                    wide_catalog(count, refusal_repetitions, false),
+                    tool,
+                    arguments,
+                    exposure,
+                    1,
+                    &id,
+                    successor,
+                );
+                if tool == "backend.graph" && !successor {
+                    assert!(page.is_some_and(|page| page.fits()));
+                } else {
+                    assert!(page.is_none_or(|page| !page.fits()));
+                }
+            }
+            irreducible_cases += 1;
+            {
                 let mut severe = ready(Fake {
-                    page_catalog: Some(wide_catalog(count, 450, false)),
+                    page_catalog: Some(wide_catalog(count, refusal_repetitions, false)),
                     ..Fake::default()
                 });
                 let call = exposure.expose_call(json!({"name":tool,"arguments":arguments}));
@@ -591,10 +632,11 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                             json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":call}),
                             None,
                         )
-                        .expect("original pressure receives a correlated response"),
+                        .expect("derived pressure receives a correlated response"),
                 );
                 assert_eq!(severe.product.page_limits, vec![12, 6, 3, 2, 1]);
                 let refusal = if tool == "backend.graph" {
+                    graph_child_refusals += 1;
                     assert_eq!(
                         initial["result"]["isError"], false,
                         "the thin graph centre fits"
@@ -643,7 +685,7 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 .find(|repetitions| {
                     // Positive graph pages include a dense centre too, so
                     // first and successor pages have uniform row pressure.
-                    // The original thin-centre/dense-child refusal stays above.
+                    // The derived thin-centre/dense-child refusal stays above.
                     let one = measured_catalog_page(
                         wide_catalog(count, *repetitions, true),
                         tool,
@@ -696,146 +738,157 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 .expect(
                     "measured complete minimum fits while twelve whole rows require native paging",
                 );
-            let mut server = ready(Fake {
-                page_catalog: Some(wide_catalog(count, repetitions, true)),
-                ..Fake::default()
-            });
-            let expected_count = count + usize::from(tool == "backend.graph");
-            let mut next = exposure.expose_call(json!({"name":tool,"arguments":arguments}));
-            let mut seen = std::collections::BTreeSet::new();
-            let mut pages = 0;
-            let mut previous_limit = None;
-            loop {
-                let prior_reads = server.product.page_limits.len();
-                let response = encoded_stdio_reply(
-                    server
-                        .handle_value(
-                            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":next}),
-                            None,
-                        )
-                        .expect("actual ID"),
-                );
-                assert_eq!(
-                    response["id"], id,
-                    "every complete page retains the actual caller ID"
-                );
-                assert_context_bounded(&response);
-                assert_eq!(response["result"]["isError"], false, "{response}");
-                if let Some(limit) = previous_limit {
-                    assert_eq!(
-                        &server.product.page_limits[prior_reads..],
-                        &[u16::try_from(limit).expect("issued native bound")],
-                        "a resumed frontier is read once at its unchanged issued limit"
-                    );
-                } else {
-                    assert_eq!(server.product.page_limits.first(), Some(&12));
-                    assert!(
-                        server.product.page_limits.len() > 1,
-                        "the unchanged initial twelve-row request must actually be resized"
-                    );
-                    assert!(
+            // Replay both the unchanged 450-repeat thin-centre catalog and
+            // the measured dense positive catalog through copied native calls.
+            for (repetitions, dense_centre) in [(450, false), (repetitions, true)] {
+                let mut server = ready(Fake {
+                    page_catalog: Some(wide_catalog(count, repetitions, dense_centre)),
+                    ..Fake::default()
+                });
+                let expected_count = count + usize::from(tool == "backend.graph");
+                let mut next = exposure.expose_call(json!({"name":tool,"arguments":arguments}));
+                let mut seen = std::collections::BTreeSet::new();
+                let mut pages = 0;
+                let mut previous_limit = None;
+                loop {
+                    let prior_reads = server.product.page_limits.len();
+                    let response = encoded_stdio_reply(
                         server
+                            .handle_value(
+                                json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":next}),
+                                None,
+                            )
+                            .expect("actual ID"),
+                    );
+                    assert_eq!(
+                        response["id"], id,
+                        "every complete page retains the actual caller ID"
+                    );
+                    assert_context_bounded(&response);
+                    assert_eq!(response["result"]["isError"], false, "{response}");
+                    if let Some(limit) = previous_limit {
+                        assert_eq!(
+                            &server.product.page_limits[prior_reads..],
+                            &[u16::try_from(limit).expect("issued native bound")],
+                            "a resumed frontier is read once at its unchanged issued limit"
+                        );
+                    } else {
+                        assert_eq!(server.product.page_limits.first(), Some(&12));
+                        assert!(
+                            server.product.page_limits.len() > 1,
+                            "the unchanged initial twelve-row request must actually be resized"
+                        );
+                        assert!(
+                            server
+                                .product
+                                .page_limits
+                                .last()
+                                .is_some_and(|limit| *limit < 12)
+                        );
+                    }
+                    let structured = &response["result"]["structuredContent"];
+                    let rows = structured["records"].as_array().expect("whole native page");
+                    assert!(!rows.is_empty(), "native page makes progress");
+                    for row in rows {
+                        let coordinate = row["identity"]["coordinate"]
+                            .as_str()
+                            .expect("selectable exact coordinate");
+                        if coordinate == MODULE && !dense_centre {
+                            assert!(
+                                row.get("summary").is_none(),
+                                "the original centre has no document"
+                            );
+                        } else {
+                            assert_eq!(
+                                row["summary"],
+                                CATALOG_SUMMARY_UNIT.repeat(repetitions),
+                                "every selected source summary stays complete"
+                            );
+                        }
+                        if coordinate == MODULE {
+                            assert_eq!(
+                                tool, "backend.graph",
+                                "only graph retains the centre prefix"
+                            );
+                        }
+                        assert!(
+                            seen.insert(coordinate.to_owned()),
+                            "coordinate cannot repeat: {coordinate}"
+                        );
+                    }
+                    pages += 1;
+                    if !structured["more"].as_bool().expect("honest continuation") {
+                        break;
+                    }
+                    next = structured["continuation_call"].clone();
+                    let call = if exposure == McpExposure::RegisteredCall {
+                        &next["arguments"]
+                    } else {
+                        &next
+                    };
+                    let effective = call["arguments"]["limit"]
+                        .as_u64()
+                        .expect("effective native bound");
+                    assert_eq!(
+                        u16::try_from(effective).expect("issued native bound"),
+                        *server
                             .product
                             .page_limits
                             .last()
-                            .is_some_and(|limit| *limit < 12)
+                            .expect("successful native page read"),
+                        "the emitted continuation copies the exact successful native read limit"
                     );
-                }
-                let structured = &response["result"]["structuredContent"];
-                let rows = structured["records"].as_array().expect("whole native page");
-                assert!(!rows.is_empty(), "native page makes progress");
-                for row in rows {
-                    let coordinate = row["identity"]["coordinate"]
+                    assert!(
+                        effective < 12,
+                        "initial page must actually be resized by the full response budget"
+                    );
+                    if let Some(previous) = previous_limit {
+                        assert_eq!(effective, previous, "resumed limits stay fixed");
+                    }
+                    previous_limit = Some(effective);
+                    assert_eq!(call["arguments"]["detail"], "full");
+                    let cursor = call["arguments"]["cursor"]
                         .as_str()
-                        .expect("selectable exact coordinate");
-                    assert_eq!(
-                        row["summary"],
-                        "λאב🙂[]{}\\\"!".repeat(repetitions),
-                        "every selected source summary stays complete"
-                    );
-                    if coordinate == MODULE {
+                        .expect("exact executable native proof");
+                    if let Some(duplicate) = structured.get("nextCursor") {
+                        assert_eq!(call["arguments"]["cursor"], *duplicate);
+                    } else {
+                        assert!(
+                            cursor.len() > 1024,
+                            "only long proofs use executable-only projection"
+                        );
                         assert_eq!(
-                            tool, "backend.graph",
-                            "only graph retains the centre prefix"
+                            serde_json::to_string(&response)
+                                .expect("complete frame")
+                                .matches(cursor)
+                                .count(),
+                            1,
+                            "the complete portable native proof appears exactly once"
                         );
                     }
+                    assert!(pages <= expected_count);
+                }
+                assert!(pages > 1);
+                assert_eq!(seen.len(), expected_count);
+                if tool == "backend.graph" {
                     assert!(
-                        seen.insert(coordinate.to_owned()),
-                        "coordinate cannot repeat: {coordinate}"
+                        seen.contains(MODULE),
+                        "native graph centre is never discarded"
                     );
                 }
-                pages += 1;
-                if !structured["more"].as_bool().expect("honest continuation") {
-                    break;
+                for index in 0..count {
+                    assert!(seen.contains(&format!("{MODULE}:{}::Session_{index:03}", index + 2)));
                 }
-                next = structured["continuation_call"].clone();
-                let call = if exposure == McpExposure::RegisteredCall {
-                    &next["arguments"]
-                } else {
-                    &next
-                };
-                let effective = call["arguments"]["limit"]
-                    .as_u64()
-                    .expect("effective native bound");
-                assert_eq!(
-                    u16::try_from(effective).expect("issued native bound"),
-                    *server
-                        .product
-                        .page_limits
-                        .last()
-                        .expect("successful native page read"),
-                    "the emitted continuation copies the exact successful native read limit"
-                );
-                assert!(
-                    effective < 12,
-                    "initial page must actually be resized by the full response budget"
-                );
-                if let Some(previous) = previous_limit {
-                    assert_eq!(effective, previous, "resumed limits stay fixed");
-                }
-                previous_limit = Some(effective);
-                assert_eq!(call["arguments"]["detail"], "full");
-                let cursor = call["arguments"]["cursor"]
-                    .as_str()
-                    .expect("exact executable native proof");
-                if let Some(duplicate) = structured.get("nextCursor") {
-                    assert_eq!(call["arguments"]["cursor"], *duplicate);
-                } else {
-                    assert!(
-                        cursor.len() > 1024,
-                        "only long proofs use executable-only projection"
-                    );
-                    assert_eq!(
-                        serde_json::to_string(&response)
-                            .expect("complete frame")
-                            .matches(cursor)
-                            .count(),
-                        1,
-                        "the complete portable native proof appears exactly once"
-                    );
-                }
-                assert!(pages <= expected_count);
-            }
-            assert!(pages > 1);
-            assert_eq!(seen.len(), expected_count);
-            if tool == "backend.graph" {
-                assert!(
-                    seen.contains(MODULE),
-                    "native graph centre is never discarded"
-                );
-            }
-            for index in 0..count {
-                assert!(seen.contains(&format!("{MODULE}:{}::Session_{index:03}", index + 2)));
             }
         }
     }
-    assert!(
-        irreducible_cases > 0,
-        "original native minimum pressure remains covered"
+    assert_eq!(
+        irreducible_cases, 6,
+        "all routes and exposures retain a derived irreducible minimum"
     );
     assert_eq!(
-        original_graph_child_refusals, 2,
-        "both original graph exposures retain the explicit child refusal"
+        graph_child_refusals, 2,
+        "both graph exposures retain the actual same-limit child refusal"
     );
 }
 
