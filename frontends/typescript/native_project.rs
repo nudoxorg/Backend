@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use tsz::config::{ResolvedCompilerOptions, TsConfig};
 use tsz::module_resolver::{ImportKind, ImportingModuleKind, ModuleResolver};
-use tsz::parser::node_view::NodeAccess;
+use tsz::parser::node::NodeAccess;
 use tsz::parser::{MeteredParserState, NodeIndex, syntax_kind_ext};
 use tsz::scanner::SyntaxKind;
 use tsz_common::ExecutionCheckpoint;
