@@ -42,9 +42,7 @@ pub(crate) fn map_frame_error(error: LocalControlError) -> ClientError {
         LocalControlError::FrameTooLarge => {
             ClientError::Transport(ReplicationError::MessageTooLarge)
         }
-        LocalControlError::Io(kind) => {
-            ClientError::Io(format!("local control I/O failed: {kind:?}"))
-        }
+        LocalControlError::Io(kind) => ClientError::Io(format!("local control I/O failed: {kind}")),
         LocalControlError::Closed => ClientError::Io("local endpoint is closed".to_owned()),
         other => ClientError::Protocol(other.to_string()),
     }

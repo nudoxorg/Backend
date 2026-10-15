@@ -764,7 +764,7 @@ impl Fault {
             let language = profile.profile.name().unwrap_or("unknown profile");
             match profile.state {
                 State::Published { coverage, .. } => facts.push(format!(
-                    "{language}: published {} source files with {coverage:?} coverage",
+                    "{language}: published {} source files with {coverage}",
                     profile.source_count
                 )),
                 State::Unavailable { reason } | State::Failed { reason, .. } => {
@@ -783,7 +783,7 @@ impl Fault {
                                 .sentence()
                                 .to_owned()
                         })
-                        .unwrap_or_else(|| format!("{reason:?}"));
+                        .unwrap_or_else(|| reason.to_string());
                     facts.push(format!("{language}: unavailable; {detail}{prior}"));
                 }
                 State::Pending { .. } => {

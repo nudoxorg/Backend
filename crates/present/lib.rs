@@ -77,11 +77,11 @@ mod product;
 mod projection;
 #[cfg(test)]
 mod projection_tests;
+mod readiness;
 #[cfg(test)]
 mod readiness_agreement_tests;
 #[cfg(test)]
 mod readiness_tests;
-mod readiness;
 mod record;
 mod render;
 mod sections;
@@ -91,6 +91,7 @@ mod signature;
 mod startup_recovery;
 mod status;
 mod token_count;
+mod words;
 
 pub use startup_recovery::{
     StartupRecoveryCommand, StartupRecoveryContext, StartupRecoveryMode, StartupRecoveryWorkspace,

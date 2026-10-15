@@ -1110,6 +1110,19 @@ pub enum IndexOperationSemanticCoverage {
     },
 }
 
+impl core::fmt::Display for IndexOperationSemanticCoverage {
+    /// Reads as the phrase a status line uses after "with": `complete
+    /// coverage`, `partial coverage (12 of 13 files)`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Complete => formatter.write_str("complete coverage"),
+            Self::Partial { completed, total } => {
+                write!(formatter, "partial coverage ({completed} of {total} files)")
+            }
+        }
+    }
+}
+
 /// Coherent old generation retained while a new source capture is pending or
 /// failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1134,6 +1147,18 @@ pub enum IndexOperationSemanticUnavailableReason {
     Cancelled,
     /// Source or compiler admission refused the refresh.
     Rejected,
+}
+
+impl core::fmt::Display for IndexOperationSemanticUnavailableReason {
+    /// Reads as the sentence fragment that says why no generation was selected.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Toolchain => "the compiler toolchain is unavailable",
+            Self::ProjectAuthority => "the project authority is missing",
+            Self::Cancelled => "the refresh was cancelled",
+            Self::Rejected => "the compiler input was rejected",
+        })
+    }
 }
 
 /// Independent semantic outcome for one captured profile.
@@ -4267,6 +4292,19 @@ pub enum IndexSearchResultCount {
     AtLeast(u32),
     /// The search projection could not establish a count.
     Unknown,
+}
+
+impl core::fmt::Display for IndexSearchResultCount {
+    /// Reads as the phrase a page footer states: `5 results`, `at least 5
+    /// results`, `result count unknown`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Exact(1) => formatter.write_str("1 result"),
+            Self::Exact(count) => write!(formatter, "{count} results"),
+            Self::AtLeast(count) => write!(formatter, "at least {count} results"),
+            Self::Unknown => formatter.write_str("result count unknown"),
+        }
+    }
 }
 
 /// One page from the stable selected index snapshot.

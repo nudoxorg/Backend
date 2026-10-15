@@ -138,7 +138,9 @@ fn progress_line(observation: &IndexOperationObservation) -> String {
             status.operation_key,
             match &status.state {
                 IndexOperationState::Accepted => "accepted".to_owned(),
-                IndexOperationState::Active { stage, .. } => format!("active ({stage:?})"),
+                IndexOperationState::Active { stage, .. } => {
+                    format!("active ({})", backend_present::index_stage_name(*stage))
+                }
                 IndexOperationState::Published(_) => "published".to_owned(),
                 IndexOperationState::PartiallyPublished { .. } => "partially published".to_owned(),
                 IndexOperationState::Failed { .. } => "failed".to_owned(),

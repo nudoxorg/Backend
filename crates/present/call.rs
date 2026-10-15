@@ -1004,10 +1004,12 @@ fn home_or_session(
 }
 
 fn admit(command: &SurfaceCommand) -> Result<SurfaceCommand, Fault> {
-    command
-        .admit()
-        .map(|()| command.clone())
-        .map_err(|error| Fault::admission(error, Operand::Text(format!("{:?}", command.id()))))
+    command.admit().map(|()| command.clone()).map_err(|error| {
+        Fault::admission(
+            error,
+            Operand::Text(backend_library::command_spec(command.id()).name.to_owned()),
+        )
+    })
 }
 
 fn locators(invocation: &Invocation) -> Result<Box<[ProductText]>, Fault> {
