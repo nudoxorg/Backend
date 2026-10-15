@@ -20,7 +20,8 @@ use backend_semantic::ir::{
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
 };
 use backend_frontend_python::legacy::{
-    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
+    CheckerReport, DeclarationKind, DefinitionTarget, Inference, InferenceSite, InferredType, Span,
+    SymbolOutcome, SymbolResolution,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
@@ -270,6 +271,83 @@ fn supplied_local_resolution_upgrades_the_call_to_oracle() -> Result<(), TestErr
         } else {
             Err(TestError::Falsified(
                 "the exact-span local resolution did not decode as an Oracle occurrence",
+            ))
+        }
+    })
+}
+
+/// A source-only checker result without an exact target must leave the
+/// syntax-derived target at index confidence, even when the spelling matches.
+#[test]
+fn supplied_unverified_resolution_never_upgrades_the_call() -> Result<(), TestError> {
+    with_deep_stack(|| {
+        let report = report_with_symbols(Box::from([SymbolResolution {
+            target: "target".to_owned(),
+            span: TARGET_CALL_SPAN,
+            outcome: SymbolOutcome::Unverified,
+        }]));
+        let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
+        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
+        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let matching: Vec<_> = occurrences
+            .iter()
+            .filter(|fact| {
+                matches!(fact.occurrence.target,
+                    OccurrenceTarget::Local(local) if local.raw as usize == target_row)
+            })
+            .collect();
+        if matching.len() == 1
+            && matching[0].occurrence.confidence == OccurrenceConfidence::Index
+            && matching
+                .iter()
+                .all(|fact| fact.occurrence.confidence != OccurrenceConfidence::Oracle)
+        {
+            Ok(())
+        } else {
+            Err(TestError::Falsified(
+                "Unverified evidence did not retain exactly one Index target without Oracle confidence",
+            ))
+        }
+    })
+}
+
+/// A project-native definition carries a validated declaration coordinate,
+/// so the exact same-module target still receives oracle confidence after
+/// source-only diagnostic matches become explicitly unverified.
+#[test]
+fn supplied_exact_definition_still_upgrades_only_its_target() -> Result<(), TestError> {
+    with_deep_stack(|| {
+        const TARGET_NAME_SPAN: Span = Span { start: 46, end: 52 };
+        let report = report_with_symbols(Box::from([SymbolResolution {
+            target: "target".to_owned(),
+            span: TARGET_CALL_SPAN,
+            outcome: SymbolOutcome::Definition {
+                target: DefinitionTarget {
+                    relative_path: "module.py".into(),
+                    package: "fixture".into(),
+                    name_span: TARGET_NAME_SPAN,
+                    qualified_name: "module.target".into(),
+                    source_coordinate: "fixture-coordinate".into(),
+                    name: "target".into(),
+                    kind: DeclarationKind::Function,
+                    same_module: true,
+                },
+                callee: None,
+            },
+        }]));
+        let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
+        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
+        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let exact = occurrences.iter().any(|fact| {
+            fact.occurrence.confidence == OccurrenceConfidence::Oracle
+                && matches!(fact.occurrence.target,
+                    OccurrenceTarget::Local(local) if local.raw as usize == target_row)
+        });
+        if exact {
+            Ok(())
+        } else {
+            Err(TestError::Falsified(
+                "the exact DefinitionTarget did not decode as the selected Oracle target",
             ))
         }
     })
