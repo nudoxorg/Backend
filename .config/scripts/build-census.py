@@ -1340,6 +1340,19 @@ def _parse_proc_status_uids(status_text: str) -> tuple[int, ...]:
     return values
 
 
+def _linux_exiting_witness_kernel_supported() -> bool:
+    """Enable this source-derived proof only for the exact audited release.
+
+    Suffixes, newer kernels and unavailable/malformed release data require a
+    separate audit; they retain the existing strict executable refusal.
+    """
+    try:
+        release = os.uname().release
+    except (AttributeError, OSError):
+        return False
+    return type(release) is str and release == "6.18.38"
+
+
 def _exiting_status_uids(status_text: str, row: _PsRow, stat: _LinuxProcStat) -> tuple[int, ...]:
     """Require one complete status payload tying no-mm to its sole task.
 
@@ -1425,7 +1438,11 @@ def _linux_process_record(
                     "start_ticks": stat.start_ticks,
                     "stat_flags": stat.flags,
                 }
-            if missing.errno == errno.ENOENT and stat.flags & _LINUX_PF_EXITING:
+            if (
+                missing.errno == errno.ENOENT
+                and stat.flags & _LINUX_PF_EXITING
+                and _linux_exiting_witness_kernel_supported()
+            ):
                 if proc.pidfd_ready() is not False:
                     raise missing
                 try:

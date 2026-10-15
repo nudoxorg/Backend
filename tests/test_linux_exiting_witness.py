@@ -6,7 +6,9 @@ import importlib.util
 import pathlib
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).parents[1]
@@ -99,13 +101,14 @@ class LinuxExitingWitnessTests(unittest.TestCase):
         boot.parent.mkdir(parents=True)
         boot.write_text("fixture-boot\n", encoding="ascii")
 
-    def capture(self, proc, hint="nix"):
+    def capture(self, proc, hint="nix", *, release="6.18.38"):
         row = census._PsRow(41, 11, 12, 1000, "Thu Oct 15 01:24:22 2026", hint)
         details = []
-        records, issues, races = census._linux_processes(
-            1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
-            proc_factory=lambda _pid: proc, issue_details=details,
-        )
+        with mock.patch.object(census.os, "uname", return_value=types.SimpleNamespace(release=release)):
+            records, issues, races = census._linux_processes(
+                1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+                proc_factory=lambda _pid: proc, issue_details=details,
+            )
         return records, issues, races, details
 
     def assert_refused(self, proc):
@@ -142,6 +145,25 @@ class LinuxExitingWitnessTests(unittest.TestCase):
         self.assertFalse(group["job_limit_known"])
         self.assertEqual(proc.events.count("status"), 2)
         self.assertNotIn("cmdline", proc.events)
+
+    def test_only_exact_audited_kernel_release_can_supply_a_witness(self):
+        for release in ("6.18.37", "6.18.39", "6.18.54", "6.18.38-custom", "6.18.38+",
+                        "6.18.38\n", " 6.18.38", "6.18.038", "", None, b"6.18.38", 61838):
+            with self.subTest(release=release):
+                proc = Proc()
+                records, issues, races, details = self.capture(proc, release=release)
+                self.assertEqual(records, {})
+                self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+                self.assertEqual(races, {})
+                self.assertEqual(details[0]["reason"], "proc-path-missing-without-pidfd-exit-proof")
+                self.assertEqual(proc.events.count("status"), 1, "unsupported kernels cannot enter the witness")
+
+    def test_missing_or_unavailable_uname_release_refuses_the_new_proof(self):
+        for result in (types.SimpleNamespace(), object()):
+            with self.subTest(result=result), mock.patch.object(census.os, "uname", return_value=result):
+                self.assertFalse(census._linux_exiting_witness_kernel_supported())
+        with mock.patch.object(census.os, "uname", side_effect=OSError(errno.EIO, "unavailable")):
+            self.assertFalse(census._linux_exiting_witness_kernel_supported())
 
     def test_cargo_compiler_and_runtime_hints_are_preserved_not_hidden_in_generic_unknown(self):
         for hint, kind, flag in (
