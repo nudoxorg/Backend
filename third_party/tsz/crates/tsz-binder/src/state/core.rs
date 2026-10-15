@@ -175,6 +175,7 @@ impl BinderState {
             find_enclosing_scope_cache: Default::default(),
             shorthand_ambient_modules: Arc::new(FxHashSet::default()),
             module_export_equals_non_module: FxHashMap::default(),
+            module_export_equals_non_module_on_demand: false,
             lib_symbols_merged: false,
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
@@ -411,6 +412,7 @@ impl BinderState {
             find_enclosing_scope_cache: Default::default(),
             shorthand_ambient_modules: Arc::new(FxHashSet::default()),
             module_export_equals_non_module: FxHashMap::default(),
+            module_export_equals_non_module_on_demand: false,
             lib_symbols_merged: false,
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
@@ -535,6 +537,7 @@ impl BinderState {
             find_enclosing_scope_cache: Default::default(),
             shorthand_ambient_modules,
             module_export_equals_non_module: FxHashMap::default(),
+            module_export_equals_non_module_on_demand: false,
             lib_symbols_merged: false,
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
@@ -549,7 +552,10 @@ impl BinderState {
         if !binder.scopes.is_empty() {
             binder.current_scope_id = ScopeId(0);
         }
-        binder.recompute_module_export_equals_non_module();
+        // The program-wide `module_exports` is shared by every file's binder; classifying
+        // all of its modules here, once per binder, costs files x modules. Each module is
+        // classified when it is first asked about instead.
+        binder.module_export_equals_non_module_on_demand = true;
         binder
     }
 
@@ -1761,6 +1767,19 @@ impl BinderState {
             }
             true
         })
+    }
+
+    /// Whether `module_name` has an `export =` that resolves to a non-module entity, as
+    /// this binder classifies it: `None` when the module is unknown or has no `export =`.
+    #[must_use]
+    pub fn module_export_equals_non_module_for(&self, module_name: &str) -> Option<bool> {
+        if let Some(known) = self.module_export_equals_non_module.get(module_name) {
+            return Some(*known);
+        }
+        if !self.module_export_equals_non_module_on_demand {
+            return None;
+        }
+        self.compute_module_export_equals_non_module(self.module_exports.get(module_name)?)
     }
 
     pub(super) fn compute_module_export_equals_non_module(

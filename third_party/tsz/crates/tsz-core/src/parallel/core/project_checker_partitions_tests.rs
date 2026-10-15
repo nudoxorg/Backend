@@ -4401,6 +4401,34 @@ fn hot_file_sources() -> Vec<(String, String)> {
     ]
 }
 
+#[test]
+fn checked_image_reuses_one_program_fact_and_type_parameter_cache_for_every_file() {
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let execution = ProjectCheckerExecution { checkpoint: &budget, workers: NonZeroUsize::new(2).unwrap() };
+    let (image, _) = PreparedProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic, execution,
+    ).unwrap().check_with_partitions(execution).unwrap();
+    let session = image.query_session(&budget).unwrap();
+    let mut shared = Vec::new();
+    for index in 0..image.files.len() {
+        let (facts, parameters, shares_types) = session.with_file_checker(index, |checker, _, _| (
+            checker.ctx.shared_program_facts.clone(),
+            checker.ctx.cross_file_type_params_cache.clone(),
+            checker.ctx.share_owner_symbol_type_results,
+        )).unwrap();
+        assert!(shares_types);
+        shared.push((facts.unwrap(), parameters.unwrap()));
+    }
+    assert!(shared.len() > 1);
+    for (facts, parameters) in &shared[1..] {
+        assert!(Arc::ptr_eq(facts, &shared[0].0));
+        assert!(Arc::ptr_eq(parameters, &shared[0].1));
+    }
+}
+
 fn plan_for<'a>(
     program: &'a MergedProgram,
     options: &'a CheckerOptions,

@@ -1106,6 +1106,8 @@ struct ProjectCheckerViews {
     global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>>,
     shared_declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
     shared_query_cache: Option<tsz_solver::construction::SharedQueryCache>,
+    /// Type-parameter extraction results shared only within this exact image.
+    cross_file_type_params: crate::checker::context::CrossFileTypeParamsCache,
     affected_lib_interfaces: FxHashSet<String>,
     affected_lib_extension_interfaces: FxHashSet<String>,
 }
@@ -1546,6 +1548,7 @@ impl<'a> ParallelCheckPlan<'a> {
             global_symbol_file_index,
             shared_declared_modules,
             shared_query_cache,
+            cross_file_type_params: Default::default(),
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
             }),
@@ -1734,6 +1737,8 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
+        checker.ctx.share_owner_symbol_type_results = true;
+        checker.ctx.cross_file_type_params_cache = Some(Arc::clone(&self.cross_file_type_params));
 
         if !self.lib_contexts.is_empty() {
             checker
