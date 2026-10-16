@@ -14,7 +14,7 @@
 //! Anything missing is stated as a typed [`crate::Fault`], never omitted
 //! silently and never replaced with an empty success.
 
-use crate::fault::Fault;
+use crate::fault::{Fault, FaultSlug};
 use crate::glyph::RelationLabel;
 use crate::identity::{Identity, LineNumber, PackagePath};
 use crate::language::Language;
@@ -475,6 +475,24 @@ impl Page {
     pub fn with_notes(mut self, notes: impl Into<Box<[Fault]>>) -> Self {
         self.notes = notes.into();
         self
+    }
+
+    /// Returns the first failed required section, retaining the useful page.
+    ///
+    /// Section request order settles precedence: relations, then members,
+    /// then embedded source. Typed source/lane availability and partial
+    /// publication notices describe optional evidence, not failed reads.
+    #[must_use]
+    pub fn fault(&self) -> Option<&Fault> {
+        self.notes.iter().chain(self.source.fault()).find(|fault| {
+            !matches!(
+                fault.slug(),
+                FaultSlug::SourceUnavailable
+                    | FaultSlug::LaneUnavailable
+                    | FaultSlug::LanePartial
+                    | FaultSlug::PartiallyPublished
+            )
+        })
     }
 
     /// Returns the page's identity.

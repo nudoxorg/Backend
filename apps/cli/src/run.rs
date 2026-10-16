@@ -2,7 +2,7 @@
 //!
 //! Every decision about *which* round trips one command needs — a page is a
 //! document plus the rows around it, an outline is a tree of keys plus the rows
-//! that name them, a probe that fails becomes a note rather than a failure —
+//! that name them, failed section probes retain a useful page and typed fault —
 //! lives in [`backend_present::answer`], because the MCP surface must make the
 //! same ones. The CLI's optional owner replacement policy only repeats
 //! unpinned reads or reconciles a journaled start under its original key.
