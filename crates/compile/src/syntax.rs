@@ -2382,7 +2382,10 @@ fn push_python_import_from(node: Node<'_>, text: &str, imports: &mut Vec<Extract
     let line = node_line(node);
     let excerpt = node_text(node, text);
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    // `module_name` is a reference operand, not an introduced binding.
+    // Enumerating node kinds also visited that dotted name and manufactured
+    // an extra import (or a duplicate when module and binding share a name).
+    for child in node.children_by_field_name("name", &mut cursor) {
         if child.kind() == "aliased_import" {
             let exported = child
                 .child_by_field_name("name")
