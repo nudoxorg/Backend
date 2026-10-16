@@ -13,7 +13,8 @@
 //!
 //! * the text block is the shared Markdown rendering with its MCP continuation
 //!   instruction, and `structuredContent` uses the same typed projection the
-//!   CLI's `--format json` emits;
+//!   CLI's `--format json` emits, except that semantic selection returns a
+//!   pre-admitted mutation acknowledgement and a separate metadata read;
 //! * `isError` is true when the shared answer carries a [`Fault`], including
 //!   a product refusal that retains its exact typed operation receipt. The fault is
 //!   rendered in the shared three-line grammar with its affordance as the exact
@@ -52,6 +53,7 @@ mod index_progress;
 mod package_graph;
 mod record_pages;
 mod semantic_pages;
+mod semantic_selection;
 mod wire_admission;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
@@ -1097,6 +1099,14 @@ impl<P: Product> Server<P> {
                 };
                 self.source_membership_tool(request, detail, invocation, response_id)
             }
+            Ok(Request::Surface(command))
+                if matches!(
+                    command.as_ref(),
+                    SurfaceCommand::SelectSemanticVersion { .. }
+                ) =>
+            {
+                self.select_semantic_version_tool(&command, detail, invocation, response_id)
+            }
             Ok(request) if matches!(&request, Request::Search { .. } | Request::Resolve { .. }) => {
                 self.records_tool(&request, detail, continuation, invocation, response_id)
             }
@@ -1553,6 +1563,9 @@ impl<P: Product> Server<P> {
                 response_id,
                 package_graph::GraphToolProjection::Surface,
             );
+        }
+        if matches!(&command, SurfaceCommand::SelectSemanticVersion { .. }) {
+            return self.select_semantic_version_tool(&command, detail, invocation, response_id);
         }
         if matches!(&command, SurfaceCommand::SemanticVersions { .. }) {
             return self.semantic_versions_tool(&command, detail, invocation, response_id);
