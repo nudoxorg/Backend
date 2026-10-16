@@ -1641,7 +1641,7 @@ mod declaration_resolution_controls {
                 let label = format!("/workspace/go::{path}:{line}::{name}");
                 Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
                     .with_kind(DeclarationKind::Function)
-                    .with_source(SourceLocation::new(path, *line).expect("captured site"))
+                    .with_source(SourceLocation::new(*path, *line).expect("captured site"))
             })
             .collect();
         let root = ViewRoot::new_incomplete(
