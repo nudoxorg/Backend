@@ -371,9 +371,11 @@ mod tests {
         let case = case.to_owned();
         let server_path = path.clone();
         let (release_peer, retain_peer) = std::sync::mpsc::channel();
+        let (ready, server_ready) = std::sync::mpsc::channel();
         let budgeted = case == "budgeted";
         let server = std::thread::spawn(move || {
             let (mut peer, _) = listener.accept().expect("accept");
+            ready.send(()).expect("client awaits fixture readiness");
             let frame = read_body(&mut peer).expect("request frame");
             let original = unwrap_deferred_command(&frame, backend_library::DTO_VERSION)
                 .expect("request grammar")
@@ -439,6 +441,11 @@ mod tests {
             drop(peer);
             drop(listener);
         });
+        // Thread startup and accept are fixture setup, not the authenticated
+        // request's ordinary read lease. Keep the 60/180/500 ms laws intact.
+        server_ready
+            .recv_timeout(Duration::from_secs(1))
+            .expect("owned server is ready before the request clock starts");
         let started = Instant::now();
         let result = if let Some(scope) = scope {
             client.request_with_search_admission(request(), wait, scope)

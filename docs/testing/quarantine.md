@@ -64,6 +64,40 @@ an ignore requires removing its metadata too; renewing one requires current
 observations and an accountable review. Source inventory/lexer/expiry controls
 run in the Nix sandbox, without compiling or executing the ignored Rust tests.
 
+
+## Wine 72 triage 2026-10-15
+
+Build484603/windows-wine2 on e2c295b3e ran603 cases:531 passed,72failed,
+134skipped. The source-bound [72-case ledger](wine-72-triage.json) records every
+failure identity and diagnostic site. Fifty-three explicitly report missing
+protected DACLs before the behavior under test. Those exact Wine-only filters
+have Backend maintainers as owner and expire November14 UTC. Linux/native Windows
+selection and production private-storage admission remain unchanged.
+
+The independent Win32 probe documented in historical commit
+1cf43173d0a657183d99520bc76916a0d96343a1 applied an owner-only protected DACL with
+SetSecurityInfo, then read it successfully without SE_DACL_PROTECTED
+(control0x8004, missing0x1000). The current53 explicit errors match that boundary.
+This is emulator coverage loss, not native Windows passing evidence. Removal
+requires a Wine version preserving the bit or independent native Windows proof.
+
+Nineteen cases lack precise captured causes and remain selected. Fixture helpers
+now print actual errors. Diagnose them on a fresh source-bound Wine run before
+further exclusion. This is not a new green result; no thresholds or admission
+checks are relaxed.
+
+Fresh build490495/92868fc11 ran550 cases:531passed,19failed,187skipped.
+Eighteen retained store failures now explicitly report the same protected-DACL
+rejection; their exact Wine-only filters have owner and November14 expiry.
+One cache fixture still returns an opaque None; expose the directory-capability
+error before deciding its disposition. No native-platform coverage is removed.
+
+Build490924/10b8ef947 exposes the final cache cause: opening the protected
+fixture directory returns InvalidData, workspace object does not have a protected
+DACL. All historical72 are now classified as this emulator limitation, with
+exact Wine-only owner/expiry filters. A fresh full candidate run is still needed;
+no native Windows pass or production guard relaxation is implied.
+
 ## Managed native intake 2026-10-16
 
 Canonical9ae0eca9d contains five new ignore attributes not registered by its

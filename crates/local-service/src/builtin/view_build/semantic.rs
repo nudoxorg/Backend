@@ -32,6 +32,15 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
+
+static C_FRESHNESS_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn c_freshness_diagnostics_enabled() -> bool {
+    *C_FRESHNESS_DIAGNOSTICS_ENABLED.get_or_init(|| {
+        std::env::var_os("NUDOX_DEBUG_C_FRESHNESS").is_some_and(|value| value == "1")
+    })
+}
 
 fn package_manifest_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
     super::super::local_manifest::indexed_package_manifest_name(label, workspace)
@@ -729,6 +738,69 @@ fn semantic_rows(
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
+            if matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+            ) && !decision.stale_paths.is_empty()
+                && c_freshness_diagnostics_enabled()
+            {
+                let current_paths = current_paths.get(&target).unwrap_or(&empty);
+                let current_identities = current_identities.get(&target);
+                eprintln!(
+                    "NUDOX_C_FRESHNESS coordinate={:?} claim={:?} profile={:?} identity_decisive={} path_sets_differ={} stale_count={} compiled_count={} current_count={}",
+                    key.coordinate().as_str(),
+                    claim,
+                    key.profile(),
+                    decision.identity_decisive,
+                    decision.path_sets_differ,
+                    decision.stale_paths.len(),
+                    compiled_sources.len(),
+                    current_paths.len(),
+                );
+                for path in decision.stale_paths.iter().take(64) {
+                    let compiled = decision.compiled.get(path);
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale path={path:?} compiled={:?} current={:?}",
+                        compiled.map(|identity| identity.as_ref()),
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if decision.stale_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale_paths_omitted={}",
+                        decision.stale_paths.len() - 64
+                    );
+                }
+                for image in opened.iter().take(64) {
+                    let (path, identity) = match image {
+                        super::image_rows::CompiledImage::Resident { path, identity, .. }
+                        | super::image_rows::CompiledImage::Opened { path, identity, .. } => {
+                            (path, identity)
+                        }
+                    };
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS image path={path:?} identity={:?}",
+                        identity.as_ref(),
+                    );
+                }
+                if opened.len() > 64 {
+                    eprintln!("NUDOX_C_FRESHNESS images_omitted={}", opened.len() - 64);
+                }
+                for path in current_paths.iter().take(64) {
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current path={path:?} identity={:?}",
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if current_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current_paths_omitted={}",
+                        current_paths.len() - 64
+                    );
+                }
+            }
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
             let mut ownership_complete = true;
             let mut group_by_path = BTreeMap::<String, usize>::new();
@@ -1232,6 +1304,24 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
     Ok(EntityKinds { derived, sites, exact })
 }
 
+/// Java's semantic type names are qualified while its structural tags capture
+/// the declared identifier. Restrict this projection to Java's type family;
+/// the existing count and span checks below decide whether the simple name is
+/// unique enough to attach a source site.
+fn semantic_source_name(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    family: u8,
+    name: &[u8],
+) -> Vec<u8> {
+    if profile.language() == backend_semantic::vocabulary::Language::Java
+        && family == 1
+        && let Ok(name) = std::str::from_utf8(name)
+    {
+        return name.rsplit('.').next().unwrap_or(name).as_bytes().to_vec();
+    }
+    name.to_vec()
+}
+
 pub(super) struct SemanticRowContent {
     pub(super) document: Vec<Fragment>,
     pub(super) signature: Option<String>,
@@ -1609,17 +1699,13 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
     let encoded_bytes = documentation_bytes
         .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;
-    // The canonical semantic document is rendered (and so validated against
-    // its type-depth and size bounds) but not shown. It is an injective
-    // machine encoding that spells every name as hex (`name=x"626561636F6E
-    // 5F656E747279"`) and every type as canonical IR; placing it first in
-    // the document put that dump at the top of every compiler-backed page and
-    // into every documentation fact. A reader gets the written signature and
-    // the declaration's own documentation instead.
-    let mut output = vec![0; prepared.encoded_len];
-    prepared
-        .write_into(&mut output)
-        .map_err(|error| BuiltinModelError(format!("write project semantic document: {error}")))?;
+    // Preparation has already walked and validated every selected semantic
+    // fact through the bounded CountWriter and supplied the exact encoded
+    // length. Search rows never expose this injective machine encoding: they
+    // use the readable signature and declaration documentation below. Writing
+    // it into a throwaway allocation repeated the full IR traversal for every
+    // declaration while retaining the allocation until this function returned.
+    // Keep the same type-depth and byte-size checks without materializing it.
     let mut document = Vec::with_capacity(documentation.len());
     let mut documentation_targets = Vec::new();
     for fragment in documentation {
@@ -1901,5 +1987,132 @@ mod tests {
             "package seek {range_median} ns was not 8× cheaper than a full publication walk \
              {page_median} ns"
         );
+    }
+
+    fn cpp_image_with_documentation(documentation: &str) -> Result<Vec<u8>, String> {
+        use backend_semantic::ir::{
+            BorrowedTree, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
+            CorePayloadHash, DeclarationFamilyId, DocInput, EntityAuthorityFacts, EntityVersion,
+            FactAvailability, IrBuilder, ItemKind, LanguageExtensionInput, ParentageAuthority,
+            TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
+            full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{CxxStandard, LanguageProfile};
+
+        let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let mut builder = IrBuilder::new();
+        builder
+            .set_language_profile(profile)
+            .map_err(|error| error.to_string())?;
+        let templates = builder
+            .intern_type_parameters(&[])
+            .map_err(|error| error.to_string())?;
+        let includes = builder
+            .intern_attributes(&[])
+            .map_err(|error| error.to_string())?;
+        let docs = [DocInput::Text(documentation)];
+        let item = [TreeItemInput {
+            name: b"xml_document",
+            anonymous_callable_anchor: None,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                documentation: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &docs,
+            attributes: &[],
+            source: None,
+            extension: Some(LanguageExtensionInput::Clang(&ClangFacts {
+                qualifiers: ClangQualifiers {
+                    is_const: false,
+                    is_volatile: false,
+                    is_restrict: false,
+                },
+                storage: ClangStorageClass::None,
+                layout: ClangLayout {
+                    size_bits: None,
+                    align_bits: None,
+                },
+                templates,
+                includes,
+                declared_name: None,
+            })),
+        }];
+        let versions = [EntityVersion {
+            family: DeclarationFamilyId::from_raw([1; 16]),
+            variant: VariantFingerprint::from_raw([2; 16]),
+            core_payload: CorePayloadHash::from_raw([3; 16]),
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &item,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    #[test]
+    fn cpp_search_row_checks_document_bounds_without_changing_visible_content() -> Result<(), String>
+    {
+        use super::*;
+        use backend_engine::application::DocumentationSession;
+        use backend_semantic::ir::EntityId;
+        use backend_semantic::vocabulary::{CxxStandard, LanguageProfile};
+
+        let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let bytes = cpp_image_with_documentation("Pugixml declaration documentation")?;
+        let image = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
+        let session = DocumentationSession::new(&image);
+        let entity = session
+            .entity(EntityId::new(0))
+            .map_err(|error| error.to_string())?;
+        let content = semantic_row_content(
+            profile,
+            &image,
+            &entity,
+            backend_engine::package_key("cpp-pugixml"),
+            [7; 32],
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            document_text(&content.document),
+            "Pugixml declaration documentation"
+        );
+        assert_eq!(content.signature, None);
+
+        let oversized = "x".repeat(MAX_SEMANTIC_DOCUMENT_BYTES);
+        let bytes = cpp_image_with_documentation(&oversized)?;
+        let image = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
+        let session = DocumentationSession::new(&image);
+        let entity = session
+            .entity(EntityId::new(0))
+            .map_err(|error| error.to_string())?;
+        let result = semantic_row_content(
+            profile,
+            &image,
+            &entity,
+            backend_engine::package_key("cpp-pugixml"),
+            [7; 32],
+        );
+        let error = match result {
+            Ok(_) => {
+                return Err("the existing canonical-document output bound was bypassed".to_owned());
+            }
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("exceeds its output bound"));
+        Ok(())
     }
 }

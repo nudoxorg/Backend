@@ -279,7 +279,6 @@ impl LocalEngineClient {
             label: Arc::from(context.as_str()),
             packages: packages.into(),
         });
-        let catalog = Some(self.catalog()?);
         Ok(EngineDto::Root {
             request: *request_id,
             basis: *basis,
@@ -287,7 +286,9 @@ impl LocalEngineClient {
             revision,
             delta: None,
             project,
-            catalog,
+            // Root is the bounded owner/bootstrap fact. Orbit loads the
+            // optional Explore catalog on the page-read lane.
+            catalog: None,
         })
     }
 
@@ -305,35 +306,6 @@ impl LocalEngineClient {
             basis: *basis,
             revision: revision.cursor(),
         })
-    }
-
-    fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
-        let reply = self
-            .with_session_read(|session| {
-                session.surface(SurfaceCommand::Explore {
-                    query: None,
-                    limit: 64,
-                })
-            });
-        Self::catalog_from_reply(reply)
-    }
-
-    fn catalog_from_reply(
-        reply: Result<SurfaceReply, EngineFault>,
-    ) -> Result<Arc<[PackageSummary]>, EngineFault> {
-        let SurfaceReply::Explored(records) = reply? else {
-            return Err(EngineFault::Failed(crate::core::ErrorValue::new(
-                FaultCode::Protocol,
-                "the local service returned a non-Explore reply for the catalog request",
-            )));
-        };
-        Ok(
-            records
-                .iter()
-                .filter_map(package_summary)
-                .collect::<Vec<_>>()
-                .into(),
-        )
     }
 
     fn request_surface(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -1158,24 +1130,180 @@ mod tests {
     }
 
     #[test]
-    fn catalog_explore_failure_is_preserved_as_a_typed_fault() {
-        let expected = fault(ClientError::CommandFailed(
-            backend_library::CommandFailure::NotFound,
-        ));
-        let observed = LocalEngineClient::catalog_from_reply(Err(expected.clone()))
-            .expect_err("Explore failure must not become an absent catalog");
-        assert_eq!(observed, expected);
-    }
+    #[cfg(any(unix, windows))]
+    fn root_admission_uses_revision_only_and_leaves_catalog_to_page_reads() {
+        use backend_client::CommandTransport;
+        use backend_library::{
+            AuthorityScopeClaim, Basis, Command, CoverageCapability, Cursor, Frontier,
+            ProducerObservationClaims, ProducerObservationVerifier, ScopeRoot,
+            UntrustedProducerObservation, ViewRoot, admit_complete_scope,
+            admit_producer_observation, object_version, view_key, view_state_root,
+        };
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
 
-    #[test]
-    fn catalog_rejects_a_reply_from_the_wrong_surface_command() {
-        let observed = LocalEngineClient::catalog_from_reply(Ok(SurfaceReply::Projects(
-            Box::new([]),
-        )))
-        .expect_err("a non-Explore reply is a protocol fault");
-        assert!(matches!(
-            observed,
-            EngineFault::Failed(error) if error.code() == FaultCode::Protocol
+        struct FixtureVerifier;
+        impl ProducerObservationVerifier for FixtureVerifier {
+            type Error = &'static str;
+
+            fn verify(
+                &self,
+                observation: &UntrustedProducerObservation,
+            ) -> Result<ProducerObservationClaims, Self::Error> {
+                if observation.evidence() != b"root-revision-fixture" {
+                    return Err("wrong fixture evidence");
+                }
+                Ok(ProducerObservationClaims::new(
+                    observation.producer_identity(),
+                    observation.scope_root(),
+                    observation.context(),
+                    *blake3::hash(observation.evidence()).as_bytes(),
+                ))
+            }
+        }
+
+        let basis = Basis::new(view_state_root(&[]), object_version(b"library-source-v1"));
+        let scope = ScopeRoot::from_bytes(basis.object.to_bytes());
+        let observation = admit_producer_observation(
+            UntrustedProducerObservation::new(
+                [0x71; 32],
+                scope,
+                [0x72; 32],
+                b"root-revision-fixture".to_vec(),
+            ),
+            &FixtureVerifier,
+        )
+        .expect("fixture producer observation");
+        let coverage = CoverageCapability::from_authorized_with_evidence(
+            admit_complete_scope(
+                AuthorityScopeClaim::from_object_version(basis.object),
+                observation,
+            )
+            .expect("fixture complete coverage"),
+            b"root-revision-fixture".to_vec(),
+        )
+        .expect("fixture coverage capability");
+        let view = Arc::new(
+            ViewRoot::empty_checked(
+                view_key(b"library-view-v1"),
+                basis,
+                Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+                coverage,
+            )
+            .expect("coverage-bearing fixture root"),
+        );
+
+        struct RecordingTransport {
+            library: backend_library::Library,
+            seen: Arc<Mutex<Vec<Command>>>,
+            cancelled: Arc<AtomicBool>,
+            interrupt: TransportInterrupt,
+        }
+        impl CommandTransport for RecordingTransport {
+            fn request(
+                &mut self,
+                request: backend_library::CommandDto,
+            ) -> Result<backend_library::ReplyDto, ClientError> {
+                self.seen
+                    .lock()
+                    .expect("command record")
+                    .push(request.command.clone());
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
+                    ));
+                }
+                // Use the real coverage-bearing owner reply. A raw LocalStream
+                // has no authenticated peer verifier, so decoding its wire
+                // certificate would correctly refuse this fixture's producer.
+                let reply = self.library.execute_dto(request);
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
+                    ));
+                }
+                Ok(reply)
+            }
+
+            fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+                Some(self.interrupt.clone())
+            }
+        }
+
+        let cursor = Cursor::for_view_root_at(&view, 0);
+        let library = backend_library::Library::from_view((*view).clone(), cursor)
+            .expect("coherent fixture library");
+        #[cfg(unix)]
+        let (interrupt_stream, _interrupt_peer) =
+            backend_replication::LocalStream::pair().expect("interruptible transport pair");
+        #[cfg(windows)]
+        let (interrupt_stream, _interrupt_peer) = {
+            // Windows exposes AF_UNIX listeners but has no socketpair API.
+            // Keep the same real interrupt capability through a named pair.
+            static PAIRS: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "nx-root-{}-{}.sock",
+                std::process::id(),
+                PAIRS.fetch_add(1, Ordering::Relaxed),
+            ));
+            let listener = backend_replication::LocalListener::bind(&path)
+                .expect("bind interruptible transport pair");
+            let client = backend_replication::LocalStream::connect(&path)
+                .expect("connect interruptible transport pair");
+            let (server, _) = listener.accept().expect("accept interruptible transport pair");
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+            (client, server)
+        };
+        let interrupt = backend_client::UnixCommandTransport::from_stream(interrupt_stream)
+            .interrupt_handle()
+            .expect("actual socket interrupt");
+        let basis = VersionedRoot::from_revision(1, cursor, 0);
+        let gate =
+            super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+        let attachment = gate.ready_epoch().expect("ready attachment");
+        assert_eq!(
+            gate.publish_view(attachment, Arc::clone(&view), cursor),
+            super::super::owner::PublicationAdmission::Admitted,
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let project = LocalProjectId::new("/fixture/root-with-lazy-catalog").expect("project");
+        let mut client = LocalEngineClient::gated("unused-recording-endpoint", project, gate);
+        client.attached_epoch = Some(attachment);
+        client.active_cancel = Some(CancellationToken::new());
+        let cancel_flag = Arc::clone(&cancelled);
+        let _cancel_flag_wake = client
+            .active_cancel
+            .as_ref()
+            .expect("active request cancellation")
+            .on_cancel(move || cancel_flag.store(true, Ordering::Release));
+        client.session = Some(Session::from_transport(
+            "unused-recording-endpoint",
+            RecordingTransport {
+                library,
+                seen: Arc::clone(&seen),
+                cancelled,
+                interrupt,
+            },
         ));
+
+        let result = client
+            .request_root(&EngineRequest::Root {
+                project: None,
+                request: RequestId::new(0x71),
+                basis,
+                cancel: CancellationToken::new(),
+            })
+            .expect("the certified owner revision admits Root");
+        assert!(matches!(result, EngineDto::Root { catalog: None, .. }));
+        assert_eq!(
+            *seen.lock().expect("command record"),
+            [Command::Revision],
+            "Root must not wait on a catalog Explore request",
+        );
     }
 }

@@ -144,6 +144,9 @@ in
         cp ${../ci/quarantine.py} quarantine.py
         cp ${../ci/test_quarantine.py} test_quarantine.py
         python3 test_quarantine.py
+        cp ${../ci/fast_cache.py} fast_cache.py
+        cp ${../ci/test_fast_cache.py} test_fast_cache.py
+        python3 test_fast_cache.py
         cp ${../ci/source_ignores.py} source_ignores.py
         cp ${../ci/test_source_ignores.py} test_source_ignores.py
         python3 test_source_ignores.py
@@ -219,15 +222,22 @@ in
           # Lease recovery compares an owner's process start time via `ps`.
           pkgs.ps
           pkgs.python3
+          pkgs.nushell
         ];
       }
       ''
         # The test finds its sibling scripts (cargo-in.sh, the rustc cache
         # wrapper, the provenance helper) from its own location, so run it
         # from a tree with the repository's layout rather than the store.
-        mkdir -p repo/.config repo/tests
+        mkdir -p repo/.config/scripts repo/.config/ci repo/tests \
+          repo/frontends/rust/fixtures/toml_pin \
+          repo/apps/desktop/tests/fixtures/browse_tree
         cp -r ${../scripts} repo/.config/scripts
+        cp ${../ci/linux.nu} ${../ci/lib.nu} repo/.config/ci/
+        cp ${../../frontends/rust/fixtures/toml_pin/Cargo.lock} repo/frontends/rust/fixtures/toml_pin/Cargo.lock
+        cp ${../../apps/desktop/tests/fixtures/browse_tree/Cargo.lock} repo/apps/desktop/tests/fixtures/browse_tree/Cargo.lock
         cp ${../../tests/cargo-shared-cache.sh} repo/tests/cargo-shared-cache.sh
+        NUDOX_LINUX_CI_REPO="$PWD/repo" \
         NUDOX_CARGO_CACHE_SCRIPT="$PWD/repo/.config/scripts/cargo-shared-cache.sh" \
           ${pkgs.bash}/bin/bash repo/tests/cargo-shared-cache.sh
         mkdir -p $out/share

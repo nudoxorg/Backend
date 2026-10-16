@@ -345,8 +345,10 @@ fn run(mut boot: Boot) {
         }
     });
     application.run(move |cx: &mut App| open_the_window(cx, parts, starting_platform));
+    crate::runtime::trace::mark("close.platform_stopped", "application event loop returned");
     gate.close();
     drop(owner);
+    crate::runtime::trace::mark("close.owner_stopped", "host owner joined");
 }
 
 /// What the platform's launch closure needs, moved into it.
