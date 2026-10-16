@@ -180,22 +180,30 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn oversized_reply_header_shuts_down_the_exact_socket_before_another_read() {
-        let (mut stream, mut peer) = backend_replication::LocalStream::pair().expect("pair");
-        let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
-        peer.write_all(&length.to_be_bytes())
-            .expect("oversized header");
-        peer.write_all(b"unconsumed body bytes")
-            .expect("body prefix");
+    fn oversized_reply_header_shuts_down_the_exact_socket_before_another_exchange() {
+        let (stream, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let server = std::thread::spawn(move || {
+            let _request = read_body(&mut peer).expect("first request");
+            let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
+            peer.write_all(&length.to_be_bytes())
+                .expect("oversized header");
+            peer.write_all(b"unconsumed body bytes")
+                .expect("body prefix");
+            peer.set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded closed-socket check");
+            let mut byte = [0];
+            assert_eq!(peer.read(&mut byte).expect("shutdown notification"), 0);
+        });
+        let mut client = UnixCommandTransport::from_stream(stream);
         assert!(matches!(
-            read_before(&mut stream, Instant::now() + Duration::from_secs(1)),
+            client.request(request()),
             Err(ClientError::ResponseFrameTooLarge { basis: None })
         ));
-        let mut byte = [0];
-        assert!(
-            matches!(stream.read(&mut byte), Ok(0) | Err(_)),
-            "body bytes must never become a subsequent frame"
-        );
+        // `shutdown(Both)` may leave bytes already queued in the kernel's
+        // receive buffer, but the transport cannot start another exchange on
+        // that stream, so those bytes can never be decoded as a reply frame.
+        assert!(client.request(request()).is_err());
+        server.join().expect("closed peer joined");
     }
 
     /// A private short-path directory for named-socket tests. `temp_dir()` can
@@ -347,14 +355,27 @@ mod tests {
         case: &str,
         wait: Duration,
     ) -> (Result<backend_library::ReplyDto, ClientError>, Duration) {
-        exchange_with_scope(case, wait, None)
+        let (result, elapsed, _, _) = exchange_with_scope(case, wait, SearchScope::None);
+        (result, elapsed)
+    }
+
+    #[derive(Clone, Copy)]
+    enum SearchScope {
+        None,
+        Default,
+        Explicit,
     }
 
     fn exchange_with_scope(
         case: &str,
         wait: Duration,
-        scope: Option<&super::super::RequestContext>,
-    ) -> (Result<backend_library::ReplyDto, ClientError>, Duration) {
+        scope_kind: SearchScope,
+    ) -> (
+        Result<backend_library::ReplyDto, ClientError>,
+        Duration,
+        Option<super::super::RequestContext>,
+        Option<Instant>,
+    ) {
         let socket_dir = PrivateSocketDir::new();
         let path = socket_dir.socket_path();
         assert!(
@@ -446,8 +467,30 @@ mod tests {
         server_ready
             .recv_timeout(Duration::from_secs(1))
             .expect("owned server is ready before the request clock starts");
+        // Scope clocks begin only after fixture binding, authentication, and
+        // thread startup. Those operations are outside the request budget.
+        let scope = match scope_kind {
+            SearchScope::None => None,
+            SearchScope::Default => {
+                let scope = crate::RequestContext::new();
+                scope.begin_default_search(wait).expect("default admission");
+                Some(scope)
+            }
+            SearchScope::Explicit => {
+                let scope = crate::RequestContext::new();
+                scope.read_deadline(wait).expect("explicit deadline");
+                scope
+                    .begin_default_search(Duration::from_secs(30))
+                    .expect("explicit budget remains absolute");
+                Some(scope)
+            }
+        };
+        let absolute = scope.as_ref().and_then(|scope| {
+            matches!(scope_kind, SearchScope::Explicit)
+                .then(|| scope.read_deadline(wait).expect("explicit deadline"))
+        });
         let started = Instant::now();
-        let result = if let Some(scope) = scope {
+        let result = if let Some(scope) = scope.as_ref() {
             client.request_with_search_admission(request(), wait, scope)
         } else if budgeted {
             client.request_with_budget(request(), wait)
@@ -459,7 +502,7 @@ mod tests {
         drop(client);
         server.join().expect("owned server kernel wait");
         drop(socket_dir);
-        (result, elapsed)
+        (result, elapsed, scope, absolute)
     }
 
     #[test]
@@ -485,12 +528,8 @@ mod tests {
 
     #[test]
     fn default_search_scope_adopts_only_exact_ack_and_explicit_budget_remains_absolute() {
-        let scope = crate::RequestContext::new();
-        scope
-            .begin_default_search(Duration::from_millis(60))
-            .expect("default initial admission");
-        let (result, elapsed) =
-            exchange_with_scope("valid", Duration::from_millis(60), Some(&scope));
+        let (result, elapsed, scope, _) =
+            exchange_with_scope("valid", Duration::from_millis(60), SearchScope::Default);
         assert_eq!(
             result
                 .expect("one ordinary search terminal past initial budget")
@@ -499,21 +538,15 @@ mod tests {
         );
         assert!(elapsed >= Duration::from_millis(150));
         scope
+            .expect("default search scope")
             .check()
             .expect("admitted finite owner lease remains active");
 
-        let explicit = crate::RequestContext::new();
-        let absolute = explicit
-            .read_deadline(Duration::from_millis(60))
-            .expect("explicit absolute deadline");
-        explicit
-            .begin_default_search(Duration::from_secs(30))
-            .expect("cannot replace explicit budget");
-        let (result, elapsed) =
-            exchange_with_scope("valid", Duration::from_millis(60), Some(&explicit));
+        let (result, elapsed, _, absolute) =
+            exchange_with_scope("valid", Duration::from_millis(60), SearchScope::Explicit);
         assert!(matches!(result, Err(ClientError::Disconnected(_))));
         assert!(elapsed < Duration::from_millis(150));
-        assert!(Instant::now() >= absolute);
+        assert!(Instant::now() >= absolute.expect("explicit absolute deadline"));
 
         for case in [
             "wrong-request",
@@ -523,12 +556,8 @@ mod tests {
             "retired-owner",
             "repeated",
         ] {
-            let scope = crate::RequestContext::new();
-            scope
-                .begin_default_search(Duration::from_millis(60))
-                .expect("initial lease");
-            let (result, elapsed) =
-                exchange_with_scope(case, Duration::from_millis(60), Some(&scope));
+            let (result, elapsed, _, _) =
+                exchange_with_scope(case, Duration::from_millis(60), SearchScope::Default);
             assert!(
                 matches!(result, Err(ClientError::Protocol(_))),
                 "{case}: {result:?}"
