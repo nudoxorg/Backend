@@ -899,10 +899,7 @@ impl FileStore {
     ///
     /// This is an alias for [`Self::open_closure_claim`] for callers that
     /// already hold the admitted logical closure ID.
-    pub fn read_closure_index(
-        &self,
-        id: ClosureId,
-    ) -> Result<nodes::DurableManifest, StoreError> {
+    pub fn read_closure_index(&self, id: ClosureId) -> Result<nodes::DurableManifest, StoreError> {
         self.open_closure(id)
     }
 
@@ -1445,7 +1442,9 @@ impl ArtifactSession {
         }
         let pin = self.gc_pin.as_ref().ok_or(StoreError::Corrupt)?;
         let mut admission = nodes::RelationAdmission::new(&self.store, pin)?;
-        let relation_write = self.store.write_lazy_relation_update_admitted(&update, &mut admission)?;
+        let relation_write = self
+            .store
+            .write_lazy_relation_update_admitted(&update, &mut admission)?;
         let candidate_facts = verify_closure_tree(
             &self.store,
             update.target_root(),
@@ -1767,12 +1766,14 @@ impl ArtifactSession {
 impl Drop for ArtifactSession {
     fn drop(&mut self) {
         self.pending.take();
-        let _ = artifact_fs::cleanup_session(
-            &self.store,
-            &self.staging_parent,
-            &self.staging_name,
-            &self.staging_dir,
-        );
+        if let Ok(_process_lock) = self.store.acquire_process_lock() {
+            let _ = artifact_fs::cleanup_session(
+                &self.store,
+                &self.staging_parent,
+                &self.staging_name,
+                &self.staging_dir,
+            );
+        }
         self.lease_file.take();
         self.gc_pin.take();
     }
