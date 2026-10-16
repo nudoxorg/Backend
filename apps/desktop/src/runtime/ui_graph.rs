@@ -460,6 +460,7 @@ impl UiRootEntity {
             Err(error) => { self.reject_index_preflight(&intent, error.message, cx); return; }
         };
         self.index_preflights.insert(project.clone(), IndexPreflight { intent, attachment, save: IndexPreflightSave::Writing, revision, _task: None });
+        cx.notify(); // Pending request controls follow the actual preflight, not a guessed row phase.
         let completed_project = project.clone();
         let task = cx.spawn(async move |root, cx| {
             let saved = acknowledgment.recv().await.unwrap_or_else(|_| Err(WriteFailure { message: "The local state writer closed before confirming this index request. Nothing was sent.".into() }));
@@ -743,6 +744,20 @@ impl UiRootEntity {
         if let Some(store) = &self.store {
             store.update(cx, |store, cx| store.admit_snapshot(snapshot, cx));
         }
+    }
+
+    /// Positive first-send proof for a mounted pending-request control.
+    /// The preflight is removed before dispatch_saved_index can reach the actor;
+    /// an absent operation/receipt alone never proves that nothing was sent.
+    pub(crate) fn unsent_index_revision(&self, expected: &crate::model::WorkspaceProject) -> Option<WriteRevision> {
+        if self.quitting { return None; }
+        let snapshot = self.snapshot();
+        if !snapshot.workspace().projects.iter().any(|row| row.same_index_attempt(expected)) { return None; }
+        let pending = self.index_preflights.get(&expected.id)?;
+        let Intent::IndexProject { project, operation, basis, .. } = &pending.intent else { return None; };
+        if project != &expected.id { return None; }
+        index_preflight_basis(&snapshot, project, operation, *basis).ok()?;
+        Some(pending.revision)
     }
 
     /// Returns the one immutable read model used by every visual surface.
