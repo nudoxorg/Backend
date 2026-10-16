@@ -23,6 +23,158 @@ fn callback_mismatch_memo_disabled() -> bool {
     })
 }
 
+#[cfg(test)]
+mod void_callback_probe_tests {
+    use super::*;
+    use crate::context::CheckerOptions;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tsz_binder::BinderState;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::FunctionShape;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    struct CountWork(AtomicU64);
+
+    impl ExecutionCheckpoint for CountWork {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.0.fetch_add(work, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn callback(arena: &tsz_parser::NodeArena) -> NodeIndex {
+        arena
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.kind == syntax_kind_ext::ARROW_FUNCTION
+                    || node.kind == syntax_kind_ext::FUNCTION_EXPRESSION
+            })
+            .max_by_key(|(_, node)| node.end - node.pos)
+            .map(|(index, _)| NodeIndex(index as u32))
+            .expect("callback expression")
+    }
+
+    fn probe(source: &str, expected_return: TypeId) -> (Option<usize>, u64) {
+        let mut parser = ParserState::new("probe.ts".into(), source.into());
+        let root = parser.parse_source_file();
+        let arena = parser.get_arena();
+        let mut binder = BinderState::new();
+        binder.bind_source_file(arena, root);
+        let interner = TypeInterner::new();
+        let expected = interner.function(FunctionShape {
+            params: Vec::new(),
+            this_type: None,
+            return_type: expected_return,
+            type_params: Vec::new(),
+            type_predicate: None,
+            is_constructor: false,
+            is_method: false,
+        });
+        let work = CountWork(AtomicU64::new(0));
+        let queries = QueryCache::new(&interner).with_execution_checkpoint(&work);
+        let mut checker = CheckerState::new(
+            arena,
+            &binder,
+            &queries,
+            "probe.ts".into(),
+            CheckerOptions::default(),
+        );
+        let argument = callback(arena);
+        work.0.store(0, Ordering::Relaxed);
+        let result = checker
+            .raw_block_body_callback_mismatch(&[argument], |_, _| Some(expected))
+            .map(|(index, _, _)| index);
+        (result, work.0.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn void_return_probe_does_not_reenter_nested_callback_bodies() {
+        let source = "const callback = () => { const nested = () => { return missing; }; nested(); return 'accepted'; };";
+        let (mismatch, work) = probe(source, TypeId::VOID);
+        assert_eq!(mismatch, None);
+        assert_eq!(
+            work, 0,
+            "a discarded return needs no speculative body inference"
+        );
+        let (mismatch, work) = probe(source, TypeId::NUMBER);
+        assert_eq!(
+            mismatch,
+            Some(0),
+            "concrete return mismatches are still checked"
+        );
+        assert!(
+            work > 0,
+            "non-void contexts must still infer the callback body"
+        );
+    }
+
+    #[test]
+    fn generator_callbacks_keep_the_existing_probe() {
+        let (_, work) = probe(
+            "const callback = function* () { yield 1; return 2; };",
+            TypeId::VOID,
+        );
+        assert!(
+            work > 0,
+            "generator components retain the existing analysis"
+        );
+    }
+
+    #[test]
+    fn void_return_probe_preserves_actual_body_and_argument_diagnostics() {
+        let source = r#"
+declare function sink(callback: (event: string) => void): void;
+declare function numberSink(callback: () => number): void;
+sink((event) => { const invalid: number = event; missingInsideCallback; return 'accepted'; });
+sink((event: number) => { return event; });
+numberSink(() => { return 'rejected'; });
+"#;
+        let mut parser = ParserState::new("test.ts".into(), source.into());
+        let root = parser.parse_source_file();
+        let mut binder = BinderState::new();
+        binder.bind_source_file(parser.get_arena(), root);
+        let interner = TypeInterner::new();
+        let mut checker = CheckerState::new(
+            parser.get_arena(),
+            &binder,
+            &interner,
+            "test.ts".into(),
+            CheckerOptions {
+                strict: true,
+                ..Default::default()
+            },
+        );
+        checker.check_source_file(root);
+        let diagnostics = &checker.ctx.diagnostics;
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2322),
+            "body assignment error: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2304
+                && source[diagnostic.start as usize..].starts_with("missingInsideCallback")),
+            "body name error: {diagnostics:?}"
+        );
+        let parameter_call = source.find("sink((event: number)").expect("parameter call");
+        let return_call = source.find("numberSink(() =>").expect("return call");
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2345
+                && (parameter_call..return_call).contains(&(diagnostic.start as usize))),
+            "parameter compatibility error: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == 2345
+                    && diagnostic.start as usize >= return_call),
+            "non-void return error: {diagnostics:?}"
+        );
+    }
+}
+
 impl<'a> CheckerState<'a> {
     pub(super) fn snapshot_overload_retry_state(&mut self) -> FullSnapshot {
         self.ctx.snapshot_full()
@@ -512,6 +664,17 @@ impl<'a> CheckerState<'a> {
             }
             let expected = expected_for_index(self, index)?;
             if expected == TypeId::ERROR || expected == TypeId::UNKNOWN || expected == TypeId::ANY {
+                return None;
+            }
+            // A non-generator callback cannot have a return mismatch against
+            // an agreed void return: the caller discards its returned value.
+            // Do not speculatively recheck its entire body (and nested calls)
+            // just to reach the same void-substitutability rule below. Normal
+            // argument compatibility and body diagnostics are checked by the
+            // caller; this probe rolls its speculative diagnostics back.
+            if !func.asterisk_token
+                && stable_call_recovery_return_type(self.ctx.types, expected) == Some(TypeId::VOID)
+            {
                 return None;
             }
             // Contextual-callback mismatch memo (#13250). Overload resolution and
