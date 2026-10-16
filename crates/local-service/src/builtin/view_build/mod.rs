@@ -25,6 +25,8 @@ mod kinds;
 mod py_function_field_join;
 #[cfg(test)]
 mod py_static_field_join;
+#[cfg(test)]
+mod python_import_binding_tests;
 mod query;
 #[cfg(test)]
 mod search_ranking_native;

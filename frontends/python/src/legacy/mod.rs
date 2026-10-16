@@ -1362,7 +1362,8 @@ struct Projection<'a> {
     error: Option<ExtractionError>,
     /// Module-level names already declared. The first declaration of a name
     /// wins; later rebindings are dropped. Consecutive overloads of one name
-    /// are exempt via [`last_module_function`].
+    /// are exempt via [`last_module_function`]. Written import aliases retain
+    /// their own source sites while still occupying this module namespace.
     module_declared: HashSet<String>,
     /// The most recent module-level function name, so overload runs stay
     /// distinct from later rebindings of the same spelling.
@@ -1390,6 +1391,17 @@ struct BodyFrame {
     nonlocals: HashSet<String>,
 }
 impl<'a> Projection<'a> {
+    /// Imports are written binding sites, including repeated names in one
+    /// statement. Keep Ruff's distinct name/owner ranges rather than applying
+    /// the ordinary module declaration's first-name retention policy.
+    fn add_import_alias_declaration(&mut self, declaration: DeclarationFact) {
+        if self.function_depth == 0 && self.class_depth == 0 {
+            self.module_declared.insert(declaration.name.clone());
+            self.last_module_function = None;
+        }
+        self.facts.declarations.push(declaration);
+    }
+
     fn add_declaration(&mut self, declaration: DeclarationFact) {
         if self.function_depth == 0 && self.class_depth == 0 {
             let allow_overload = declaration.kind == DeclarationKind::Function
@@ -2750,7 +2762,7 @@ impl Projection<'_> {
         let Some(binding_span) = self.alias_binding_span(alias, ImportBindingForm::Direct) else {
             return;
         };
-        self.add_declaration(DeclarationFact {
+        self.add_import_alias_declaration(DeclarationFact {
             name: binding,
             name_span: binding_span,
             kind: DeclarationKind::Alias,
@@ -2803,7 +2815,7 @@ impl Projection<'_> {
                 receiver: OccurrenceReceiver::None,
             });
         }
-        self.add_declaration(DeclarationFact {
+        self.add_import_alias_declaration(DeclarationFact {
             name: binding,
             name_span: binding_span,
             kind: DeclarationKind::Alias,
