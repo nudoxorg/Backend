@@ -756,20 +756,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let admitted = self
                 .scoped_names
                 .insert((scope, declaration.kind as u8, key));
-            if !admitted {
-                // A written implementation the HIR module-scope walk below
-                // can independently rediscover (unlike an ordinary named
-                // item, which that walk never re-enumerates once the
-                // written-syntax pass has cast it) must still be marked
-                // covered here, or the twin this gate just dropped comes
-                // back as a second, byte-identical admission and the image
-                // build honestly — but wrongly — rejects it as a
-                // `DuplicateDeclarationIdentity` collision with itself.
-                if let RustDefinition::Implementation(implementation) = &declaration.definition {
-                    self.covered_impls.push(*implementation);
-                }
-                continue;
-            }
+            // Cover the HIR definition behind a written declaration before
+            // considering whether to emit its row. This also applies to a
+            // later cfg twin rejected by `scoped_names`: if its definition
+            // is left uncovered, the module-scope pass re-emits the twin and
+            // the canonical image sees the duplicate identity we filtered.
             match &declaration.definition {
                 RustDefinition::Field(field) => self.covered_fields.push(*field),
                 RustDefinition::Implementation(implementation) => {
@@ -780,6 +771,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         self.covered_defs.push(definition);
                     }
                 }
+            }
+            if !admitted {
+                continue;
             }
             declarations.push(Decl {
                 kind: declaration.kind,
