@@ -194,6 +194,31 @@ def drew_a_frame(trace: Path) -> bool:
     return False
 
 
+def _deliver_gui_quit(xdotool: str, window: str, env: dict) -> int:
+    """Focus and send the public Quit chord within the original five-second bound."""
+    deadline = time.monotonic() + 5
+    for action, arguments in (
+        ("focus", ["windowfocus", "--sync", window]),
+        ("Quit key", ["key", "--clearmodifiers", "super+q"]),
+    ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return fail("desktop Quit delivery exceeded 5s")
+        try:
+            delivered = subprocess.run(
+                [xdotool, *arguments], env=env, capture_output=True,
+                text=True, timeout=remaining,
+            )
+        except subprocess.TimeoutExpired:
+            return fail(f"desktop {action} delivery did not finish within the shared 5s bound")
+        if delivered.returncode != 0:
+            return fail(
+                f"desktop {action} delivery failed with exit {delivered.returncode}:\n"
+                f"{delivered.stderr[-3000:]}"
+            )
+    return 0
+
+
 def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     xvfb = shutil.which("Xvfb")
     xdotool = shutil.which("xdotool")
@@ -248,10 +273,11 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                 window = windows.stdout.splitlines()[0]
                 # Exercise the app's public Quit shortcut. Signals below are
                 # failure cleanup of this task's children, never the proof.
-                subprocess.run(
-                    [xdotool, "windowfocus", "--sync", window, "key", "--clearmodifiers", "super+q"],
-                    env=env, check=True, capture_output=True, timeout=5,
-                )
+                # Separate invocations keep key delivery on the focused XTest
+                # path, rather than xdotool's implicit window stack. Quit may
+                # destroy the target before a directed key-release event.
+                if _deliver_gui_quit(xdotool, window, env) != 0:
+                    return 1
                 try:
                     code = app.wait(timeout=10)
                 except subprocess.TimeoutExpired:
