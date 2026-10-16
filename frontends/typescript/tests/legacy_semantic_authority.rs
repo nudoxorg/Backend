@@ -23,37 +23,6 @@ enum AuthorityTestError {
 }
 
 #[test]
-fn typescript_profile_preserves_local_binding_and_utf16_coordinates()
--> Result<(), AuthorityTestError> {
-    let source = "const rocket = '🚀';\nfunction useRocket(): string { return rocket; }\n";
-    let arena = Allocator::default();
-    let module = analyze(TypeScriptSource::TypeScript, source, &arena)?;
-    let scoping = module.semantic.scoping();
-    let rocket = scoping
-        .symbol_ids()
-        .find(|symbol| scoping.symbol_name(*symbol) == "rocket")
-        .ok_or(AuthorityTestError::MissingSymbol { name: "rocket" })?;
-    (!scoping.get_resolved_reference_ids(rocket).is_empty())
-        .then_some(())
-        .ok_or(AuthorityTestError::MissingResolvedUse { name: "rocket" })?;
-
-    let bytes = Utf8Span::try_from(16..20)?;
-    let units = bytes.to_utf16(source)?;
-    let expected = Utf16Span::try_from(16..18)?;
-    (units == expected)
-        .then_some(())
-        .ok_or(AuthorityTestError::MissingResolvedUse {
-            name: "UTF-16 conversion",
-        })?;
-    (units.to_utf8(source)? == bytes).then_some(()).ok_or(
-        AuthorityTestError::MissingResolvedUse {
-            name: "UTF-8 round trip",
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
 fn authored_javascript_package_entry_is_admitted_by_lexical_authority() {
     let source = "export class JavaScriptBeacon {\n  constructor(intensity) { this.intensity = intensity; }\n  illuminate() { return this.intensity; }\n}\n/** ORACLE/JAVASCRIPT: signal level thirty-four. */\nexport function JavaScriptBeaconEntry() { return new JavaScriptBeacon(34).illuminate(); }\n";
     let arena = Allocator::default();
@@ -69,36 +38,6 @@ fn authored_javascript_package_entry_is_admitted_by_lexical_authority() {
         .collect::<Vec<_>>();
     assert!(declarations.contains(&"JavaScriptBeacon"));
     assert!(declarations.contains(&"JavaScriptBeaconEntry"));
-}
-
-#[test]
-fn declaration_stream_lends_exact_source_names_and_closed_symbol_kinds()
--> Result<(), AuthorityTestError> {
-    let source = "interface Vessel {}\nconst rocket = 1;\nfunction launch() {}\n";
-    let arena = Allocator::default();
-    let module = analyze(TypeScriptSource::TypeScript, source, &arena)?;
-    let observed = module
-        .declarations()
-        .filter_map(|declaration| {
-            let name = source.get(
-                usize::try_from(declaration.name.start).ok()?
-                    ..usize::try_from(declaration.name.end).ok()?,
-            )?;
-            Some((name, declaration.kind))
-        })
-        .collect::<Vec<_>>();
-    let required = [
-        ("Vessel", OxcDeclarationKind::Interface),
-        ("rocket", OxcDeclarationKind::Constant),
-        ("launch", OxcDeclarationKind::Function),
-    ];
-    required
-        .iter()
-        .all(|fact| observed.contains(fact))
-        .then_some(())
-        .ok_or(AuthorityTestError::MissingResolvedUse {
-            name: "typed declaration stream",
-        })
 }
 
 #[test]
@@ -128,27 +67,6 @@ fn declaration_grammar_admits_ambient_unimplemented_members() -> Result<(), Auth
     )
     .map(|_| ())
     .map_err(AuthorityTestError::Authority)
-}
-
-#[test]
-fn tsx_profile_accepts_jsx_while_typescript_profile_rejects_it() -> Result<(), AuthorityTestError> {
-    let source = "export const view = <main data-id='record' />;";
-    let jsx_enabled_arena = Allocator::default();
-    analyze(TypeScriptSource::Tsx, source, &jsx_enabled_arena)?;
-
-    let standard_typescript_arena = Allocator::default();
-    match analyze(
-        TypeScriptSource::TypeScript,
-        source,
-        &standard_typescript_arena,
-    ) {
-        Err(AuthorityError::Syntax { diagnostics }) if !diagnostics.is_empty() => Ok(()),
-        Ok(_)
-        | Err(AuthorityError::Binding { .. } | AuthorityError::Syntax { .. })
-        | Err(AuthorityError::Checker { .. }) => Err(AuthorityTestError::MissingResolvedUse {
-            name: "TSX grammar distinction",
-        }),
-    }
 }
 
 #[test]

@@ -1,0 +1,503 @@
+{
+  "schema": "nudox-ts-17-independent-review/v1",
+  "task_id": "W1.3",
+  "reviewer": "Codex independent cross-review",
+  "source": {
+    "repo": "Backend",
+    "path": "/Users/robertmccrary/Code/NuDox/.ci-worktrees/Backend-linux-deep",
+    "commit": "63c2adffa3e62e0717a87a7267b3bdd41513a48b",
+    "verified_head": "63c2adffa3e62e0717a87a7267b3bdd41513a48b"
+  },
+  "scope": "Cross-review of the 17 function-level TypeScript deletion mappings proposed by compiler-transport-audit.json. No source files, builds, CI, or hosts touched.",
+  "result": {
+    "mappings_reviewed": 17,
+    "function_items_byte_identical": 17,
+    "mappings_invalidated": 0,
+    "recommendation": "Function-body deletions are redundant at this frozen source, subject to the strict scope caveat below. Delete only these 17 functions; retain both legacy files/targets because each still contains nonmapped tests."
+  },
+  "test_discovery": {
+    "manifest": "frontends/typescript/Cargo.toml",
+    "evidence": "Manifest defines [lib] path=\"lib.rs\" and has no [[test]] entries or autotests=false; workspace manifest has no override for this package. Cargo default integration-test autodiscovery therefore creates a target for each .rs file directly under tests/. The legacy and current files are separately compiled test targets today. This was determined statically; no Cargo command was run.",
+    "test_fn_counts": {
+      "legacy_checker_protocol.rs": 27,
+      "checker_protocol.rs": 19,
+      "legacy_semantic_authority.rs": 7,
+      "semantic_authority.rs": 5
+    },
+    "residual_unique_tests_after_function_deletion": {
+      "legacy_checker_protocol.rs": 13,
+      "checker_protocol.rs": 5,
+      "legacy_semantic_authority.rs": 4,
+      "semantic_authority.rs": 2
+    },
+    "scope_caveat": "Do not delete either legacy file or its target based on these mappings: the old checker file has 13 unmapped #[test] functions and old semantic file has 4. This review establishes duplicate function contracts, not that the old integration targets have no other purpose."
+  },
+  "shared_context": {
+    "checker_imports": "Both import Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, MappedModifier, Narrowing, Origin, Report, TypeTree and source_digest from backend_frontend_typescript::legacy. Current checker_protocol.rs additionally imports backend_semantic::vocabulary::TypeScriptSource; this is used in the current target outside the mapped tests and in the bounded-child helper. It does not change any mapped function body resolution.",
+    "checker_constants_and_fixtures": {
+      "GOLDEN": "Both are include_str!(\"transcripts/golden.json\") relative to same tests directory; SHA-256 f91967d5b2da9a37d38a570f8b31a7c8fdbef0e62559266ffe81c76975707e90",
+      "GOLDEN_SOURCE": "Both are include_bytes!(\"fixtures/source.ts\") relative to same tests directory; SHA-256 06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e",
+      "adapter": "Both define adapter() -> Checker { Checker::default() }, exact helper text.",
+      "golden_source": "Both decode the same GOLDEN_SOURCE bytes as UTF-8 in identical helper text."
+    },
+    "bounded_child": "Both checker files place the four process tests in #[cfg(unix)] mod bounded_child; all four have direct #[test] and same inherited unix cfg. The module static environment mutex and script() temporary executable setup are textually equivalent. with_script differs only in qualification: legacy uses backend_semantic::vocabulary::TypeScriptSource::TypeScript while current uses imported TypeScriptSource::TypeScript. This resolves to the same enum variant and sends identical source bytes to Checker::run_with_program. Thus effective platform and helper behavior match, though helper text is not byte-identical.",
+    "semantic_imports_and_error_enum": "Legacy semantic file imports analyze_with_declaration and spells CoordinateError fully qualified in AuthorityTestError; current imports CoordinateError and omits analyze_with_declaration. The removed/imported analyzer is used by an unmapped legacy test; mapped bodies call analyze only. Fully qualified and imported CoordinateError resolve to backend_frontend_typescript::legacy::CoordinateError, same From conversion. Both AuthorityTestError enums otherwise have same variants and messages, and mapped bodies construct the same variants.",
+    "semantic_fixtures": "Mapped semantic tests embed source strings in the function bodies and have no external fixtures. Their complete fn items compare byte-for-byte."
+  },
+  "mappings": [
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "golden_transcript_binds_this_type_and_foreign_base"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "golden_transcript_binds_this_type_and_foreign_base"
+      },
+      "source_identity": {
+        "delete_fn_line": 148,
+        "retain_fn_line": 172,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "0033d5f63bbe00a23d0328179cc4a3771e83bfe86459e71b192d03c7cecb29d2",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Decodes golden JSON and binds it to the included TS source; asserts `this`/foreign-base declaration types and source spans against exact source slices.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "unknown_field_is_a_decode_fault"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "unknown_field_is_a_decode_fault"
+      },
+      "source_identity": {
+        "delete_fn_line": 435,
+        "retain_fn_line": 203,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "2ea654601f4248983bbdad3797fcbd4368c56eac6f0d3eac98360eb4866af1ec",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Adds an unknown JSON field to a valid report; asserts strict decoding returns the typed decode error rather than silently accepting schema drift.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "stale_schema_names_both_versions"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "stale_schema_names_both_versions"
+      },
+      "source_identity": {
+        "delete_fn_line": 450,
+        "retain_fn_line": 218,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "28ff86463b2abde81003fd035620a6dd831b20b30cba5813a967d2ec4727097c",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Changes schema version to stale value; asserts error carries both observed and supported versions.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "newer_schema_is_rejected_by_the_single_schema_owner"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "newer_schema_is_rejected_by_the_single_schema_owner"
+      },
+      "source_identity": {
+        "delete_fn_line": 462,
+        "retain_fn_line": 230,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "c066c2d56a80c99c27074c31902ea47ed4ddc8679b67ef104a000c33337bfc36",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Changes schema to future version; asserts rejection remains owned by the single schema version boundary.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "truncated_record_is_a_decode_fault"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "truncated_record_is_a_decode_fault"
+      },
+      "source_identity": {
+        "delete_fn_line": 474,
+        "retain_fn_line": 242,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "6ff823175fd56a03c7a3cab0530047811665f95494e85b4f732bebfef63ac319",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Feeds incomplete JSON record; asserts typed decode fault for truncation.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "report_bound_to_different_source_is_typed_rejection"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "report_bound_to_different_source_is_typed_rejection"
+      },
+      "source_identity": {
+        "delete_fn_line": 483,
+        "retain_fn_line": 251,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "694786418e3e6bc7225755459bf0982a5ab4e8d36869242d58da6c26ef8e3c32",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Decodes valid golden report but binds to different source bytes; asserts digest/source binding rejects it.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "malformed_digest_is_a_decode_fault"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "malformed_digest_is_a_decode_fault"
+      },
+      "source_identity": {
+        "delete_fn_line": 499,
+        "retain_fn_line": 267,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "3a1677c1fba615cf99f3f5934182bdb4f726ff042163c98ce67f4e7de72e6394",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Corrupts digest text in otherwise valid report; asserts typed decode fault.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "surrogate_splitting_span_is_a_typed_binding_fault"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "surrogate_splitting_span_is_a_typed_binding_fault"
+      },
+      "source_identity": {
+        "delete_fn_line": 509,
+        "retain_fn_line": 277,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "e2dd5885a959b3251d91e8f6842b537b1145dbb6235cb7dfaf1a2709e67d54e3",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Uses span splitting a UTF-16 surrogate pair; asserts binding rejects invalid coordinate conversion.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "narrowing_binds_both_spans_and_tolerates_an_absent_type"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "narrowing_binds_both_spans_and_tolerates_an_absent_type"
+      },
+      "source_identity": {
+        "delete_fn_line": 547,
+        "retain_fn_line": 315,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "8d6c9752ebfdde23720dab296f0cbfc84b10d751b3be75f9edc0e2b24c0448bc",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Constructs narrowing with declaration and assignment-site spans and absent type; asserts both source slices bind and optional type remains absent.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "narrowing_span_outside_the_source_is_a_typed_binding_fault"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "narrowing_span_outside_the_source_is_a_typed_binding_fault"
+      },
+      "source_identity": {
+        "delete_fn_line": 583,
+        "retain_fn_line": 351,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "ca8bf7f92b0a097969199f55f2a1b84411481d6b662f6ec4d8418131ab82e7b2",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Uses out-of-range narrowing span; asserts typed binding fault rather than panic or unchecked slice.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "output_limit_reports_exact_operands_and_reaps_child"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "output_limit_reports_exact_operands_and_reaps_child"
+      },
+      "source_identity": {
+        "delete_fn_line": 655,
+        "retain_fn_line": 419,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": [
+          "module #[cfg(unix)]"
+        ]
+      },
+      "body_sha256": "f7666fe6783771ba4970d6bbfae27ec002ce5293f43975ac9fef627a6e962b98",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Runs a temporary shell emitting 100 stdout bytes under an 8-byte cap; asserts OutputLimit fields (collect/stdout/100/8) and child cleanup.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "deadline_kills_process_group_and_returns_promptly"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "deadline_kills_process_group_and_returns_promptly"
+      },
+      "source_identity": {
+        "delete_fn_line": 675,
+        "retain_fn_line": 439,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": [
+          "module #[cfg(unix)]"
+        ]
+      },
+      "body_sha256": "35e50ad0929088ffa5bdebb52a967162eac8638129dbd0b385cb3923d8d13a6c",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Runs shell plus background sleeper under 1s deadline; asserts typed collect timeout at 1000ms and elapsed under 4s, exercising process-group termination.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "module_missing_exit_maps_to_typed_module_unavailability"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "module_missing_exit_maps_to_typed_module_unavailability"
+      },
+      "source_identity": {
+        "delete_fn_line": 711,
+        "retain_fn_line": 475,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": [
+          "module #[cfg(unix)]"
+        ]
+      },
+      "body_sha256": "f30a7841cddce4772eed2502aec34d712003343788abb40277c52172ab14f3a6",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Runs temporary script with missing-TypeScript diagnostic and exit 3; asserts ModuleUnavailable typed mapping and diagnostic text.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_checker_protocol.rs",
+        "name": "checker_failure_retains_stderr_tail"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/checker_protocol.rs",
+        "name": "checker_failure_retains_stderr_tail"
+      },
+      "source_identity": {
+        "delete_fn_line": 722,
+        "retain_fn_line": 486,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": [
+          "module #[cfg(unix)]"
+        ]
+      },
+      "body_sha256": "c7ea4c65016a0a98b17ab23e6ea7ca484106ccf33ece64d19e2f4bcef06f07d5",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Runs failing script emitting semantic-failure stderr; asserts process exit error preserves stderr tail.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_semantic_authority.rs",
+        "name": "typescript_profile_preserves_local_binding_and_utf16_coordinates"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/semantic_authority.rs",
+        "name": "typescript_profile_preserves_local_binding_and_utf16_coordinates"
+      },
+      "source_identity": {
+        "delete_fn_line": 26,
+        "retain_fn_line": 26,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "0589847713a9fb1b92278675ecaa5cac3656b7e7e8e2df13f6764d066e159fc0",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Analyzes source containing rocket emoji and local use; asserts symbol resolution and UTF-8 16..20 maps to UTF-16 16..18.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_semantic_authority.rs",
+        "name": "declaration_stream_lends_exact_source_names_and_closed_symbol_kinds"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/semantic_authority.rs",
+        "name": "declaration_stream_lends_exact_source_names_and_closed_symbol_kinds"
+      },
+      "source_identity": {
+        "delete_fn_line": 75,
+        "retain_fn_line": 57,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "1c6ce9a3881306907e1e854844504dbaeacb516652f90fa3deb45ddaf6a587a8",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Analyzes declarations; asserts exact source-backed names and allowed closed declaration-kind set.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    },
+    {
+      "delete": {
+        "path": "frontends/typescript/tests/legacy_semantic_authority.rs",
+        "name": "tsx_profile_accepts_jsx_while_typescript_profile_rejects_it"
+      },
+      "retain": {
+        "path": "frontends/typescript/tests/semantic_authority.rs",
+        "name": "tsx_profile_accepts_jsx_while_typescript_profile_rejects_it"
+      },
+      "source_identity": {
+        "delete_fn_line": 134,
+        "retain_fn_line": 87,
+        "delete_attributes": [
+          "#[test]"
+        ],
+        "retain_attributes": [
+          "#[test]"
+        ],
+        "enclosing_cfg": []
+      },
+      "body_sha256": "ddcce31c0888bb83db509415c992b4a201fdb0a5b1ec83b7cfc1ecb6f9595097",
+      "body_equal_byte_for_byte": true,
+      "concrete_contract": "Analyzes same JSX input in TSX and TS profiles; asserts TSX admission and TypeScript rejection.",
+      "comparison_notes": "The complete fn item text is byte-identical at the frozen source. File-level imports differ as noted in shared_context; mapped body resolves against same APIs/fixtures."
+    }
+  ],
+  "limitations": [
+    "This is a focused independent audit of the listed 17 pairs, not a full TypeScript test-suite or crate audit.",
+    "The paired current/legacy targets are both discovered by Cargo; this does not assess whether repository CI explicitly filters one target.",
+    "The recommendation is to remove only duplicate test functions. It does not approve deleting old files, changing Cargo target discovery, or deleting tests not listed."
+  ],
+  "batch_id": "TYPESCRIPT-01",
+  "reviewed_source_functions": 100,
+  "decisions": {
+    "keep": 83,
+    "delete": 17,
+    "rewrite_as_surface_test": 0
+  },
+  "replacement_coverage": "Exact retained integration-test functions exercise the same real checker protocol, source bytes, coordinates, authority refusals and bounded child lifecycle; no sole behaviour coverage removed. Both legacy targets remain for 17 unmapped tests.",
+  "acceptance": {
+    "required_fast": "pending",
+    "required_t1": "pending",
+    "t2": "pending",
+    "affected_t3": "pending",
+    "merged": false
+  },
+  "runtime_status": "Fresh cab7cdf38-based candidate plus exact compatibility prerequisites; exact required fast/T1, TypeScript T2, and affected TypeScript T3 are pending. No passing or flake-rate claim."
+}
