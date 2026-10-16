@@ -2459,7 +2459,7 @@ fn decode_core(
     for (segment_index, segment) in segments.iter().enumerate() {
         for record in segment.records() {
             if !matches!(
-                record.tag(),
+                super::declarations::core_legacy_tag(record.tag()),
                 super::declarations::CORE_TAG
                     | super::declarations::CORE_ANONYMOUS_CALLABLE_TAG
                     | super::declarations::CORE_JUMBO_TAG
@@ -2468,7 +2468,7 @@ fn decode_core(
                 return Err(SemanticPlaneRecordError::RowGrammar.into());
             }
             let jumbo_row = matches!(
-                record.tag(),
+                super::declarations::core_legacy_tag(record.tag()),
                 super::declarations::CORE_JUMBO_TAG
                     | super::declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
             );
@@ -2518,6 +2518,11 @@ fn decode_core(
                     1 => true,
                     _ => return Err(SemanticPlaneRecordError::RowGrammar.into()),
                 };
+            }
+            if super::declarations::core_has_publication(record.tag())
+                && !matches!(cursor.u8()?, 1 | 2)
+            {
+                return Err(SemanticPlaneRecordError::RowGrammar.into());
             }
             if jumbo_row {
                 let _ = cursor.take(crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES * 2)?;

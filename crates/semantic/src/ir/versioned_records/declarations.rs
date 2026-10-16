@@ -19,6 +19,30 @@ pub(super) const CORE_TAG: u8 = 1;
 pub(super) const CORE_ANONYMOUS_CALLABLE_TAG: u8 = 2;
 pub(super) const CORE_JUMBO_TAG: u8 = 3;
 pub(super) const CORE_ANONYMOUS_CALLABLE_JUMBO_TAG: u8 = 4;
+/// Tags 5..8 add the closed publication role to the corresponding 1..4
+/// grammar. Old records remain byte-identical and readable as Unavailable.
+pub(super) const fn core_legacy_tag(tag: u8) -> u8 {
+    if tag >= 5 && tag <= 8 { tag - 4 } else { tag }
+}
+pub(super) const fn core_has_publication(tag: u8) -> bool {
+    tag >= 5 && tag <= 8
+}
+fn core_publication_tag(tag: u8, role: crate::ir::DeclarationPublicationRole) -> u8 {
+    if role == crate::ir::DeclarationPublicationRole::Unavailable {
+        tag
+    } else {
+        tag + 4
+    }
+}
+fn read_publication(
+    cursor: &mut Cursor<'_>,
+    present: bool,
+) -> Result<(), SemanticPlaneRecordError> {
+    if present && !matches!(cursor.u8()?, 1 | 2) {
+        return Err(SemanticPlaneRecordError::RowGrammar);
+    }
+    Ok(())
+}
 pub(super) const DOCS_TAG: u8 = 2;
 pub(super) const DOCS_JUMBO_TAG: u8 = 3;
 
@@ -640,7 +664,12 @@ pub(super) fn validate_record_with_row_limit(
     maximum_inline_row_bytes: usize,
 ) -> Result<(), SemanticPlaneRecordError> {
     let mut cursor = Cursor::new(payload);
-    let identity = match (kind, tag) {
+    let grammar_tag = if kind == SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Core) {
+        core_legacy_tag(tag)
+    } else {
+        tag
+    };
+    let identity = match (kind, grammar_tag) {
         (
             SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Core),
             CORE_TAG | CORE_ANONYMOUS_CALLABLE_TAG,
@@ -649,7 +678,7 @@ pub(super) fn validate_record_with_row_limit(
             let name = cursor.bytes32()?; // Name bytes are not promised UTF-8.
             let kind = crate::ir::ItemKind::try_from(cursor.u16()?)
                 .map_err(|_| SemanticPlaneRecordError::RowGrammar)?;
-            if tag == CORE_ANONYMOUS_CALLABLE_TAG
+            if grammar_tag == CORE_ANONYMOUS_CALLABLE_TAG
                 && (kind != crate::ir::ItemKind::Function
                     || !crate::ir::AnonymousCallableAnchorView::new(name).is_well_formed())
             {
@@ -681,6 +710,7 @@ pub(super) fn validate_record_with_row_limit(
                     return Err(SemanticPlaneRecordError::RowGrammar);
                 }
             }
+            read_publication(&mut cursor, core_has_publication(tag))?;
             let members = cursor.u32()?;
             for _ in 0..members {
                 let _ = read_identity(&mut cursor)?;
@@ -698,7 +728,8 @@ pub(super) fn validate_record_with_row_limit(
             let parsed = parse_core_jumbo_row(
                 payload,
                 maximum_inline_row_bytes,
-                tag == CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
+                grammar_tag == CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
+                core_has_publication(tag),
             )?;
             let _ = cursor.take(payload.len())?;
             parsed.identity
@@ -784,6 +815,7 @@ fn parse_core_jumbo_row(
     payload: &[u8],
     maximum_inline_row_bytes: usize,
     anonymous_callable: bool,
+    publication: bool,
 ) -> Result<ParsedCoreJumboRow, SemanticPlaneRecordError> {
     let mut cursor = Cursor::new(payload);
     let identity = read_identity(&mut cursor)?;
@@ -853,6 +885,7 @@ fn parse_core_jumbo_row(
             return Err(SemanticPlaneRecordError::RowGrammar);
         }
     }
+    read_publication(&mut cursor, publication)?;
     let members = read_checked_jumbo_descriptor(
         &mut cursor,
         owner,
@@ -880,7 +913,7 @@ fn parse_core_jumbo_row(
         .and_then(|size| size.checked_add(2 + 1))
         .and_then(|size| size.checked_add(parent_bytes))
         .and_then(|size| size.checked_add(parentage_bytes))
-        .and_then(|size| size.checked_add(8 + members.byte_length() + attributes.byte_length()))
+        .and_then(|size| size.checked_add(8 + u64::from(publication) + members.byte_length() + attributes.byte_length()))
         .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
     let jumbo_framed_bytes = u64::try_from(super::HEADER_BYTES + super::RECORD_HEADER_BYTES)
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
@@ -897,7 +930,7 @@ fn parse_core_jumbo_row(
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
         .checked_add(32 + 1 + 4)
         .and_then(|size| size.checked_add(name_length))
-        .and_then(|size| size.checked_add(2 + 1 + parent_bytes + parentage_bytes + 8))
+        .and_then(|size| size.checked_add(2 + 1 + parent_bytes + parentage_bytes + 8 + u64::from(publication)))
         .and_then(|size| size.checked_add(JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES as u64 * 2))
         .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
     if name_is_descriptor == (inline_name_framed_bytes <= maximum) {
@@ -944,7 +977,7 @@ pub(super) fn core_jumbo_descriptors_for_record_with_row_limit(
     maximum_inline_row_bytes: usize,
 ) -> Result<Option<CoreJumboValueDescriptors>, SemanticPlaneRecordError> {
     if !matches!(
-        record.tag(),
+        core_legacy_tag(record.tag()),
         CORE_JUMBO_TAG | CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
     ) {
         return Ok(None);
@@ -952,7 +985,8 @@ pub(super) fn core_jumbo_descriptors_for_record_with_row_limit(
     let parsed = parse_core_jumbo_row(
         record.payload(),
         maximum_inline_row_bytes,
-        record.tag() == CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
+        core_legacy_tag(record.tag()) == CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
+        core_has_publication(record.tag()),
     )?;
     if record.key()
         != super::declaration_plane_key(
@@ -1126,10 +1160,10 @@ fn encode_core_row_with_jumbo<Reader: SemanticReader + ?Sized>(
         |push| visit_core_attribute_wire_parts(reader, row, push),
     )?;
     out.extend_from_slice(&descriptor.encode_wire());
-    Ok(match row.name {
+    Ok(core_publication_tag(match row.name {
         crate::ir::ItemName::Named(_) => CORE_JUMBO_TAG,
         crate::ir::ItemName::AnonymousCallable(_) => CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
-    })
+    }, row.authority.publication))
 }
 
 fn core_jumbo_framed_bytes(
@@ -1150,7 +1184,7 @@ fn core_jumbo_framed_bytes(
     };
     u64::try_from(super::HEADER_BYTES + super::RECORD_HEADER_BYTES)
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
-        .checked_add(32 + name_bytes + 2 + 1 + parent_bytes + parentage_bytes + 8)
+        .checked_add(32 + name_bytes + 2 + 1 + parent_bytes + parentage_bytes + 8 + u64::from(row.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable))
         .and_then(|bytes| bytes.checked_add(JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES as u64 * 2))
         .ok_or(SemanticPlaneRecordError::RowTooLarge)
 }
@@ -1172,7 +1206,7 @@ fn core_inline_framed_bytes<Reader: SemanticReader + ?Sized>(
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
         .checked_add(32 + 4)
         .and_then(|bytes| bytes.checked_add(u64::try_from(name.len()).ok()?))
-        .and_then(|bytes| bytes.checked_add(2 + 1 + 8 + 4 + 4))
+        .and_then(|bytes| bytes.checked_add(2 + 1 + 8 + 4 + 4 + u64::from(row.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable)))
         .and_then(|bytes| bytes.checked_add(if row.parent.is_some() { 33 } else { 1 }))
         .and_then(|bytes| {
             bytes.checked_add(match row.authority.parentage {
@@ -1606,7 +1640,7 @@ fn encode_core_row<Reader: SemanticReader + ?Sized>(
                 .ok_or(SemanticPlaneRecordError::ReaderReference)?,
         )?;
     }
-    Ok(tag)
+    Ok(core_publication_tag(tag, row.authority.publication))
 }
 
 fn encode_authority(authority: EntityAuthorityFacts, out: &mut Vec<u8>) {
@@ -1621,6 +1655,9 @@ fn encode_authority(authority: EntityAuthorityFacts, out: &mut Vec<u8>) {
         authority.language_extension,
     ] {
         out.push(availability(value));
+    }
+    if authority.publication != crate::ir::DeclarationPublicationRole::Unavailable {
+        out.push(authority.publication as u8);
     }
 }
 

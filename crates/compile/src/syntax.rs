@@ -709,7 +709,11 @@ impl SyntaxFrontend {
         }
         // Shared extraction semantics changed too: every grammar must retire
         // cached name/line deduplication even when its own query is unchanged.
-        let capture_contract = b"syntax-capture/exact-owner-name-source-kinds-macros-docs-v3\0";
+        let capture_contract: &[u8] = if language == SourceLanguage::Go {
+            b"syntax-capture/exact-owner-name-source-kinds-macros-docs-go-extents-v4\0"
+        } else {
+            b"syntax-capture/exact-owner-name-source-kinds-macros-docs-v3\0"
+        };
         let mut identity =
             Vec::with_capacity(capture_contract.len() + language.name().len() + contract.len() + 1);
         identity.extend_from_slice(capture_contract);
@@ -978,12 +982,17 @@ fn captured_definitions<'a>(
         };
         let owner_node = captured_owner_node(language, node, name);
         let name_node = name;
-        let binding_identity = if language == SourceLanguage::TypeScript {
+        let binding_identity = if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
+            let extent = if language == SourceLanguage::Go {
+                go_declaration_extent(node, name_node)
+            } else {
+                owner_node
+            };
             SourceBindingIdentity::Exact(
                 SourceBindingCapture::new(
-                    u32::try_from(owner_node.start_byte())
+                    u32::try_from(extent.start_byte())
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
-                    u32::try_from(owner_node.end_byte())
+                    u32::try_from(extent.end_byte())
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
                     u32::try_from(name_node.start_byte())
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
@@ -1084,6 +1093,45 @@ fn captured_owner_node<'a>(
         {
             return declarator;
         }
+    }
+    definition
+}
+
+/// The Go authority's exact declaration extent (`oracle/docs.go`). A sole
+/// spec owns its keyword and parentheses; sibling specs own just their spec.
+/// Multi-name values own separate identifier extents. No text or line matching
+/// enters this producer proof. The syntax node used for containment is kept
+/// separately, so narrowing a value's identity does not invent containment.
+fn go_declaration_extent<'a>(definition: Node<'a>, name: Node<'a>) -> Node<'a> {
+    if !matches!(definition.kind(), "type_spec" | "type_alias" | "var_spec" | "const_spec") {
+        return definition;
+    }
+    if matches!(definition.kind(), "var_spec" | "const_spec") {
+        let mut cursor = definition.walk();
+        if definition.children_by_field_name("name", &mut cursor).filter(|node| node.is_named()).count() > 1 {
+            return name;
+        }
+    }
+    let mut parent = definition.parent();
+    while let Some(node) = parent {
+        if matches!(node.kind(), "type_declaration" | "var_declaration" | "const_declaration") {
+            let mut cursor = node.walk();
+            let mut specs = 0;
+            for child in node.named_children(&mut cursor) {
+                if matches!(child.kind(), "type_spec" | "type_alias" | "var_spec" | "const_spec") {
+                    specs += 1;
+                } else if child.kind() == "var_spec_list" {
+                    let mut nested = child.walk();
+                    specs += child.named_children(&mut nested)
+                        .filter(|spec| spec.kind() == "var_spec").count();
+                }
+            }
+            return if specs == 1 { node } else { definition };
+        }
+        if node.kind() != "var_spec_list" {
+            break;
+        }
+        parent = node.parent();
     }
     definition
 }

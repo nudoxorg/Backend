@@ -1250,6 +1250,7 @@ impl StorageColumns<'_> {
         add!(self.entities.docs);
         add!(self.entities.attributes);
         add!(self.entity_authority.parentage);
+        add!(self.entity_authority.publication);
         add!(self.entity_authority.source);
         add!(self.entity_authority.source_file);
         add!(self.entity_authority.members);

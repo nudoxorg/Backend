@@ -747,6 +747,7 @@ pub(super) struct FactSet<'source> {
     identity_discriminators: Box<[Option<[u8; 16]>]>,
     documentation_captured: Box<[bool]>,
     provenance: Provenance,
+    publication_roles: Box<[backend_semantic::ir::DeclarationPublicationRole]>,
     occurrence_owners: Box<[u32]>,
     occurrences: Box<[Occurrence<'source>]>,
     occurrence_len: usize,
@@ -1127,6 +1128,7 @@ impl<'source> FactSet<'source> {
             identity_discriminators: vec![None; plan.facts].into_boxed_slice(),
             documentation_captured: vec![false; plan.facts].into_boxed_slice(),
             provenance: Provenance::new(plan.facts),
+            publication_roles: vec![backend_semantic::ir::DeclarationPublicationRole::Unavailable; plan.facts].into_boxed_slice(),
             occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
             occurrences: vec![
                 Occurrence {
@@ -1301,6 +1303,7 @@ impl<'source> FactSet<'source> {
         };
         let attributes = self.item_attribute_list(ordinal).is_some();
         Ok(EntityAuthorityFacts {
+            publication: self.publication_roles[ordinal],
             parentage,
             source: if source_present {
                 captured

@@ -329,7 +329,7 @@ pub(super) fn semantic_entity_for_symbol(
 ) -> Result<Option<backend_semantic::ir::EntityId>, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     session
-        .canonical_entities()
+        .publication_entities()
         .find_map(|entity| match entity {
             Ok(entity)
                 if view_build::semantic_symbol(package, entity.entity.version.identity())
@@ -351,7 +351,7 @@ fn published_identities_from_views(
     let mut published = BTreeSet::new();
     for image in images {
         let session = DocumentationSession::new(image);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic graph published entity: {error}"))
             })?;
@@ -548,7 +548,7 @@ fn project_opened_semantic_graph(
             }
         }
         if include_incoming {
-            for source in session.canonical_entities() {
+            for source in session.publication_entities() {
                 let source = source.map_err(|error| {
                     BuiltinModelError(format!("read semantic graph source: {error}"))
                 })?;
@@ -642,6 +642,57 @@ fn project_semantic_graph_relations(
     )
 }
 
+/// The evidence of one written site of a link: its own confidence and its
+/// own captured span, not the representative of the relation it proves.
+fn occurrence_evidence(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    id: backend_semantic::ir::LinkOccurrenceId,
+    occurrence: backend_semantic::ir::LinkOccurrence,
+) -> Result<backend_engine::SemanticLinkEvidence, BuiltinModelError> {
+    use backend_semantic::ir::{FactAvailability, SemanticCoreReader as _};
+    let authority = image.occurrence_authority(id).ok_or_else(|| {
+        BuiltinModelError("semantic occurrence has no authority record".to_owned())
+    })?;
+    let source = match (authority.source, occurrence.source) {
+        (FactAvailability::Captured, Some(span)) => {
+            let file = image.atom(span.file()).ok_or_else(|| {
+                BuiltinModelError("semantic occurrence path is absent from its image".to_owned())
+            })?;
+            let file = std::str::from_utf8(file).map_err(|_| {
+                BuiltinModelError("semantic occurrence path is not UTF-8".to_owned())
+            })?;
+            Some(backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new(file)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?,
+                start: span.start(),
+                end: span.end(),
+            })
+        }
+        _ => None,
+    };
+    Ok(backend_engine::SemanticLinkEvidence {
+        confidence: semantic_confidence(occurrence.confidence),
+        source,
+    })
+}
+
+/// Whether `facts` already holds this very use: the same caller, relation
+/// and written site.
+fn reference_fact_at_site(
+    facts: &[backend_engine::ReferenceFact],
+    site: backend_engine::SymbolKey,
+    relation: backend_engine::SemanticLinkKind,
+    evidence: &backend_engine::SemanticLinkEvidence,
+) -> bool {
+    evidence.source.as_ref().is_some_and(|source| {
+        facts.iter().any(|fact| {
+            fact.site == site
+                && fact.relation == relation
+                && fact.evidence.source.as_ref() == Some(source)
+        })
+    })
+}
+
 fn reference_fact_has_site_and_relation(
     facts: &[backend_engine::ReferenceFact],
     site: backend_engine::SymbolKey,
@@ -732,7 +783,7 @@ fn project_opened_reference_facts(
     let mut published = BTreeSet::new();
     for image in images {
         let session = DocumentationSession::new(image);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!(
                     "read semantic references published entity: {error}"
@@ -743,8 +794,15 @@ fn project_opened_reference_facts(
     }
     for image in images {
         let caller_path = view_build::compiled_source_path(image)?;
+        let mut occurrence_sites = std::collections::BTreeMap::new();
+        for (id, occurrence) in image.link_occurrences() {
+            occurrence_sites
+                .entry(occurrence.link)
+                .or_insert_with(Vec::new)
+                .push((id, occurrence));
+        }
         let session = DocumentationSession::new(image);
-        for source in session.canonical_entities() {
+        for source in session.publication_entities() {
             let source = source.map_err(|error| {
                 BuiltinModelError(format!("read semantic references caller: {error}"))
             })?;
@@ -756,7 +814,7 @@ fn project_opened_reference_facts(
             {
                 continue;
             }
-            for (_, link) in image.links_from(source.entity.id) {
+            for (link_id, link) in image.links_from(source.entity.id) {
                 let LinkTarget::External(external) = link.target else {
                     continue;
                 };
@@ -821,21 +879,30 @@ fn project_opened_reference_facts(
                     continue;
                 }
                 let relation = semantic_link_kind(link.kind);
-                if reference_fact_has_site_and_relation(&facts, caller_symbol, relation) {
-                    continue;
-                }
-                facts.push(backend_engine::ReferenceFact {
-                    site: caller_symbol,
-                    target: backend_engine::SemanticLinkTarget::Local {
-                        declaration: semantic_declaration_identity(identity),
-                    },
-                    relation,
-                    evidence: semantic_link_evidence(image, link)?,
-                });
-                if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
-                    return Err(BuiltinModelError(
-                        "semantic references exceed the bounded result contract".to_owned(),
-                    ));
+                let evidence = match occurrence_sites.get(&link_id) {
+                    Some(sites) => sites
+                        .iter()
+                        .map(|(id, occurrence)| occurrence_evidence(image, *id, *occurrence))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => vec![semantic_link_evidence(image, link)?],
+                };
+                for evidence in evidence {
+                    if reference_fact_at_site(&facts, caller_symbol, relation, &evidence) {
+                        continue;
+                    }
+                    facts.push(backend_engine::ReferenceFact {
+                        site: caller_symbol,
+                        target: backend_engine::SemanticLinkTarget::Local {
+                            declaration: semantic_declaration_identity(identity),
+                        },
+                        relation,
+                        evidence,
+                    });
+                    if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                        return Err(BuiltinModelError(
+                            "semantic references exceed the bounded result contract".to_owned(),
+                        ));
+                    }
                 }
             }
         }
@@ -1161,10 +1228,9 @@ fn append_reference_facts(
             let hit = hit.map_err(|error| error.to_string())?;
             let site = session
                 .entity(hit.entity())
-                .map_err(|error| error.to_string())?
-                .entity
-                .version
-                .identity();
+                .map_err(|error| error.to_string())?;
+            if !session.owns_declaration(&site.entity) { continue; }
+            let site = site.entity.version.identity();
             let evidence = backend_engine::SemanticLinkEvidence {
                 confidence: semantic_confidence(hit.confidence()),
                 source: hit
@@ -10931,6 +10997,12 @@ mod references_tests {
     /// Encodes one Rust image whose `Caller` entity calls `Callee`, with the
     /// call occurrence carrying a captured source span.
     fn fixture_image() -> Result<Vec<u8>, String> {
+        fixture_image_with_roles([backend_semantic::ir::DeclarationPublicationRole::Unavailable; 2])
+    }
+
+    fn fixture_image_with_roles(
+        roles: [backend_semantic::ir::DeclarationPublicationRole; 2],
+    ) -> Result<Vec<u8>, String> {
         let source = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"call fixture"),
             byte_len: 12,
@@ -10950,7 +11022,8 @@ mod references_tests {
             .map_err(|error| error.to_string())?;
         let calling_site = TreeEntityId::new(0);
         let called_target = TreeEntityId::new(1);
-        let authority = |parentage| EntityAuthorityFacts {
+        let authority = |parentage, publication| EntityAuthorityFacts {
+            publication,
             parentage,
             visibility: FactAvailability::Captured,
             ..EntityAuthorityFacts::default()
@@ -10961,7 +11034,7 @@ mod references_tests {
                 anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
-                authority: authority(ParentageAuthority::Root),
+                authority: authority(ParentageAuthority::Root, roles[0]),
                 parent: None,
                 semantic_type: None,
                 members: &[],
@@ -10975,7 +11048,7 @@ mod references_tests {
                 anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
-                authority: authority(ParentageAuthority::Root),
+                authority: authority(ParentageAuthority::Root, roles[1]),
                 parent: None,
                 semantic_type: None,
                 members: &[],
@@ -11045,6 +11118,30 @@ mod references_tests {
         let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
         encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
         Ok(bytes)
+    }
+
+    #[test]
+    fn reference_only_targets_can_anchor_owned_sites_but_support_sites_do_not_publish()
+    -> Result<(), String> {
+        use backend_semantic::ir::DeclarationPublicationRole as Role;
+        let package = backend_engine::package_key("fixture");
+        let callee = super::super::super::view_build::semantic_symbol(
+            package,
+            fixture_version(2).identity(),
+        );
+        for (roles, expected) in [
+            ([Role::PrimaryOwned, Role::ReferenceOnly], 1),
+            ([Role::ReferenceOnly, Role::PrimaryOwned], 0),
+        ] {
+            let bytes = fixture_image_with_roles(roles)?;
+            let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
+                .map_err(|error| error.to_string())?;
+            let mut facts = Vec::new();
+            append_reference_facts(package, &image, callee, &mut facts)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(facts.len(), expected);
+        }
+        Ok(())
     }
 
     #[test]

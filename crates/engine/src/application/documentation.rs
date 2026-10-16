@@ -98,6 +98,52 @@ impl<'image, Reader: SemanticReader + ?Sized> DocumentationSession<'image, Reade
             rows: self.reader.canonical_entities(),
         }
     }
+
+    /// Whether the producer proved this entity is a declaration owned by this
+    /// image. Reference-only entities remain accessible through `entity` and
+    /// canonical traversal for type/receiver/member closure. Other languages
+    /// retain their established legacy publication behavior.
+    #[must_use]
+    pub fn owns_declaration(&self, entity: &SemanticEntity) -> bool {
+        use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticImageAuthority};
+        match entity.authority.publication {
+            Role::PrimaryOwned => true,
+            Role::ReferenceOnly => false,
+            Role::Unavailable => !matches!(
+                self.image.authority,
+                SemanticImageAuthority::Language(LanguageProfile::Go(_))
+            ),
+        }
+    }
+
+    /// Publication projection shared by product rows, query facts and indexes.
+    pub fn publication_entities(
+        &self,
+    ) -> impl Iterator<
+        Item = Result<DocumentationEntity<'image, Reader>, DocumentationProjectionError>,
+    > + '_ {
+        self.canonical_entities().filter(|entity| {
+            entity
+                .as_ref()
+                .map_or(true, |entity| self.owns_declaration(&entity.entity))
+        })
+    }
+
+    /// Legacy Go images cannot certify a complete owned declaration inventory.
+    #[must_use]
+    pub fn publication_ownership_available(&self) -> bool {
+        use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticImageAuthority};
+        if !matches!(
+            self.image.authority,
+            SemanticImageAuthority::Language(LanguageProfile::Go(_))
+        ) {
+            return true;
+        }
+        let mut rows = self.reader.canonical_entities();
+        // Empty legacy images have no image-level complete-empty ownership
+        // witness. Do not turn the absence of rows into such an observation.
+        rows.len() != 0 && rows.all(|entity| entity.authority.publication != Role::Unavailable)
+    }
 }
 
 /// Immutable declaration facts suitable for a documentation page.

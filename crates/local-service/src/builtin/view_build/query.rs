@@ -10,8 +10,7 @@ use super::call_join::{
 };
 use super::compiled_source_path;
 use super::identity::{
-    declaration_kind, fragment_text, query_external_id, query_package_id, query_semantic_id,
-    semantic_coordinate,
+    fragment_text, query_external_id, query_package_id, query_semantic_id, semantic_coordinate,
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
@@ -64,6 +63,7 @@ pub(in crate::builtin) fn semantic_query_corpus(
         ));
     }
 
+    let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let complete = append_compiler_query_facts(
         snapshot,
         compiler,
@@ -71,8 +71,10 @@ pub(in crate::builtin) fn semantic_query_corpus(
         &mut facts,
         generations,
         image_rows,
+        &mut exact_sites,
     )?;
-    let structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
+    let mut structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
+    structural_plan.unify_exact_sites(sources, &exact_sites)?;
     append_structural_query_facts(sources, &structural_plan, &mut facts)?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -100,6 +102,7 @@ fn append_compiler_query_facts(
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::image_rows::ImageRowResidence,
+    exact_sites: &mut super::exact_sites::ExactDeclarationSites,
 ) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError>
 {
     let relation = snapshot
@@ -162,6 +165,16 @@ fn append_compiler_query_facts(
     }
 
     let opened = open_query_publications(&pending)?;
+    for publication in &opened {
+        if publication
+            .images
+            .iter()
+            .any(|image| !DocumentationSession::new(&image.view).publication_ownership_available())
+        {
+            complete.remove(&(publication.package.to_bytes(), publication.profile));
+        }
+    }
+    let sites = super::semantic::StructuralSites::of(sources)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
     let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();
@@ -214,11 +227,27 @@ fn append_compiler_query_facts(
             let image = &opened_image.view;
             let caller_path = &opened_image.path;
             let session = DocumentationSession::new(image);
+            // The corpus names a declaration with the word its view row has, so
+            // it pairs entities with the file's written declarations the same
+            // way `project_image_rows` does (an import alias is the one word
+            // only the written twin settles), and only for an image built from
+            // the bytes now indexed.
+            let declarations = sites.declarations_of_source(
+                package.as_bytes(),
+                caller_path,
+                opened_image.source,
+            )?;
+            let declarations = declarations.iter().collect::<Vec<_>>();
+            let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
+            for (identity, binding) in &kinds.exact {
+                exact_sites.record(package, caller_path, *binding,
+                    RowId::Symbol(super::identity::semantic_symbol(package, *identity)));
+            }
             let identities = &opened_image.identities;
             let image_digest = opened_image.digest;
             let mut external_targets =
                 BTreeMap::<String, (ExternalTargetIdentity, ExternalId)>::new();
-            for entity in session.canonical_entities() {
+            for entity in session.publication_entities() {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -231,10 +260,12 @@ fn append_compiler_query_facts(
                     ));
                 }
                 let name = super::semantic_display_name(entity.name)?.to_owned();
+                let kind = kinds.kind_of(identity, entity.entity.kind);
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
                     .parent
+                    .filter(|parent| image.entity(*parent).is_some_and(|parent| session.owns_declaration(&parent)))
                     .map(|parent| {
                         let parent = session.entity(parent).map_err(|error| {
                             BuiltinModelError(format!(
@@ -261,7 +292,7 @@ fn append_compiler_query_facts(
                                 ));
                             };
                             let target = target.version.identity();
-                            if identities.contains(&target) {
+                            if published.contains(&target) {
                                 related.push(query_semantic_id(package, target));
                             }
                         }
@@ -357,7 +388,7 @@ fn append_compiler_query_facts(
                     ),
                     backend_extension_trustfall::SemanticQueryPresentation {
                         id,
-                        kind: declaration_kind(entity.entity.kind).name().to_owned(),
+                        kind: kind.name().to_owned(),
                         coordinate: semantic_coordinate(&label, identity, &name),
                         name,
                         signature: content.signature,
@@ -421,6 +452,8 @@ fn append_compiler_query_facts(
 struct OpenedQueryImage<'a> {
     view: SemanticImageView<'a>,
     path: String,
+    /// The identity of the source bytes the image was compiled from.
+    source: backend_version::ContentId<backend_version::SourceFactDomain>,
     digest: [u8; 32],
     identities: BTreeSet<DeclarationIdentity>,
 }
@@ -443,11 +476,11 @@ fn open_query_publications<'a>(
             let view = bytes.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
-            let path = compiled_source_path(&view)?;
+            let (path, source) = super::semantic::compiled_source(&view)?;
             let digest = bytes.content_digest();
             let mut identities = BTreeSet::new();
             let session = DocumentationSession::new(&view);
-            for entity in session.canonical_entities() {
+            for entity in session.publication_entities() {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -456,6 +489,7 @@ fn open_query_publications<'a>(
             images.push(OpenedQueryImage {
                 view,
                 path,
+                source,
                 digest,
                 identities,
             });
@@ -506,6 +540,12 @@ pub(super) fn append_structural_query_facts(
         let mut index = 0usize;
         super::structural::visit_complete_declarations(sources, record, |declaration| {
             let prepared = structural_plan.declaration(*file_key, index)?;
+            if prepared.compiler_twin {
+                index = index.checked_add(1).ok_or_else(|| {
+                    BuiltinModelError("structural declaration count overflow".to_owned())
+                })?;
+                return Ok(());
+            }
             let id = prepared.id.stable_key();
             let coordinate = prepared.coordinate.clone();
             let documentation = if prepared.is_file_module {
@@ -623,7 +663,7 @@ fn index_open_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> {
         let path = compiled_source_path(&view)?;
         let digest = *blake3::hash(bytes).as_bytes();
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;
@@ -645,7 +685,7 @@ fn index_reopened_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> 
         let view = SemanticImageView::reopen(bytes)
             .map_err(|error| BuiltinModelError(format!("reopen semantic query image: {error}")))?;
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;
@@ -661,7 +701,7 @@ fn index_reopened_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> 
         let path = compiled_source_path(&view)?;
         let digest = *blake3::hash(bytes).as_bytes();
         let session = DocumentationSession::new(&view);
-        for entity in session.canonical_entities() {
+        for entity in session.publication_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic query declaration: {error}"))
             })?;

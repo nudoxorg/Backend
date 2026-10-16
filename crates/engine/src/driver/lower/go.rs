@@ -1107,7 +1107,28 @@ pub(crate) fn collect<'source>(
     go.occurrences()?;
     // Pass six: interface-satisfaction edges as implements occurrences.
     go.satisfactions()?;
+    go.publication_roles()?;
     Ok(())
+}
+
+/// Retains conflicting producer observations as unavailable in either order.
+fn observe_publication_role(
+    roles: &mut [backend_semantic::ir::DeclarationPublicationRole],
+    fixed: &mut [bool],
+    poisoned: &mut [bool],
+    ordinal: usize,
+    role: backend_semantic::ir::DeclarationPublicationRole,
+) {
+    if poisoned[ordinal] {
+        return;
+    }
+    if fixed[ordinal] && roles[ordinal] != role {
+        roles[ordinal] = backend_semantic::ir::DeclarationPublicationRole::Unavailable;
+        poisoned[ordinal] = true;
+    } else {
+        roles[ordinal] = role;
+    }
+    fixed[ordinal] = true;
 }
 
 /// Maps one closed declaration kind onto the canonical entity kind.
@@ -1393,6 +1414,7 @@ struct Projector<'x, 'source> {
     /// Same-package member targets, resolved for reference rows naming
     /// methods or fields through their receiver type.
     members: Vec<MemberKey<'source>>,
+    reference_only: Vec<u32>,
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
@@ -1409,7 +1431,95 @@ impl<'x, 'source> Projector<'x, 'source> {
             declaration_spans: vec![None; declarations],
             name_spans: vec![None; declarations],
             members: Vec::new(),
+            reference_only: Vec::new(),
         }
+    }
+
+    /// Ownership comes only from the v6 producer's digest-bound flags, with
+    /// lexical fields/carriers inheriting their exact canonical owner's role.
+    /// Supporting receiver roots remain in the IR even when a method they own
+    /// is primary. Promoted/effective method copies never own a declaration.
+    fn publication_roles(&mut self) -> Result<(), GoCollectError> {
+        use backend_semantic::ir::DeclarationPublicationRole as Role;
+        if self.image.version() != 6 {
+            return Ok(());
+        }
+        let count = self.facts.len();
+        let mut fixed = vec![false; count];
+        let mut poisoned = vec![false; count];
+        for index in 0..self.image.declaration_count() {
+            let declaration = self
+                .image
+                .declaration(index)
+                .map_err(GoCollectError::Image)?;
+            if let Some(ordinal) = self.declaration_ordinals[index] {
+                observe_publication_role(
+                    &mut self.facts.publication_roles,
+                    &mut fixed,
+                    &mut poisoned,
+                    ordinal as usize,
+                    if declaration.bound {
+                        Role::PrimaryOwned
+                    } else {
+                        Role::ReferenceOnly
+                    },
+                );
+            }
+        }
+        for index in 0..self.image.method_count() {
+            let method = self.image.method(index).map_err(GoCollectError::Image)?;
+            if let Some(ordinal) = self.method_ordinals[index] {
+                observe_publication_role(
+                    &mut self.facts.publication_roles,
+                    &mut fixed,
+                    &mut poisoned,
+                    ordinal as usize,
+                    if method.bound && !method.promoted {
+                        Role::PrimaryOwned
+                    } else {
+                        Role::ReferenceOnly
+                    },
+                );
+            }
+        }
+        for ordinal in &self.reference_only {
+            observe_publication_role(
+                &mut self.facts.publication_roles,
+                &mut fixed,
+                &mut poisoned,
+                *ordinal as usize,
+                Role::ReferenceOnly,
+            );
+        }
+        let parents = self.facts.provenance.parentage();
+        let roles = &mut self.facts.publication_roles;
+        let mut visiting = vec![false; count];
+        for start in 0..count {
+            let mut chain = Vec::new();
+            let mut cursor = start;
+            while !fixed[cursor] && !visiting[cursor] {
+                visiting[cursor] = true;
+                chain.push(cursor);
+                match parents[cursor] {
+                    crate::driver::types::ParentageState::Bound { parent }
+                        if parent.index() < count =>
+                    {
+                        cursor = parent.index()
+                    }
+                    _ => break,
+                }
+            }
+            let role = if fixed[cursor] {
+                roles[cursor]
+            } else {
+                Role::Unavailable
+            };
+            for ordinal in chain.into_iter().rev() {
+                roles[ordinal] = role;
+                fixed[ordinal] = true;
+            }
+        }
+        Ok(())
     }
 
     /// Records one pushed declaration name for later resolution.
@@ -1596,6 +1706,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 constructor(EntityKind::Alias),
             ));
             let ordinal = push(self.facts, fact)?;
+            self.reference_only.push(ordinal);
             self.facts
                 .mark_parentage_root(ordinal)
                 .map_err(|fault| lane_terminal_ordinal(ordinal, spelling.len(), fault))?;
@@ -2088,6 +2199,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             let ordinal =
                 self.executable(method_set.name, method_set.type_root, parameter_start)?;
+            self.reference_only.push(ordinal);
             self.facts
                 .attach_parent(ordinal, type_ordinal)
                 .map_err(|fault| lane_terminal_ordinal(ordinal, method_set.name.len(), fault))?;
@@ -2446,6 +2558,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                         constant_flags: 0,
                     }));
                 let ordinal = push(self.facts, fact)?;
+                self.reference_only.push(ordinal);
                 self.facts
                     .mark_unrepresented_parent(ordinal, owner_identity)
                     .map_err(|fault| {
@@ -2660,8 +2773,8 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Pass six: one oracle-confidence implements occurrence per
     /// interface-satisfaction edge, owned by the satisfying type's fact.
-    /// In-package targets resolve to their local nominal ordinals;
-    /// cross-package targets fold to foreign `go` lineage keys. Go never
+    /// Primary-source targets resolve to their local nominal ordinals;
+    /// sibling/foreign targets fold to foreign `go` lineage keys. Go never
     /// writes the satisfaction relation, so the occurrence anchors on the
     /// subject's declared identifier: when the image carries the subject's
     /// authority-bound NAME-TOKEN extent, the occurrence's owner-relative
@@ -2698,15 +2811,15 @@ impl<'x, 'source> Projector<'x, 'source> {
             } else {
                 row.target_package
             };
-            let target = if let Some(ordinal) = self.lookup(target_package, row.target) {
-                OccurrenceTarget::Local(EntityId::new(ordinal))
+            let target = if let Some(target) = self.local_type_target(target_package, row.target) {
+                target
             } else {
                 // A satisfaction target is an interface by the plane's
                 // construction, so its honest foreign kind is the trait —
                 // the same kind a local interface projects.
                 foreign_target(
                     reference_index,
-                    row.target_package,
+                    target_package,
                     row.target,
                     EntityKind::Trait,
                 )?
@@ -5518,6 +5631,118 @@ mod tests {
                 crate::driver::types::DeclarationScope::fixture(),
             )
             .map_err(TestError::Ir)
+    }
+
+    #[test]
+    fn primary_method_keeps_reference_only_sibling_receiver_and_owned_carriers()
+    -> Result<(), TestError> {
+        use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticReader as _};
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let signature = fix.func(&[int], &[int], false);
+        let receiver = fix.declaration(KIND_TYPE, b"SiblingReceiver", None);
+        let sibling = fix.atom(SIBLING_FILE);
+        fix.declarations[receiver].file = Some(sibling);
+        let method = fix.method(receiver, b"PrimaryMethod", Some(signature));
+        fix.methods[method].bound = true;
+        let promoted = fix.method(receiver, b"PromotedCopy", None);
+        fix.methods[promoted].bound = true;
+        fix.methods[promoted].promoted = true;
+        let local = fix.declaration(KIND_FUNC, b"Local", Some(signature));
+        fix.declarations[local].bound = true;
+        let remote = fix.declaration(KIND_FUNC, b"Remote", None);
+        fix.declarations[remote].file = Some(sibling);
+        fix.unresolved_cgo(b"C.Foreign");
+        fix.constraint(b"windows.go", b"windows", &[(KIND_TYPE, b"WinType")]);
+        let source = vec![b' '; SPAN_END as usize];
+        let ir = lower_ir(&fix, &source)?;
+        let named = |name: &[u8]| {
+            ir.canonical_entities()
+                .find(|entity| ir.atom(entity.name.atom()) == Some(name))
+                .expect("named entity")
+        };
+        let receiver = named(b"SiblingReceiver");
+        let method = named(b"PrimaryMethod");
+        assert_eq!(receiver.authority.publication, Role::ReferenceOnly);
+        assert_eq!(method.authority.publication, Role::PrimaryOwned);
+        assert_eq!(
+            method.parent,
+            Some(receiver.id),
+            "canonical receiver support is retained"
+        );
+        assert_eq!(
+            named(b"PromotedCopy").authority.publication,
+            Role::ReferenceOnly
+        );
+        assert_eq!(named(b"Remote").authority.publication, Role::ReferenceOnly);
+        assert_eq!(named(b"Local").authority.publication, Role::PrimaryOwned);
+        assert_eq!(
+            named(b"C.Foreign").authority.publication,
+            Role::ReferenceOnly
+        );
+        assert_eq!(named(b"WinType").authority.publication, Role::ReferenceOnly);
+        assert!(
+            ir.canonical_entities()
+                .all(|entity| entity.authority.publication != Role::Unavailable)
+        );
+        for entity in ir
+            .canonical_entities()
+            .filter(|entity| entity.parent == Some(method.id))
+        {
+            assert_eq!(
+                entity.authority.publication,
+                Role::PrimaryOwned,
+                "signature carriers inherit primary ownership"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_satisfaction_target_keeps_a_package_key_instead_of_support_ordinal()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let subject = fix.declaration(KIND_TYPE, b"Client", None);
+        fix.declarations[subject].bound = true;
+        let target = fix.declaration(KIND_TYPE, b"Reader", None);
+        let sibling = fix.atom(SIBLING_FILE);
+        fix.declarations[target].file = Some(sibling);
+        fix.declarations[target].name_span = Some((0, 1));
+        fix.satisfaction(subject, b"Reader", b"");
+        let source = vec![b' '; SPAN_END as usize];
+        let bytes = lower(&fix, &source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let occurrence = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .next()
+            .ok_or(TestError::Missing("satisfaction"))??;
+        let OccurrenceTarget::Foreign(key) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("sibling satisfaction package target"));
+        };
+        let ForeignOrigin::Package(lineage) = key.origin else {
+            return Err(TestError::Missing("sibling satisfaction package lineage"));
+        };
+        assert_eq!(lineage.name.as_bytes(), PACKAGE);
+        assert_eq!(key.path, "Reader");
+        Ok(())
+    }
+
+    #[test]
+    fn conflicting_publication_observations_remain_unavailable_in_either_order() {
+        use backend_semantic::ir::DeclarationPublicationRole as Role;
+        for observations in [
+            [Role::PrimaryOwned, Role::ReferenceOnly],
+            [Role::ReferenceOnly, Role::PrimaryOwned],
+        ] {
+            let mut roles = [Role::Unavailable];
+            let mut fixed = [false];
+            let mut poisoned = [false];
+            for role in observations.into_iter().chain([Role::PrimaryOwned]) {
+                super::observe_publication_role(&mut roles, &mut fixed, &mut poisoned, 0, role);
+            }
+            assert_eq!(roles, [Role::Unavailable]);
+        }
     }
 
     /// The byte extent of the first occurrence of one needle in the test

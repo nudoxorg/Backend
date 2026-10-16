@@ -4636,6 +4636,18 @@ mod tests {
         member_count: usize,
         replace_member: Option<usize>,
     ) -> (Ir, DeclarationIdentity) {
+        core_members_image_with_publication(
+            member_count,
+            replace_member,
+            crate::ir::DeclarationPublicationRole::Unavailable,
+        )
+    }
+
+    fn core_members_image_with_publication(
+        member_count: usize,
+        replace_member: Option<usize>,
+        publication: crate::ir::DeclarationPublicationRole,
+    ) -> (Ir, DeclarationIdentity) {
         let entity_count = member_count + usize::from(replace_member.is_some());
         let versions: Vec<_> = (0..=entity_count).map(core_fixture_version).collect();
         let root_identity = versions[0].identity();
@@ -4658,6 +4670,7 @@ mod tests {
             .collect();
         let empty_members: [TreeEntityId; 0] = [];
         let authority = EntityAuthorityFacts {
+            publication,
             parentage: ParentageAuthority::Root,
             members: FactAvailability::Captured,
             documentation: FactAvailability::Captured,
@@ -4857,6 +4870,60 @@ mod tests {
     }
 
     #[test]
+    fn publication_core_inline_jumbo_and_legacy_tags_are_separate_grammars() {
+        use crate::ir::DeclarationPublicationRole as Role;
+        for (role, member_count, expected) in [
+            (Role::Unavailable, 0, 1),
+            (Role::PrimaryOwned, 0, 5),
+            (Role::ReferenceOnly, 0, 5),
+            (Role::PrimaryOwned, 185, 7),
+        ] {
+            let (ir, root) = core_members_image_with_publication(member_count, None, role);
+            let (captured, _) = core_capture(&ir, 4096);
+            let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), root);
+            let (record, _) = core_row(&captured, key, 4096);
+            assert_eq!(record.tag(), expected);
+            declarations::validate_record_with_row_limit(
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                key,
+                record.tag(),
+                record.payload(),
+                4096,
+            )
+            .expect("role grammar round trip");
+            if role != Role::Unavailable && member_count == 0 {
+                let mut bad = record.payload().to_vec();
+                // This fixture has no parent and a root parentage, so the
+                // role follows identity, framed name, kind, visibility and
+                // those two one-byte parent cells plus eight availability bytes.
+                let role_offset = 32 + 4 + b"TestRequests".len() + 2 + 1 + 1 + 1 + 8;
+                bad[role_offset] = 3;
+                assert!(
+                    declarations::validate_record_with_row_limit(
+                        SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                        key,
+                        record.tag(),
+                        &bad,
+                        4096
+                    )
+                    .is_err()
+                );
+                assert!(
+                    declarations::validate_record_with_row_limit(
+                        SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                        key,
+                        1,
+                        record.payload(),
+                        4096
+                    )
+                    .is_err(),
+                    "legacy tag cannot silently consume new ownership"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn core_member_overflow_preserves_the_6037_byte_tag_one_row_losslessly() {
         let (ir, root_identity) = core_members_image(185, None);
         assert_eq!(legacy_core_row_size(&ir, root_identity), 6037);
@@ -5030,6 +5097,20 @@ mod tests {
         anchor: Option<&[u8]>,
         attributes: &[&[u8]],
     ) -> (Ir, DeclarationIdentity) {
+        core_callable_image_with_publication(
+            name,
+            anchor,
+            attributes,
+            crate::ir::DeclarationPublicationRole::Unavailable,
+        )
+    }
+
+    fn core_callable_image_with_publication(
+        name: &[u8],
+        anchor: Option<&[u8]>,
+        attributes: &[&[u8]],
+        publication: crate::ir::DeclarationPublicationRole,
+    ) -> (Ir, DeclarationIdentity) {
         let version = core_fixture_version(0);
         let item = TreeItemInput {
             anonymous_callable_anchor: anchor,
@@ -5037,6 +5118,7 @@ mod tests {
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
+                publication,
                 parentage: ParentageAuthority::Root,
                 members: FactAvailability::Captured,
                 documentation: FactAvailability::Captured,
@@ -5064,6 +5146,59 @@ mod tests {
             builder.finish().expect("Core name IR is valid"),
             version.identity(),
         )
+    }
+
+    #[test]
+    fn publication_anonymous_inline_and_jumbo_tags_preserve_legacy_grammars() {
+        use crate::ir::{
+            AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, CallableAnchorStep,
+            CallableChildRole, CallableParentShape, DeclarationPublicationRole as Role,
+        };
+        let route = [CallableAnchorStep {
+            child_role: CallableChildRole::CallArgument,
+            parent: CallableParentShape::Call,
+        }];
+        let mut storage = [0; 32];
+        let length = AnonymousCallableAnchor { steps: &route }
+            .write_storage(AnonymousCallableFamilyMultiplicity::Unique, &mut storage)
+            .expect("anchor");
+        for (role, tag_delta) in [
+            (Role::Unavailable, 0),
+            (Role::PrimaryOwned, 4),
+            (Role::ReferenceOnly, 4),
+        ] {
+            for overflow in [false, true] {
+                let attribute = vec![b'a'; if overflow { 5000 } else { 2 }];
+                let (ir, identity) = core_callable_image_with_publication(
+                    b"",
+                    Some(&storage[..length]),
+                    &[&attribute],
+                    role,
+                );
+                let (captured, mut objects) = core_capture(&ir, 4096);
+                let key =
+                    declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+                let (record, _) = core_row(&captured, key, 4096);
+                assert_eq!(record.tag(), (if overflow { 4 } else { 2 }) + tag_delta);
+                declarations::validate_record_with_row_limit(
+                    SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                    key,
+                    record.tag(),
+                    record.payload(),
+                    4096,
+                )
+                .expect("anonymous role grammar");
+                let policy =
+                    CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+                        .expect("policy");
+                let _ = verify_captured_jumbo_family_with_policy(
+                    SemanticIrPlane::Core,
+                    &captured,
+                    policy,
+                    &mut objects,
+                );
+            }
+        }
     }
 
     #[test]

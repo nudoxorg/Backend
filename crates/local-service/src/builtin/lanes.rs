@@ -27,6 +27,9 @@
 //! * A Partial publication supplies positive semantic facts only from selected
 //!   artifacts that match the current source identity. Structural declarations
 //!   remain because an available image does not prove a complete file inventory.
+//!   An exact equal Go compiler/syntax declaration extent in the same source
+//!   content assigns the compiler identity to that binding, represented once.
+//!   Missing or conflicting proof leaves the structural declaration intact.
 //!   The ledger records [`FileLane::Mixed`]; coverage remains Partial.
 //! * No available selected artifact for the file → the structural lane answers,
 //!   and the cause is retained ([`StructuralCause`]).

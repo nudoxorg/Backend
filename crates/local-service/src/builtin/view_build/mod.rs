@@ -4,9 +4,11 @@
 //! semantic publications retain their existing semantic-only/stale policy.
 //! Partial publications contribute current selected artifacts' positive facts
 //! alongside structural declarations; available bytes never certify a whole
-//! file inventory or promote package coverage to Complete.
+//! file inventory or promote package coverage to Complete. An exact source
+//! declaration witnessed by both lanes has one compiler-owned identity.
 
 mod call_join;
+mod exact_sites;
 #[cfg(test)]
 mod foreign_target_display_tests;
 #[cfg(test)]
@@ -463,6 +465,8 @@ pub fn execute() {}
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = super::SemanticRowSink {
+            ownership_complete: &mut true,
+            exact_sites: &mut Default::default(),
             initial: &initial,
             symbols: &mut symbols,
             rows: &mut rows,
@@ -578,6 +582,8 @@ pub fn execute() {}
         let mut rows = Vec::new();
         let mut remaining = usize::MAX;
         let mut sink = super::SemanticRowSink {
+            ownership_complete: &mut true,
+            exact_sites: &mut Default::default(),
             initial: &initial,
             symbols: &mut symbols,
             rows: &mut rows,
@@ -694,6 +700,7 @@ pub fn execute() {}
             DocInput::Text("Deprecated: use New."),
         ];
         let documented = EntityAuthorityFacts {
+            publication: backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned,
             documentation: FactAvailability::Captured,
             ..fixture_authority(ParentageAuthority::Root)
         };
@@ -718,6 +725,7 @@ pub fn execute() {}
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: EntityAuthorityFacts {
+                    publication: backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned,
                     documentation: FactAvailability::Captured,
                     ..fixture_authority(fixture_identity(1))
                 },

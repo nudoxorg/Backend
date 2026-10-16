@@ -96,7 +96,7 @@ pub(crate) fn reopen_full_semantic_image(
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
     if layout.schema == SCHEMA_CARRIER_BINDINGS
-        || (layout.schema == SCHEMA_TYPED_NAMES
+        || (layout.schema >= SCHEMA_TYPED_NAMES
             && layout
                 .entry(FullDirectoryKind::SignatureCarrierBindingRanges)
                 .count
@@ -121,7 +121,7 @@ fn validate_signature_carrier_roles(
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
-        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
     ) || layout.entry(FullDirectoryKind::SignatureCarrierRoles).count == 0
     {
         return Ok(());
@@ -671,12 +671,14 @@ fn validate_entity_reserved(
         + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::Entities,
         })? * ENTITY_ROW_BYTES;
-    let reserved_start = if layout.schema == SCHEMA_TYPED_NAMES {
+    let reserved_start = if layout.schema >= super::wire::SCHEMA_PUBLICATION_ROLES {
+        offset + 34
+    } else if layout.schema >= SCHEMA_TYPED_NAMES {
         offset + 33
     } else {
         offset + 32
     };
-    if layout.schema == SCHEMA_TYPED_NAMES && !matches!(bytes[offset + 32], 0 | 1) {
+    if layout.schema >= SCHEMA_TYPED_NAMES && !matches!(bytes[offset + 32], 0 | 1) {
         return Err(FullSemanticImageFault::EntityNameTag {
             row,
             observed: bytes[offset + 32],

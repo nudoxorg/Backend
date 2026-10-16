@@ -2,7 +2,7 @@ use super::super::{
     BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
     BuiltinValidator, activate_semantic_publication,
 };
-use backend_engine::application::LocalCompilerClient;
+use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_semantic::ir::{
     SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
@@ -83,7 +83,9 @@ pub(super) fn semantic_package_snapshot<'view>(
             let activated =
                 activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             for image in activated.images() {
-                append_semantic_image(view, package, image, &mut declarations, &mut links)?;
+                if !append_semantic_image(view, package, image, &mut declarations, &mut links)? {
+                    return Ok(None);
+                }
             }
         }
         let Some(next) = page.next().cloned() else {
@@ -103,11 +105,18 @@ fn append_semantic_image<'view>(
         SemanticDeclaration<'view>,
     )>,
     links: &mut Vec<SemanticLinkSummary>,
-) -> Result<(), BuiltinModelError> {
+) -> Result<bool, BuiltinModelError> {
     let image = image
         .reopen()
         .map_err(|error| BuiltinModelError(format!("reopen semantic diff image: {error}")))?;
-    for entity in image.canonical_entities() {
+    let session = DocumentationSession::new(&image);
+    if !session.publication_ownership_available() {
+        return Ok(false);
+    }
+    for entity in image
+        .canonical_entities()
+        .filter(|entity| session.owns_declaration(entity))
+    {
         let identity = entity.version.identity();
         let symbol = super::super::view_build::semantic_symbol(package, identity);
         let row = view
@@ -122,6 +131,7 @@ fn append_semantic_image<'view>(
         let parent = entity
             .parent
             .and_then(|parent| image.entity(parent))
+            .filter(|parent| session.owns_declaration(parent))
             .map(|parent| parent.version.identity());
         if declarations.len() == MAX_DIFF_DECLARATIONS {
             return Err(BuiltinModelError(
@@ -144,7 +154,8 @@ fn append_semantic_image<'view>(
         generation: backend_semantic::ir::GenerationId::from_canonical_bytes(image.as_ref()),
         reader: &image,
     };
-    append_semantic_image_links(snapshot, links, MAX_DIFF_LINKS)
+    append_semantic_image_links(snapshot, links, MAX_DIFF_LINKS)?;
+    Ok(true)
 }
 
 pub(super) fn append_semantic_image_links<'image, Reader>(
@@ -156,7 +167,14 @@ where
     Reader: backend_semantic::ir::SemanticReader + ?Sized,
 {
     let reader = snapshot.reader;
+    let session = DocumentationSession::new(reader);
     for link in SemanticStableLinks::new(snapshot) {
+        let source = reader.entity(link.evidence.from).ok_or_else(|| {
+            BuiltinModelError("semantic diff relation source is missing".to_owned())
+        })?;
+        if !session.owns_declaration(&source) {
+            continue;
+        }
         if links.len() >= maximum_links {
             return Err(BuiltinModelError(
                 "semantic diff graph index exceeds its memory budget".to_owned(),
@@ -187,6 +205,12 @@ pub(super) fn finish_semantic_snapshot(
             "semantic diff publication contains a duplicate declaration identity".to_owned(),
         ));
     }
+    links.retain(|link| match link.key.target {
+        backend_semantic::ir::DeclarationLinkTarget::Local(target) => declarations
+            .binary_search_by_key(&target, |(identity, _)| *identity)
+            .is_ok(),
+        _ => true,
+    });
     links.sort_unstable_by(semantic_link_summary_order);
     Ok(found_publication.then_some(SemanticPackageSnapshot {
         declarations,

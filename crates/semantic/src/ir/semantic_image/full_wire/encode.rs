@@ -82,7 +82,7 @@ fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {
     output[..4].copy_from_slice(&MAGIC);
     let (directory_kinds, directory_count) = if matches!(
         plan.layout.schema,
-        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
     ) {
         (&FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS[..], 29)
     } else if plan.layout.schema == SCHEMA_CARRIER_ROLES {

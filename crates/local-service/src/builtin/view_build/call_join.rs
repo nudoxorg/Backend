@@ -45,7 +45,15 @@ pub(in crate::builtin) enum RetargetingScope {
 fn may_resolve_scope(
     image: &SemanticImageView<'_>,
     scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+    incomplete_ownership: &BTreeSet<backend_semantic::vocabulary::Language>,
 ) -> bool {
+    if let backend_semantic::ir::SemanticImageAuthority::Language(profile) =
+        image.image_facts().authority
+    {
+        if incomplete_ownership.contains(&profile.language()) {
+            return false;
+        }
+    }
     match image.image_facts().provenance {
         ImageProvenance::Captured { recipe, .. } => scopes
             .get(&recipe.profile.language())
@@ -58,6 +66,7 @@ fn may_resolve_scope(
 
 pub(crate) struct ProjectCallableIndex {
     scopes: BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+    incomplete_ownership: BTreeSet<backend_semantic::vocabulary::Language>,
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     mention_by_path_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
@@ -103,6 +112,19 @@ impl ProjectCallableIndex {
         programs: &[&super::source_availability::CurrentNativeProgram],
         legacy_image_program: bool,
     ) -> Result<Self, BuiltinModelError> {
+        // A legacy or mixed Go image leaves a hole in the declaration inventory.
+        // A unique name in the other images cannot close that hole. Preserve
+        // exact-coordinate indexes while withholding scope-wide name joins.
+        let mut incomplete_ownership = BTreeSet::new();
+        for image in images {
+            if !DocumentationSession::new(*image).publication_ownership_available() {
+                if let backend_semantic::ir::SemanticImageAuthority::Language(profile) =
+                    image.image_facts().authority
+                {
+                    incomplete_ownership.insert(profile.language());
+                }
+            }
+        }
         let mut proven_tsz_coordinates = BTreeMap::<_, Vec<DeclarationIdentity>>::new();
         let mut program_members = BTreeMap::<_, Vec<_>>::new();
         let mut forest_image_owners = BTreeMap::new();
@@ -227,7 +249,7 @@ impl ProjectCallableIndex {
                 &super::source_availability::NativeProgramImageBacking::of(image.as_ref()),
             );
             let session = DocumentationSession::new(image);
-            for entity in session.canonical_entities() {
+            for entity in session.publication_entities() {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic graph callable: {error}"))
                 })?;
@@ -282,7 +304,7 @@ impl ProjectCallableIndex {
                 }
                 // Partial targets remain available to exact-coordinate joins.
                 // They cannot enter a different complete lane's name-based index.
-                if !may_resolve_scope(image, scopes) {
+                if !may_resolve_scope(image, scopes, &incomplete_ownership) {
                     continue;
                 }
                 // Anonymous callables participate in exact source-span joins,
@@ -364,6 +386,7 @@ impl ProjectCallableIndex {
         }
         Ok(Self {
             scopes: scopes.clone(),
+            incomplete_ownership,
             by_path_name,
             by_owner_name,
             mention_by_path_name_kind,
@@ -377,7 +400,7 @@ impl ProjectCallableIndex {
     }
 
     fn may_resolve_scope(&self, image: &SemanticImageView<'_>) -> bool {
-        may_resolve_scope(image, &self.scopes)
+        may_resolve_scope(image, &self.scopes, &self.incomplete_ownership)
     }
 
     pub(crate) fn resolve(
@@ -1557,6 +1580,7 @@ mod tsz_source_coordinate_tests {
         let target = identity(19);
         ProjectCallableIndex {
             scopes: BTreeMap::new(),
+            incomplete_ownership: BTreeSet::new(),
             by_path_name: BTreeMap::new(),
             by_owner_name: BTreeMap::new(),
             mention_by_path_name_kind: BTreeMap::new(),
