@@ -1455,7 +1455,15 @@ fn linux_child_resource_ceilings_are_exact_and_leave_parent_unchanged() -> Resul
         .with_cpu_time_limit(Duration::from_millis(1500))?
         .with_memory_bytes_limit(1024 * 1024 * 1024)?
         .with_process_count_limit(4)?;
-    let receipt = command("/bin/cat", &["/proc/self/limits"], process_limits)?.run()?;
+    let receipt = command(
+        "/bin/sh",
+        &[
+            "-c",
+            r#"while IFS= read -r line; do printf '%s\n' "$line"; done < /proc/self/limits"#,
+        ],
+        process_limits,
+    )?
+    .run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Success);
     assert_eq!(receipt.status(), Some(0));
     assert!(receipt.reaped());
@@ -1512,8 +1520,8 @@ fn unsupported_resource_bounds_are_reported_before_spawn() -> Result<(), Box<dyn
 #[test]
 fn linux_memory_ceiling_prevents_the_authority_from_succeeding() -> Result<(), Box<dyn Error>> {
     let unrestricted = command(
-        "/bin/true",
-        &[],
+        "/bin/sh",
+        &["-c", ":"],
         limits(1024, 1024, Duration::from_secs(1), 64)?,
     )?
     .run()?;
@@ -1525,8 +1533,8 @@ fn linux_memory_ceiling_prevents_the_authority_from_succeeding() -> Result<(), B
     // the same executable that succeeded above. With pre-exec admission the
     // kernel can refuse exec itself, before there is a running authority.
     let bounded = command(
-        "/bin/true",
-        &[],
+        "/bin/sh",
+        &["-c", ":"],
         limits(1024, 1024, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?,
     )?
     .run();
