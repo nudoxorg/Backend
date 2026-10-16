@@ -19,10 +19,11 @@ struct Reader {
 impl Reader {
     fn new(related_fails: bool, members_fail: bool, captured_source: bool) -> Self {
         let basis = root().basis();
+        let package = package_key("/abs/app");
         let row = Row::in_package(
             RowId::Symbol(symbol_key(COORDINATE)),
             basis,
-            package_key("/abs/app"),
+            package,
             COORDINATE,
         )
         .with_signature("function generateSchedule() {}")
@@ -39,7 +40,7 @@ impl Reader {
             view_key(b"composite show"),
             basis,
             root().frontier(),
-            vec![row],
+            vec![Row::new(RowId::Package(package), basis, "/abs/app"), row],
             Vec::new(),
         )
         .expect("incomplete fixture");
