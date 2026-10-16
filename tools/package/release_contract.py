@@ -299,7 +299,7 @@ def linux_checkpoint_shell_assets(directory, manifest, *, required=False):
     sidecar = directory / "install-linux-x64.sh.sha256"
     present = (os.path.lexists(shell), os.path.lexists(sidecar))
     if not any(present) and not required:
-        return []  # Older portable-package records did not emit a shell asset.
+        return None  # Older portable-package records did not emit a shell asset.
     if not all(present):
         raise ValueError("Linux checkpoint shell requires both launcher and SHA-256 sidecar")
     from linux_release_package import checkpoint_shell, read_regular_bytes
@@ -311,10 +311,11 @@ def linux_checkpoint_shell_assets(directory, manifest, *, required=False):
     if raw != checkpoint_shell(tag, installer, manifest["minimum_glibc"]):
         raise ValueError("Linux checkpoint shell differs from its actual installer/tag/glibc pins")
     digest = hashlib.sha256(raw).hexdigest()
-    if read_regular_bytes(sidecar, 256, "Linux checkpoint shell sidecar") != \
-            f"{digest}  {shell.name}\n".encode():
+    sidecar_raw = read_regular_bytes(sidecar, 256, "Linux checkpoint shell sidecar")
+    if sidecar_raw != f"{digest}  {shell.name}\n".encode():
         raise ValueError("Linux checkpoint shell sidecar differs from its exact bytes")
-    return [shell, sidecar]
+    # Carry the admitted cohort, never reopen mutable candidate paths as new authority.
+    return tag, installer, [(shell.name, raw), (sidecar.name, sidecar_raw)]
 
 
 def validate_linux(directory, manifest, source=None, *, require_qa=True, manifest_sha256=None):
@@ -608,11 +609,11 @@ class GitHub:
             if tag != package.get("release_tag") and not re.fullmatch(re.escape("v" + manifest["version"]) + r"-rc\.[0-9]+", tag):
                 raise ValueError("candidate tag differs from its immutable Linux checkpoint")
         shell_assets = []
+        pinned_installer = None
         if selected == "linux-x64" and not stable:
-            shell_assets = linux_checkpoint_shell_assets(directory, manifest)
-            if shell_assets:
-                pinned_tag = linux_checkpoint_tag(manifest, (directory / "install-linux-x64.py").read_bytes(),
-                                                  sha256(metadata_path(directory, "release-manifest", selected)))
+            checkpoint = linux_checkpoint_shell_assets(directory, manifest)
+            if checkpoint is not None:
+                pinned_tag, pinned_installer, shell_assets = checkpoint
                 if tag != pinned_tag:
                     raise ValueError("Linux checkpoint shell can only publish under its exact pinned checkpoint tag")
         release = self.find_release(tag)
@@ -645,9 +646,12 @@ class GitHub:
                 if bootstrap.is_symlink() or not bootstrap.is_file() or bootstrap.stat().st_size > 1024 * 1024:
                     raise ValueError("Linux release is missing its bounded regular installer bootstrap")
                 published_bootstrap = staging / "install-linux-x64.py"
-                published_bootstrap.write_bytes(bootstrap.read_bytes())
+                published_bootstrap.write_bytes(pinned_installer if pinned_installer is not None else bootstrap.read_bytes())
                 paths.append(published_bootstrap)
-                paths.extend(shell_assets)
+                for name, admitted_bytes in shell_assets:
+                    staged_shell = staging / name
+                    staged_shell.write_bytes(admitted_bytes)
+                    paths.append(staged_shell)
             self.publish_assets(release, paths, assets, stable)
         if release["draft"] and not draft_only:
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})

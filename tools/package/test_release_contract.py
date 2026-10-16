@@ -484,6 +484,31 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(published[sidecar.name], sidecar.read_bytes())
             self.assertEqual(published["install-linux-x64.py"], (root / "install-linux-x64.py").read_bytes())
 
+    def test_checkpoint_upload_keeps_admitted_bytes_when_candidate_paths_change_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+            tag, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
+            original = {p.name: p.read_bytes() for p in [root / "install-linux-x64.py", shell, sidecar]}
+            github = FakeGitHub()
+            original_lookup = github.find_release
+            def changed_after_admission(selected_tag):
+                for name in original:
+                    path = root / name
+                    replacement = root / (name + ".replacement")
+                    replacement.write_bytes(b"replaced after admission, must never upload")
+                    path.unlink()
+                    # The Python path remains regular; the two shell paths become symlinks.
+                    if name.endswith(".py"):
+                        replacement.rename(path)
+                    else:
+                        path.symlink_to(replacement)
+                return original_lookup(selected_tag)
+            with patch.object(github, "find_release", side_effect=changed_after_admission):
+                github.publish(root, tag, False, "linux-x64", draft_only=True)
+            published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
+            self.assertEqual({name: published[name] for name in original}, original)
+
     def test_new_checkpoint_missing_pair_tamper_and_symlinks_refuse_before_publication(self):
         for fault in ["missing-both", "missing-shell", "missing-sidecar", "body", "sidecar", "installer", "symlink"]:
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
