@@ -1,5 +1,6 @@
 """The snapshot admission contract must reject failed product setup."""
 import importlib.util
+from concurrent.futures import Future
 from pathlib import Path
 import unittest
 
@@ -496,7 +497,7 @@ for line in sys.stdin:
 
 
 class ParallelCaseTests(unittest.TestCase):
-    def invoke(self, failure=None, duplicate=False):
+    def invoke(self, failure=None, duplicate=False, wait_for_fast_verdict=False):
         import contextlib
         import io
         import json
@@ -515,26 +516,35 @@ class ParallelCaseTests(unittest.TestCase):
                 (snapshots / (name + ".json")).write_text(json.dumps({"answers": {"case": name}, "performance": {"seconds": {}}}))
             report = root / "report.json"
             rendezvous = threading.Barrier(2)
+            fast_verdict = threading.Event()
             reached = []
 
             def run(case, binaries):
                 reached.append(case["name"])
                 self.assertEqual(surface.CURRENT_CASE.get(), case["name"])
                 rendezvous.wait(timeout=3)  # A serial executor cannot satisfy this.
+                if wait_for_fast_verdict and case["name"] == "alpha":
+                    if not fast_verdict.wait(timeout=3):
+                        raise RuntimeError("completed peer verdict was blocked by this unfinished case")
                 if case["name"] == failure:
                     raise RuntimeError("intentional setup failure")
                 return {"answers": {"case": case["name"]}, "performance": {"seconds": {"query": 0.01}}}
 
             stdout, stderr = io.StringIO(), io.StringIO()
-            argv = ["surface.py", "--bin-dir", str(root), "--jobs", "2", "--report", str(report)]
-            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            original_log = surface.log
+            def log(message):
+                if message.startswith("case beta matches"):
+                    fast_verdict.set()
+                original_log(message)
+            argv = ["surface.py", "--bin-dir", str(root), "--report", str(report)]
+            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface, "log", side_effect=log), patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 try:
                     result = surface.main()
                 except SystemExit as error:
                     result = error.code
             return result, reached, json.loads(report.read_text()) if report.exists() else {}, stdout.getvalue(), stderr.getvalue()
 
-    def test_distinct_cases_overlap_and_preserve_both_results(self):
+    def test_default_workers_overlap_distinct_cases_and_preserve_both_results(self):
         import json
         result, reached, report, output, error = self.invoke()
         self.assertEqual(result, 0, error + output)
@@ -542,6 +552,12 @@ class ParallelCaseTests(unittest.TestCase):
         self.assertEqual(set(report), {"alpha", "beta"})
         metrics = [json.loads(line.split(" ", 1)[1]) for line in output.splitlines() if line.startswith("SURFACE-PERFORMANCE ")]
         self.assertEqual({row["case"] for row in metrics}, {"alpha", "beta"})
+
+    def test_completed_peer_verdict_is_reported_before_slow_first_case_finishes(self):
+        result, reached, report, output, error = self.invoke(wait_for_fast_verdict=True)
+        self.assertEqual(result, 0, error + output)
+        self.assertEqual(set(reached), {"alpha", "beta"})
+        self.assertEqual(set(report), {"alpha", "beta"})
 
     def test_failed_case_cannot_be_hidden_by_successful_peer(self):
         result, reached, report, output, error = self.invoke(failure="beta")
@@ -953,14 +969,20 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
             def __init__(self, **kwargs): pass
             def __enter__(self): return self
             def __exit__(self, *args): return False
-            def map(self, function, cases):
-                yield ({"performance": {"seconds": {}}}, 0.1, None)
-                records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
-                           for line in stdout.getvalue().splitlines()
-                           if line.startswith("SURFACE-CASE-EVIDENCE ")]
-                self_test.assertEqual(records[0]["case"], "first")
-                self_test.assertEqual(records[0]["verdict"]["state"], "passed")
-                raise RuntimeError("later case interrupted")
+            def submit(self, function, case, *args):
+                future = Future()
+                if case["name"] == "first":
+                    future.set_result(({"performance": {"seconds": {}}}, 0.1, None))
+                return future
+
+        def interrupted_completion(futures):
+            yield next(iter(futures))
+            records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
+                       for line in stdout.getvalue().splitlines()
+                       if line.startswith("SURFACE-CASE-EVIDENCE ")]
+            self_test.assertEqual(records[0]["case"], "first")
+            self_test.assertEqual(records[0]["verdict"]["state"], "passed")
+            raise RuntimeError("later case interrupted")
 
         self_test = self
         with tempfile.TemporaryDirectory() as directory:
@@ -975,6 +997,7 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
                                       report=None, update=False, print_missing=False)
             with patch.object(surface, "SURFACE", root), \
                     patch.object(surface, "ThreadPoolExecutor", InterruptedExecutor), \
+                    patch.object(surface, "as_completed", interrupted_completion), \
                     contextlib.redirect_stdout(stdout):
                 with self.assertRaisesRegex(RuntimeError, "later case interrupted"):
                     surface.compare_cases(args, argparse.ArgumentParser())

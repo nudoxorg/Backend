@@ -40,8 +40,9 @@ their checkout provides harness/configuration only, with no product build.
 
 ## Bounded case parallelism (W3.3)
 
-One invocation runs serially by default to preserve performance isolation.
-Opt into up to four concurrent isolated cases, reusing the same published binaries:
+One invocation runs two independent cases concurrently by default. Use `--jobs 1`
+for a serial diagnostic or explicitly choose up to four workers, reusing the same
+published binaries and existing task resource limits:
 
 ```sh
 python3 .config/ci/test.py integration --bin-dir DIR --jobs 2
@@ -51,15 +52,16 @@ Each indexed case keeps its own project, owner, workspace and credentials.
 Duplicate scratch names fail before any case launches. The CLI-contract runner
 uses shared scratch paths, so its small group is serialized. A failed case does
 not cancel or hide successful peers; the tier passes only if every selected
-case passes. Snapshots and reports are compared/emitted in catalog order.
+case passes. Each completed case is compared and reported immediately; a slower
+earlier catalog entry cannot hold back a completed peer verdict.
 Reported case wall time measures execution, excluding time waiting for a worker.
 
 `SURFACE-PERFORMANCE` lines in the retained CI event log carry schema1 JSON with
 the case name and full measured timing/CPU/memory data. The report file remains
 available while the task container exists. Answer snapshots and performance
-limits are unchanged by selecting a worker count; the native rollout must prove
-that existing comparisons pass before enabling concurrency in CI. Cross-host noise
-calibration and durable independent Concourse artifact jobs remain separate work.
+limits are unchanged by selecting a worker count. Robert's October16 milestone is
+built, wired and fast with honest case verdicts; green and cross-host performance
+calibration are the next phase. Contention failures remain failures.
 
 ## Initial snapshot review
 
@@ -405,11 +407,10 @@ wall time from128s (serial676) to85s. All public answers, memory and owner CPU
 matched, but the Go cold query exceeded its existing wall limit. A second run
 (484136 / pr-t1/681, `afe2be041`) also exceeded polyglot/Python indexing wall
 limits (45.42s/10.18s), despite CPU21.41s/2.11s remaining within limits.
-The experimental Go query baseline increase was reverted. Default scheduling
-remains serial; explicit parallel runs keep the same performance gates and can
-fail from contention. Dedicated capacity and repeatable operating-mode calibration
-are needed before making parallelism the default. These trials are not a CI
-speed guarantee or completion of durable artifact fan-out.
+The experimental Go query baseline increase was reverted. These historical trials
+precede Robert's October16 two-worker rollout: all performance gates remain
+unchanged, and contention failures stay visible for the get-it-green phase.
+The historical timings are not a current 16-case speed guarantee.
 
 ## Whole Rust source project (W2.3)
 

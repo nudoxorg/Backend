@@ -24,7 +24,7 @@ Exit 0 when every case matches, 1 otherwise.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from contextlib import contextmanager
 import difflib
@@ -1170,9 +1170,11 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                    "artifact_manifest_sha256": args.artifact_digest}
                   if args.ci_report else None)
     with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        results = executor.map(
-            lambda case: _invoke_case(case, args.bin_dir.resolve(), provenance), cases)
-        for case, (record, elapsed, error) in zip(cases, results):
+        futures = {executor.submit(_invoke_case, case, args.bin_dir.resolve(), provenance): case
+                   for case in cases}
+        for future in as_completed(futures):
+            case = futures[future]
+            record, elapsed, error = future.result()
             try:
                 entry = {"state": "failed", "seconds": {}}
                 evidence[case["name"]] = entry
@@ -1246,8 +1248,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--case", action="append", help="run only these cases (default: all)")
-    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=1,
-                        help="concurrent isolated cases, 1–4 (default: 1)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=2,
+                        help="concurrent isolated cases, 1–4 (default: 2)")
     parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
     parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
     parser.add_argument("--ci-report", type=Path, help="write versioned exact-artifact case verdicts/diffs/performance")
