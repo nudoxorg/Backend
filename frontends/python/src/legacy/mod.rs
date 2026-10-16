@@ -3002,6 +3002,8 @@ mod tests {
             text: "x",
             names: &[],
             class_names: &[],
+            variable_names: &[],
+            module_import_names: &[],
             facts: &mut facts,
             owner: String::new(),
             class_depth: 0,

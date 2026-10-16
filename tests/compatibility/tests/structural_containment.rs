@@ -14,10 +14,24 @@ use backend_compile::{Container, DeclarationKind, SourceDeclaration, SyntaxError
 use std::{error::Error, path::Path};
 
 /// Renders one declaration exactly as the assertions below read it.
-fn rendered(declaration: &SourceDeclaration) -> String {
+fn rendered(declaration: &SourceDeclaration, declarations: &[SourceDeclaration]) -> String {
     let container = match declaration.container() {
         Container::Module => "module".to_owned(),
         Container::Enclosing { name, line } => format!("in {name}@{line}"),
+        Container::Binding { binding } => {
+            let mut parents = declarations.iter().filter(|candidate| matches!(
+                candidate.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(capture) if capture.binding() == *binding
+            ));
+            let parent = parents
+                .next()
+                .expect("captured parent binding is present in this source");
+            assert!(
+                parents.next().is_none(),
+                "captured parent binding is unique"
+            );
+            format!("in {}@{}", parent.name(), parent.line())
+        }
         Container::Attached { type_name } => format!("on {type_name}"),
     };
     format!(
@@ -42,7 +56,10 @@ fn assert_declared(
     declarations: &[SourceDeclaration],
     expected: &[&str],
 ) -> Result<(), Box<dyn Error>> {
-    let rows = declarations.iter().map(rendered).collect::<Vec<_>>();
+    let rows = declarations
+        .iter()
+        .map(|declaration| rendered(declaration, declarations))
+        .collect::<Vec<_>>();
     let missing = expected
         .iter()
         .filter(|entry| !rows.iter().any(|row| row == *entry))
