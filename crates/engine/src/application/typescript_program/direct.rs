@@ -588,6 +588,8 @@ mod tests {
         fixture.write("src/value.ts/missing", "present");
         assert!(witness.validate_current(admitted.witness()).is_err());
     }
+
+    mod dotted_modules;
 }
 
 #[cfg(test)]
