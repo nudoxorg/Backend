@@ -270,7 +270,18 @@ fn projection_page_certificate(
     owner_root: &ViewRoot,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    let preimage = match command {
+    let recipe = match command {
+        Command::PackagePage(_) => {
+            backend_engine::QueryPageRecipe::packages(page.snapshot.root.basis().root)
+        }
+        Command::OutlinePage {
+            package,
+            page: request,
+        } => backend_engine::QueryPageRecipe::outline(
+            page.snapshot.root.basis().root,
+            *package,
+            request.limit(),
+        ),
         Command::GraphPage {
             symbol,
             page: request,
@@ -278,17 +289,24 @@ fn projection_page_certificate(
             page.snapshot.root.basis().root,
             *symbol,
             request.window(),
-        )
-        .canonical_preimage()
-        .to_vec(),
-        _ => identity_preimage(&[
-            b"query",
-            &paged_recipe(command)?,
-            page.snapshot.root.basis().root.as_bytes(),
-            &[0],
-        ]),
+        ),
+        _ => {
+            return Err(BuiltinModelError(
+                "projection page reply does not match a paged command".to_owned(),
+            ));
+        }
     };
-    let mut certificate = view_certificate(&page.snapshot.root, &preimage, Some(owner_root), base)?;
+    if recipe.identity() != page.snapshot.root.recipe() {
+        return Err(BuiltinModelError(
+            "projection page reply does not match its recipe witness".to_owned(),
+        ));
+    }
+    let mut certificate = view_certificate(
+        &page.snapshot.root,
+        recipe.canonical_preimage(),
+        Some(owner_root),
+        base,
+    )?;
     if let PageTerminal::More(continuation) = page.terminal {
         append_cursor_claim(&mut certificate, continuation.cursor());
     }
@@ -383,25 +401,6 @@ fn append_cursor_claim(certificate: &mut WireCertificate, cursor: backend_engine
             sequence: cursor.sequence(),
         },
     );
-}
-
-fn paged_recipe(command: &Command) -> Result<Vec<u8>, BuiltinModelError> {
-    match command {
-        Command::PackagePage(_) => Ok(b"packages-page".to_vec()),
-        Command::OutlinePage { package, .. } => {
-            let mut recipe = b"outline-page-v2".to_vec();
-            recipe.extend_from_slice(package.as_bytes());
-            Ok(recipe)
-        }
-        Command::GraphPage { symbol, .. } => {
-            let mut recipe = b"graph-page".to_vec();
-            recipe.extend_from_slice(&symbol.claimed_bytes());
-            Ok(recipe)
-        }
-        _ => Err(BuiltinModelError(
-            "projection page reply does not match a paged command".to_owned(),
-        )),
-    }
 }
 
 fn identity_preimage(parts: &[&[u8]]) -> Vec<u8> {
@@ -1474,6 +1473,214 @@ mod tests {
                 &decoded,
             )
             .expect("copied native selector");
+        }
+    }
+
+    #[test]
+    fn outline_page_certificate_admits_actual_pages_and_rejects_legacy_recipe_claims() {
+        use backend_library::{
+            CommandDto, Library, PageRequest, QueryLimit, QueryPageRecipe, ReplyDto,
+        };
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let package = backend_engine::package_key("pkg:angular-outline");
+        let mut rows = vec![backend_engine::Row::new(
+            RowId::Package(package),
+            template.basis(),
+            "pkg:angular-outline",
+        )];
+        rows.extend((0..7).map(|index| {
+            let label = format!("pkg:angular-outline::ArticlesService{index}");
+            backend_engine::Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                template.basis(),
+                package,
+                label,
+            )
+        }));
+        let owner = checked_root(rows);
+        let library = Library::from_view(
+            owner.clone(),
+            backend_engine::Cursor::for_view_root_at(&owner, 5),
+        )
+        .expect("actual catalog");
+        let limit = QueryLimit::new(3).expect("nondefault page credit");
+        let mut request = PageRequest::new(library.revision_root(), limit);
+        for page_index in 0..3 {
+            let command = Command::OutlinePage {
+                package,
+                page: request,
+            };
+            let reply = library
+                .execute(command.clone())
+                .expect("actual outline producer");
+            let CommandReply::ProjectionPage(page) = &reply else {
+                panic!("outline page");
+            };
+            let recipe = QueryPageRecipe::outline(owner.root(), package, limit);
+            assert_eq!(page.snapshot.root.recipe(), recipe.identity());
+            let certificate = reply_certificate(&command, &reply, &owner, library.cursor(), None)
+                .expect("service certificate")
+                .expect("page certificate");
+            let encoded_recipe = backend_engine::encode_id(recipe.identity().as_bytes());
+            assert!(certificate.claims.iter().any(|claim| matches!(claim,
+                WireClaim::KeyBytes { schema: backend_engine::WireSchema::ViewRecipe, id, value }
+                if id == &encoded_recipe && value.as_ref() == recipe.canonical_preimage()
+            )));
+            let encoded = serde_json::to_vec(
+                &ReplyDto::new(page_index, reply.clone()).with_certificate(certificate.clone()),
+            )
+            .expect("actual service reply bytes");
+            let decoded = ReplyDto::decode_with_certificate(&encoded, owner.capability())
+                .expect("independent client identity admission");
+            backend_library::admit_reply(&CommandDto::new(page_index, command), &decoded)
+                .expect("same requested outline and credit");
+            let CommandReply::ProjectionPage(page) = &decoded.reply else {
+                panic!("decoded outline page");
+            };
+            assert_eq!(
+                page.snapshot.root.row_count(),
+                if page_index == 2 { 1 } else { 3 }
+            );
+            for foreign in [
+                Command::OutlinePage {
+                    package,
+                    page: PageRequest::new(
+                        library.revision_root(),
+                        QueryLimit::new(4).expect("foreign credit"),
+                    ),
+                },
+                Command::OutlinePage {
+                    package: backend_engine::package_key("pkg:foreign"),
+                    page: request,
+                },
+            ] {
+                assert!(
+                    reply_certificate(&foreign, &reply, &owner, library.cursor(), None).is_err()
+                );
+                assert!(
+                    backend_library::admit_reply(&CommandDto::new(page_index, foreign), &decoded)
+                        .is_err()
+                );
+            }
+            // Recreate the observed old producer bug: the real root recipe ID
+            // paired with the obsolete preimage must still fail authentication.
+            let mut legacy = certificate;
+            let mut old_recipe = b"outline-page-v2".to_vec();
+            old_recipe.extend_from_slice(package.as_bytes());
+            for claim in legacy.claims.iter_mut() {
+                if let WireClaim::KeyBytes {
+                    schema: backend_engine::WireSchema::ViewRecipe,
+                    id,
+                    value,
+                } = claim
+                    && id == &encoded_recipe
+                {
+                    *value =
+                        identity_preimage(&[b"query", &old_recipe, owner.root().as_bytes(), &[0]])
+                            .into_boxed_slice();
+                }
+            }
+            let legacy_wire =
+                serde_json::to_vec(&ReplyDto::new(page_index, reply).with_certificate(legacy))
+                    .expect("obsolete certificate bytes");
+            let error = ReplyDto::decode_with_certificate(&legacy_wire, owner.capability())
+                .expect_err("the old Angular outline fault remains rejected");
+            assert!(
+                error.contains("view recipe") && error.contains("DigestMismatch"),
+                "{error}"
+            );
+            match page.terminal {
+                PageTerminal::More(continuation) => {
+                    assert!(page_index < 2);
+                    request = request.with_continuation(continuation);
+                }
+                PageTerminal::Complete => assert_eq!(page_index, 2),
+                PageTerminal::Cancelled => panic!("fixture work is not cancelled"),
+            }
+        }
+    }
+
+    #[test]
+    fn package_page_certificate_admits_actual_continuations_and_refuses_outline_substitution() {
+        use backend_library::{
+            CommandDto, Library, PageRequest, QueryLimit, QueryPageRecipe, ReplyDto,
+        };
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let packages = (0..7)
+            .map(|index| format!("pkg:page{index}"))
+            .collect::<Vec<_>>();
+        let owner = checked_root(
+            packages
+                .iter()
+                .map(|label| {
+                    backend_engine::Row::new(
+                        RowId::Package(backend_engine::package_key(label)),
+                        template.basis(),
+                        label.clone(),
+                    )
+                })
+                .collect(),
+        );
+        let library = Library::from_view(
+            owner.clone(),
+            backend_engine::Cursor::for_view_root_at(&owner, 5),
+        )
+        .expect("catalog");
+        let limit = QueryLimit::new(3).expect("nondefault page credit");
+        let mut request = PageRequest::new(library.revision_root(), limit);
+        for page_index in 0..3 {
+            let command = Command::PackagePage(request);
+            let reply = library
+                .execute(command.clone())
+                .expect("actual package producer");
+            let certificate = reply_certificate(&command, &reply, &owner, library.cursor(), None)
+                .expect("service certificate")
+                .expect("page certificate");
+            let encoded = serde_json::to_vec(
+                &ReplyDto::new(page_index, reply.clone()).with_certificate(certificate),
+            )
+            .expect("wire reply");
+            let decoded = ReplyDto::decode_with_certificate(&encoded, owner.capability())
+                .expect("independent client admission");
+            backend_library::admit_reply(&CommandDto::new(page_index, command), &decoded)
+                .expect("same package page");
+            let CommandReply::ProjectionPage(page) = &decoded.reply else {
+                panic!("package page");
+            };
+            assert_eq!(
+                page.snapshot.root.recipe(),
+                QueryPageRecipe::packages(owner.root()).identity()
+            );
+            assert_eq!(
+                page.snapshot.root.row_count(),
+                if page_index == 2 { 1 } else { 3 }
+            );
+            let foreign = Command::OutlinePage {
+                package: backend_engine::package_key(&packages[0]),
+                page: request,
+            };
+            assert!(reply_certificate(&foreign, &reply, &owner, library.cursor(), None).is_err());
+            assert!(
+                backend_library::admit_reply(&CommandDto::new(page_index, foreign), &decoded)
+                    .is_err()
+            );
+            match page.terminal {
+                PageTerminal::More(continuation) => {
+                    assert!(page_index < 2);
+                    let wrong_credit = PageRequest::new(
+                        library.revision_root(),
+                        QueryLimit::new(4).expect("foreign credit"),
+                    )
+                    .with_continuation(continuation);
+                    assert!(
+                        library.execute(Command::PackagePage(wrong_credit)).is_err(),
+                        "legacy package continuations cannot change their fixed credit"
+                    );
+                    request = request.with_continuation(continuation);
+                }
+                PageTerminal::Complete => assert_eq!(page_index, 2),
+                PageTerminal::Cancelled => panic!("fixture work is not cancelled"),
+            }
         }
     }
 

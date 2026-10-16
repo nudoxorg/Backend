@@ -24,6 +24,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
 (constructor_declaration name: (identifier) @name) @definition.constructor
 (enum_declaration name: (identifier) @name) @definition.enum
 (record_declaration name: (identifier) @name) @definition.struct
+(annotation_type_declaration name: (identifier) @name) @definition.interface
 "
     );
     SyntaxFrontend::new(
@@ -35,4 +36,33 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
             &tags,
         )?],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::syntax_frontend;
+    use backend_compile::DeclarationKind;
+    use std::path::Path;
+
+    #[test]
+    fn annotation_interfaces_and_nested_classes_are_structural_declarations() {
+        let source = br#"
+package javax.annotation;
+public @interface Nonnull {
+    class Checker {}
+}
+"#;
+        let analysis = syntax_frontend()
+            .expect("Java syntax frontend")
+            .analyze(Path::new("javax/annotation/Nonnull.java"), source)
+            .expect("valid annotation source");
+        let declarations = analysis.declarations();
+
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name() == "Nonnull" && declaration.kind() == DeclarationKind::Interface
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name() == "Checker" && declaration.kind() == DeclarationKind::Class
+        }));
+    }
 }

@@ -145,6 +145,7 @@ impl GracefulClose {
     }
 
     fn request(&mut self, target: CloseTarget, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.request", "public close received");
         if self.phase == Phase::Committed {
             return;
         }
@@ -189,6 +190,7 @@ impl GracefulClose {
         let checkpoint = match checkpoint {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
+                crate::runtime::trace::mark("close.checkpoint_refused", "checkpoint needs a decision");
                 self.phase = Phase::NeedsDecision(attempt, error.message.to_string());
                 cx.notify();
                 return;
@@ -204,6 +206,7 @@ impl GracefulClose {
                 .as_ref()
                 .is_none_or(|pages| pages.captured_root() == basis)
         );
+        crate::runtime::trace::mark("close.saving", "checkpoint pending");
         self.phase = Phase::Saving(attempt);
         cx.notify();
         let timer = cx.background_executor().timer(self.deadline);
@@ -236,7 +239,7 @@ impl GracefulClose {
                 close.task = None;
                 match result {
                     Ok(()) => close.begin_finish(attempt, cx),
-                    Err(error) => { close.phase = Phase::NeedsDecision(attempt, error); cx.notify(); }
+                    Err(error) => { crate::runtime::trace::mark("close.save_failed", "checkpoint needs a decision"); close.phase = Phase::NeedsDecision(attempt, error); cx.notify(); }
                 }
             });
             drop(retained);
@@ -306,6 +309,7 @@ impl GracefulClose {
     /// The save decision is now irreversible. Transfer only Send join handles;
     /// window/root Drop cannot synchronously wait for these workers any more.
     fn begin_finish(&mut self, attempt: Attempt, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.finish", "checkpoint saved; joining workers");
         let finish = self
             .root
             .update(cx, |root, cx| root.commit_close(cx))
@@ -367,6 +371,7 @@ impl GracefulClose {
                 } else {
                     // The Send-only join remains tracked by this live window.
                     // Retry watches that same job; it never creates another.
+                    crate::runtime::trace::mark("close.worker_blocked", "worker join deadline expired");
                     close.phase = Phase::WorkerBlocked(attempt);
                     cx.notify();
                 }
@@ -375,6 +380,7 @@ impl GracefulClose {
     }
 
     fn finalize(&mut self, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.committed", "workers joined; quitting");
         self.phase = Phase::Committed;
         self.approved.set(true);
         cx.notify();

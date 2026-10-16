@@ -203,6 +203,18 @@ impl<'work> ParserStateCore<'work> {
         // This is essential for LSP features that resolve identifier references.
         self.arena.set_interner(self.scanner.interner().clone());
 
+        let language_variant = u32::from(self.is_jsx_file());
+        // Public TSZ ScriptKind values, also exposed by the WASM API.
+        let script_kind = match std::path::Path::new(&self.file_name)
+            .extension().and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase).as_deref()
+        {
+            Some("js" | "mjs" | "cjs") => 1,
+            Some("jsx") => 2,
+            Some("tsx") => 4,
+            _ => 3,
+        };
+
         self.arena.add_source_file(
             start_pos,
             end_pos,
@@ -212,8 +224,8 @@ impl<'work> ParserStateCore<'work> {
                 file_name: self.file_name.clone(),
                 text: self.scanner.source_text_arc(),
                 language_version: u32::from(self.language_version.ts_numeric_value()),
-                language_variant: 0,
-                script_kind: 3,
+                language_variant,
+                script_kind,
                 is_declaration_file: self.is_declaration_file(),
                 has_no_default_lib: false,
                 comments, // Cached comment ranges

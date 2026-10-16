@@ -751,6 +751,18 @@ in
             };
           }
           {
+            # Exercise the shared inference admission path under the same
+            # bounded CPU authority as other process-backed compiler work.
+            # The fixture keeps the production two-second request deadline;
+            # isolating it from concurrent native compiler probes prevents
+            # worker startup starvation from turning that deadline into a
+            # test-suite scheduling limit.
+            filter = "test(=shared_inference_gate_bounds_child_processes_and_releases_after_failure)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+          }
+          {
             filter = "test(/process|framed|cli_process/)";
             test-group = "process-global";
           }

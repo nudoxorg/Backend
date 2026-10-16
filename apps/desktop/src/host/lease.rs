@@ -87,14 +87,29 @@ impl DesktopHost {
     /// # Errors
     /// Returns an error when credentials, composition, or binding fail.
     pub fn start_with_paths(paths: WorkspacePaths) -> Result<Self, HostError> {
+        let initializing = std::time::Instant::now();
+        crate::runtime::trace::mark("boot.paths_initialize.begin", "initialize selected paths");
         paths.initialize().map_err(HostError::Runtime)?;
+        crate::runtime::trace::span(
+            "boot.paths_initialize",
+            initializing,
+            "selected paths",
+        );
         let probing = std::time::Instant::now();
+        crate::runtime::trace::mark("boot.probe_live.begin", "check selected endpoint");
         let live = Self::endpoint_is_live(&paths);
         crate::runtime::trace::span("boot.probe_live", probing, live);
         if live {
+            let registry_started = std::time::Instant::now();
+            crate::runtime::trace::mark("boot.registry_setup.begin", "attached owner");
             let registry = super::toolchain::captured_by_the_process().ok().and_then(|snapshot| {
                 super::registry::CargoCache::from_snapshot(&snapshot, paths.data().join("registry-sources"))
             });
+            crate::runtime::trace::span(
+                "boot.registry_setup",
+                registry_started,
+                "attached owner",
+            );
             return Ok(Self {
                 paths,
                 embedded: None,
@@ -104,6 +119,8 @@ impl DesktopHost {
                 composition: None,
             });
         }
+        let configuring = std::time::Instant::now();
+        crate::runtime::trace::mark("boot.config_setup.begin", "parse owner configuration");
         let mut config =
             ProcessConfig::parse(Self::owner_arguments(&paths)?).map_err(HostError::Service)?;
         config.apply_registry_user_policy(registry_user_policy(&paths));
@@ -121,10 +138,23 @@ impl DesktopHost {
                 HostError::Service(ProcessError::Profile(error.to_string()))
             })?,
         };
+        crate::runtime::trace::span(
+            "boot.config_setup",
+            configuring,
+            "owner configuration and compiler environment",
+        );
+        let registry_started = std::time::Instant::now();
+        crate::runtime::trace::mark("boot.registry_setup.begin", "embedded owner");
         let registry = super::registry::CargoCache::from_snapshot(
             &configuration.compiler_environment, paths.data().join("registry-sources"),
         );
+        crate::runtime::trace::span(
+            "boot.registry_setup",
+            registry_started,
+            "embedded owner",
+        );
         let embedding = std::time::Instant::now();
+        crate::runtime::trace::mark("boot.embed.begin", "start embedded local service");
         // The workspace is this application's own, and its index can be made again:
         // one an earlier build wrote is set aside, not refused.
         let started = EmbeddedLocalService::start_replacing_state_from_another_build(config);

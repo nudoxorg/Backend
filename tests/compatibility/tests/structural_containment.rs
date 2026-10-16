@@ -203,7 +203,7 @@ const PYTHON_SOURCE: &str = r"
 class Worker:
     'Runs work items.'
     name = 'worker'
-    # How many times to retry.
+    #: How many times to retry.
     retries = 3
 
     def run(self):

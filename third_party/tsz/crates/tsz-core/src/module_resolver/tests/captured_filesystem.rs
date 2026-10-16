@@ -29,6 +29,250 @@ struct MemoryFileSystem {
     probed_paths: RwLock<Vec<PathBuf>>,
 }
 
+fn resolve_dotted(
+    fs: &MemoryFileSystem,
+    mode: ModuleResolutionKind,
+    importer: &str,
+    kind: ImportKind,
+    specifier: &str,
+    allow_arbitrary_extensions: bool,
+) -> io::Result<Result<super::super::ResolvedModule, ResolutionFailure>> {
+    let options = ResolvedCompilerOptions {
+        module_resolution: Some(mode),
+        allow_arbitrary_extensions,
+        module_suffixes: vec![String::new()],
+        ..Default::default()
+    };
+    ModuleResolver::with_file_system(&options, fs).resolve_with_kind_checked(
+        specifier,
+        &Path::new("/virtual/workspace/src").join(importer),
+        Span::new(0, specifier.len() as u32),
+        kind,
+    )
+}
+
+#[test]
+fn dotted_basenames_append_source_extensions_in_implicit_resolution_modes() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_file(
+        "/virtual/workspace/src/app.component.ts",
+        "export class AppComponent {}",
+    );
+    fs.add_file(
+        "/virtual/workspace/src/app.config.ts",
+        "export const appConfig = {};",
+    );
+    fs.add_file(
+        "/virtual/workspace/src/article-list-config.model.ts",
+        "export interface Config {}",
+    );
+    for (mode, importer) in [
+        (ModuleResolutionKind::Node, "main.ts"),
+        (ModuleResolutionKind::Bundler, "main.ts"),
+        (ModuleResolutionKind::Classic, "main.ts"),
+        (ModuleResolutionKind::Node16, "main.cts"),
+        (ModuleResolutionKind::NodeNext, "main.cts"),
+    ] {
+        for stem in ["app.component", "app.config", "article-list-config.model"] {
+            let resolved = resolve_dotted(
+                &fs,
+                mode,
+                importer,
+                ImportKind::EsmImport,
+                &format!("./{stem}"),
+                false,
+            )
+            .expect("captured filesystem")
+            .expect("complete dotted basename resolves");
+            assert_eq!(
+                resolved.resolved_path,
+                PathBuf::from(format!("/virtual/workspace/src/{stem}.ts"))
+            );
+        }
+    }
+}
+
+#[test]
+fn dotted_basenames_keep_esm_refusal_and_arbitrary_declaration_precedence() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_file(
+        "/virtual/workspace/src/app.component.ts",
+        "export class AppComponent {}",
+    );
+    for mode in [ModuleResolutionKind::Node16, ModuleResolutionKind::NodeNext] {
+        for (importer, kind) in [
+            ("main.mts", ImportKind::EsmImport),
+            ("main.cts", ImportKind::DynamicImport),
+        ] {
+            assert!(
+                resolve_dotted(&fs, mode, importer, kind, "./app.component", false)
+                    .expect("captured filesystem")
+                    .is_err(),
+                "ESM cannot add an implicit .ts suffix"
+            );
+        }
+        assert!(
+            resolve_dotted(
+                &fs,
+                mode,
+                "main.cts",
+                ImportKind::CjsRequire,
+                "./app.component",
+                false
+            )
+            .expect("captured filesystem")
+            .is_ok()
+        );
+    }
+    fs.add_file(
+        "/virtual/workspace/src/app.d.component.ts",
+        "export declare class AppComponent {}",
+    );
+    for mode in [
+        ModuleResolutionKind::Node,
+        ModuleResolutionKind::Bundler,
+        ModuleResolutionKind::NodeNext,
+    ] {
+        for allow in [false, true] {
+            let resolved = resolve_dotted(
+                &fs,
+                mode,
+                "main.mts",
+                ImportKind::EsmImport,
+                "./app.component",
+                allow,
+            )
+            .expect("captured filesystem")
+            .expect("declaration companion still comes first");
+            assert_eq!(
+                resolved.resolved_path,
+                PathBuf::from("/virtual/workspace/src/app.d.component.ts")
+            );
+        }
+    }
+}
+
+#[test]
+fn dotted_probe_preserves_known_extensions_assets_and_captured_failures() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    fs.add_file(
+        "/virtual/workspace/src/app.ts",
+        "export const unrelated = true;",
+    );
+    fs.add_file("/virtual/workspace/src/style.css", "body {}");
+    for allow in [false, true] {
+        assert!(
+            resolve_dotted(
+                &fs,
+                ModuleResolutionKind::Bundler,
+                "main.ts",
+                ImportKind::EsmImport,
+                "./app.component",
+                allow
+            )
+            .expect("captured filesystem")
+            .is_err(),
+            "never replace .component with .ts"
+        );
+        assert!(
+            resolve_dotted(
+                &fs,
+                ModuleResolutionKind::Bundler,
+                "main.ts",
+                ImportKind::EsmImport,
+                "./style.css",
+                allow
+            )
+            .expect("captured filesystem")
+            .is_err(),
+            "raw assets never become source modules"
+        );
+    }
+    fs.add_file(
+        "/virtual/workspace/src/style.d.css.ts",
+        "declare const css: string; export default css;",
+    );
+    fs.add_file(
+        "/virtual/workspace/src/style.css.ts",
+        "export const implementation = true;",
+    );
+    for allow in [false, true] {
+        let resolved = resolve_dotted(
+            &fs,
+            ModuleResolutionKind::Bundler,
+            "main.ts",
+            ImportKind::EsmImport,
+            "./style.css",
+            allow,
+        )
+        .expect("captured filesystem")
+        .expect("asset declaration stays first");
+        assert_eq!(
+            resolved.resolved_path,
+            PathBuf::from("/virtual/workspace/src/style.d.css.ts")
+        );
+    }
+    fs.add_file("/virtual/workspace/src/data.json", "{}");
+    fs.add_file(
+        "/virtual/workspace/src/data.json.ts",
+        "export const notJson = true;",
+    );
+    assert!(
+        matches!(
+            resolve_dotted(
+                &fs,
+                ModuleResolutionKind::Node,
+                "main.ts",
+                ImportKind::EsmImport,
+                "./data.json",
+                false
+            )
+            .expect("captured filesystem"),
+            Err(ResolutionFailure::JsonModuleWithoutResolveJsonModule { .. })
+        ),
+        "known JSON suffix keeps its own resolution policy"
+    );
+    fs.add_file(
+        "/virtual/workspace/src/app.component.d.ts",
+        "export declare const declaration: true;",
+    );
+    fs.add_file(
+        "/virtual/workspace/src/app.component.js",
+        "export const runtime = true;",
+    );
+    let resolved = resolve_dotted(
+        &fs,
+        ModuleResolutionKind::Bundler,
+        "main.ts",
+        ImportKind::EsmImport,
+        "./app.component.js",
+        false,
+    )
+    .expect("captured filesystem")
+    .expect("known JS declaration substitution");
+    assert_eq!(
+        resolved.resolved_path,
+        PathBuf::from("/virtual/workspace/src/app.component.d.ts")
+    );
+    fs.deny("/virtual/workspace/src/app.component.ts");
+    assert_eq!(
+        resolve_dotted(
+            &fs,
+            ModuleResolutionKind::Bundler,
+            "main.ts",
+            ImportKind::EsmImport,
+            "./app.component",
+            false
+        )
+        .expect_err("a failed captured probe cannot become ordinary NotFound")
+        .kind(),
+        io::ErrorKind::PermissionDenied
+    );
+}
+
 impl MemoryFileSystem {
     fn new(boundary: &str) -> Self {
         let mut this = Self::default();

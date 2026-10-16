@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
         mpsc::{
             Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
         },
@@ -54,6 +54,36 @@ const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
 const COMPILER_LANE_QUEUE_CAPACITY: usize = 1;
 const MAX_PYTHON_SNAPSHOT_WITNESS_BYTES: usize = 64 * 1024 * 1024;
+
+const DEBUG_COMPILER_OWNER_REASON_LIMIT: u8 = 8;
+
+fn debug_worker_generation_stop(startup: bool, phase: &str) {
+    debug_compiler_owner(
+        if startup { 4 } else { 5 },
+        if startup {
+            "worker-startup-stop"
+        } else {
+            "worker-generation-stop"
+        },
+        format_args!("phase={phase}"),
+    );
+}
+
+fn debug_compiler_owner(reason: u8, event: &str, detail: impl std::fmt::Display) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    static SEEN: AtomicU16 = AtomicU16::new(0);
+    if reason >= DEBUG_COMPILER_OWNER_REASON_LIMIT
+        || !*ENABLED.get_or_init(|| {
+            std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1")
+        })
+    {
+        return;
+    }
+    let bit = 1_u16 << reason;
+    if SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        eprintln!("NUDOX-COMPILER-OWNER event={event} {detail}");
+    }
+}
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -3054,7 +3084,10 @@ impl DeferredNativePython {
                 tool: NativeTool::Python,
                 result: Ok(row),
             })
-            .map_err(|_| CompilerRuntimeCause::RequestOwnerStopped)?;
+            .map_err(|_| {
+                debug_compiler_owner(7, "probe-observer-stopped", "tool=python");
+                CompilerRuntimeCause::RequestOwnerStopped
+            })?;
         // A peer cannot observe a claim until the fallible row and notification succeeded.
         self.observation_sent.store(true, Ordering::Release);
         Ok(())
@@ -3597,11 +3630,10 @@ impl LocalCompilerClient {
             response: response_tx,
             cancelled: Arc::clone(&lease.cancelled),
         };
-        let sender = self
-            .shared
-            .command
-            .as_ref()
-            .ok_or_else(|| facts.terminal(CompilerRuntimeCause::RequestOwnerStopped))?;
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile");
+            facts.terminal(CompilerRuntimeCause::RequestOwnerStopped)
+        })?;
         match sender.try_send(command) {
             Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
@@ -3610,6 +3642,7 @@ impl LocalCompilerClient {
                 }));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=compile");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
         }
@@ -3657,6 +3690,7 @@ impl LocalCompilerClient {
             .expect("validated compiler admission wait fits the monotonic clock");
         if let Some(deferred) = native_python {
             if !self.shared.alive.load(Ordering::Acquire) {
+                debug_compiler_owner(0, "request-owner-dead", "operation=wait-toolchain");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
             let authority = deferred
@@ -3703,6 +3737,7 @@ impl LocalCompilerClient {
                 return Ok(());
             }
             if !self.shared.alive.load(Ordering::Acquire) {
+                debug_compiler_owner(0, "request-owner-dead", "operation=wait-toolchain");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
             if cancelled.load(Ordering::Acquire) {
@@ -3745,11 +3780,10 @@ impl LocalCompilerClient {
         }
         let mut lease = RequestLease::acquire_snapshot(&self.shared, self.client_id, requested)?;
         let (response, returned) = sync_channel(1);
-        let sender = self
-            .shared
-            .command
-            .as_ref()
-            .ok_or(SemanticImageAccessError::OwnerStopped { requested })?;
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=semantic-image");
+            SemanticImageAccessError::OwnerStopped { requested }
+        })?;
         match sender.try_send(RuntimeCommand::SemanticImage {
             requested,
             response,
@@ -3760,12 +3794,14 @@ impl LocalCompilerClient {
                 return Err(SemanticImageAccessError::RequestInFlight { requested });
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=semantic-image");
                 return Err(SemanticImageAccessError::OwnerStopped { requested });
             }
         }
-        let result = returned
-            .recv()
-            .map_err(|_| SemanticImageAccessError::OwnerStopped { requested })?;
+        let result = returned.recv().map_err(|_| {
+            debug_compiler_owner(7, "response-owner-stopped", "operation=semantic-image");
+            SemanticImageAccessError::OwnerStopped { requested }
+        })?;
         lease.complete(result)
     }
 
@@ -3787,6 +3823,7 @@ impl LocalCompilerClient {
         let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile-package");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -3806,6 +3843,7 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=compile-package");
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -3856,6 +3894,7 @@ impl LocalCompilerClient {
         let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile-package-staged");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -3875,6 +3914,11 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(
+                    2,
+                    "command-disconnected",
+                    "operation=compile-package-staged",
+                );
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -3943,6 +3987,7 @@ impl LocalCompilerClient {
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=activate-generation");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -3963,6 +4008,7 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=activate-generation");
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -4124,6 +4170,7 @@ impl<'shared> RequestLease<'shared> {
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, CompilerTerminal> {
         if !shared.alive.load(Ordering::Acquire) {
+            debug_compiler_owner(0, "request-owner-dead", "operation=lease-acquire");
             return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
         }
         let request_id = shared.next_request.fetch_add(1, Ordering::Relaxed);
@@ -4153,6 +4200,7 @@ impl<'shared> RequestLease<'shared> {
         requested: SemanticImageAuthority,
     ) -> Result<Self, SemanticImageAccessError> {
         if !shared.alive.load(Ordering::Acquire) {
+            debug_compiler_owner(0, "request-owner-dead", "operation=semantic-image-lease");
             return Err(SemanticImageAccessError::OwnerStopped { requested });
         }
         let request_id = shared.next_request.fetch_add(1, Ordering::Relaxed);
@@ -4420,6 +4468,11 @@ fn run_worker(
                     .iter_mut()
                     .find(|candidate| candidate.tool == observation.tool)
                 else {
+                    debug_compiler_owner(
+                        5,
+                        "worker-generation-stop",
+                        "phase=missing-toolchain-slot",
+                    );
                     alive.store(false, Ordering::Release);
                     break;
                 };
@@ -4453,6 +4506,7 @@ fn run_worker_generation(
         match owned.selection() {
             Ok(selection) => toolchains.push(selection),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "toolchain-selection");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::Toolchain {
                         ordinal,
@@ -4467,6 +4521,7 @@ fn run_worker_generation(
     let toolchains = match LocalToolchainSet::validate(&toolchains) {
         Ok(toolchains) => toolchains,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "toolchain-set-validation");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4480,6 +4535,7 @@ fn run_worker_generation(
         match LocalPackageRoot::new(owned.ecosystem, &owned.path) {
             Ok(root) => package_roots.push(root),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "package-root-validation");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::PackageRoot {
                         ordinal,
@@ -4494,6 +4550,7 @@ fn run_worker_generation(
     let package_roots = match LocalPackageRootSet::validate(&package_roots) {
         Ok(package_roots) => package_roots,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "package-root-set-validation");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4601,6 +4658,7 @@ fn run_worker_generation(
         match configuration.scratch.lane_scratch() {
             Ok(scratch) => lane_scratches.push(scratch),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "lane-scratch-allocation");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::LaneScratch {
                         lane,
@@ -4636,6 +4694,13 @@ fn run_worker_generation(
     ) {
         Ok(compiler) => compiler,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "compiler-construction");
+            if std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1") {
+                eprintln!(
+                    "NUDOX-COMPILER-OWNER phase={} compiler-construction error={error}",
+                    if startup.is_some() { "startup" } else { "generation" }
+                );
+            }
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4721,6 +4786,7 @@ fn run_worker_lanes(
                     )
                 })
             {
+                debug_worker_generation_stop(startup.is_some(), "lane-thread-spawn");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::LaneSpawn {
                         lane,
@@ -4734,6 +4800,7 @@ fn run_worker_lanes(
         }
         drop(completion_tx);
         let Some(mut lane_queue) = BoundedLaneQueue::new(lane_senders) else {
+            debug_worker_generation_stop(startup.is_some(), "empty-lane-set");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(LocalCompilerRuntimeOpenError::StartupOwnerStopped));
             }
@@ -4743,6 +4810,7 @@ fn run_worker_lanes(
         if let Some(startup) = startup.take()
             && startup.send(Ok(())).is_err()
         {
+            debug_compiler_owner(4, "worker-startup-stop", "phase=ready-notification-closed");
             alive.store(false, Ordering::Release);
             return WorkerDisposition::Stop;
         }
@@ -4760,12 +4828,16 @@ fn run_worker_lanes(
                 Ok(completion) => {
                     in_flight = in_flight.saturating_sub(1);
                     if !publish_lane_completion(compiler, completion) {
+                        debug_compiler_owner(6, "publisher-stop", "phase=lane-completion-publish");
                         stopping = true;
                         alive.store(false, Ordering::Release);
                     }
                     continue;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => stopping = true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    debug_compiler_owner(7, "worker-channel-stopped", "channel=lane-completions");
+                    stopping = true;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
 
@@ -4784,11 +4856,23 @@ fn run_worker_lanes(
                     Ok(completion) => {
                         in_flight = in_flight.saturating_sub(1);
                         if !publish_lane_completion(compiler, completion) {
+                            debug_compiler_owner(
+                                6,
+                                "publisher-stop",
+                                "phase=drain-completion-publish",
+                            );
                             stopping = true;
                             alive.store(false, Ordering::Release);
                         }
                     }
-                    Err(RecvTimeoutError::Disconnected) => stopping = true,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        debug_compiler_owner(
+                            7,
+                            "worker-channel-stopped",
+                            "channel=lane-completions-drain",
+                        );
+                        stopping = true;
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                 }
                 continue;
@@ -4809,7 +4893,10 @@ fn run_worker_lanes(
                     &mut stopping,
                     alive,
                 ),
-                Err(RecvTimeoutError::Disconnected) => stopping = true,
+                Err(RecvTimeoutError::Disconnected) => {
+                    debug_compiler_owner(7, "worker-channel-stopped", "channel=commands");
+                    stopping = true;
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
@@ -4874,6 +4961,12 @@ fn dispatch_runtime_command(
                     );
                 }
                 Err(LaneSendError::Closed(job)) => {
+                    let lane = identity.lane(compiler_lane_count());
+                    debug_compiler_owner(
+                        3,
+                        "lane-closed",
+                        format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+                    );
                     reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
                 }
             }
@@ -4896,6 +4989,7 @@ fn dispatch_runtime_command(
             embedding_scratch_max,
             embedding_requirement,
             in_flight,
+            alive,
         ),
         RuntimeCommand::CompilePackageSourcesStaged {
             request,
@@ -4915,6 +5009,7 @@ fn dispatch_runtime_command(
             embedding_scratch_max,
             embedding_requirement,
             in_flight,
+            alive,
         ),
         RuntimeCommand::SemanticImage {
             requested,
@@ -4938,6 +5033,7 @@ fn dispatch_runtime_command(
                         requested,
                         cause,
                     }));
+                    debug_compiler_owner(6, "worker-panic-stop", "operation=semantic-image");
                     *stopping = true;
                     alive.store(false, Ordering::Release);
                 }
@@ -4976,6 +5072,7 @@ fn dispatch_runtime_command(
                     let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
                         facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
                     )));
+                    debug_compiler_owner(6, "worker-panic-stop", "operation=activate-generation");
                     *stopping = true;
                     alive.store(false, Ordering::Release);
                 }
@@ -4998,6 +5095,7 @@ fn queue_package_sources(
     embedding_scratch_max: usize,
     _embedding_requirement: EmbeddingRequirement,
     in_flight: &mut usize,
+    alive: &AtomicBool,
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
@@ -5097,6 +5195,12 @@ fn queue_package_sources(
             );
         }
         Err(LaneSendError::Closed(job)) => {
+            let lane = identity.lane(compiler_lane_count());
+            debug_compiler_owner(
+                3,
+                "lane-closed",
+                format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+            );
             reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
         }
     }

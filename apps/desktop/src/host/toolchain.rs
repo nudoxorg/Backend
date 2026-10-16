@@ -300,38 +300,74 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// Executes the real desktop environment composition against the standalone owner policy.
-    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink;
-    /// it must not set NUDOX_TSC/Node/module-root overrides for the default-environment gate.
+    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink.
     #[test]
     #[ignore = "requires a pinned actual installed Linux/npm or macOS application environment"]
     fn actual_default_launch_matches_standalone_installed_tool_selection() {
-        for variable in ["NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
-            backend_local_service::COMPILER_ENVIRONMENT_ENV] {
-            assert!(std::env::var_os(variable).is_none(), "default gate cannot configure {variable}");
+        for variable in [
+            "NUDOX_TSC",
+            "NUDOX_TYPESCRIPT_NODE",
+            "NUDOX_TYPESCRIPT_MODULE_ROOT",
+            "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
+            backend_local_service::COMPILER_ENVIRONMENT_ENV,
+        ] {
+            assert!(
+                std::env::var_os(variable).is_none(),
+                "default gate cannot configure {variable}"
+            );
         }
-        let expected_compiler = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_GLOBAL_TSC")
-            .expect("pinned global npm tsc entrypoint")).expect("canonical global compiler");
-        let expected_node = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_NODE")
-            .expect("pinned installed Node runtime")).expect("canonical Node runtime");
+        let _installed_compiler = std::fs::canonicalize(
+            std::env::var_os("NUDOX_SETUP_EXPECTED_GLOBAL_TSC")
+                .expect("pinned global npm tsc entrypoint"),
+        )
+        .expect("canonical global compiler");
+        let _installed_node = std::fs::canonicalize(
+            std::env::var_os("NUDOX_SETUP_EXPECTED_NODE").expect("pinned installed Node runtime"),
+        )
+        .expect("canonical Node runtime");
         let desktop = prepared_by_the_process().expect("actual desktop composition");
-        let locald = LocalCompilerHost::new(backend_local_service::ProcessHostEnvironment,
-            LocalHostDiscovery::InstalledTools).capture_installed_selection().expect("standalone owner composition");
-        assert_eq!(&desktop, locald.snapshot(), "GUI and CLI/MCP select the same exact host paths");
-        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(expected_compiler.as_path()));
-        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptCompiler), None);
-        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(expected_node.as_path()));
-        assert!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot).is_some(),
-            "the actual installed SDK must retain its captured default module root");
-        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot), None,
-            "an installed global module root cannot become an explicit project SDK override");
+        let locald = LocalCompilerHost::new(
+            backend_local_service::ProcessHostEnvironment,
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("standalone owner composition");
+        assert_eq!(
+            &desktop,
+            locald.snapshot(),
+            "GUI and CLI/MCP select the same exact host paths"
+        );
+        for variable in [
+            LocalHostVariable::NudoxTypeScriptCompiler,
+            LocalHostVariable::NudoxTypeScriptDefaultCompiler,
+            LocalHostVariable::NudoxTypeScriptNode,
+            LocalHostVariable::NudoxTypeScriptDefaultNode,
+            LocalHostVariable::NudoxTypeScriptModuleRoot,
+            LocalHostVariable::NudoxTypeScriptDefaultModuleRoot,
+            LocalHostVariable::NudoxTypeScriptReportProgram,
+            LocalHostVariable::NudoxTypeScriptBundledNode,
+            LocalHostVariable::NudoxTypeScriptBundledApplication,
+        ] {
+            assert_eq!(
+                desktop.path(variable),
+                None,
+                "installed global SDK stays unused under native-default policy: {variable:?}"
+            );
+        }
         let restarted = prepared_by_the_process().expect("repeat actual desktop composition");
-        assert_eq!(desktop, restarted, "unchanged launch inputs yield the same closed owner paths");
-        println!("actual-default-host-snapshot={}", desktop.encode().expect("closed snapshot receipt"));
+        assert_eq!(
+            desktop, restarted,
+            "unchanged launch inputs yield the same closed owner paths"
+        );
+        println!(
+            "actual-default-host-snapshot={}",
+            desktop.encode().expect("closed snapshot receipt")
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn desktop_and_locald_capture_the_same_global_npm_symlink_and_node() {
+    fn desktop_and_locald_capture_the_same_explicit_global_npm_symlink_and_node() {
         use std::os::unix::{fs::PermissionsExt as _, fs::symlink};
         let machine = machine("typescript-shared");
         let home = machine.root.join("home");
@@ -351,8 +387,36 @@ mod tests {
             .expect("node permissions");
         let mut captured = BTreeMap::from([
             ("HOME", home.into_os_string()),
-            ("PATH", bin.into_os_string()),
+            ("PATH", bin.as_os_str().to_owned()),
         ]);
+        let native_desktop = installed_snapshot(&captured).expect("native default desktop capture");
+        let native_locald = LocalCompilerHost::new(
+            DesktopLaunchEnvironment {
+                captured: &captured,
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("native default locald capture");
+        assert_eq!(&native_desktop, native_locald.snapshot());
+        for variable in [
+            LocalHostVariable::NudoxTypeScriptCompiler,
+            LocalHostVariable::NudoxTypeScriptDefaultCompiler,
+            LocalHostVariable::NudoxTypeScriptNode,
+            LocalHostVariable::NudoxTypeScriptDefaultNode,
+            LocalHostVariable::NudoxTypeScriptModuleRoot,
+            LocalHostVariable::NudoxTypeScriptDefaultModuleRoot,
+            LocalHostVariable::NudoxTypeScriptReportProgram,
+            LocalHostVariable::NudoxTypeScriptBundledNode,
+            LocalHostVariable::NudoxTypeScriptBundledApplication,
+        ] {
+            assert_eq!(
+                native_desktop.path(variable),
+                None,
+                "ambient npm SDK is not selected under native-default policy: {variable:?}"
+            );
+        }
+        captured.insert("NUDOX_TSC", bin.join("tsc").into_os_string());
         let desktop = installed_snapshot(&captured).expect("desktop capture");
         let locald = LocalCompilerHost::new(
             DesktopLaunchEnvironment {
@@ -364,13 +428,13 @@ mod tests {
         .expect("locald capture");
         assert_eq!(&desktop, locald.snapshot());
         assert_eq!(
-            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
+            desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
             Some(compiler.as_path())
         );
         assert_eq!(
-            desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
             None,
-            "discovered host fallback cannot override project-local SDK precedence"
+            "an explicitly selected npm SDK does not masquerade as installed default policy"
         );
         assert_eq!(
             desktop.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot),
@@ -417,6 +481,7 @@ mod tests {
         }
         let mut captured = BTreeMap::from([("HOME", home.into_os_string()),
             ("PATH", tsc.parent().unwrap().as_os_str().to_owned())]);
+        captured.insert("NUDOX_TSC", tsc.as_os_str().to_owned());
         for (name, cause) in [("NUDOX_GO", Failure::ExecutableUnavailable),
             ("NUDOX_GO_ROOT", Failure::GoRootUnavailable), ("NUDOX_GO_ORACLE", Failure::OracleUnavailable)] {
             for value in [OsString::new(), OsString::from("relative-object"), machine.root.join("missing-object").into_os_string()] {
@@ -428,8 +493,24 @@ mod tests {
                 let transported = ClosedLocalHostEnvironmentSnapshot::parse(&desktop.encode().unwrap()).unwrap();
                 let owner = LocalCompilerHostSelection::from_closed_snapshot(transported).unwrap();
                 assert_eq!(owner.go_authority_failure(), Some(cause));
-                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(tsc.as_path()));
-                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(node.as_path()));
+                assert_eq!(
+                    owner
+                        .snapshot()
+                        .path(LocalHostVariable::NudoxTypeScriptCompiler),
+                    Some(tsc.as_path())
+                );
+                assert!(
+                    owner
+                        .snapshot()
+                        .path(LocalHostVariable::NudoxTypeScriptDefaultCompiler)
+                        .is_none()
+                );
+                assert_eq!(
+                    owner
+                        .snapshot()
+                        .path(LocalHostVariable::NudoxTypeScriptDefaultNode),
+                    Some(node.as_path())
+                );
             }
             captured.remove(name);
         }

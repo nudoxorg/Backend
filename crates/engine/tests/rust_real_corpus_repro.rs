@@ -331,6 +331,15 @@ fn rust_real_corpus_regression_fixtures() {
     // declared parameter row.
     let where_free_predicate =
         "pub fn f<T>(value: T) -> T where T: core::fmt::Debug { value }";
+    // `rustversion` tool attributes are not evaluated by the syntax authority.
+    // Like anyhow's test_backtrace.rs, both cfg-disjoint function definitions
+    // reach the written pass; the rejected twin must also be covered so the
+    // HIR module walk cannot re-emit it with the same declaration identity.
+    let rustversion_item_twins = "#[rustversion::not(nightly)] #[test] fn test_backtrace() {} #[rustversion::nightly] #[test] fn test_backtrace() {}";
+    // A macro can stamp same-named, same-signature functions into sibling
+    // modules at one invocation span. HIR module ancestry distinguishes
+    // these legal declarations without weakening same-scope identity checks.
+    let expanded_functions_in_sibling_modules = "macro_rules! generated { ($name:ident) => { mod left { fn $name() {} } mod right { fn $name() {} } }; } generated!(same);";
     // Two distinct raw-pointer compounds in one signature are distinct
     // carriers, while the shared leaf stays one deduped row.
     let repeated_raw_pointer =
@@ -346,6 +355,11 @@ fn rust_real_corpus_regression_fixtures() {
         ("impl-trait-written-run", impl_trait_written_run),
         ("generic-defaults", generic_defaults),
         ("where-free-predicate", where_free_predicate),
+        ("rustversion-item-twins", rustversion_item_twins),
+        (
+            "expanded-functions-in-sibling-modules",
+            expanded_functions_in_sibling_modules,
+        ),
         ("repeated-raw-pointer", repeated_raw_pointer),
     ] {
         let outcome = compile_corpus_file(body.as_bytes());

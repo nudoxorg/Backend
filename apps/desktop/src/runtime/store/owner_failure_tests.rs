@@ -472,11 +472,11 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     let sink = Rc::clone(&events);
     let captured = Rc::clone(&capabilities);
     let subscription: Subscription = cx.update(|cx| {
-        let mut watch = Watch::new(store.read(cx), [PageKey::Health], &[Branch::GraphFocus]);
+        let mut watch = Watch::new(store.read(cx), [PageKey::Health], &[Branch::Owner]);
         cx.subscribe(store, move |store, event: &StoreEvent, cx| {
             if watch.changed(store.read(cx), event) {
                 sink.borrow_mut().push(event.clone());
-                if event.is_branch(Branch::GraphFocus) {
+                if event.is_branch(Branch::Owner) {
                     captured
                         .borrow_mut()
                         .push(store.read(cx).current_owner_retry());
@@ -503,7 +503,7 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     });
     assert_eq!(
         events.borrow().as_slice(),
-        &[StoreEvent::Snapshot(Branch::GraphFocus)],
+        &[StoreEvent::Snapshot(Branch::Owner)],
         "capability repaint is separate from resource churn"
     );
     store.update(cx, |store, cx| {
@@ -769,7 +769,7 @@ fn actual_watcher_replaces_changed_seeded_quiet_faults_and_keeps_identical_failu
     let sink = Rc::clone(&events);
     let observed_key = key.clone();
     let subscription: Subscription = cx.update(|cx| {
-        let mut watch = Watch::new(store.read(cx), [observed_key], &[Branch::GraphFocus]);
+        let mut watch = Watch::new(store.read(cx), [observed_key], &[Branch::Owner]);
         cx.subscribe(store, move |store, event: &StoreEvent, cx| {
             if watch.changed(store.read(cx), event) {
                 sink.borrow_mut().push(event.clone());

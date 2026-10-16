@@ -1413,12 +1413,54 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 #[cfg(unix)]
 #[test]
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
-    let process_limits =
-        limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
-    let process = command("/bin/sh", &["-c", "sleep 1 & wait"], process_limits)?;
+    let python = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|directory| directory.join("python3"))
+        .chain([
+            PathBuf::from("/usr/bin/python3"),
+            PathBuf::from("/usr/local/bin/python3"),
+            PathBuf::from("/opt/homebrew/bin/python3"),
+        ])
+        .find(|path| path.is_file())
+        .ok_or("Python fork probe is unavailable")?
+        .canonicalize()?;
+    let python = python
+        .to_str()
+        .ok_or("Python fork probe path is not UTF-8")?;
+    // Shells can retry a denied background fork and overflow the output cap.
+    // Attempt exactly one fork, and distinguish EAGAIN from every other error.
+    let probe = r#"import errno, os, sys
+try:
+    pid = os.fork()
+except OSError as error:
+    if error.errno != errno.EAGAIN:
+        raise
+    print("fork-denied")
+    sys.exit(73)
+if pid == 0:
+    os._exit(0)
+os.waitpid(pid, 0)
+print("fork-allowed")
+"#;
+    let process_limits = limits(64, 64, Duration::from_secs(2), 128)?;
+    let unrestricted = command(python, &["-I", "-S", "-c", probe], process_limits)?.run()?;
+    assert_eq!(unrestricted.terminal(), ProcessTerminal::Success);
+    assert_eq!(unrestricted.status(), Some(0));
+    assert_eq!(unrestricted.stdout(), b"fork-allowed\n");
+    assert!(unrestricted.stderr().is_empty());
+    assert!(unrestricted.reaped());
+
+    let process = command(
+        python,
+        &["-I", "-S", "-c", probe],
+        process_limits.with_process_count_limit(1)?,
+    )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
-    assert_ne!(receipt.status(), Some(0));
+    assert_eq!(receipt.status(), Some(73));
+    assert_eq!(receipt.stdout(), b"fork-denied\n");
+    assert!(receipt.stderr().is_empty());
     assert!(receipt.reaped());
     Ok(())
 }
