@@ -6695,6 +6695,9 @@ mod tests {
             F::NativeProjectCheckDeadline,
             F::NativeProjectCheckWorkBudgetExhausted,
             F::NativeCheckerWorkerPoolUnavailable,
+            F::NativeSessionModuleResolution,
+            F::NativeModuleInvalidReference,
+            F::NativeProjectCheckModuleInvalidReference,
         ] {
             let private = b"private absolute path /home/user/app/node_modules; native stderr";
             let terminal = CompilerTerminal::Compile {

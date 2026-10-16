@@ -165,6 +165,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeProjectSessionMismatch,
     /// Native TypeScript checker session lacked compiler-owned module resolutions.
     NativeSessionMissingProjectModuleResolutions,
+    /// Native TypeScript checker session rejected its module resolution inputs.
+    NativeSessionModuleResolution,
     /// Native TypeScript checker session selected a file index outside its program.
     NativeSessionFileIndexOutOfRange,
     /// Native TypeScript warm checker image was used under a different budget.
@@ -185,6 +187,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeModuleUnsupportedRequestKind,
     /// Native TypeScript module resolution contained a duplicate request.
     NativeModuleDuplicateRequest,
+    /// Native TypeScript module resolution contained an invalid captured reference.
+    NativeModuleInvalidReference,
     /// Native TypeScript project checking module resolution contained an invalid normalized path.
     NativeProjectCheckModuleInvalidVirtualPath,
     /// Native TypeScript project checking module resolution contained a duplicate program path.
@@ -201,6 +205,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeProjectCheckModuleUnsupportedRequestKind,
     /// Native TypeScript project checking module resolution contained a duplicate request.
     NativeProjectCheckModuleDuplicateRequest,
+    /// Native TypeScript project checking module resolution contained an invalid captured reference.
+    NativeProjectCheckModuleInvalidReference,
     /// Native TypeScript checker session was cancelled.
     NativeSessionCancelled,
     /// Native TypeScript checker session exceeded its admitted deadline.
@@ -312,6 +318,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeSessionMissingProjectModuleResolutions => {
                 "typescript_native_session_missing_project_module_resolutions"
             }
+            Self::NativeSessionModuleResolution => "typescript_native_session_module_resolution",
             Self::NativeSessionFileIndexOutOfRange => {
                 "typescript_native_session_file_index_out_of_range"
             }
@@ -333,6 +340,7 @@ impl TypeScriptAuthorityFailureKind {
                 "typescript_native_module_unsupported_request_kind"
             }
             Self::NativeModuleDuplicateRequest => "typescript_native_module_duplicate_request",
+            Self::NativeModuleInvalidReference => "typescript_native_module_invalid_reference",
             Self::NativeProjectCheckModuleInvalidVirtualPath => {
                 "typescript_native_project_check_module_invalid_virtual_path"
             }
@@ -356,6 +364,9 @@ impl TypeScriptAuthorityFailureKind {
             }
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "typescript_native_project_check_module_duplicate_request"
+            }
+            Self::NativeProjectCheckModuleInvalidReference => {
+                "typescript_native_project_check_module_invalid_reference"
             }
             Self::NativeSessionExecutionCheckpointMismatch => "typescript_native_session_execution_checkpoint_mismatch",
             Self::NativeSessionCancelled => "typescript_native_session_cancelled",
@@ -563,6 +574,9 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeSessionMissingProjectModuleResolutions => {
                 "Native TypeScript checker session lacked compiler-owned module resolutions"
             }
+            Self::NativeSessionModuleResolution => {
+                "Native TypeScript checker session rejected its module resolution inputs"
+            }
             Self::NativeSessionFileIndexOutOfRange => {
                 "Native TypeScript checker session selected a file index outside its program"
             }
@@ -590,6 +604,9 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeModuleDuplicateRequest => {
                 "Native TypeScript module resolution contained a duplicate request"
             }
+            Self::NativeModuleInvalidReference => {
+                "Native TypeScript module resolution contained an invalid captured reference"
+            }
             Self::NativeProjectCheckModuleInvalidVirtualPath => {
                 "Native TypeScript project checking module resolution contained an invalid normalized path"
             }
@@ -613,6 +630,9 @@ impl TypeScriptAuthorityFailureKind {
             }
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "Native TypeScript project checking module resolution contained a duplicate request"
+            }
+            Self::NativeProjectCheckModuleInvalidReference => {
+                "Native TypeScript project checking module resolution contained an invalid captured reference"
             }
             Self::NativeSessionExecutionCheckpointMismatch => "Native TypeScript checker image belongs to a different admitted execution budget",
             Self::NativeSessionCancelled => "Native TypeScript checker session was cancelled",
