@@ -27,6 +27,7 @@ fn callback_mismatch_memo_disabled() -> bool {
 mod void_callback_probe_tests {
     use super::*;
     use crate::context::CheckerOptions;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tsz_binder::BinderState;
     use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
@@ -123,15 +124,10 @@ mod void_callback_probe_tests {
         );
     }
 
-    #[test]
-    fn void_return_probe_preserves_actual_body_and_argument_diagnostics() {
-        let source = r#"
-declare function sink(callback: (event: string) => void): void;
-declare function numberSink(callback: () => number): void;
-sink((event) => { const invalid: number = event; missingInsideCallback; return 'accepted'; });
-sink((event: number) => { return event; });
-numberSink(() => { return 'rejected'; });
-"#;
+    fn check_body_diagnostics(
+        source: &str,
+        admitted_program: bool,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
         let mut parser = ParserState::new("test.ts".into(), source.into());
         let root = parser.parse_source_file();
         let mut binder = BinderState::new();
@@ -147,8 +143,33 @@ numberSink(() => { return 'rejected'; });
                 ..Default::default()
             },
         );
+        assert!(
+            !checker.ctx.report_unresolved_imports,
+            "legacy standalone policy"
+        );
+        if admitted_program {
+            // This source has no module/directive requests. Install the same explicit
+            // closed outcome context as the native program: unlike bare standalone
+            // construction, it enables authoritative unresolved-name diagnostics.
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::new(Default::default()));
+            assert!(checker.ctx.report_unresolved_imports);
+        }
         checker.check_source_file(root);
-        let diagnostics = &checker.ctx.diagnostics;
+        checker.ctx.diagnostics.clone()
+    }
+
+    #[test]
+    fn void_return_probe_preserves_actual_body_and_argument_diagnostics() {
+        let source = r#"
+declare function sink(callback: (event: string) => void): void;
+declare function numberSink(callback: () => number): void;
+sink((event) => { const invalid: number = event; missingInsideCallback; return 'accepted'; });
+sink((event: number) => { return event; });
+numberSink(() => { return 'rejected'; });
+"#;
+        let diagnostics = check_body_diagnostics(source, true);
         assert!(
             diagnostics.iter().any(|diagnostic| diagnostic.code == 2322),
             "body assignment error: {diagnostics:?}"
@@ -171,6 +192,58 @@ numberSink(() => { return 'rejected'; });
                 .any(|diagnostic| diagnostic.code == 2345
                     && diagnostic.start as usize >= return_call),
             "non-void return error: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_name_policy_is_explicit_for_void_callback_diagnostics() {
+        let source =
+            "declare function sink(callback: () => void): void; sink(() => { missingInVoid; });";
+        let legacy = check_body_diagnostics(source, false);
+        assert!(
+            legacy.iter().all(|diagnostic| diagnostic.code != 2304),
+            "legacy standalone construction intentionally suppresses unresolved names: {legacy:?}"
+        );
+        let admitted = check_body_diagnostics(source, true);
+        let missing = source.find("missingInVoid").expect("missing name");
+        assert_eq!(admitted.iter().filter(|diagnostic| diagnostic.code == 2304
+            && diagnostic.start as usize == missing).count(), 1,
+            "an admitted program must report the body name exactly once: {admitted:?}");
+    }
+
+    #[test]
+    fn admitted_void_callbacks_preserve_nested_and_function_expression_names() {
+        let source = r#"
+declare function sink(callback: (event: string) => void): void;
+sink((event) => {
+    const nested = () => { missingNested; return event; };
+    nested(); missingOuter; return 'discarded';
+});
+sink(function(event) { missingFunction; return event; });
+sink((event) => missingExpression);
+"#;
+        let diagnostics = check_body_diagnostics(source, true);
+        for name in [
+            "missingNested",
+            "missingOuter",
+            "missingFunction",
+            "missingExpression",
+        ] {
+            let start = source.find(name).expect("missing name");
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(
+                        |diagnostic| diagnostic.code == 2304 && diagnostic.start as usize == start
+                    )
+                    .count(),
+                1,
+                "{name} must survive normal checking, independent of a discarded return: {diagnostics:?}"
+            );
+        }
+        assert!(
+            diagnostics.iter().all(|diagnostic| diagnostic.code != 2345),
+            "void-substitutable returns remain accepted: {diagnostics:?}"
         );
     }
 }
