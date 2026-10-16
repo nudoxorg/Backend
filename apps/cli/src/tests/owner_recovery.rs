@@ -64,7 +64,12 @@ impl Fixture {
         )
         .expect("captured attachment");
         paths.initialize().expect("private authority and state");
-        let package = PackageReference::parse(project.to_str().expect("UTF8")).expect("package");
+        // WorkspacePaths captures the canonical project identity (for example,
+        // macOS resolves `/tmp` through `/private/tmp`). Persist the same path
+        // the production caller uses when it creates the journal claim.
+        let package =
+            PackageReference::parse(paths.project().to_str().expect("captured project is UTF8"))
+                .expect("package");
         Self {
             root,
             paths,

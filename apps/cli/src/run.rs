@@ -381,7 +381,9 @@ mod graph_admission_tests {
         let source =
             PackageReference::parse(&format!("pkg:cargo/{}@1", "s".repeat(2000))).expect("source");
         let authority = PackageGraphSourceAuthority::Local([7; 32]);
-        let target = "t".repeat(3000);
+        // Keep the coordinate within the public package-URL bound while the
+        // complete rendered graph still exceeds the human-output budget.
+        let target = "t".repeat(2000);
         let edge = PackageDependencyRecord::new_with_source_authority(
             source.clone(),
             authority,
