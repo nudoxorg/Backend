@@ -250,13 +250,16 @@ impl UiRootEntity {
     #[must_use]
     pub fn new(mut runtime: DesktopRuntime, persistence: Option<PersistentState>) -> Self {
         let basis = runtime.snapshot().key();
-        let request = runtime.allocate_request();
+        // The owner watcher issues the authoritative Root in `admit_owner`.
+        // Queuing another here races that handover and can start a bootstrap
+        // only to cancel it once the same owner becomes ready.
+        let startup = (!runtime.has_owner_gate()).then(|| {
+            let request = runtime.allocate_request();
+            QueuedIntent::Plain(Intent::RefreshRoot { basis, request })
+        });
         Self {
             runtime,
-            // Startup is itself a typed intent.  The root is admitted before
-            // the first useful frame so a cold window never renders a fake
-            // catalog or a second, view-owned bootstrap path.
-            pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
+            pending: startup.into_iter().collect(),
             persistence,
             persistence_writer: None,
             persistence_wake: None,
@@ -973,8 +976,7 @@ impl UiRootEntity {
     }
 
     /// The owner answered (W-Open I1): its root replaces the unserved one,
-    /// and the root read (project, catalog) is asked again at it — the one
-    /// asked at startup waited behind the owner at the unserved basis.
+    /// and the first root read (project, catalog) is asked at that basis.
     pub(crate) fn admit_owner(
         &mut self,
         key: crate::core::VersionedRoot,
@@ -1384,6 +1386,8 @@ mod durable_writer_tests;
 mod index_preflight_basis_tests;
 #[cfg(test)]
 mod operation_observation_tests;
+#[cfg(test)]
+mod startup_root_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();
