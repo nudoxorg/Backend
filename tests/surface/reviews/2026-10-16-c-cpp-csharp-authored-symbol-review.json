@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "scope": "Independent source-only check of the configured C rxi-map, C++ pugixml, and C# TinyIoC authored-symbol queries. No product output, snapshot, performance sample, or runtime acceptance is claimed.",
+  "review_head": "d9b2b1b9c1aaee3207e3d847a947225daf925101",
+  "pins_and_sources": [
+    {
+      "case": "c-rxi-map",
+      "coordinate": "rxi-map",
+      "pinned_archive_sha256": "cc9fa016bf615c5d9e6c0e5c37aa698daed64e39ce3910167f9ccca1ef3a4259",
+      "source_path": "src/map.c",
+      "source_sha256": "b1b4ab54c68d8c24775a1d2c1bafc99afd5704803cb5a3c8cdeaa3130e01a2a8",
+      "queries": [
+        {
+          "name": "map_deinit_",
+          "line": 111,
+          "declaration": "void map_deinit_(map_base_t *m)",
+          "kind": "C function",
+          "meaning": "Frees map nodes and the bucket array."
+        },
+        {
+          "name": "map_get_",
+          "line": 127,
+          "declaration": "void *map_get_(map_base_t *m, const char *key)",
+          "kind": "C function",
+          "meaning": "Looks up a key and returns its stored value or NULL."
+        }
+      ]
+    },
+    {
+      "case": "cpp-pugixml",
+      "coordinate": "pugixml v1.14",
+      "pinned_archive_sha256": "610f98375424b5614754a6f34a491adbddaaec074e9044577d965160ec103d2e",
+      "source_path": "src/pugixml.hpp",
+      "source_sha256": "68ca7eac371875363257c85eea74e8e3d0a2d16e478d6685e140a9217bee36b4",
+      "queries": [
+        {
+          "name": "xml_parse_result",
+          "line": 1017,
+          "declaration": "struct PUGIXML_CLASS xml_parse_result",
+          "kind": "C++ struct",
+          "meaning": "Carries parse status, offset, encoding, boolean conversion, and error description."
+        },
+        {
+          "name": "xml_document",
+          "line": 1039,
+          "declaration": "class PUGIXML_CLASS xml_document: public xml_node",
+          "kind": "C++ class",
+          "meaning": "DOM document root that owns its buffer and exposes document construction and loading."
+        }
+      ]
+    },
+    {
+      "case": "csharp-tinyioc",
+      "coordinate": "nuget:tinyioc@1.3.0",
+      "pinned_archive_sha256": "7c01cae08498adbafc73f8b599382f4fea39d05e01d8e3282eaf75727996c749",
+      "source_path": "Content/TinyIoC.cs",
+      "source_sha256": "e7898a069de8f1d2ba97414a92d140cf167a0c61bcfb869b9b33dd94e94aac4b",
+      "queries": [
+        {
+          "name": "TinyIoCResolutionException",
+          "line": 554,
+          "declaration": "class TinyIoCResolutionException : Exception",
+          "kind": "C# class",
+          "meaning": "Resolution exception with constructors for the unresolved type and an optional inner exception."
+        },
+        {
+          "name": "TinyIoCContainer",
+          "line": 866,
+          "declaration": "sealed partial class TinyIoCContainer : IDisposable",
+          "kind": "C# class",
+          "meaning": "The container type; the surrounding preprocessor branch makes it public unless TINYIOC_INTERNAL is defined."
+        }
+      ],
+      "package_entries": 6,
+      "archive_uncompressed_bytes": 181845,
+      "authored_csharp_bytes": 169985
+    }
+  ],
+  "acceptance_limits": [
+    "The C and C++ source file hashes were checked against the configured candidate evidence, and the C# package and source hashes were computed from the retained pinned archive/source file.",
+    "These source facts establish authored path and declaration kind only; they do not predict search ranking, result count, outline shape, or actual product output.",
+    "Current exact-head native T2 execution remains required."
+  ]
+}
