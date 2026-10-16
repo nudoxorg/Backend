@@ -244,6 +244,215 @@ pub(super) enum CapturedRootPolicy {
     CanonicalEnvironment,
 }
 
+/// A private mirror read transaction, never a cache of an original environment.
+/// The root and at most one adjacent file parent remain held between reads.
+/// Closing a parent group reopens its spelling beneath the held root; finishing
+/// reopens the absolute root. Neither a renamed parent nor a substituted root
+/// can turn a stale descriptor into an accepted current-path witness.
+pub(in super::super) struct EnvironmentReadSession<'root> {
+    root: &'root Path,
+    directory: backend_platform::DirectoryCapability,
+    parent: Option<(PathBuf, backend_platform::DirectoryCapability)>,
+}
+
+impl<'root> EnvironmentReadSession<'root> {
+    pub(in super::super) fn open(
+        root: &'root Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
+        checkpoint(control)?;
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err(CheckerError::UncapturedDependency { path: root.into() });
+        }
+        let directory = open_environment_root(root, control)?;
+        checkpoint(control)?;
+        Ok(Self {
+            root,
+            directory,
+            parent: None,
+        })
+    }
+
+    fn open_parent(
+        &self,
+        relative: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<backend_platform::DirectoryCapability, CheckerError> {
+        let mut directory = self.directory.clone();
+        for component in relative.components() {
+            checkpoint(control)?;
+            let Component::Normal(name) = component else {
+                return Err(CheckerError::UncapturedDependency {
+                    path: self.root.join(relative),
+                });
+            };
+            let name = name
+                .to_str()
+                .ok_or_else(|| project_error("", "dependency path is not UTF-8"))?;
+            directory = directory.open_dir(name).map_err(workspace_error)?;
+            record_read_work(ReadWorkEvent::ParentOpen);
+        }
+        Ok(directory)
+    }
+
+    fn finish_parent(&mut self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
+        if let Some((relative, held)) = self.parent.take() {
+            let named = self.open_parent(&relative, control)?;
+            if !held
+                .is_same_source_directory(&named)
+                .map_err(workspace_error)?
+            {
+                return Err(project_error(
+                    "",
+                    "private dependency parent changed during validation",
+                ));
+            }
+        }
+        checkpoint(control)
+    }
+
+    pub(in super::super) fn digest(
+        &mut self,
+        relative: &Path,
+        control: PythonProjectControl<'_>,
+        maximum: u64,
+    ) -> Result<Option<(u64, [u8; 32])>, CheckerError> {
+        checkpoint(control)?;
+        let mut count = 0;
+        for component in relative.components() {
+            count += 1;
+            if !matches!(component, Component::Normal(_)) || count > 64 {
+                return Err(CheckerError::UncapturedDependency {
+                    path: self.root.join(relative),
+                });
+            }
+        }
+        let name = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|_| count != 0)
+            .ok_or_else(|| CheckerError::UncapturedDependency {
+                path: self.root.join(relative),
+            })?;
+        let parent = relative.parent().unwrap_or(Path::new(""));
+        if self
+            .parent
+            .as_ref()
+            .is_none_or(|(previous, _)| previous != parent)
+        {
+            self.finish_parent(control)?;
+            let directory = match self.open_parent(parent, control) {
+                Ok(directory) => directory,
+                Err(CheckerError::Workspace { source })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            self.parent = Some((parent.to_owned(), directory));
+        }
+        let directory = &self.parent.as_ref().expect("admitted dependency parent").1;
+        let file = match directory.open_file_read(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            #[cfg(unix)]
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(project_error(
+                    "",
+                    DigestPurpose::CapturedInput.bounds_message(),
+                ));
+            }
+            Err(error) => return Err(workspace_error(error)),
+        };
+        digest_bounded_file_with(
+            file,
+            control,
+            maximum,
+            DigestPurpose::CapturedInput,
+            std::io::Read::read,
+        )
+        .map(Some)
+    }
+
+    pub(in super::super) fn finish(
+        mut self,
+        control: PythonProjectControl<'_>,
+    ) -> Result<(), CheckerError> {
+        self.finish_parent(control)?;
+        let named = open_environment_root(self.root, control)?;
+        if !self
+            .directory
+            .is_same_source_directory(&named)
+            .map_err(workspace_error)?
+        {
+            return Err(project_error(
+                "",
+                "private dependency root changed during validation",
+            ));
+        }
+        checkpoint(control)
+    }
+}
+
+fn open_environment_root(
+    root: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<backend_platform::DirectoryCapability, CheckerError> {
+    checkpoint(control)?;
+    // The platform owns byte-capable no-follow root admission, including its
+    // audited fixed /var and /tmp aliases on macOS. Do not add an independent
+    // UTF-8 path policy or duplicate those platform-specific traversal rules.
+    let directory = backend_platform::DirectoryCapability::open_read_only_source(root)
+        .map_err(workspace_error)?;
+    record_read_work(ReadWorkEvent::RootWalk);
+    checkpoint(control)?;
+    Ok(directory)
+}
+
+#[derive(Clone, Copy)]
+enum ReadWorkEvent {
+    RootWalk,
+    ParentOpen,
+    PayloadBuffer(usize),
+}
+
+#[cfg(not(test))]
+fn record_read_work(event: ReadWorkEvent) {
+    if let ReadWorkEvent::PayloadBuffer(capacity) = event {
+        let _ = capacity;
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReadWork {
+    root_walks: usize,
+    parent_opens: usize,
+    payload_buffer_capacity: usize,
+}
+#[cfg(test)]
+std::thread_local! {
+    static READ_WORK: std::cell::Cell<Option<ReadWork>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+fn record_read_work(event: ReadWorkEvent) {
+    READ_WORK.with(|slot| {
+        if let Some(mut work) = slot.get() {
+            match event {
+                ReadWorkEvent::RootWalk => work.root_walks += 1,
+                ReadWorkEvent::ParentOpen => work.parent_opens += 1,
+                ReadWorkEvent::PayloadBuffer(capacity) => work.payload_buffer_capacity += capacity,
+            }
+            slot.set(Some(work));
+        }
+    });
+}
+
 pub(super) fn read_captured_input_bounded(
     root: &Path,
     relative: &Path,
@@ -269,47 +478,103 @@ pub(super) fn digest_environment_input(
         relative,
         Some(control),
         CapturedRootPolicy::CanonicalEnvironment,
-        |mut file| {
-            use std::io::Read;
-            let before = file.metadata().map_err(workspace_error)?;
-            if !before.is_file() || before.len() > maximum {
-                return Err(project_error(
-                    "",
-                    "compiled resource exceeds capture scan budget",
-                ));
-            }
-            let mut digest = blake3::Hasher::new();
-            let mut length = 0u64;
-            let mut buffer = [0; 65536];
-            loop {
-                checkpoint(control)?;
-                let count = file.read(&mut buffer).map_err(workspace_error)?;
-                if count == 0 {
-                    break;
-                }
-                length = length
-                    .checked_add(count as u64)
-                    .ok_or_else(|| project_error("", "compiled resource length overflow"))?;
-                if length > maximum {
-                    return Err(project_error(
-                        "",
-                        "compiled resource grew beyond capture scan budget",
-                    ));
-                }
-                digest.update(&buffer[..count]);
-            }
-            checkpoint(control)?;
-            let after = file.metadata().map_err(workspace_error)?;
-            if !after.is_file()
-                || before.len() != length
-                || after.len() != length
-                || !same_open_file_revision(&before, &after)
-            {
-                return Err(project_error("", "compiled resource changed while reading"));
-            }
-            Ok((length, *digest.finalize().as_bytes()))
-        },
+        |file| digest_bounded_file(file, control, maximum),
     )
+}
+
+fn digest_bounded_file(
+    file: std::fs::File,
+    control: PythonProjectControl<'_>,
+    maximum: u64,
+) -> Result<(u64, [u8; 32]), CheckerError> {
+    digest_bounded_file_with(
+        file,
+        control,
+        maximum,
+        DigestPurpose::CompiledResource,
+        std::io::Read::read,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum DigestPurpose {
+    CapturedInput,
+    CompiledResource,
+}
+
+impl DigestPurpose {
+    const fn bounds_message(self) -> &'static str {
+        match self {
+            Self::CapturedInput => "compiler input is not a bounded regular captured file",
+            Self::CompiledResource => "compiled resource exceeds capture scan budget",
+        }
+    }
+    const fn growth_message(self) -> &'static str {
+        match self {
+            Self::CapturedInput => "compiler input changed beyond capture bound",
+            Self::CompiledResource => "compiled resource grew beyond capture scan budget",
+        }
+    }
+    const fn revision_message(self) -> &'static str {
+        match self {
+            Self::CapturedInput => "captured compiler input changed while reading",
+            Self::CompiledResource => "compiled resource changed while reading",
+        }
+    }
+}
+
+fn digest_bounded_file_with(
+    mut file: std::fs::File,
+    control: PythonProjectControl<'_>,
+    maximum: u64,
+    purpose: DigestPurpose,
+    mut read: impl FnMut(&mut std::fs::File, &mut [u8]) -> std::io::Result<usize>,
+) -> Result<(u64, [u8; 32]), CheckerError> {
+    // Keep the Windows same-handle revision around this complete read too:
+    // held-root sessions do not pass through read_regular_no_follow's wrapper.
+    #[cfg(windows)]
+    let windows_before =
+        backend_platform::win32::project_fs::revision_for_file(&file).map_err(workspace_error)?;
+    let before = file.metadata().map_err(workspace_error)?;
+    if !before.is_file() || before.len() > maximum {
+        return Err(project_error("", purpose.bounds_message()));
+    }
+    let mut digest = blake3::Hasher::new();
+    let mut length = 0u64;
+    let mut buffer = [0; 65536];
+    loop {
+        checkpoint(control)?;
+        let count = read(&mut file, &mut buffer).map_err(workspace_error)?;
+        if count == 0 {
+            break;
+        }
+        length = length
+            .checked_add(count as u64)
+            .ok_or_else(|| project_error("", "compiled resource length overflow"))?;
+        if length > maximum {
+            return Err(project_error("", purpose.growth_message()));
+        }
+        digest.update(&buffer[..count]);
+    }
+    checkpoint(control)?;
+    let after = file.metadata().map_err(workspace_error)?;
+    if !after.is_file()
+        || before.len() != length
+        || after.len() != length
+        || !same_open_file_revision(&before, &after)
+    {
+        return Err(project_error("", purpose.revision_message()));
+    }
+    #[cfg(windows)]
+    if windows_before
+        != backend_platform::win32::project_fs::revision_for_file(&file).map_err(workspace_error)?
+    {
+        return Err(project_error(
+            "",
+            "captured compiler input changed while reading",
+        ));
+    }
+    Ok((length, *digest.finalize().as_bytes()))
 }
 
 fn captured_input_with<T>(
@@ -382,6 +647,9 @@ fn read_regular_no_follow<T>(
         }
         directory
     };
+    if matches!(root_policy, CapturedRootPolicy::CanonicalEnvironment) {
+        record_read_work(ReadWorkEvent::RootWalk);
+    }
     let mut components = relative.components().peekable();
     let file = loop {
         input_checkpoint(control)?;
@@ -404,6 +672,7 @@ fn read_regular_no_follow<T>(
             break opened;
         }
         directory = opened;
+        record_read_work(ReadWorkEvent::ParentOpen);
     };
     consume(std::fs::File::from(file)).map(Some)
 }
@@ -422,6 +691,7 @@ fn read_regular_no_follow<T>(
     // ancestor and rejects reparses and special/hard-linked files; Python adds
     // no unsafe API or ambient path fallback here.
     let root = ProjectRoot::open(root).map_err(workspace_error)?;
+    record_read_work(ReadWorkEvent::RootWalk);
     let parts = relative
         .components()
         .map(|part| {
@@ -509,6 +779,7 @@ fn read_bounded_file_with_limit(
             "captured compiler input changed while reading",
         ));
     }
+    record_read_work(ReadWorkEvent::PayloadBuffer(output.capacity()));
     Ok(output)
 }
 
@@ -560,6 +831,350 @@ mod tests {
             cancelled,
             deadline: Instant::now() + Duration::from_secs(30),
         }
+    }
+
+    struct WorkMeasurement;
+    impl WorkMeasurement {
+        fn start() -> Self {
+            READ_WORK.with(|slot| slot.set(Some(ReadWork::default())));
+            Self
+        }
+        fn take(&self) -> ReadWork {
+            READ_WORK.with(|slot| slot.replace(Some(ReadWork::default())).unwrap_or_default())
+        }
+    }
+    impl Drop for WorkMeasurement {
+        fn drop(&mut self) {
+            READ_WORK.with(|slot| slot.set(None));
+        }
+    }
+
+    #[test]
+    fn held_environment_reader_matches_old_values_with_two_root_walks_and_no_payload_vec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = Workspace::create()?;
+        let root = workspace.path.canonicalize()?;
+        std::fs::create_dir(root.join("unicode_λ"))?;
+        let cancelled = AtomicBool::new(false);
+        let names = (0..64)
+            .map(|n| format!("unicode_λ/member_{n:03}.pyi"))
+            .collect::<Vec<_>>();
+        for (n, name) in names.iter().enumerate() {
+            std::fs::write(root.join(name), vec![n as u8; 65537])?;
+        }
+        let measure = WorkMeasurement::start();
+        let expected = names
+            .iter()
+            .map(|name| {
+                let bytes = read_captured_input_bounded(
+                    &root,
+                    Path::new(name),
+                    Some(control(&cancelled)),
+                    65537,
+                    CapturedRootPolicy::CanonicalEnvironment,
+                )?
+                .ok_or_else(|| project_error("", "missing positive control"))?;
+                Ok((bytes.len() as u64, *blake3::hash(&bytes).as_bytes()))
+            })
+            .collect::<Result<Vec<_>, CheckerError>>()?;
+        let old = measure.take();
+        let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+        for (name, expected) in names.iter().zip(expected) {
+            assert_eq!(
+                session.digest(Path::new(name), control(&cancelled), 65537)?,
+                Some(expected)
+            );
+        }
+        session.finish(control(&cancelled))?;
+        let held = measure.take();
+        assert_eq!(old.root_walks, names.len());
+        assert_eq!(held.root_walks, 2);
+        assert!(old.payload_buffer_capacity >= names.len() * 65537);
+        assert_eq!(held.payload_buffer_capacity, 0);
+        #[cfg(unix)]
+        {
+            assert_eq!(old.parent_opens, names.len());
+            assert_eq!(
+                held.parent_opens, 2,
+                "one parent admission and one current-spelling recheck"
+            );
+        }
+        eprintln!("environment_reader_work old={old:?} held={held:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn held_environment_reader_keeps_missing_bounds_path_and_cancellation_refusals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = Workspace::create()?;
+        let root = workspace.path.canonicalize()?;
+        std::fs::write(root.join("member.py"), b"exact\0bytes\n")?;
+        let cancelled = AtomicBool::new(false);
+        let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+        assert_eq!(
+            session.digest(Path::new("missing.py"), control(&cancelled), 64)?,
+            None
+        );
+        assert_eq!(
+            session.digest(
+                Path::new("missing_parent/member.py"),
+                control(&cancelled),
+                64
+            )?,
+            None
+        );
+        for path in ["", "../member.py", "/member.py", "./member.py"] {
+            assert!(
+                session
+                    .digest(Path::new(path), control(&cancelled), 64)
+                    .is_err()
+            );
+        }
+        let old_bounds = read_captured_input_bounded(
+            &root,
+            Path::new("member.py"),
+            Some(control(&cancelled)),
+            10,
+            CapturedRootPolicy::CanonicalEnvironment,
+        )
+        .unwrap_err()
+        .to_string();
+        let new_bounds = session
+            .digest(Path::new("member.py"), control(&cancelled), 10)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(new_bounds, old_bounds);
+        #[cfg(unix)]
+        {
+            std::fs::create_dir(root.join("not_a_file"))?;
+            let old = read_captured_input_bounded(
+                &root,
+                Path::new("not_a_file"),
+                Some(control(&cancelled)),
+                64,
+                CapturedRootPolicy::CanonicalEnvironment,
+            )
+            .unwrap_err()
+            .to_string();
+            let new = session
+                .digest(Path::new("not_a_file"), control(&cancelled), 64)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(new, old);
+        }
+        assert!(
+            session
+                .digest(Path::new("member.py"), control(&cancelled), 12)?
+                .is_some()
+        );
+        let expired = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now(),
+        };
+        assert!(matches!(
+            session.digest(Path::new("member.py"), expired, 64),
+            Err(CheckerError::Deadline { .. })
+        ));
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            session.finish(control(&cancelled)),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn held_environment_reader_rejects_same_byte_parent_and_root_replacements()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for replace_root in [false, true] {
+            let workspace = Workspace::create()?;
+            let outer = workspace.path.canonicalize()?;
+            let root = outer.join("mirror");
+            std::fs::create_dir_all(root.join("package"))?;
+            std::fs::write(root.join("package/member.py"), b"same bytes\n")?;
+            let cancelled = AtomicBool::new(false);
+            let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+            assert!(
+                session
+                    .digest(Path::new("package/member.py"), control(&cancelled), 64)?
+                    .is_some()
+            );
+            let selected = if replace_root {
+                root.clone()
+            } else {
+                root.join("package")
+            };
+            let displaced = outer.join("displaced");
+            std::fs::rename(&selected, &displaced)?;
+            std::fs::create_dir_all(root.join("package"))?;
+            std::fs::write(root.join("package/member.py"), b"same bytes\n")?;
+            assert!(session.finish(control(&cancelled)).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn held_environment_reader_refuses_leaf_parent_and_root_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        let workspace = Workspace::create()?;
+        let root = workspace.path.canonicalize()?;
+        std::fs::create_dir(root.join("package"))?;
+        std::fs::write(root.join("package/member.py"), b"same bytes\n")?;
+        symlink(root.join("package/member.py"), root.join("leaf.py"))?;
+        symlink(root.join("package"), root.join("alias"))?;
+        symlink(&root, root.join("root-alias"))?;
+        let cancelled = AtomicBool::new(false);
+        for path in ["leaf.py", "alias/member.py"] {
+            let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+            assert!(
+                session
+                    .digest(Path::new(path), control(&cancelled), 64)
+                    .is_err()
+            );
+            assert!(
+                read_captured_input_bounded(
+                    &root,
+                    Path::new(path),
+                    Some(control(&cancelled)),
+                    64,
+                    CapturedRootPolicy::CanonicalEnvironment
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            EnvironmentReadSession::open(&root.join("root-alias"), control(&cancelled)).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn held_environment_root_preserves_non_utf8_private_workspace_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let workspace = Workspace::create()?;
+        let root = workspace
+            .path
+            .canonicalize()?
+            .join(std::ffi::OsStr::from_bytes(b"private-\xff"));
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("member.py"), b"exact bytes\n")?;
+        let cancelled = AtomicBool::new(false);
+        let bytes = read_captured_input_bounded(
+            &root,
+            Path::new("member.py"),
+            Some(control(&cancelled)),
+            64,
+            CapturedRootPolicy::CanonicalEnvironment,
+        )?
+        .ok_or("missing member")?;
+        let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+        assert_eq!(
+            session.digest(Path::new("member.py"), control(&cancelled), 64)?,
+            Some((bytes.len() as u64, *blake3::hash(&bytes).as_bytes()))
+        );
+        session.finish(control(&cancelled))?;
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_environment_digest_preserves_exact_old_faults_and_stop_types()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Read as _;
+        let workspace = Workspace::create()?;
+        let path = workspace.path.join("member.py");
+        let cancelled = AtomicBool::new(false);
+        for scenario in ["cancel", "early-eof", "rewrite", "read-error", "growth"] {
+            let mut messages = Vec::new();
+            for old in [true, false] {
+                cancelled.store(false, std::sync::atomic::Ordering::Release);
+                std::fs::write(&path, vec![1; 131073])?;
+                // Force distinct revisions even on filesystems whose timestamps
+                // cannot distinguish two writes occurring in one clock tick.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)?
+                    .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1))?;
+                let mut calls = 0;
+                let read = |file: &mut std::fs::File, buffer: &mut [u8]| {
+                    calls += 1;
+                    if scenario == "early-eof" {
+                        return Ok(0);
+                    }
+                    if scenario == "read-error" {
+                        return Err(std::io::Error::other("injected disk read failure"));
+                    }
+                    let count = file.read(buffer)?;
+                    if calls == 1 {
+                        match scenario {
+                            "cancel" => cancelled.store(true, std::sync::atomic::Ordering::Release),
+                            "rewrite" => std::fs::write(&path, vec![2; 131073])?,
+                            "growth" => std::fs::write(&path, vec![2; 131074])?,
+                            _ => {}
+                        }
+                    }
+                    Ok(count)
+                };
+                let file = std::fs::File::open(&path)?;
+                let result = if old {
+                    read_bounded_file_with_limit(file, Some(control(&cancelled)), 131073, read)
+                        .map(|_| ())
+                } else {
+                    digest_bounded_file_with(
+                        file,
+                        control(&cancelled),
+                        131073,
+                        DigestPurpose::CapturedInput,
+                        read,
+                    )
+                    .map(|_| ())
+                };
+                let error = result.expect_err(scenario);
+                if scenario == "cancel" {
+                    assert!(matches!(error, CheckerError::Cancelled { .. }));
+                }
+                messages.push(error.to_string());
+            }
+            assert_eq!(messages[0], messages[1], "scenario {scenario}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn held_environment_reads_keep_the_full_final_private_membership_fence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for add_member in [false, true] {
+            let workspace = Workspace::create()?;
+            let root = workspace.path.canonicalize()?;
+            std::fs::create_dir(root.join("package"))?;
+            std::fs::write(root.join("package/member.py"), b"exact bytes\n")?;
+            let cancelled = AtomicBool::new(false);
+            let tree = super::super::DirectoryWitness::capture_tree(&root, control(&cancelled))?;
+            let mut session = EnvironmentReadSession::open(&root, control(&cancelled))?;
+            assert!(
+                session
+                    .digest(Path::new("package/member.py"), control(&cancelled), 64)?
+                    .is_some()
+            );
+            if add_member {
+                std::fs::write(root.join("package/new_member.py"), b"new member\n")?;
+            } else {
+                std::fs::remove_file(root.join("package/member.py"))?;
+            }
+            session.finish(control(&cancelled))?;
+            // The session owns exact file contents and named directory
+            // identity. The existing whole-tree fence separately owns all
+            // present/absent children; neither boundary substitutes for it.
+            assert!(
+                tree.iter()
+                    .any(|directory| directory.validate_current().is_err())
+            );
+        }
+        Ok(())
     }
 
     fn captured_configuration_witness(
