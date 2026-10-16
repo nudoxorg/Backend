@@ -262,7 +262,7 @@ mod tests {
         let current = current.iter().collect::<Vec<_>>();
         let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
         let project = sources.projects.get(package.as_bytes()).ok_or("project")?;
-        let projected = semantic::project_image_rows(&image, *blake3::hash(&bytes).as_bytes(), project, profile, initial.basis(), false, path, &current, None).map_err(|error| error.to_string())?;
+        let projected = semantic::project_image_rows(&image, *blake3::hash(&bytes).as_bytes(), project, profile, initial.basis(), false, path, &current, None, None).map_err(|error| error.to_string())?;
         let mut exact = ExactDeclarationSites::default();
         let mut rows = Vec::new();
         let mut symbols = BTreeSet::new();
@@ -365,6 +365,7 @@ mod tests {
                 false,
                 path,
                 &current,
+                None,
                 None,
             )
             .map_err(|error| error.to_string())?;

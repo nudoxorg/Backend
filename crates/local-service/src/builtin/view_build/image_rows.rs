@@ -353,6 +353,7 @@ pub(super) fn append_resident_image_rows(
         sink.path,
         sink.site_declarations,
         sink.native_projection(),
+        sink.native_csharp_projection(),
     )?;
     match residence.store(key, projected) {
         Ok(cached) => apply_projected_image(cached, sink),
@@ -1599,6 +1600,7 @@ mod tests {
             PATH,
             sites,
             None,
+            None,
         )
         .expect("direct projection");
         let mut symbols = BTreeSet::new();
@@ -2047,6 +2049,7 @@ mod tests {
             false,
             PATH,
             &[],
+            None,
             None,
         )
         .expect("project");

@@ -2317,11 +2317,10 @@ fn prepare_deferred_compile(
                 context.source_root.to_path_buf(),
                 sources.into_boxed_slice(),
                 profile,
-                native_candidate_profiles,
-                native_candidate_permits,
+                &native_candidate_profiles,
+                &native_candidate_permits,
             )?;
             let sources = source_set
-                .map_err(|error| BuiltinModelError(error.to_string()))?
                 .with_input_claim(input_claim);
             let sources = match context
                 .python_environment
