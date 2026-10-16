@@ -1,0 +1,55 @@
+{
+  "task": "W2 independent Python Blinker snapshot review",
+  "scope": "functional answer review only; no baseline update and no T2 green claim",
+  "candidate": {
+    "path": "/tmp/nudox-blinker-linux34-snapshot-candidate.json",
+    "sha256": "0574f320c63a03c823dc0fa3d12f288a8697c305d4d9a187e174f4a950736ab3",
+    "source_sha": "a453e3ff976da05cd951747de3d678a5dd8fd342",
+    "log": "/tmp/nudox-combined34-current.log"
+  },
+  "old_reviewed_snapshot": {
+    "path": "tests/surface/snapshots/python-blinker.json",
+    "sha256": "65490c4fd133b19f99f40833624eda4c9661ceec9a21aa291c5b84ea7bee5e03"
+  },
+  "functional_verdict": "candidate answers are suitable as an answers-only reviewed proposal: after replacing only image-scoped external symbol IDs and their derived image revision/source-root and response byte/token counts with placeholders, all answers compare exactly equal to the old snapshot.",
+  "changed_answer_classes": [
+    "image-scoped external endpoint coordinate and selected-symbol-id bytes for external NamedSignal and make_id rows (CLI and MCP projections)",
+    "image-derived revision/source_root tokens (including package revision and MCP page source root)",
+    "byte and estimated-token counts mechanically affected by the changed external coordinate strings"
+  ],
+  "unchanged_contracts": [
+    "same answer set and request shapes",
+    "same authored declaration and external display names",
+    "same kinds, paths, readiness states, summaries, and coverage",
+    "same row counts and ordering",
+    "same MCP wire content apart from external coordinates and derived byte accounting",
+    "all other functional fields exactly equal after normalizing the above image-derived fields"
+  ],
+  "source_check": {
+    "pinned_source": "/nix/store/835yxcd19m9gnz6bw05qg0i3hyd9ynf4-nudox-surface-python-blinker-1.9.0",
+    "make_id": "src/blinker/_utilities.py:42 defines make_id and describes stable receiver/sender identifiers; candidate still returns the same function row/name/summary/source identity.",
+    "NamedSignal": "src/blinker/base.py:464 defines NamedSignal(Signal), name/doc initialization and documented namespace behavior; candidate retains same struct/type/reference rows and source identities."
+  },
+  "identity_evidence": "Current code scopes ExternalTargetIdentity to package plus blake3(semantic image); stable external names may therefore receive new IDs when image bytes change. Automatic T1 builds851 and855 both produced 04df4e57\u2026::make_id across different heads, supporting a canonical image-scoped change over per-run randomness. No same-artifact rerun is claimed here.",
+  "performance": {
+    "decision": "reject candidate performance object",
+    "reason": "candidate add=14.86s and NamedSignal search=5.37s exceed existing bands; retain old performance object exactly and leave existing band failure visible. Do not use this functional review to calibrate or pass performance."
+  },
+  "proposal": {
+    "path": "tests/surface/snapshots/python-blinker.json",
+    "sha256": "4e87b96407146a41418561ae52a70461ac26c8de13f0ee020c9d209b91ace171",
+    "construction": "candidate answers merged with exact old reviewed performance object"
+  },
+  "limits": [
+    "No source edits, snapshot writes, builds, CI runs, or retries.",
+    "This proposal does not authorize replacing the repository snapshot; root review and performance handling remain separate."
+  ],
+  "reviewer": "Codex / GPT-6 Luna, independent pinned-source and recursive-answer review, accepted by root Codex / GPT-6",
+  "accepted_change": "Actual candidate answer fields retained verbatim; no runtime snapshot normalization changed. Existing performance suffix preserved byte for byte.",
+  "performance_suffix_sha256": "24113f1ebf620542e311b002ab99ba1fc79b668b94b0dd708e38c1dade7d793d",
+  "build": {
+    "pipeline": "nudox-triage-proof",
+    "job": "linux",
+    "number": 34
+  }
+}

@@ -1807,10 +1807,14 @@ fn compose_owner_timed(
     let relation_registry =
         product_relation_registry().map_err(|error| ProcessError::Profile(error.to_string()))?;
     timing.begin(startup_timing::Phase::WorkspaceOpen);
+    let genesis = genesis().map_err(|error| ProcessError::Profile(error.to_string()))?;
+    if std::env::var_os("NUDOX_TRACE").is_some() {
+        eprintln!("backend-local-service: workspace genesis admitted");
+    }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
-        genesis().map_err(|error| ProcessError::Profile(error.to_string()))?,
+        genesis,
         dispatcher,
         DaemonConfig::default(),
         relation_registry,

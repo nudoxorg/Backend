@@ -8,6 +8,7 @@
 //! syntax baseline and is never used to manufacture a semantic claim here.
 
 use crate::{compile_commands::CompileCommands, system_includes};
+use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile};
 use std::{
     ffi::OsString,
     fs,
@@ -320,12 +321,52 @@ impl ClangProject {
     /// or per-extension defaults.
     #[must_use]
     pub fn arguments(&self) -> Vec<String> {
+        self.arguments_with_defaults(default_arguments(
+            &self.entry,
+            package_prefers_cpp(&self.root),
+        ))
+    }
+
+    /// Returns arguments for the entry under an explicit C or C++ profile.
+    ///
+    /// A matching compilation-database command remains authoritative. The
+    /// supplied profile selects the fallback standard only when no command
+    /// exists for this entry.
+    #[must_use]
+    pub fn arguments_for_profile(&self, profile: LanguageProfile) -> Vec<String> {
+        let cpp_package = package_prefers_cpp(&self.root);
+        let defaults = match profile {
+            LanguageProfile::C(standard) => vec![format!(
+                "-std={}",
+                match standard {
+                    CStandard::C11 => "c11",
+                    CStandard::C17 => "c17",
+                    CStandard::C23 => "c23",
+                }
+            )],
+            LanguageProfile::Cxx(standard) => vec![
+                format!(
+                    "-std={}",
+                    match standard {
+                        CxxStandard::Cxx17 => "c++17",
+                        CxxStandard::Cxx20 => "c++20",
+                        CxxStandard::Cxx23 => "c++23",
+                        CxxStandard::Cxx26 => "c++2c",
+                    }
+                ),
+                "-x".to_owned(),
+                "c++".to_owned(),
+            ],
+            _ => default_arguments(&self.entry, cpp_package),
+        };
+        self.arguments_with_defaults(defaults)
+    }
+
+    fn arguments_with_defaults(&self, defaults: Vec<String>) -> Vec<String> {
         let database = CompileCommands::load(&self.root);
         let selected = database
             .as_ref()
             .and_then(|commands| commands.args_for(&self.entry));
-        let cpp_package = package_prefers_cpp(&self.root);
-        let defaults = default_arguments(&self.entry, cpp_package);
         let selected = selected.as_deref().unwrap_or(&defaults);
         let selected = without_toolchain_authority_args(selected);
         let mut authority = vec![

@@ -5,7 +5,7 @@
 use backend_frontend_clang::legacy::{
     ClangInput, ClangScratch, CollectError, DatabaseError, MAX_DATABASE_ARGUMENTS, collect,
 };
-use backend_semantic::vocabulary::{CStandard, LanguageProfile, RustEdition};
+use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile, RustEdition};
 use core::sync::atomic::AtomicBool;
 
 /// Holds the exact public error fact required by one collector boundary test.
@@ -168,6 +168,32 @@ fn cpp_header_entry_defaults_to_cxx_arguments_and_flag_first_shape() -> Result<(
     assert!(
         !arguments.iter().any(|argument| argument == "-std=c11"),
         "a .hpp entry must never receive the C default: {arguments:?}"
+    );
+
+    let profile_arguments = project.arguments_for_profile(LanguageProfile::Cxx(CxxStandard::Cxx23));
+    assert!(
+        profile_arguments.ends_with(&["-std=c++23".to_owned(), "-x".to_owned(), "c++".to_owned(),]),
+        "the explicit C++23 profile must control the no-database fallback: {profile_arguments:?}"
+    );
+
+    let database = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"single_include/pkg/pkg.hpp\",\"arguments\":[\"clang++\",\"-std=c++20\",\"-x\",\"c++\",\"-c\",\"single_include/pkg/pkg.hpp\"]}}]",
+        root.display()
+    );
+    std::fs::write(root.join("compile_commands.json"), database).map_err(|_| TestError::Profile)?;
+    let database_arguments =
+        project.arguments_for_profile(LanguageProfile::Cxx(CxxStandard::Cxx23));
+    assert!(
+        database_arguments
+            .iter()
+            .any(|argument| argument == "-std=c++20"),
+        "an applicable compilation-database standard must remain authoritative: {database_arguments:?}"
+    );
+    assert!(
+        !database_arguments
+            .iter()
+            .any(|argument| argument == "-std=c++23"),
+        "the profile fallback must not override a database command: {database_arguments:?}"
     );
     Ok(())
 }

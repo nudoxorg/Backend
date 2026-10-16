@@ -7,6 +7,7 @@
 //! Split from `config/mod.rs` to keep each file under the 2000-line limit
 //! (§19; ratchet tracked by #8280).
 
+use super::super::extends::resolve_extends_path;
 use super::super::*;
 use tempfile::tempdir;
 

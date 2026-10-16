@@ -321,11 +321,22 @@ let
       "NUDOX_GO_ORACLE_BIN"
     ]
     // {
-      packages = tools.nativeCompilers ++ [
-        pkgs.python3
-        pkgs.coreutils
-        pkgs.jdk25
-      ];
+      # T2 now launches the published desktop as well as CLI/MCP. Keep its
+      # font lookup hermetic, as the smoke shell does for the same binary.
+      FONTCONFIG_FILE = gui.fontConfig;
+      packages =
+        tools.nativeCompilers
+        ++ [
+          pkgs.python3
+          pkgs.coreutils
+          pkgs.jdk25
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.xorg.xorgserver
+          pkgs.xdotool
+          pkgs.imagemagick
+          (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
+        ];
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;
@@ -333,6 +344,29 @@ let
       NUDOX_SURFACE_PYTHON_BLINKER =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).python-blinker;
+      NUDOX_SURFACE_PYTHON_CACHETOOLS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-cachetools;
+      NUDOX_SURFACE_PYTHON_TOMLI = toString (import ./surface-corpus.nix { inherit pkgs; }).python-tomli;
+      NUDOX_SURFACE_PYTHON_ITSDANGEROUS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-itsdangerous;
+      NUDOX_SURFACE_RUST_ITOA = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa;
+      NUDOX_SURFACE_RUST_RYU = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu;
+      NUDOX_SURFACE_RUST_ITOA_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa-vendor;
+      NUDOX_SURFACE_RUST_RYU_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu-vendor;
+      NUDOX_SURFACE_GO_UUID = toString (import ./surface-corpus.nix { inherit pkgs; }).go-uuid;
+      NUDOX_SURFACE_GO_SYNC = toString (import ./surface-corpus.nix { inherit pkgs; }).go-sync;
+      NUDOX_SURFACE_C_RXI_MAP = toString (import ./surface-corpus.nix { inherit pkgs; }).c-rxi-map;
+      NUDOX_SURFACE_CPP_PUGIXML = toString (import ./surface-corpus.nix { inherit pkgs; }).cpp-pugixml;
+      NUDOX_SURFACE_JAVA_JSR305 = toString (import ./surface-corpus.nix { inherit pkgs; }).java-jsr305;
+      NUDOX_SURFACE_CSHARP_TINYIOC =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).csharp-tinyioc;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
       COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
       NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";
