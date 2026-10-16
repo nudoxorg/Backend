@@ -23,7 +23,7 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Literal
 
 
 GIB = 1024**3
@@ -36,6 +36,8 @@ MAX_CENSUS_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_CENSUS_ERROR_BYTES = 64 * 1024
 CENSUS_TIMEOUT_SECONDS = 22
 SSH_CONNECT_TIMEOUT_SECONDS = 8
+DestinationOutputVolume = Literal["root", "ci", "both"]
+DESTINATION_OUTPUT_VOLUMES = ("root", "ci", "both")
 CI_DISK_FIELDS = (
     "root_disk_device", "ci_disk_path", "ci_disk_device",
     "ci_disk_available_bytes", "ci_disk_reserved_bytes", "ci_disk_reserve_file",
@@ -402,10 +404,17 @@ def evaluate_fleet(
     destination_memory_only_for_remote: bool = False,
     excluded_hosts: Mapping[str, str] | None = None,
     include_ilo_prod: bool = False,
+    destination_output_volume: DestinationOutputVolume = "both",
 ) -> dict[str, Any]:
     """Fail closed on missing/stale/incomplete evidence and enforce fleet caps."""
     now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     reasons: list[str] = []
+    output_volume = destination_output_volume if (
+        type(destination_output_volume) is str
+        and destination_output_volume in DESTINATION_OUTPUT_VOLUMES
+    ) else None
+    if output_volume is None:
+        reasons.append("destination-output-volume-invalid")
     if type(include_ilo_prod) is not bool:
         reasons.append("fleet-optional-host-policy-invalid")
     configured_hosts = {**DEFAULT_HOSTS, **(OPTIONAL_HOSTS if include_ilo_prod is True else {})}
@@ -594,6 +603,7 @@ def evaluate_fleet(
             "available_memory_source": resources.get("available_memory_source"),
             "root_disk_available_bytes": resources.get("root_disk_available_bytes"),
             "root_disk_reserved_bytes": resources.get("root_disk_reserved_bytes", 0),
+            "ci_disk_resources_valid": _valid_ci_disk_resources(resources),
             "snapshot_issue_counts": census.get("snapshot_issue_counts"),
             "snapshot_race_counts": census.get("snapshot_race_counts"),
             "census_sha256": sample.get("census_sha256"),
@@ -602,7 +612,29 @@ def evaluate_fleet(
 
     if total_admission_slots + (1 if destination in hosts else 0) > FLEET_ADMISSION_SLOT_LIMIT:
         reasons.append("fleet-compiler-admission-slot-limit-reached")
+    storage_guard: dict[str, Any] = {
+        "output_volume": output_volume,
+        "root_floor_enforced": destination in host_summaries,
+        "root_reserve_enforced": destination in host_summaries,
+        "ci_reserve_enforced": False,
+        "ci_reserve_skipped_distinct_root_output": False,
+        "fresh_device_evidence_valid": False,
+        "same_device": None,
+    }
     if destination in host_summaries:
+        summary = host_summaries[destination]
+        ci_valid = _valid_ci_disk_resources(summary)
+        fresh_devices = (ci_valid and summary.get("complete") is True
+                         and summary.get("ci_disk_resources_valid") is True)
+        same_device = (summary["root_disk_device"] == summary["ci_disk_device"]) if ci_valid else None
+        if output_volume in ("root", "ci") and not fresh_devices:
+            reasons.append("destination-output-volume-device-evidence-invalid-or-missing")
+        skip_idle_ci = output_volume == "root" and fresh_devices and same_device is False
+        storage_guard.update(
+            fresh_device_evidence_valid=fresh_devices, same_device=same_device,
+            ci_reserve_enforced=ci_valid and not skip_idle_ci,
+            ci_reserve_skipped_distinct_root_output=skip_idle_ci,
+        )
         disk = host_summaries[destination].get("root_disk_available_bytes")
         if type(disk) is not int or disk < MIN_DESTINATION_DISK:
             reasons.append("destination-root-disk-below-16-gib-or-missing")
@@ -611,7 +643,7 @@ def evaluate_fleet(
             reasons.append("destination-root-disk-reserve-invalid")
         elif type(disk) is int and reserved and disk < reserved:
             reasons.append("destination-root-disk-below-ci-reserve")
-        if _valid_ci_disk_resources(host_summaries[destination]) and (
+        if ci_valid and not skip_idle_ci and (
             host_summaries[destination]["ci_disk_available_bytes"] < host_summaries[destination]["ci_disk_reserved_bytes"]
         ):
             reasons.append("destination-ci-disk-below-reserve")
@@ -630,6 +662,7 @@ def evaluate_fleet(
         "schema": "compiler-capacity-admission.v6",
         "sampled_at_utc": now.isoformat(),
         "destination": destination,
+        "destination_storage_guard": storage_guard,
         "sample_scope": {
             "configured_hosts": list(configured_hosts),
             "optional_hosts_enabled": ["ilo-prod"] if include_ilo_prod is True else [],
@@ -708,6 +741,10 @@ def main(argv: list[str] | None = None) -> int:
         "--include-ilo-prod", action="store_true",
         help="Include the fourth production host in every capacity/freshness check; required for destination ilo-prod. Managed admissions during production QA must use this four-host scope on every destination.",
     )
+    parser.add_argument(
+        "--destination-output-volume", choices=DESTINATION_OUTPUT_VOLUMES, default="both",
+        help="Reviewed destination write route (default: both). Root-only may skip the separate CI reserve only with fresh distinct-device evidence; same-filesystem reserves still apply. The managed job review must bind all writes to this route.",
+    )
     parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS_PER_PROCESS)
     parser.add_argument(
         "--allow-local-over-cap-for-remote", action="store_true",
@@ -775,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         destination_memory_only_for_remote=args.destination_memory_only_for_remote,
         excluded_hosts=excluded_hosts,
         include_ilo_prod=args.include_ilo_prod,
+        destination_output_volume=args.destination_output_volume,
     )
     report["collector_started_at_utc"] = started.isoformat()
     report["sampler_path"] = str(census_path.resolve())

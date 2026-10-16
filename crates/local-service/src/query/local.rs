@@ -2463,13 +2463,24 @@ mod prepared_corpus_tests {
             .ok_or_else(|| std::io::Error::other("missing view capability").into())
     }
 
+    #[derive(Debug)]
+    struct ViewFixtureError(backend_engine::ViewError);
+
+    impl std::fmt::Display for ViewFixtureError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "renamed view fixture rejected: {:?}", self.0)
+        }
+    }
+
+    impl std::error::Error for ViewFixtureError {}
+
     fn renamed_view(view: &ViewRoot) -> TestResult<ViewRoot> {
         let mut rows = view.rows().to_vec();
         rows.iter_mut()
             .find(|row| row.label == "alpha exact")
             .ok_or_else(|| std::io::Error::other("missing fixture symbol"))?
             .label = "zephyr marker".to_owned();
-        Ok(ViewRoot::new_checked(
+        let renamed = ViewRoot::new_checked(
             view.recipe(),
             view.basis(),
             view.frontier(),
@@ -2477,7 +2488,8 @@ mod prepared_corpus_tests {
             vec![backend_engine::ViewCoverage::Complete],
             view_capability(view)?,
         )
-        .map_err(|error| std::io::Error::other(format!("invalid renamed view: {error:?}")))?)
+        .map_err(|error| Box::new(ViewFixtureError(error)) as Box<dyn std::error::Error>)?;
+        Ok(renamed)
     }
 
     fn select(
