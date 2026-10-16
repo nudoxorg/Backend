@@ -239,6 +239,7 @@ fn append_compiler_query_facts(
             )?;
             let declarations = declarations.iter().collect::<Vec<_>>();
             let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
+            let locations = super::retained_locations::RetainedLocations::for_entities(profile, image, &session, &declarations, &kinds.exact).map_err(BuiltinModelError)?;
             for (identity, binding) in &kinds.exact {
                 exact_sites.record(package, caller_path, *binding,
                     RowId::Symbol(super::identity::semantic_symbol(package, *identity)));
@@ -261,6 +262,12 @@ fn append_compiler_query_facts(
                 }
                 let name = super::semantic_display_name(entity.name)?.to_owned();
                 let kind = kinds.kind_of(identity, entity.entity.kind);
+                let location = locations.place(image, &entity.entity).map(|placement| placement.location)
+                    .or_else(|| kinds.exact_location(profile, identity, caller_path));
+                let display_coordinate = match location {
+                    Some(location) => super::identity::declaration_coordinate(label, location.path(), location.start_line(), &name),
+                    None => semantic_coordinate(label, identity, &name),
+                };
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
@@ -389,7 +396,7 @@ fn append_compiler_query_facts(
                     backend_extension_trustfall::SemanticQueryPresentation {
                         id,
                         kind: kind.name().to_owned(),
-                        coordinate: semantic_coordinate(&label, identity, &name),
+                        coordinate: display_coordinate,
                         name,
                         signature: content.signature,
                         documentation: fragment_text(&content.document),

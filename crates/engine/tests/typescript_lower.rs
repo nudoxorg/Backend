@@ -8428,3 +8428,94 @@ fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<(
     );
     Ok(())
 }
+
+#[test]
+fn authored_parameter_properties_and_anonymous_callables_own_rows_but_type_carriers_do_not()
+-> TestResult<()> {
+    use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticReader as _};
+    let source = b"import { ArticlesService, Other as Renamed } from './service';\ntype Mixed = string | number; export class Screen { constructor(private readonly articleService: ArticlesService) {} method(input: { nested: string }) { return () => input; } }\nconst callback = () => 1;\n";
+    let authority = report(source);
+    let compiled = try_lower(source, Some(&authority))?;
+    let syntax =
+        backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("fixture.ts"), source)?;
+    let mut imports = 0;
+    let mut parameters = 0;
+    let mut fields = 0;
+    let mut support = 0;
+    for item in compiled.ir.items() {
+        let entity = compiled
+            .ir
+            .entity(item.id())
+            .ok_or_else(|| io::Error::other("entity"))?;
+        if [b"ArticlesService".as_slice(), b"Renamed".as_slice()].contains(&item.name())
+            && item.kind() == ItemKind::Reexport
+        {
+            let span = item
+                .source()
+                .ok_or_else(|| io::Error::other("import source"))?;
+            let site = syntax
+                .declarations()
+                .iter()
+                .find(|site| {
+                    site.name().as_bytes() == item.name()
+                        && site.kind() == backend_compile::DeclarationKind::Import
+                })
+                .ok_or_else(|| io::Error::other("import syntax"))?;
+            let backend_compile::SourceBindingIdentity::Exact(capture) = site.binding_identity()
+            else {
+                return Err(io::Error::other("exact import capture").into());
+            };
+            assert_eq!(capture.owner(), (span.start(), span.end()));
+            assert_eq!(entity.authority.publication, Role::PrimaryOwned);
+            imports += 1;
+        }
+        if item.name() == b"articleService" {
+            assert_eq!(entity.authority.publication, Role::PrimaryOwned);
+            let span = item
+                .source()
+                .ok_or_else(|| io::Error::other("authored parameter/field source"))?;
+            assert!(
+                source[span.start() as usize..span.end() as usize]
+                    .windows(b"articleService".len())
+                    .any(|w| w == b"articleService")
+            );
+            if item.kind() == ItemKind::Parameter {
+                parameters += 1;
+            }
+            if item.kind() == ItemKind::Field {
+                fields += 1;
+            }
+        }
+        if entity.authority.publication == Role::ReferenceOnly {
+            support += 1;
+            assert!(
+                item.source().is_none(),
+                "registered authored source owns a row"
+            );
+        }
+        assert_ne!(entity.authority.publication, Role::Unavailable);
+    }
+    assert_eq!((parameters, fields, imports), (1, 1, 2));
+    assert!(
+        support > 0,
+        "fixture must retain canonical type-expression support"
+    );
+    let mut bytes = vec![0; backend_semantic::ir::full_semantic_image_len(&compiled.ir)?];
+    backend_semantic::ir::encode_full_semantic_image(&compiled.ir, &mut bytes)?;
+    let reopened = backend_semantic::ir::SemanticImageView::reopen(&bytes)?;
+    let session = backend_engine::application::DocumentationSession::new(&reopened);
+    assert!(
+        session.canonical_entities().count() > session.publication_entities().count(),
+        "cold type support remains canonical without owning search rows"
+    );
+    assert!(
+        session.publication_entities().all(|entity| entity
+            .expect("entity")
+            .entity
+            .authority
+            .publication
+            == Role::PrimaryOwned)
+    );
+
+    Ok(())
+}
