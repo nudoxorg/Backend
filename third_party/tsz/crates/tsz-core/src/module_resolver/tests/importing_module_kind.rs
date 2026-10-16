@@ -15,7 +15,7 @@
 
 use super::super::*;
 
-fn resolver_with_module(module: crate::emitter::ModuleKind) -> ModuleResolver {
+fn resolver_with_module(module: crate::emitter::ModuleKind) -> ModuleResolver<'static> {
     let options = ResolvedCompilerOptions {
         module_resolution: Some(ModuleResolutionKind::Bundler),
         printer: crate::emitter::PrinterOptions {
