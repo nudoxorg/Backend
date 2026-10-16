@@ -8401,17 +8401,17 @@ fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<(
     let syntax =
         backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("workout.ts"), source)?;
     let mut checked = 0;
-    for item in compiled
-        .ir
-        .items()
-        .filter(|item| [b"Workout".as_slice(), b"workout".as_slice()].contains(&item.name()))
-    {
+    for item in compiled.ir.items().filter(|item| {
+        [b"Workout".as_slice(), b"workout".as_slice()]
+            .into_iter()
+            .any(|name| item.name() == name)
+    }) {
         let span = item
             .source()
             .ok_or_else(|| io::Error::other("written declaration lost its compiler extent"))?;
         assert!(
             syntax.declarations().iter().any(|site| {
-                site.name().as_bytes() == item.name()
+                item.name() == site.name().as_bytes()
                     && matches!(site.binding_identity(), SourceBindingIdentity::Exact(capture)
                     if capture.owner() == (span.start(), span.end()))
             }),
