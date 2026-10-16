@@ -88,9 +88,15 @@ pub(crate) fn entity(
     let authority = EntityAuthorityFacts {
         publication: if layout.schema >= super::wire::SCHEMA_PUBLICATION_ROLES {
             crate::ir::DeclarationPublicationRole::from_byte(bytes[offset + 33]).ok_or(
-                FullSemanticImageFault::Discriminant { field: FullSemanticImageField::Entities, row, observed: bytes[offset + 33] }
+                FullSemanticImageFault::Discriminant {
+                    field: FullSemanticImageField::Entities,
+                    row,
+                    observed: bytes[offset + 33],
+                },
             )?
-        } else { crate::ir::DeclarationPublicationRole::Unavailable },
+        } else {
+            crate::ir::DeclarationPublicationRole::Unavailable
+        },
         parentage: parentage(bytes, offset, row)?,
         source: availability(bytes[offset + 24], row)?,
         source_file: availability(bytes[offset + 25], row)?,

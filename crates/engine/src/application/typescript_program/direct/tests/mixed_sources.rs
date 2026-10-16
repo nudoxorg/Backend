@@ -169,7 +169,8 @@ fn both_captured_profiles_keep_mixed_native_kinds_and_json_value_types() {
             project
                 .diagnostics()
                 .any(|diagnostic| diagnostic.code == 2322 && diagnostic.file == JSON_TYPES_PATH),
-            "the native JSON boolean type must reject assignment to string, not become any"
+            "the native JSON boolean type must reject assignment to string, not become any: {:?}",
+            project.diagnostics().collect::<Vec<_>>()
         );
     }
 }
@@ -256,7 +257,13 @@ fn captured_json_bytes_invalidate_the_recipe_and_native_value_type() {
             .project()
             .unwrap()
             .diagnostics()
-            .any(|diagnostic| diagnostic.code == 2322 && diagnostic.file == JSON_TYPES_PATH)
+            .any(|diagnostic| diagnostic.code == 2322 && diagnostic.file == JSON_TYPES_PATH),
+        "captured JSON default import diagnostics: {:?}",
+        authority
+            .project()
+            .unwrap()
+            .diagnostics()
+            .collect::<Vec<_>>()
     );
     fixture.write(JSON_PATH, r#"{"enabled":"now a string","title":"Docs"}"#);
     let next = native(&fixture, &sources);

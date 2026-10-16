@@ -4,7 +4,7 @@
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-use backend_version::ScopeRoot;
+use backend_version::{ContentId, ScopeRoot, SourceFactDomain, ToolchainDomain};
 
 use super::wire::{
     CSHARP_TAG, TYPESCRIPT_TAG, domain_code, extension_row_key, identity_bytes, validate_record,
@@ -23,8 +23,8 @@ use crate::ir::{
     IrBuilder, Item, ItemKind, ItemName, JavaFacts, JavaRelease, Language, LanguageExtensionInput,
     LanguageProfile, ParentageAuthority, PythonFacts, PythonParameterKind, PythonVersion,
     RustEdition, RustFacts, RustOwnership, SemanticInputWitness, SemanticIrPlane,
-    SemanticPlaneKind, SemanticReader, SourceSpan, TypeExpr, TypeScriptFacts, TypeScriptSource,
-    VariantFingerprint, Visibility,
+    SemanticPlaneKind, SemanticReader, SourceIdentity, SourceSpan, TypeExpr, TypeScriptFacts,
+    TypeScriptSource, VariantFingerprint, Visibility,
 };
 
 const MAXIMUM_BYTES: usize = crate::ir::MAX_SEMANTIC_SEGMENT_BYTES;
@@ -42,6 +42,20 @@ fn add_extension(
     seed: u8,
     extension: LanguageExtensionInput<'_>,
 ) -> crate::ir::EntityId {
+    add_extension_at(builder, seed, extension, None)
+}
+
+fn add_extension_at(
+    builder: &mut IrBuilder,
+    seed: u8,
+    extension: LanguageExtensionInput<'_>,
+    source: Option<SourceSpan>,
+) -> crate::ir::EntityId {
+    let source_availability = if source.is_some() {
+        FactAvailability::Captured
+    } else {
+        FactAvailability::Unavailable
+    };
     let item = Item {
         name: ItemName::Named(builder.intern_atom(b"extension-owner").expect("owner atom")),
         kind: ItemKind::Function,
@@ -51,7 +65,7 @@ fn add_extension(
         members: builder.intern_members(&[]).expect("empty members"),
         docs: builder.intern_docs(&[]).expect("empty docs"),
         attributes: builder.intern_attributes(&[]).expect("empty attributes"),
-        source: None,
+        source,
     };
     builder
         .add_item(
@@ -60,6 +74,8 @@ fn add_extension(
             Some(extension),
             EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
+                source: source_availability,
+                source_file: source_availability,
                 visibility: FactAvailability::Captured,
                 language_extension: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
@@ -192,6 +208,31 @@ fn fixture(profile: LanguageProfile) -> Ir {
             add_extension(&mut builder, 6, LanguageExtensionInput::Java(&facts));
         }
         LanguageProfile::C(_) | LanguageProfile::Cxx(_) => {
+            let source = b"A Widget";
+            let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
+            let toolchain =
+                ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang extension fixture");
+            builder
+                .set_image_provenance(
+                    SourceIdentity {
+                        identity: source_identity,
+                        byte_len: u32::try_from(source.len()).expect("source length fits"),
+                    },
+                    crate::vocabulary::CompileRecipeFact::derive(
+                        profile,
+                        crate::vocabulary::Stage::LowerIr,
+                        crate::vocabulary::NativeTool::Clang,
+                        source_identity,
+                        toolchain,
+                    ),
+                    crate::ir::PackageLineage::new("cargo", "clang-extension-fixture")
+                        .expect("package lineage"),
+                    "include/recorded.hpp",
+                )
+                .expect("captured source provenance");
+            let path = builder
+                .intern_atom(b"include/recorded.hpp")
+                .expect("source path");
             let facts = ClangFacts {
                 qualifiers: ClangQualifiers {
                     is_const: true,
@@ -205,8 +246,14 @@ fn fixture(profile: LanguageProfile) -> Ir {
                 },
                 templates: builder.intern_type_parameters(&[]).expect("templates"),
                 includes: builder.intern_attributes(&[]).expect("includes"),
+                declared_name: crate::ir::SourceSpan::new(path, 2, 8),
             };
-            add_extension(&mut builder, 7, LanguageExtensionInput::Clang(&facts));
+            add_extension_at(
+                &mut builder,
+                7,
+                LanguageExtensionInput::Clang(&facts),
+                SourceSpan::new(path, 0, 8),
+            );
         }
     }
     builder.finish().expect("IR")
@@ -310,6 +357,102 @@ fn all_supported_extension_profiles_reopen_and_resolve_types_references() {
         )
         .expect("independent reader census agrees");
     }
+}
+
+#[test]
+fn clang_versioned_v2_wire_retains_captured_declared_name_file_and_bounds() {
+    let profile = LanguageProfile::Cxx(CxxStandard::Cxx26);
+    let ir = fixture(profile);
+    let payloads = encode_extensions(&ir, profile);
+    let all_bytes = payloads
+        .iter()
+        .flat_map(|segment| segment.bytes().iter().copied())
+        .collect::<Vec<_>>();
+    let path = b"include/recorded.hpp";
+    assert!(all_bytes.windows(path.len()).any(|window| window == path));
+    assert!(
+        all_bytes
+            .windows(4)
+            .any(|window| window == 2_u32.to_be_bytes())
+    );
+    assert!(
+        all_bytes
+            .windows(4)
+            .any(|window| window == 8_u32.to_be_bytes())
+    );
+
+    let checked = checked_types(&ir);
+    let owners = expected_extension_owners(&ir);
+    let checked_extensions =
+        validate_language_extension_family_v2(profile, views(&payloads), &checked, &owners)
+            .expect("versioned v2 reader accepts the source-backed name row");
+    assert_eq!(checked_extensions.row_count(), 1);
+    verify_language_extension_plane_against_reader(
+        &ir,
+        profile,
+        witness(),
+        &payloads
+            .iter()
+            .map(|segment| segment.metadata().expect("descriptor"))
+            .collect::<Vec<_>>(),
+        &payloads
+            .iter()
+            .map(|segment| segment.bytes())
+            .collect::<Vec<_>>(),
+        MAXIMUM_BYTES,
+    )
+    .expect("wire row matches the captured reader's exact span");
+
+    let segment = payloads.first().expect("Clang extension segment");
+    let segment_view = decode_semantic_plane_segment(
+        segment.kind(),
+        &segment.metadata().expect("descriptor"),
+        segment.bytes(),
+    )
+    .expect("Clang segment decodes");
+    let record = segment_view.records().next().expect("Clang row");
+    let kind = SemanticPlaneKind::Ir(SemanticIrPlane::LanguageExtensions(profile));
+    let mut reversed_span = record.payload().to_vec();
+    let len = reversed_span.len();
+    let start_offset = len.checked_sub(8).expect("name span has two bounds");
+    let end_offset = len.checked_sub(4).expect("name span has an end bound");
+    reversed_span
+        .get_mut(start_offset..end_offset)
+        .expect("encoded start cell")
+        .copy_from_slice(&9_u32.to_be_bytes());
+    reversed_span
+        .get_mut(end_offset..len)
+        .expect("encoded end cell")
+        .copy_from_slice(&8_u32.to_be_bytes());
+    assert!(matches!(
+        validate_record(kind, record.key(), record.tag(), &reversed_span),
+        Err(SemanticPlaneRecordError::RowGrammar)
+    ));
+
+    let span_suffix_bytes = 1 + 4 + path.len() + 8;
+    let legacy_payload_len = record
+        .payload()
+        .len()
+        .checked_sub(span_suffix_bytes)
+        .expect("v2 row has the complete optional name-span suffix");
+    let legacy_payload = record
+        .payload()
+        .get(..legacy_payload_len)
+        .expect("legacy row ends before the v2 name-span suffix");
+    let legacy_key = super::wire::legacy_clang_extension_row_key(
+        profile,
+        version(7).identity(),
+        super::wire::CLANG_TAG,
+    );
+    assert!(validate_record(kind, legacy_key, record.tag(), legacy_payload).is_ok());
+    assert!(matches!(
+        validate_record(kind, record.key(), record.tag(), legacy_payload),
+        Err(SemanticPlaneRecordError::StableKeyMismatch)
+    ));
+    assert!(matches!(
+        validate_record(kind, legacy_key, record.tag(), record.payload()),
+        Err(SemanticPlaneRecordError::StableKeyMismatch)
+    ));
 }
 
 fn typescript_pair(reverse: bool) -> Ir {

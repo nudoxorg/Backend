@@ -25,6 +25,8 @@ pub(crate) enum ProjectCommand {
     Retry,
     /// Ask the owner to index it again after it was paused.
     Resume,
+    /// Stop a positively identified local preflight before its first send.
+    StopPending,
     /// Read the durable outcome of its saved operation; starts no new index.
     CheckOutcome,
     /// Deliberately start distinct work after an exact consumed-key tombstone.
@@ -56,6 +58,7 @@ impl ProjectCommand {
             Self::Activate => "Make active",
             Self::Retry => "Try again",
             Self::Resume => "Resume",
+            Self::StopPending => "Stop pending request",
             Self::CheckOutcome => "Check outcome",
             Self::StartNewIndex => "Start a new index",
             Self::Reveal => "Reveal",
@@ -70,7 +73,7 @@ impl ProjectCommand {
         match self {
             Self::Retry | Self::Resume | Self::Locate | Self::CheckOutcome | Self::StartNewIndex => Weight::Primary,
             Self::Activate | Self::Reveal => Weight::Plain,
-            Self::Remove => Weight::Danger,
+            Self::Remove | Self::StopPending => Weight::Danger,
         }
     }
 
@@ -80,6 +83,7 @@ impl ProjectCommand {
         match self {
             Self::Activate => Intent::ActivateProject(project.clone()),
             Self::Retry | Self::Resume | Self::StartNewIndex => Intent::RetryIndex(project.clone()),
+            Self::StopPending => Intent::CancelIndex(project.clone()),
             Self::CheckOutcome => Intent::CheckIndexOutcome(project.clone()),
             Self::Reveal => Intent::RevealProject(project.clone()),
             Self::Locate => Intent::OpenAddProject,

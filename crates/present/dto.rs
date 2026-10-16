@@ -1016,6 +1016,9 @@ pub struct ProductDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_source_membership_page:
         Option<backend_library::PackageSourceMembershipPageResultV1>,
+    /// Current selected compiler captures and complete diagnostic read selectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_outcomes: Option<backend_library::PackageCompilerOutcomes>,
     /// Exact guarded native graph page, retaining every edge and authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_graph_page: Option<backend_library::PackageGraphPage>,
@@ -1215,6 +1218,7 @@ impl ProductDto {
             },
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
+            compiler_outcomes: view.compiler_outcomes().cloned(),
             package_graph_page: view.package_graph_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
             package_discovery: view.package_discovery().cloned(),

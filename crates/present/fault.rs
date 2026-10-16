@@ -341,6 +341,11 @@ pub enum Affordance {
         /// Original bounded page credit.
         limit: u16,
     },
+    /// Read every current compiler capture independently of packaging metadata.
+    ReadCompilerOutcomes {
+        /// Exact local package retained by the failed/partial operation.
+        package: backend_library::PackageReference,
+    },
     /// Index or refresh one project path.
     Reindex {
         /// Project path to index.
@@ -441,6 +446,10 @@ impl Affordance {
             Self::Reindex { path } => {
                 Some(format!("nudox add {}", crate::shell::quote_argument(path)))
             }
+            Self::ReadCompilerOutcomes { package } => crate::shell::command("package-profile",&[
+                package.as_str().to_owned(),"--compiler-outcome".to_owned(),
+                serde_json::to_string(&backend_library::PackageCompilerOutcomeRead::Current).ok()?,
+            ]),
             Self::RetryIndexAttempt {
                 path,
                 execution_intent,
@@ -554,6 +563,11 @@ impl Affordance {
             Self::Reindex { path } => Some(serde_json::json!({
                 "name": "backend.index",
                 "arguments": { "path": path }
+            })),
+            Self::ReadCompilerOutcomes { package } => Some(serde_json::json!({
+                "name":"backend.package_profile", "arguments":{
+                    "package":package.as_str(), "compiler_outcome":backend_library::PackageCompilerOutcomeRead::Current,
+                },
             })),
             Self::RetryIndexAttempt {
                 path,
@@ -806,7 +820,7 @@ impl Fault {
                     facts.join("; "),
                 ),
             ),
-            Affordance::None,
+            Affordance::ReadCompilerOutcomes { package:package.clone() },
         )
     }
 
