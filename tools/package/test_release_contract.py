@@ -659,6 +659,115 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(stable_github.asset_data[5], b"channel installer")
             self.assertEqual(stable_github.release["assets"][-1]["name"], "install-linux-x64.py")
 
+    def checkpoint_shell_pair(self, root, manifest):
+        from linux_release_package import checkpoint_shell
+        installer = (root / "install-linux-x64.py").read_bytes()
+        tag = f"checkpoint-20261011-{manifest['source_sha'][:10]}-linux-x64"
+        shell = root / "install-linux-x64.sh"
+        shell.write_bytes(checkpoint_shell(tag, installer, manifest["minimum_glibc"]))
+        sidecar = root / "install-linux-x64.sh.sha256"
+        sidecar.write_text(f"{release.sha256(shell)}  {shell.name}\n")
+        return tag, shell, sidecar
+
+    def test_new_linux_checkpoint_publishes_exact_generated_shell_and_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+            tag, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
+            self.assertEqual(release.validate_linux(root, manifest, require_qa=False), manifest)
+            github = FakeGitHub()
+            github.publish(root, tag, False, "linux-x64", draft_only=True)
+            published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
+            self.assertEqual(published[shell.name], shell.read_bytes())
+            self.assertEqual(published[sidecar.name], sidecar.read_bytes())
+            self.assertEqual(published["install-linux-x64.py"], (root / "install-linux-x64.py").read_bytes())
+
+    def test_checkpoint_upload_keeps_admitted_bytes_when_candidate_paths_change_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+            tag, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
+            original = {p.name: p.read_bytes() for p in [root / "install-linux-x64.py", shell, sidecar]}
+            github = FakeGitHub()
+            original_lookup = github.find_release
+            def changed_after_admission(selected_tag):
+                for name in original:
+                    path = root / name
+                    replacement = root / (name + ".replacement")
+                    replacement.write_bytes(b"replaced after admission, must never upload")
+                    path.unlink()
+                    # The Python path remains regular; the two shell paths become symlinks.
+                    if name.endswith(".py"):
+                        replacement.rename(path)
+                    else:
+                        path.symlink_to(replacement)
+                return original_lookup(selected_tag)
+            with patch.object(github, "find_release", side_effect=changed_after_admission):
+                github.publish(root, tag, False, "linux-x64", draft_only=True)
+            published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
+            self.assertEqual({name: published[name] for name in original}, original)
+
+    def test_new_checkpoint_missing_pair_tamper_and_symlinks_refuse_before_publication(self):
+        for fault in ["missing-both", "missing-shell", "missing-sidecar", "body", "sidecar", "installer", "symlink"]:
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+                tag, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
+                if fault in ["missing-both", "missing-shell"]:
+                    shell.unlink()
+                if fault in ["missing-both", "missing-sidecar"]:
+                    sidecar.unlink()
+                if fault == "body":
+                    shell.write_bytes(shell.read_bytes().replace(b"--proto", b"--other", 1))
+                if fault == "sidecar":
+                    sidecar.write_text("0" * 64 + "  install-linux-x64.sh\n")
+                if fault == "installer":
+                    installer = root / "install-linux-x64.py"
+                    installer.write_bytes(installer.read_bytes() + b"\n# changed installer bytes\n")
+                if fault == "symlink":
+                    original = root / "original.sh"
+                    shell.rename(original)
+                    shell.symlink_to(original)
+                github = FakeGitHub()
+                with self.assertRaises(ValueError):
+                    github.publish(root, tag, False, "linux-x64", draft_only=True)
+                self.assertEqual(github.uploaded, {})
+                self.assertIsNone(github.release)
+
+    def test_legacy_missing_pair_remains_compatible_but_half_pair_never_does(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root)
+            self.assertEqual(release.validate_linux(root, manifest, require_qa=False), manifest)
+            _, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
+            sidecar.unlink()
+            with self.assertRaisesRegex(ValueError, "both launcher and SHA-256"):
+                release.validate_linux(root, manifest, require_qa=False)
+
+    def test_checkpoint_shell_cannot_be_published_under_a_different_candidate_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+            self.checkpoint_shell_pair(root, manifest)
+            github = FakeGitHub()
+            with self.assertRaisesRegex(ValueError, "exact pinned checkpoint tag"):
+                github.publish(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
+            self.assertIsNone(github.release)
+            self.assertEqual(github.uploaded, {})
+
+    def test_stable_linux_uses_channel_python_and_never_publishes_checkpoint_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root, package_changes={"checkpoint_shell_asset": "install-linux-x64.sh"})
+            self.checkpoint_shell_pair(root, manifest)
+            github = FakeGitHub()
+            with patch.object(release, "validate", return_value=manifest):
+                github.publish(root, "v0.2.0", True, "linux-x64")
+            published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
+            self.assertEqual(published["install-linux-x64.py"], (root / "install-linux-x64-channel.py").read_bytes())
+            self.assertNotIn("install-linux-x64.sh", published)
+            self.assertNotIn("install-linux-x64.sh.sha256", published)
+
     def test_publication_is_read_back_verified_and_retry_does_not_replace_assets(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate(directory)

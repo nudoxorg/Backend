@@ -49,6 +49,31 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def checkpoint_shell(release_tag: str, installer: bytes, minimum_glibc: str) -> bytes:
+    """Pin the saved-file launcher to this invocation's completed installer bytes."""
+    if not isinstance(release_tag, str) or not TAG_RE.fullmatch(release_tag):
+        fail("checkpoint shell requires a canonical Linux release tag")
+    if not isinstance(installer, bytes) or not 0 < len(installer) <= 16 * 1024 * 1024:
+        fail("checkpoint shell requires a bounded nonempty Python installer")
+    if not isinstance(minimum_glibc, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", minimum_glibc):
+        fail("checkpoint shell requires the measured glibc version")
+    template = Path(__file__).with_name("install_linux_checkpoint.sh.in").read_text()
+    substitutions = {
+        "@INSTALLER_URL@": f"https://github.com/nudoxorg/Backend/releases/download/{release_tag}/install-linux-x64.py",
+        "@INSTALLER_SHA256@": hashlib.sha256(installer).hexdigest(),
+        "@INSTALLER_BYTES@": str(len(installer)),
+        "@MINIMUM_GLIBC@": minimum_glibc,
+        "@MINIMUM_GLIBC_TUPLE@": minimum_glibc.replace(".", ","),
+    }
+    for token, value in substitutions.items():
+        if token not in template:
+            fail("checkpoint shell template omits " + token)
+        template = template.replace(token, value)
+    if re.search(r"@[A-Z][A-Z0-9_]*@", template):
+        fail("checkpoint shell template contains an unfilled placeholder")
+    return template.encode("utf-8")
+
+
 def run(command: list[str]) -> str:
     try:
         return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
@@ -638,6 +663,7 @@ def main() -> int:
         "embedding_setup": embedding_setup,
         "glibc_libraries_bundled": False,
         "runtime_acceptance": "external_native_qa_record_required",
+        "checkpoint_shell_asset": "install-linux-x64.sh",
     }
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
     sdk_note = ("This archive also includes a receipt-bound Node/TypeScript SDK for explicitly\n"
@@ -683,8 +709,13 @@ def main() -> int:
     candidate_installer = candidate_installer.replace('PINNED_MANIFEST_SHA256 = ""', f'PINNED_MANIFEST_SHA256 = "{sha256(output / "release-manifest.json")}"', 1)
     if candidate_installer == installer_source or 'PINNED_MANIFEST_SHA256 = ""' in candidate_installer:
         fail("could not construct digest-pinned checkpoint installer")
-    (output / "install-linux-x64.py").write_text(candidate_installer)
-    print(json.dumps({"release_tag": release_tag, "archive": str(archive), "sha256": archive_hash, "size_bytes": archive.stat().st_size, "minimum_glibc": minimum_glibc, "bundled_libraries": sorted(libraries), "release_manifest": str(output / "release-manifest.json"), "installer": str(output / "install-linux-x64.py")}, indent=2))
+    installer_bytes = candidate_installer.encode("utf-8")
+    (output / "install-linux-x64.py").write_bytes(installer_bytes)
+    shell_path = output / "install-linux-x64.sh"
+    shell_path.write_bytes(checkpoint_shell(release_tag, installer_bytes, minimum_glibc))
+    shell_digest = sha256(shell_path)
+    (output / "install-linux-x64.sh.sha256").write_text(f"{shell_digest}  {shell_path.name}\n")
+    print(json.dumps({"release_tag": release_tag, "archive": str(archive), "sha256": archive_hash, "size_bytes": archive.stat().st_size, "minimum_glibc": minimum_glibc, "bundled_libraries": sorted(libraries), "release_manifest": str(output / "release-manifest.json"), "installer": str(output / "install-linux-x64.py"), "shell_installer": {"path": str(shell_path), "sha256": shell_digest, "size_bytes": shell_path.stat().st_size}}, indent=2))
     return 0
 
 
