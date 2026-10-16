@@ -43,7 +43,24 @@ pub struct QueryPageRecipe {
     preimage: Box<[u8]>,
 }
 
+const PACKAGES_PAGE_RECIPE: &[u8] = b"packages-page";
+
 impl QueryPageRecipe {
+    /// Binds a legacy fixed package page to its selected source root.
+    #[must_use]
+    pub fn packages(root: ViewStateRoot) -> Self {
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"query",
+            PACKAGES_PAGE_RECIPE,
+            root.as_bytes(),
+            &[0],
+        ])
+        .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
     /// Binds a names request to its selected source root.
     #[must_use]
     pub fn names(root: ViewStateRoot, query: &NameQuery) -> Self {
@@ -263,7 +280,7 @@ impl Library {
                 "this projection requires a legacy fixed page and position".to_owned(),
             ));
         }
-        let recipe_bytes = b"packages-page";
+        let recipe_bytes = PACKAGES_PAGE_RECIPE;
         let recipe = self.query_recipe(recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
