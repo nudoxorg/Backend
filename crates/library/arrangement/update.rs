@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn result_slot_classification_borrows_parent_without_copying_document() {
         let basis = crate::Basis::new(
-            crate::view_state_root(b"borrowed-parent"),
+            crate::view_state_root(&[("borrowed-parent".to_owned(), String::new())]),
             crate::object_version(b"borrowed-parent"),
         );
         let parent_symbol = crate::symbol_key("borrowed-parent");

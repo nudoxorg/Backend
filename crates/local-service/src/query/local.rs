@@ -2476,7 +2476,8 @@ mod prepared_corpus_tests {
             rows,
             vec![backend_engine::ViewCoverage::Complete],
             view_capability(view)?,
-        )?)
+        )
+        .map_err(|error| std::io::Error::other(format!("invalid renamed view: {error:?}")))?)
     }
 
     fn select(

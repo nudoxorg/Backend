@@ -8404,14 +8404,18 @@ fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<(
     for item in compiled
         .ir
         .items()
-        .filter(|item| [b"Workout".as_slice(), b"workout".as_slice()].contains(&item.name()))
+        .filter(|item| {
+            item.name()
+                .named_bytes()
+                .is_some_and(|name| name == b"Workout" || name == b"workout")
+        })
     {
         let span = item
             .source()
             .ok_or_else(|| io::Error::other("written declaration lost its compiler extent"))?;
         assert!(
             syntax.declarations().iter().any(|site| {
-                site.name().as_bytes() == item.name()
+                item.name().named_bytes() == Some(site.name().as_bytes())
                     && matches!(site.binding_identity(), SourceBindingIdentity::Exact(capture)
                     if capture.owner() == (span.start(), span.end()))
             }),
