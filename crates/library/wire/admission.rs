@@ -980,6 +980,14 @@ pub fn admit_surface_reply(
             None => {}
         }
     }
+    if let crate::SurfaceCommand::PackageSourceMembership { request } = command {
+        if !matches!(reply, crate::SurfaceReply::PackageSourceMembershipPage(page) if page.admits_request(request))
+        {
+            return Err(ReplyAdmissionError::Protocol(
+                "source membership reply does not match the exact requested frontier".to_owned(),
+            ));
+        }
+    }
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)
         && !tree.request_binding().is_some_and(|binding| {

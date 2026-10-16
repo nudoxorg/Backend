@@ -217,6 +217,33 @@ pub(crate) fn execute_with_output_admission(
     let Request::Surface(command) = request else {
         return backend_present::answer(&mut engine, request);
     };
+    if let SurfaceCommand::PackageSourceMembership { request } = command.as_ref() {
+        let mut selection = backend_present::PackageSourceMembershipSelection::new(request)?;
+        let original_context = engine.session.request_context().cloned();
+        let lifetime = original_context.clone().unwrap_or_default();
+        lifetime
+            .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        engine
+            .session
+            .set_request_context(Some(lifetime.clone()))
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        let result = membership_with_output_admission(
+            &mut engine,
+            &mut selection,
+            || {
+                lifetime.check().map_err(|error| {
+                    Fault::from_client_error(&error, backend_present::Operand::Whole)
+                })
+            },
+            &mut admit,
+        );
+        let restored = engine
+            .session
+            .set_request_context(original_context)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     let backend_library::SurfaceCommand::PackageGraphPage { request } = command.as_ref() else {
         return backend_present::answer(&mut engine, &Request::Surface(command.clone()));
     };
@@ -281,6 +308,38 @@ pub(crate) fn execute_with_output_admission(
         .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
     result.and_then(|answer| restored.map(|()| answer))
 }
+
+fn membership_with_output_admission(
+    engine: &mut dyn Engine,
+    selection: &mut backend_present::PackageSourceMembershipSelection,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&Answer) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    loop {
+        check()?;
+        let command = SurfaceCommand::PackageSourceMembership {
+            request: selection.request().clone(),
+        };
+        let reply = engine
+            .surface(command.clone())
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        selection.admit_reply(&reply)?;
+        let answer = Answer::Product(Box::new(backend_present::product_view_for_owned_command(
+            &command, reply,
+        )));
+        let result = admit(&answer);
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault) if selection.shrink_after(&fault) => {}
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/membership_admission.rs"]
+mod membership_admission_tests;
 
 /// One surface exchange with no owner replacement. A command that changes
 /// state cannot be proven undelivered once its connection is lost, so the

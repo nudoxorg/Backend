@@ -4,6 +4,51 @@ use backend_library::{SemanticSourceRequest, SemanticVersionsPage};
 use wire_admission::ResponseBudget;
 
 impl<P: Product> Server<P> {
+    pub(super) fn source_membership_tool(
+        &mut self,
+        request: &backend_library::PackageSourceMembershipPageRequestV1,
+        detail: Detail,
+        invocation: McpInvocation<'_>,
+        response_id: &Value,
+    ) -> Result<Value, RpcError> {
+        let mut selection = backend_present::PackageSourceMembershipSelection::new(request)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let lifetime = self.semantic_lifetime()?;
+        let budget = ResponseBudget::new(response_id);
+        loop {
+            lifetime.check().map_err(semantic_client_error)?;
+            let command = SurfaceCommand::PackageSourceMembership {
+                request: selection.request().clone(),
+            };
+            let reply = self
+                .product
+                .surface(command.clone())
+                .map_err(semantic_client_error)?;
+            selection
+                .admit_reply(&reply)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
+            let arguments = semantic_arguments(invocation, &command)?;
+            let rendered = self
+                .semantic_result(
+                    &command,
+                    reply,
+                    detail,
+                    invocation.with_arguments(&arguments),
+                )
+                .and_then(|result| budget.admit(result));
+            lifetime.check().map_err(semantic_client_error)?;
+            match rendered {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if error
+                        .fault
+                        .as_ref()
+                        .is_some_and(|fault| selection.shrink_after(fault)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(super) fn semantic_lifetime(&mut self) -> Result<RequestContext, RpcError> {
         let lifetime = self.request_context.clone().unwrap_or_default();
         lifetime
@@ -221,6 +266,12 @@ impl<P: Product> Server<P> {
                     SurfaceCommand::SemanticSource { request }
                 })
             }
+            (SurfaceReply::PackageSourceMembershipPage(backend_library::PackageSourceMembershipPageResultV1::Page {
+                source_relation_root, source_version, next, ..
+            }), SurfaceCommand::PackageSourceMembership { request }) => next.as_ref().map(|cursor| {
+                let request = request.clone().with_selection(*source_relation_root, *source_version).with_cursor(cursor.clone());
+                SurfaceCommand::PackageSourceMembership { request }
+            }),
             _ => None,
         };
         let next = next_command
@@ -292,6 +343,9 @@ fn semantic_arguments(
                 arguments.insert("limit".to_owned(), json!(limit));
             }
             SurfaceCommand::SemanticSource { request } => {
+                arguments.insert("request".to_owned(), json!(request));
+            }
+            SurfaceCommand::PackageSourceMembership { request } => {
                 arguments.insert("request".to_owned(), json!(request));
             }
             _ => return Err(RpcError::tool("semantic arguments changed shape")),
