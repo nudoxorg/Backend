@@ -79,7 +79,7 @@ impl TszEnvironmentFingerprint {
 /// identity; no filesystem lookup or implicit source discovery is performed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TszFileInput {
-    /// Stable source path, including a supported TypeScript/JavaScript suffix.
+    /// Stable source path, including a supported TypeScript/JavaScript/JSON suffix.
     pub path: String,
     /// UTF-8 source text, moved into TSZ's owning parser.
     pub source: String,
@@ -90,7 +90,7 @@ pub struct TszFileInput {
 pub enum TszSourceError {
     /// The source path has no usable filename or extension.
     InvalidPath,
-    /// The source extension is outside the TS/JS/JSX/MTS/CTS/CJS set.
+    /// The source extension is outside the native TS/JS/JSON source set.
     UnsupportedExtension,
     /// A project or its explicit library set lists a stable path more than once.
     DuplicatePath,
@@ -135,7 +135,7 @@ impl TszLibraryInput {
         source: impl Into<Vec<u8>>,
     ) -> Result<Self, TszSourceError> {
         let path = path.into();
-        validate_source_path(&path)?;
+        validate_library_path(&path)?;
         let source = String::from_utf8(source.into()).map_err(|_| TszSourceError::InvalidUtf8)?;
         Ok(Self { path, source })
     }
@@ -168,6 +168,14 @@ pub enum TszAuthorityError {
     /// The project input could not be admitted before parsing.
     #[error(transparent)]
     Source(#[from] TszSourceError),
+    /// One exact admitted program member failed source-path validation.
+    #[error("TSZ source {path}: {source}")]
+    SourceAt {
+        /// Stable virtual source path; no ambient filesystem path is inferred.
+        path: String,
+        /// Existing typed source refusal, retained without a new failure tag.
+        source: TszSourceError,
+    },
     /// A caller queried a file index that is absent from the merged program.
     #[error("TSZ project has no bound file at index {0}")]
     MissingFile(usize),
@@ -334,6 +342,8 @@ pub struct TszProject {
     file_work_skipped: BTreeSet<String>,
     /// Exact requested policy that governed the complete retained result.
     file_work_policy: Option<TszFileWorkPolicy>,
+    /// Source parser diagnostics retain their own path and native byte spans.
+    parse_diagnostics: Vec<TszDiagnostic>,
     check: tsz::parallel::CheckResult,
 }
 
@@ -348,7 +358,7 @@ impl std::fmt::Debug for TszProject {
                 &self.bound_sources.keys().collect::<Vec<_>>(),
             )
             .field("environment", &self.options.environment)
-            .field("diagnostic_count", &(self.check.diagnostic_count + self.options.program_diagnostics.len()))
+            .field("diagnostic_count", &(self.check.diagnostic_count + self.options.program_diagnostics.len() + self.parse_diagnostics.len()))
             .finish()
     }
 }
@@ -549,7 +559,10 @@ impl TszProjectAuthority {
         let mut unique_paths = BTreeSet::new();
         let mut pending = BTreeMap::new();
         for source in sources {
-            validate_source_path(&source.path)?;
+            validate_source_path(&source.path).map_err(|error| TszAuthorityError::SourceAt {
+                path: source.path.clone(),
+                source: error,
+            })?;
             if !unique_paths.insert(source.path.clone()) {
                 return Err(TszSourceError::DuplicatePath.into());
             }
@@ -559,7 +572,10 @@ impl TszProjectAuthority {
 
         let mut report = TszUpdateReport::default();
         for library in lib_files {
-            validate_source_path(&library.file_name)?;
+            validate_library_path(&library.file_name).map_err(|error| TszAuthorityError::SourceAt {
+                path: library.file_name.clone(),
+                source: error,
+            })?;
             if !unique_paths.insert(library.file_name.clone()) {
                 return Err(TszSourceError::DuplicatePath.into());
             }
@@ -835,6 +851,19 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        let parse_diagnostics = bound_sources.iter().flat_map(|(path, bound)| {
+            bound.parse_diagnostics.iter().map(move |parsed| {
+                let mut diagnostic = TszDiagnostic::error(
+                    path.clone(), parsed.start, parsed.length, parsed.message.clone(), parsed.code,
+                );
+                if let Some(related) = &parsed.related {
+                    diagnostic.related_information.push(TszDiagnostic::related_pointer(
+                        related.code, path.clone(), related.start, related.length, related.message.clone(),
+                    ));
+                }
+                diagnostic
+            })
+        }).collect();
         self.project = Some(TszProject {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
@@ -849,6 +878,7 @@ impl TszProjectAuthority {
             query_budget: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
             file_work_skipped,
             file_work_policy: execution.file_work().cloned(),
+            parse_diagnostics,
             check,
         });
         Ok(report)
@@ -884,7 +914,8 @@ impl TszProject {
 
     /// Every retained native diagnostic, including source-free program errors.
     pub fn diagnostics(&self) -> impl Iterator<Item = &TszDiagnostic> {
-        self.program_diagnostics().iter().chain(self.check.file_results.iter().flat_map(|file| &file.diagnostics))
+        self.program_diagnostics().iter().chain(&self.parse_diagnostics)
+            .chain(self.check.file_results.iter().flat_map(|file| &file.diagnostics))
     }
 
     /// Exact program paths whose semantic check was not run because they spent
@@ -1356,8 +1387,20 @@ fn validate_source_path(path: &str) -> Result<(), TszSourceError> {
     }
     match extension.to_ascii_lowercase().as_str() {
         "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Ok(()),
+        // Native TSZ's parallel parser and checker retain strict JSON modules
+        // and derive their value types from these exact bytes. Metadata reads
+        // do not enter this source list; the captured resolver selects modules.
+        "json" if path.ends_with(".json") => Ok(()),
         _ => Err(TszSourceError::UnsupportedExtension),
     }
+}
+
+fn validate_library_path(path: &str) -> Result<(), TszSourceError> {
+    validate_source_path(path)?;
+    if path.ends_with(".json") {
+        return Err(TszSourceError::UnsupportedExtension);
+    }
+    Ok(())
 }
 
 fn source_digest(path: &str, source: &str) -> [u8; 32] {
@@ -1372,7 +1415,7 @@ fn library_digest(lib_files: &[Arc<tsz::lib_loader::LibFile>]) -> Result<[u8; 32
     let mut libraries = Vec::with_capacity(lib_files.len());
     let mut unique_paths = BTreeSet::new();
     for library in lib_files {
-        validate_source_path(&library.file_name)?;
+        validate_library_path(&library.file_name)?;
         if !unique_paths.insert(library.file_name.as_str()) {
             return Err(TszSourceError::DuplicatePath);
         }
@@ -3374,38 +3417,45 @@ mod tests {
 
     #[test]
     fn ts_and_javascript_profiles_parse_through_tsz_without_file_discovery() {
-        let paths = [
-            "src/a.ts",
-            "src/a.tsx",
-            "src/a.mts",
-            "src/a.cts",
-            "src/a.js",
-            "src/a.jsx",
-            "src/a.mjs",
-            "src/a.cjs",
+        let files = [
+            ("src/a.ts", "export const value: number = 1;", 3, 0, false),
+            ("src/a.tsx", "export const view = <section>{1}</section>;", 4, 1, false),
+            ("src/a.mts", "export const value: number = 1;", 3, 0, false),
+            ("src/a.cts", "export const value: number = 1;", 3, 0, false),
+            ("src/.prettierrc.js", "module.exports = { editor: true };", 1, 1, false),
+            ("src/a.jsx", "export const view = <section />;", 2, 1, false),
+            ("src/a.mjs", "export const value = 1;", 1, 1, false),
+            ("src/a.cjs", "module.exports = { editor: true };", 1, 1, false),
+            ("src/a.d.ts", "export declare const value: number;", 3, 0, true),
+            ("src/a.d.mts", "export declare const value: number;", 3, 0, true),
+            ("src/a.d.cts", "export declare const value: number;", 3, 0, true),
+            ("src/a.d.css.ts", "export declare const value: string;", 3, 0, true),
+            ("src/view.TSX", "export const view = <section />;", 4, 1, false),
         ];
-        for path in paths {
+        for (path, ..) in files {
             validate_source_path(path).expect("supported TS/JS path");
         }
         let mut authority = TszProjectAuthority::new();
-        let inputs = paths
+        let inputs = files
             .iter()
-            .map(|path| input(path, "export const value = 1;"))
+            .map(|(path, source, ..)| input(path, source))
             .collect();
         let report = authority
             .update(inputs, options(), &[])
             .expect("TSZ parses all supported profiles");
-        assert_eq!(report.parsed_and_bound, paths.len());
+        assert_eq!(report.parsed_and_bound, files.len());
         let project = authority.project().expect("project result exists");
-        for path in paths {
+        for (path, source, kind, variant, declaration) in files {
+            let bound = project.bind_result(path).expect("source is retained");
             assert!(
-                project
-                    .bind_result(path)
-                    .expect("source is retained")
-                    .parse_diagnostics
-                    .is_empty(),
+                bound.parse_diagnostics.is_empty(),
                 "TSZ parser accepts {path}"
             );
+            let file = bound.arena.get_source_file_at(bound.source_file).expect("native AST source");
+            assert_eq!(file.text.as_ref(), source);
+            assert_eq!(file.script_kind, kind, "native ScriptKind for {path}");
+            assert_eq!(file.language_variant, variant, "native LanguageVariant for {path}");
+            assert_eq!(file.is_declaration_file, declaration, "declaration source {path}");
         }
         assert_eq!(
             validate_source_path("src/a.vue"),
@@ -3415,6 +3465,45 @@ mod tests {
             validate_source_path("src/.ts"),
             Err(TszSourceError::InvalidPath)
         );
+    }
+
+    #[test]
+    fn json_program_members_use_native_strict_json_and_preserve_exact_bytes() {
+        let mut authority = TszProjectAuthority::new();
+        let mut recipe = options();
+        recipe.checker.resolve_json_module = true;
+        let source = r#"{"enabled":true,"title":"Docs","import":"require('not-a-module')"}"#;
+        authority.update(vec![input("src/settings.json", source)], recipe.clone(), &[]).unwrap();
+        let project = authority.project().unwrap();
+        let bound = project.bind_result("src/settings.json").unwrap();
+        assert!(bound.parse_diagnostics.is_empty(), "JSON is not parsed as TS statements");
+        let file = bound.arena.get_source_file_at(bound.source_file).unwrap();
+        assert_eq!(file.text.as_ref(), source);
+        assert_eq!(file.script_kind, 6);
+        assert_eq!(file.language_variant, 0);
+        assert!(!file.is_declaration_file);
+        assert!(file.statements.nodes.is_empty());
+        authority.update(vec![input("src/settings.json", r#"{"enabled": }"#)], recipe, &[]).unwrap();
+        assert!(!authority.project().unwrap().bind_result("src/settings.json").unwrap().parse_diagnostics.is_empty(),
+            "invalid JSON retains native JSON diagnostics");
+    }
+
+    #[test]
+    fn refused_program_member_retains_its_own_path_instead_of_the_first_js_or_tsx() {
+        for (path, expected) in [
+            ("assets/view.vue", TszSourceError::UnsupportedExtension),
+            ("src//invalid.ts", TszSourceError::InvalidPath),
+            ("src/upper.JSON", TszSourceError::UnsupportedExtension),
+        ] {
+            let mut authority = TszProjectAuthority::new();
+            let error = authority.update(vec![
+                input(".prettierrc.js", "module.exports = {};"),
+                input("fetchApi.test.tsx", "export const view = <section />;"),
+                input(path, "{}"),
+            ], options(), &[]).unwrap_err();
+            assert!(matches!(&error, TszAuthorityError::SourceAt { path: observed, source } if observed == path && *source == expected));
+            assert!(error.to_string().contains(path));
+        }
     }
 
     #[test]

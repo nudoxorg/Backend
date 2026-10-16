@@ -518,7 +518,22 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            // A declaration guarded by `cfg(doctest)` belongs to rustdoc's
+            // doctest harness, not the normal library surface this owner
+            // indexes. Track that exact standalone cfg attribute through
+            // intervening attributes/comments to its next item. This is not
+            // a general evaluator for feature or target cfg expressions.
+            let mut doctest_only = false;
             let item = source.lines().find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed == "#[cfg(doctest)]" {
+                    doctest_only = true;
+                    return None;
+                }
+                if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("//") {
+                    return None;
+                }
+                let excluded = std::mem::take(&mut doctest_only);
                 let rest = line.strip_prefix("pub ")?;
                 let rest = ["struct ", "enum ", "trait "]
                     .iter()
@@ -526,7 +541,7 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
                 let name = rest
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                     .next()?;
-                (!name.is_empty()).then(|| name.to_owned())
+                (!excluded && !name.is_empty()).then(|| name.to_owned())
             });
             if let Some(item) = item {
                 let relative = path
@@ -544,17 +559,35 @@ fn public_items_by_file(tree: &Path) -> Vec<(String, String)> {
 
 #[test]
 fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
+    let started = Instant::now();
+    eprintln!("MULTI-MODULE phase=owner-start seconds=0");
     let owner = Owner::start("modules");
+    eprintln!(
+        "MULTI-MODULE phase=owner-ready seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
     let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
     let tree = source
         .resolve(&Release::new("toml", "0.8.23").expect("release"))
         .expect("toml 0.8.23 is in the local cargo cache");
     let expected = public_items_by_file(&tree.root);
     assert!(
+        !expected.iter().any(|(_, name)| name == "ReadmeDoctests"),
+        "the cfg(doctest)-only README harness marker is not part of toml's normal library surface"
+    );
+    assert!(
         expected.len() >= 4,
         "toml 0.8.23 declares its types across several files: {expected:?}"
     );
+    eprintln!(
+        "MULTI-MODULE phase=index-start seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
     owner.index(&tree);
+    eprintln!(
+        "MULTI-MODULE phase=index-complete seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
     let package = PackageRef::parse(tree.root.to_str().expect("UTF-8")).expect("package");
     let mut reader = SessionReader::connect(owner.host.endpoint());
     let cancel = CancellationToken::new();
@@ -569,6 +602,10 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
     else {
         panic!("toml's page did not read")
     };
+    eprintln!(
+        "MULTI-MODULE phase=page-read seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
     let outline = dossier.outline.known().expect("toml's outline");
     let placed = outline
         .walk()
@@ -579,6 +616,10 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
             ))
         })
         .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        !placed.iter().any(|(_, name)| name == "ReadmeDoctests"),
+        "the normal library outline excludes toml's cfg(doctest)-only README harness marker"
+    );
     let unplaced = expected
         .iter()
         .filter(|item| !placed.contains(*item))
@@ -599,8 +640,17 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
         files.len() >= 4,
         "toml's names come from its modules, not one: {files:?}"
     );
+    eprintln!(
+        "MULTI-MODULE phase=assertions-complete seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
+    drop(reader);
+    drop(owner);
+    eprintln!(
+        "MULTI-MODULE phase=owner-retired seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
 }
-
 #[test]
 fn an_owner_reopens_its_workspace_after_indexing_a_crate_whose_docs_link_to_std() {
     // toml_write 0.1.2 documents `[`f32::NAN`] / [`f64::NAN`]`: links to
@@ -1278,8 +1328,15 @@ fn an_earlier_release_is_read_from_its_own_tree_once_it_is_added() {
     let Stage::Added(page) = &stage else {
         panic!("toml 0.5.11 is added: {stage:?}")
     };
-    assert_eq!(page.as_str(), viewed.as_str(), "added, it is listed under the root the route reads");
-    assert_ne!(page, &viewed, "the alternate route retains its original pin in the page key");
+    assert_eq!(
+        page.as_str(),
+        viewed.as_str(),
+        "added, it is listed under the root the route reads"
+    );
+    assert_ne!(
+        page, &viewed,
+        "the alternate route retains its original pin in the page key"
+    );
     let earlier_names = names_at(owner.host.endpoint(), &earlier_tree);
     let pinned_names = names_at(
         owner.host.endpoint(),

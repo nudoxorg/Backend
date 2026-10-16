@@ -207,6 +207,15 @@ pub(super) fn failure_cause(error: &PackageAuthorityError) -> Option<TypeScriptF
             cause,
             ..
         }) => Some(cause.clone()),
+        PackageAuthorityError::TypeScriptTsz(TszAuthorityError::SourceAt { path, source }) => {
+            // This is the rejected program member, not the first source used
+            // to bind the enclosing compilation request. Keep that binding
+            // intact and expose the actual member through the bounded cause.
+            let scope = PathScope::new(&[]);
+            TypeScriptFailureCause::sanitize(&format!(
+                "Native TypeScript program member {}: {source}", scope.text(path),
+            ))
+        }
         _ => None,
     }
 }
@@ -563,7 +572,7 @@ fn program_probe_failure(error: &super::toolchain_probe::ToolchainProbeError) ->
 
 fn native_failure(error: &TszAuthorityError) -> F {
     match error {
-        TszAuthorityError::Source(error) => match error {
+        TszAuthorityError::Source(error) | TszAuthorityError::SourceAt { source: error, .. } => match error {
             TszSourceError::InvalidPath => F::NativeSourceInvalidPath,
             TszSourceError::UnsupportedExtension => F::NativeSourceUnsupportedExtension,
             TszSourceError::DuplicatePath => F::NativeSourceDuplicatePath,
@@ -693,6 +702,18 @@ fn stop_failure(reason: TszProjectExecutionStop, site: StopSite) -> F {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_source_refusal_retains_the_actual_member_with_the_existing_failure_tag() {
+        let error = PackageAuthorityError::TypeScriptTsz(TszAuthorityError::SourceAt {
+            path: "src/frontend/assets/view.vue".into(),
+            source: TszSourceError::UnsupportedExtension,
+        });
+        assert_eq!(failure_kind(&error), Some(F::NativeSourceUnsupportedExtension));
+        let cause = failure_cause(&error).expect("bounded actual program member context");
+        assert!(cause.as_str().contains("src/frontend/assets/view.vue"));
+        assert!(!cause.as_str().contains(".prettierrc.js"));
+    }
 
     #[test]
     fn native_module_refusals_retain_the_resolution_site_without_inventing_a_path_failure() {

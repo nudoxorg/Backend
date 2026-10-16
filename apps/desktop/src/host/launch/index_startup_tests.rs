@@ -63,35 +63,80 @@ fn wait_for_terminal(
     previous: Option<&IndexOperationClaim>,
 ) -> TestResult<IndexOperationClaim> {
     let mut terminal = None;
-    crate::runtime::wait::until(
-        "the real owner returned an exact terminal operation",
-        || {
-            // The owner works on real threads, while this context's status
-            // cadence uses its virtual clock. Pump the same keyed read the
-            // desktop schedules after an Accepted/Active receipt.
-            cx.executor().advance_clock(Duration::from_millis(500));
-            cx.run_until_parked();
-            terminal = graph.root.read_with(cx, |root, _| {
-                let snapshot = root.snapshot();
-                let row = snapshot
-                    .workspace()
-                    .projects
-                    .iter()
-                    .find(|row| row.id == *project)?;
-                let claim = row.operation.as_ref()?;
-                if previous.is_some_and(|old| old.key == claim.key)
-                    || row.request.is_some()
-                    || row.phase != ProjectPhase::Failed
-                    || !claim.has_terminal_observation()
-                {
-                    return None;
-                }
-                Some(claim.clone())
-            });
-            terminal.is_some()
-        },
-    );
+    let completed = crate::runtime::wait::poll(crate::runtime::wait::HUNG, || {
+        // The owner works on real threads, while this context's status
+        // cadence uses its virtual clock. Pump the same keyed read the
+        // desktop schedules after an Accepted/Active receipt.
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        terminal = graph.root.read_with(cx, |root, _| {
+            let snapshot = root.snapshot();
+            let row = snapshot
+                .workspace()
+                .projects
+                .iter()
+                .find(|row| row.id == *project)?;
+            let claim = row.operation.as_ref()?;
+            if previous.is_some_and(|old| old.key == claim.key)
+                || row.request.is_some()
+                || row.phase != ProjectPhase::Failed
+                || !claim.has_terminal_observation()
+            {
+                return None;
+            }
+            Some(claim.clone())
+        });
+        terminal.is_some()
+    });
+    if !completed {
+        let captured = graph.root.read_with(cx, |root, _| {
+            let snapshot = root.snapshot();
+            snapshot
+                .workspace()
+                .projects
+                .iter()
+                .find(|row| row.id == *project)
+                .map_or_else(
+                    || "project=absent".to_owned(),
+                    |row| {
+                        let observation = row
+                            .operation
+                            .as_ref()
+                            .and_then(|claim| claim.observation.as_ref())
+                            .map_or_else(|| "none".to_owned(), safe_observation_state);
+                        format!(
+                            "phase={:?}, request_pending={}, receipt={observation}",
+                            row.phase,
+                            row.request.is_some()
+                        )
+                    },
+                )
+        });
+        return Err(format!(
+            "never: the real owner returned an exact terminal operation; captured UI state: {captured}"
+        )
+        .into());
+    }
     terminal.ok_or_else(|| "terminal operation must retain its checked receipt".into())
+}
+
+/// Summarizes only closed receipt states; failure details can contain paths.
+fn safe_observation_state(observation: &backend_library::IndexOperationObservation) -> String {
+    use backend_library::{IndexOperationObservation as Observation, IndexOperationState as State};
+    match observation {
+        Observation::Known(status) => match &status.state {
+            State::Accepted => "accepted".to_owned(),
+            State::Active { stage, .. } => format!("active:{stage:?}"),
+            State::Published(_) => "published".to_owned(),
+            State::PartiallyPublished { refused_profiles, .. } => {
+                format!("partially-published:{}", refused_profiles.len())
+            }
+            State::Failed { reason, .. } => format!("failed:{reason:?}"),
+            State::Unresolved { reason, .. } => format!("unresolved:{reason:?}"),
+        },
+        Observation::OutsideReceiptWindow { .. } => "outside-receipt-window".to_owned(),
+        Observation::Unknown { .. } => "unknown".to_owned(),
+    }
 }
 
 fn assert_actual_receipt(session: &mut Session, claim: &IndexOperationClaim) -> TestResult {

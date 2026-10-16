@@ -103,14 +103,39 @@ def run_one(bin_dir: Path, name: str) -> float:
             require("without starting it" in body.get("detail", ""), "passive refusal lost no-start explanation")
             require("call" not in body, "CLI refusal exposed MCP-only recovery arguments")
             recovery = body.get("shell", "")
-            # Both passive aliases recover by starting the selected owner via health.
-            expected = ["nudox", *scope, "health"]
-            require(shlex.split(recovery) == expected, f"recovery lost literal selected paths: {recovery!r}")
-            # Execute only a shell function that prints argv, never the recovery itself.
-            parsed = subprocess.run(["/bin/sh", "-c", 'nudox() { printf "%s\\000" "$@"; }; ' + recovery],
+            # The observed recovery retains its executable, passive mode, and
+            # private authority boundary in a subshell. shlex must recover the
+            # exact argv even when selected paths contain quotes and shell syntax.
+            executable = str(bin_dir / "backend-cli")
+            expected = [
+                "(unset",
+                "BACKEND_LOCALD_AUTHORITY_SECRET_FILE;",
+                executable,
+                "--project",
+                str(project),
+                "--workspace",
+                str(workspace),
+                "--passive",
+                "--endpoint",
+                str(endpoint),
+                "health)" if command == "health" else "status)",
+            ]
+            tokens = shlex.split(recovery)
+            require(tokens == expected, f"recovery changed its wrapper or selected argv: {tokens!r}")
+            # Only after the exact token sequence is admitted, replace its
+            # observed executable with a harmless argv printer. Never execute
+            # the recovery command itself.
+            quoted_executable = shlex.quote(executable)
+            require(recovery.startswith("(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; " + quoted_executable + " "),
+                    f"recovery did not begin with its observed executable: {recovery!r}")
+            stubbed = recovery.replace(quoted_executable + " ", "nudox ", 1)
+            parsed = subprocess.run(["/bin/sh", "-c", 'nudox() { printf "%s\\000" "$@"; }; ' + stubbed],
                                     cwd=project, env=env, capture_output=True, timeout=10)
             require(parsed.returncode == 0 and not parsed.stderr, "recovery is not valid shell syntax")
-            require(parsed.stdout == b"".join(arg.encode() + b"\0" for arg in expected[1:]), "recovery executed or changed literal operands")
+            expected_argv = ["--project", str(project), "--workspace", str(workspace), "--passive",
+                             "--endpoint", str(endpoint), command]
+            require(parsed.stdout == b"".join(arg.encode() + b"\0" for arg in expected_argv),
+                    "recovery changed literal operands in a real shell roundtrip")
             markdown = invoke(["--passive", command], "markdown")
             require(markdown.returncode == 1 and not markdown.stdout, "Markdown passive refusal used wrong exit/stream")
             require(markdown.stderr.endswith("→ Run in a shell:\n\n    " + recovery.replace("\n", "\n    ") + "\n"), "Markdown lost exact recovery command")

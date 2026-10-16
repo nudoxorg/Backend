@@ -97,7 +97,11 @@ impl<'fs> ModuleResolver<'fs> {
             if prefer_directory {
                 self.try_directory(path, package_type)
             } else {
-                self.try_file_or_directory(path, package_type)
+                let implicit_extensions = !matches!(
+                    self.resolution_kind,
+                    ModuleResolutionKind::Node16 | ModuleResolutionKind::NodeNext,
+                ) || uses_require_resolution;
+                self.try_file_or_directory_with_mode(path, package_type, implicit_extensions)
             }
         };
 

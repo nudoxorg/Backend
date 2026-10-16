@@ -377,6 +377,10 @@ mod tests {
         ));
         crate::host::private_dir(&directory).expect("fixture");
         let file = SnapshotFile::in_data(&directory);
+        // Production prepares the build fingerprint on the launch reader
+        // before scheduling any saves. This fixture writes directly, so
+        // exercise that initialization before encoding either packet.
+        assert!(file.read(&[PageKey::Orbit]).is_none());
         let mut keeper = SnapshotKeeper::default();
         keeper.file = Some(file.clone());
         let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);

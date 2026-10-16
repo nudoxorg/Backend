@@ -1,10 +1,7 @@
 //! Schema-parametric relation-node admission and reference indexing.
 
-use super::super::{
-    FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, sync_directory,
-};
+use super::super::{FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error};
 use super::{RelationAdmission, TreeWriteStats, wire};
-use crate::UntrustedObjectId;
 use backend_version::{
     CanonicalRelation, CheckedCanonicalRoot, CommittedChild, IdContext, SchemaIdentity, StateRoot,
     TreeNodeLoader, TreeNodeView, UntrustedId, admit_canonical_root_claim,

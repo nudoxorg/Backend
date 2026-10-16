@@ -302,8 +302,8 @@ fn a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them() {
     assert!(read.len() < pinned, "a Finder launch reads what Cargo resolves for this host, not the lockfile's {pinned} pins: {said}");
 }
 
-/// A C# project. The owner has no C# authority unless `NUDOX_ROSLYN_HELPER`
-/// names one, and the development shell does not, so its compile is refused
+/// A C# project. This fixture's isolated launch removes `NUDOX_ROSLYN_HELPER`
+/// so the owner has no C# authority and its compile is refused
 /// (`Unavailable { language: CSharp, stage: LowerIr }`) after its source has
 /// been scanned and its frontier committed.
 fn refused_project(root: &Path) -> PathBuf {
@@ -324,10 +324,34 @@ fn refused_project(root: &Path) -> PathBuf {
 
 #[test]
 fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
-    assert!(
-        std::env::var_os("NUDOX_ROSLYN_HELPER").is_none(),
-        "this test needs an owner with no C# authority: unset NUDOX_ROSLYN_HELPER"
-    );
+    if std::env::var_os("NUDOX_ROSLYN_HELPER").is_some()
+        || std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV).is_some()
+    {
+        // The real CI shell supplies Roslyn. Isolate only this fixture's
+        // missing-authority premise without changing shared process state.
+        // Re-capture the other inherited tool inputs instead of restoring a
+        // parent closed snapshot that could contain the Roslyn role.
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "host::embedded_owner_tests::a_refused_project_is_listed_in_the_same_boot_that_names_why",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env_remove("NUDOX_ROSLYN_HELPER")
+            .env_remove(backend_local_service::COMPILER_ENVIRONMENT_ENV)
+            .output()
+            .expect("the isolated missing-authority child runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "missing-authority fixture child exited with {:?}:\n{stdout}\n{stderr}",
+            output.status
+        );
+        assert!(stdout.contains("1 passed"), "the child ran its test: {stdout}");
+        return;
+    }
     let root = scratch("refused");
     super::private_dir(&root).expect("private scratch root");
     let project = refused_project(&root);
@@ -349,8 +373,8 @@ fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
     let canonical = project.canonicalize().expect("canonical project");
     assert_eq!(
         listed(&mut session),
-        vec![(canonical.to_string_lossy().into_owned(), RowState::Ready)],
-        "the refused project is listed at once, on its structural rows"
+        vec![(canonical.to_string_lossy().into_owned(), RowState::Failed)],
+        "the refused project is listed at once, retaining its failed semantic capture"
     );
     let rows = session.health().expect("health").row_count();
     assert!(

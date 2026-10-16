@@ -1892,6 +1892,136 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn orbit_reads_catalog_on_its_page_lane_after_root_admission() {
+        struct CatalogEngine {
+            surfaces: Vec<SurfaceCommand>,
+        }
+        impl Engine for CatalogEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Err(ClientError::Protocol(
+                    "no package snapshot in fixture".to_owned(),
+                ))
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                self.surfaces.push(command.clone());
+                match command {
+                    SurfaceCommand::Explore {
+                        query: None,
+                        limit: EXPLORE_LIMIT,
+                    } => Ok(SurfaceReply::Explored(Box::new([]))),
+                    _ => Err(ClientError::Protocol("unused Orbit source".to_owned())),
+                }
+            }
+        }
+
+        let mut engine = CatalogEngine {
+            surfaces: Vec::new(),
+        };
+        let cancel = CancellationToken::new();
+        let outlines = OutlineCache::default();
+        let context = ReadContext {
+            worker: 0,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: None,
+        };
+        let page = compose_orbit(&mut engine, &context)
+            .expect("an available Explore reply is enough for a partial Orbit page");
+
+        assert!(matches!(page, PageValue::Orbit(_)));
+        assert!(
+            engine.surfaces.iter().any(|command| matches!(
+                command,
+                SurfaceCommand::Explore {
+                    query: None,
+                    limit: EXPLORE_LIMIT
+                }
+            )),
+            "Orbit remains the lazy reader for the optional catalog",
+        );
+    }
+
+    #[test]
+    fn orbit_keeps_explore_failures_and_wrong_shapes_as_typed_gaps() {
+        #[derive(Clone, Copy)]
+        enum CatalogReply {
+            Failed,
+            WrongShape,
+        }
+        struct CatalogEngine(CatalogReply);
+        impl Engine for CatalogEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Err(ClientError::Protocol(
+                    "package snapshot unavailable".to_owned(),
+                ))
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                match command {
+                    SurfaceCommand::Projects => Ok(SurfaceReply::Projects(Box::new([]))),
+                    SurfaceCommand::Explore {
+                        query: None,
+                        limit: EXPLORE_LIMIT,
+                    } => match self.0 {
+                        CatalogReply::Failed => {
+                            Err(ClientError::CommandFailed(CommandFailure::NotFound))
+                        }
+                        CatalogReply::WrongShape => Ok(SurfaceReply::Projects(Box::new([]))),
+                    },
+                    _ => Err(ClientError::Protocol("unused Orbit source".to_owned())),
+                }
+            }
+        }
+
+        for scenario in [CatalogReply::Failed, CatalogReply::WrongShape] {
+            let mut engine = CatalogEngine(scenario);
+            let cancel = CancellationToken::new();
+            let outlines = OutlineCache::default();
+            let context = ReadContext {
+                worker: 0,
+                cancel: &cancel,
+                outlines: &outlines,
+                progress: None,
+            };
+            let PageValue::Orbit(page) = compose_orbit(&mut engine, &context)
+                .expect("other Orbit sources still produce a partial page")
+            else {
+                panic!("Orbit reader returned another page family");
+            };
+            let gap = page
+                .explore
+                .gap()
+                .expect("catalog uncertainty stays visible");
+            assert_eq!(gap.reason, crate::model::pages::GapReason::ReadFailed);
+            let expected = match scenario {
+                CatalogReply::Failed => {
+                    ClientError::CommandFailed(CommandFailure::NotFound).to_string()
+                }
+                CatalogReply::WrongShape => format!(
+                    "explore reply changed shape to {:?}",
+                    SurfaceReply::Projects(Box::new([])).id(),
+                ),
+            };
+            assert_eq!(
+                gap.detail.as_ref(),
+                expected,
+                "the original failure or shape diagnostic survives the page mapping",
+            );
+        }
+    }
+
     struct ExactRegistryTree {
         root: PathBuf,
         release: Release,

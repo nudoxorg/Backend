@@ -215,8 +215,7 @@ int measure(struct Buffer *buffer) {
             .position(|window| window == b"buffer->content")
             .expect("member expression present");
         assert!(
-            usize::try_from(member.span.start)
-                .is_ok_and(|start| start > expression_start),
+            usize::try_from(member.span.start).is_ok_and(|start| start > expression_start),
             "member site must start at the member token, not the expression"
         );
         // Every local-target site's bytes equal its target's declared name bytes.
@@ -490,6 +489,177 @@ template <typename C> struct Probe { void (C::*slot)(); };
             }),
             "a dependent member pointer keeps its pointee edge"
         );
+        Ok(())
+    })
+}
+
+/// Parameter TypeVars require libclang type identity, exact parameter cursor
+/// ownership, and one unique matching leaf. Similar-looking dependent types
+/// and repeated template arguments must remain Unknown.
+#[test]
+fn cxx_parameter_typevar_projection_requires_unique_native_leaf_identity() -> Result<(), TestError>
+{
+    let source = b"template<class A, class B> struct Pair {};\ntemplate<class T> void direct(const T& value) {}\ntemplate<class T> void indirect(decltype(T::value) value) {}\ntemplate<class T> void dependent_alias(typename T::value_type value) {}\ntemplate<class T> void repeated(Pair<T, T> value) {}\n";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"parameter-typevar.cpp",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let parameter = |function_name: &[u8]| {
+            facts.declarations.iter().find(|declaration| {
+                declaration.kind == DeclarationKind::Parameter
+                    && declaration
+                        .name
+                        .is_some_and(|span| source_at(source, span) == b"value")
+                    && declaration.owner.is_some_and(|owner| {
+                        facts.declarations.iter().any(|function| {
+                            function.identity == Some(owner)
+                                && function
+                                    .name
+                                    .is_some_and(|span| source_at(source, span) == function_name)
+                        })
+                    })
+            })
+        };
+        let template_parameter = |function_name: &[u8]| {
+            let owner = facts
+                .declarations
+                .iter()
+                .find(|declaration| {
+                    declaration.kind == DeclarationKind::Template
+                        && declaration
+                            .name
+                            .is_some_and(|span| source_at(source, span) == function_name)
+                })
+                .and_then(|declaration| declaration.identity)?;
+            facts.declarations.iter().find(|declaration| {
+                declaration.kind == DeclarationKind::TemplateParameter
+                    && declaration.owner == Some(owner)
+                    && declaration
+                        .name
+                        .is_some_and(|span| source_at(source, span) == b"T")
+            })
+        };
+        let descendants = |root: TypeId| {
+            let mut pending = vec![root];
+            let mut result = Vec::new();
+            while let Some(id) = pending.pop() {
+                let Some(row) = facts.types.get(id.raw as usize) else {
+                    continue;
+                };
+                result.push(row);
+                for edge in facts.type_edges.iter().filter(|edge| edge.source == id) {
+                    pending.push(edge.target);
+                }
+            }
+            result
+        };
+
+        let direct = parameter(b"direct").ok_or(TestError::Missing(RequiredFact::Type {
+            kind: TypeKind::Named,
+        }))?;
+        let direct_t = template_parameter(b"direct")
+            .and_then(|declaration| declaration.identity)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::TemplateParameter,
+            }))?;
+        let direct_rows = descendants(direct.type_root.ok_or(TestError::Missing(
+            RequiredFact::Type {
+                kind: TypeKind::Named,
+            },
+        ))?);
+        if direct_rows
+            .iter()
+            .filter(|row| row.kind == TypeKind::Named && row.declaration == Some(direct_t))
+            .count()
+            != 1
+        {
+            return Err(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Named,
+            }));
+        }
+
+        let indirect = parameter(b"indirect").ok_or(TestError::Missing(RequiredFact::Type {
+            kind: TypeKind::Unknown,
+        }))?;
+        let indirect_t = template_parameter(b"indirect")
+            .and_then(|declaration| declaration.identity)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::TemplateParameter,
+            }))?;
+        let indirect_rows = descendants(indirect.type_root.ok_or(TestError::Missing(
+            RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            },
+        ))?);
+        if !indirect_rows
+            .iter()
+            .any(|row| row.kind == TypeKind::Unknown)
+            || indirect_rows
+                .iter()
+                .any(|row| row.kind == TypeKind::Named && row.declaration == Some(indirect_t))
+        {
+            return Err(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            }));
+        }
+
+        let dependent_alias =
+            parameter(b"dependent_alias").ok_or(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            }))?;
+        let dependent_alias_t = template_parameter(b"dependent_alias")
+            .and_then(|declaration| declaration.identity)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::TemplateParameter,
+            }))?;
+        let dependent_alias_rows = descendants(dependent_alias.type_root.ok_or(
+            TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            }),
+        )?);
+        if !dependent_alias_rows
+            .iter()
+            .any(|row| row.kind == TypeKind::Unknown)
+            || dependent_alias_rows.iter().any(|row| {
+                row.kind == TypeKind::Named && row.declaration == Some(dependent_alias_t)
+            })
+        {
+            return Err(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            }));
+        }
+
+        let repeated = parameter(b"repeated").ok_or(TestError::Missing(RequiredFact::Type {
+            kind: TypeKind::Unknown,
+        }))?;
+        let repeated_t = template_parameter(b"repeated")
+            .and_then(|declaration| declaration.identity)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::TemplateParameter,
+            }))?;
+        let repeated_rows = descendants(repeated.type_root.ok_or(TestError::Missing(
+            RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            },
+        ))?);
+        if repeated_rows
+            .iter()
+            .any(|row| row.kind == TypeKind::Named && row.declaration == Some(repeated_t))
+            || repeated_rows
+                .iter()
+                .filter(|row| row.kind == TypeKind::Unknown)
+                .count()
+                < 2
+        {
+            return Err(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::Unknown,
+            }));
+        }
         Ok(())
     })
 }

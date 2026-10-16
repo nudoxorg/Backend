@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "task": "W2 independent pinned source review: Go google/uuid and C# TinyIoC",
+  "reviewer": "Codex / gpt-6-luna, independent pinned-source review",
+  "scope": "Source evidence for two T2 candidates at the exact review worktree head. This file records no native execution, CLI/MCP observation, snapshot, or performance result.",
+  "review_head": "cb82621bfad08821dac9706074a560367de610b9",
+  "decision": "source candidates are suitable to proceed to real native T2 execution; runtime acceptance remains pending",
+  "candidates": [
+    {
+      "case": "go-uuid",
+      "coordinate": "golang:github.com/google/uuid@v1.6.0",
+      "pin": {
+        "manifest": ".config/nix/corpus-pins.json",
+        "url": "https://proxy.golang.org/github.com/google/uuid/@v/v1.6.0.zip",
+        "expected_sri_sha256": "sha256-0PAvN3IX9CcC4lloTgZEHtv1FA3dzDS6m+pWA4s4pu0=",
+        "observed_sha256_hex": "d0f02f377217f42702e259684e06441edbf5140dddcc34ba9bea56038b38a6ed",
+        "observed_sri_sha256": "sha256-0PAvN3IX9CcC4lloTgZEHtv1FA3dzDS6m+pWA4s4pu0=",
+        "verified": true,
+        "mutable_head_used": false,
+        "archive_entries": 31,
+        "archive_uncompressed_bytes": 78244,
+        "go_source_files": 21,
+        "go_source_bytes": 71917
+      },
+      "queries": [
+        {
+          "query": "NewString",
+          "authored_path": "version4.go",
+          "declaration_line": 21,
+          "declaration": "func NewString() string",
+          "source_sha256": "f252aeb4028659d83cbf7b037d4524f7c9b76cde1fdca1f6f7de310dab6f4dcd",
+          "expected_semantics": "Creates a random version 4 UUID and returns its string form; the source documents that it panics if random generation fails and implements it through Must(NewRandom())."
+        },
+        {
+          "query": "ParseBytes",
+          "authored_path": "uuid.go",
+          "declaration_line": 120,
+          "declaration": "func ParseBytes(b []byte) (UUID, error)",
+          "source_sha256": "0edec8e34c6b6fe0db31b71a29069a09ed832e3fd04ee0175916b58f2b60e5c1",
+          "expected_semantics": "Parses UUID bytes and returns a UUID plus an error. The implementation handles canonical hyphenated text, URN-prefixed text, braced text, and compact 32-character hexadecimal text; malformed length, prefix, separators, or hex returns an error."
+        }
+      ],
+      "case_surface_inventory": {
+        "cli": ["search NewString", "search ParseBytes", "outline", "packages"],
+        "mcp": ["backend.search(NewString)", "backend.search(ParseBytes)", "backend.outline"],
+        "source_supported": true,
+        "runtime_observed": false
+      },
+      "whole_project_review": "The pin is a versioned Go module archive, not a moving repository checkout. The case targets two exported declarations in distinct authored files. Keep the complete pinned module tree, including the remaining Go files and module metadata, for indexing and outline review."
+    },
+    {
+      "case": "csharp-tinyioc",
+      "coordinate": "nuget:tinyioc@1.3.0",
+      "pin": {
+        "manifest": ".config/nix/corpus-pins.json",
+        "url": "https://api.nuget.org/v3-flatcontainer/tinyioc/1.3.0/tinyioc.1.3.0.nupkg",
+        "expected_sri_sha256": "sha256-fAHK4ISYrbr8c/i1mTgvT+o50F4B2OMoLq91cnmWx0k=",
+        "observed_sha256_hex": "7c01cae08498adbafc73f8b599382f4fea39d05e01d8e3282eaf75727996c749",
+        "observed_sri_sha256": "sha256-fAHK4ISYrbr8c/i1mTgvT+o50F4B2OMoLq91cnmWx0k=",
+        "verified": true,
+        "mutable_head_used": false,
+        "archive_entries": 6,
+        "archive_uncompressed_bytes": 181845,
+        "authored_csharp_files": 1,
+        "authored_csharp_bytes": 169985,
+        "source_path": "Content/TinyIoC.cs",
+        "source_sha256": "e7898a069de8f1d2ba97414a92d140cf167a0c61bcfb869b9b33dd94e94aac4b",
+        "package_metadata": {
+          "path": "TinyIoC.nuspec",
+          "sha256": "cf777139416ca26f21638c6364432fe16af6a0f21f241a11b91d768e0af8b3fc",
+          "id": "TinyIoC",
+          "version": "1.3",
+          "description": "An easy to use, hassle free, Inversion of Control Container for small projects, libraries and beginners alike"
+        }
+      },
+      "queries": [
+        {
+          "query": "TinyIoCContainer",
+          "authored_path": "Content/TinyIoC.cs",
+          "declaration_line": 866,
+          "declaration": "sealed partial class TinyIoCContainer : IDisposable",
+          "source_sha256": "e7898a069de8f1d2ba97414a92d140cf167a0c61bcfb869b9b33dd94e94aac4b",
+          "expected_semantics": "The source conditionally declares the container public unless TINYIOC_INTERNAL is defined. It is sealed, partial, implements IDisposable, and exposes registration and resolution APIs including generic Resolve<T> overloads."
+        },
+        {
+          "query": "TinyIoCResolutionException",
+          "authored_path": "Content/TinyIoC.cs",
+          "declaration_line": 554,
+          "declaration": "class TinyIoCResolutionException : Exception",
+          "source_sha256": "e7898a069de8f1d2ba97414a92d140cf167a0c61bcfb869b9b33dd94e94aac4b",
+          "expected_semantics": "The source conditionally declares the exception public unless TINYIOC_INTERNAL is defined. It derives from Exception and its constructors describe the unresolved type, with an overload preserving an inner exception."
+        }
+      ],
+      "case_surface_inventory": {
+        "cli": ["search TinyIoCContainer", "search TinyIoCResolutionException", "outline", "packages"],
+        "mcp": ["backend.search(TinyIoCContainer)", "backend.search(TinyIoCResolutionException)", "backend.outline"],
+        "source_supported": true,
+        "runtime_observed": false
+      },
+      "whole_project_review": {
+        "assessment": "The pinned package contains one 169985-byte authored C# file plus package metadata and archive support files. Preserve the entire package, source file, conditional compilation/header content, and metadata when indexing; do not downsample the file or relax the existing 4096 guard.",
+        "outline_expectation": "The task's 876-entity estimate is a pending runtime check, not an observed result in this source-only review. Verify the actual whole-project outline and its completeness under the existing 4096 guard during native execution."
+      }
+    }
+  ],
+  "limitations": [
+    "Neither case has a reviewed native or Linux observation in this evidence file.",
+    "No generated snapshot or golden was created or accepted.",
+    "No performance number, baseline, or calibration claim was made.",
+    "CLI and MCP entries above are the configured operations to execute; this source review does not assert that those operations pass or that their outputs match."
+  ]
+}

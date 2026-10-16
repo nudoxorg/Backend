@@ -381,30 +381,41 @@ mod graph_admission_tests {
         let source =
             PackageReference::parse(&format!("pkg:cargo/{}@1", "s".repeat(2000))).expect("source");
         let authority = PackageGraphSourceAuthority::Local([7; 32]);
-        let target = "t".repeat(3000);
-        let edge = PackageDependencyRecord::new_with_source_authority(
-            source.clone(),
-            authority,
-            PackageDependencyTarget::new(
-                RegistryEcosystem::Cargo,
-                target.clone(),
-                "r".repeat(4000),
-                Some(PackageReference::parse(&format!("pkg:cargo/{target}@1")).expect("target")),
-            )
-            .expect("complete wide requirement"),
-            DependencyScope::Runtime,
-            false,
-            DependencyEvidence {
-                authority: DependencyAuthority::LocalManifest,
-                frontier: [7; 32],
-                provenance: [8; 32],
-            },
-        );
+        // Keep every coordinate within the 2 KiB package-URL admission cap.
+        // Five distinct complete rows still exceed the human preview budget;
+        // no malformed coordinate is needed to exercise output refusal.
+        let mut rows = (0..5)
+            .map(|index| {
+                let target = format!("{}{index}", "t".repeat(2000));
+                PackageDependencyRecord::new_with_source_authority(
+                    source.clone(),
+                    authority,
+                    PackageDependencyTarget::new(
+                        RegistryEcosystem::Cargo,
+                        target.clone(),
+                        "r".repeat(4000),
+                        Some(
+                            PackageReference::parse(&format!("pkg:cargo/{target}@1"))
+                                .expect("admitted target coordinate"),
+                        ),
+                    )
+                    .expect("complete wide requirement"),
+                    DependencyScope::Runtime,
+                    false,
+                    DependencyEvidence {
+                        authority: DependencyAuthority::LocalManifest,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|row| row.facts_version);
         let mut request = PackageGraphPageRequest::new(
             source.clone(),
             PackageGraphDirection::Dependencies,
             Some(authority),
-            1,
+            5,
         )
         .expect("fixed native request");
         request.catalog_snapshot = Some([6; 32]);
@@ -416,9 +427,9 @@ mod graph_admission_tests {
             package: source.clone(),
             direction: request.direction,
             source: Some(PackageGraphSourceKey::new(source, authority)),
-            limit: 1,
+            limit: 5,
             knowledge: PackageGraphKnowledge::Known,
-            rows: vec![edge].into_boxed_slice(),
+            rows: rows.into_boxed_slice(),
             terminal: PackageGraphPageTerminal::Complete,
         };
         page.admit_for(&request)
