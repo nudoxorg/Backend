@@ -128,24 +128,22 @@ fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
         fault["operand"],
         endpoint.to_str().expect("selected endpoint")
     );
-    let recovery = fault["shell"]
-        .as_str()
-        .expect("owner startup recovery command");
-    let observed_executable = env!("CARGO_BIN_EXE_backend-cli");
-    assert!(
-        recovery.starts_with(&format!(
-            "(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; {observed_executable} --project "
-        )),
-        "{recovery}"
-    );
-    assert!(recovery.ends_with(" health)"), "{recovery}");
-    assert!(recovery.contains("--passive"), "{recovery}");
+    let recovery = fault["shell"].as_str().expect("CLI recovery guidance");
     assert!(
         fault.get("call").is_none(),
         "CLI scope cannot become MCP arguments: {fault}"
     );
     #[cfg(unix)]
-    {
+    let recovery = {
+        let observed_executable = env!("CARGO_BIN_EXE_backend-cli");
+        assert!(
+            recovery.starts_with(&format!(
+                "(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; {observed_executable} --project "
+            )),
+            "{recovery}"
+        );
+        assert!(recovery.ends_with(" health)"), "{recovery}");
+        assert!(recovery.contains("--passive"), "{recovery}");
         // The response names the observed executable. Replace only that
         // already-asserted token so the shell proof captures argv without
         // launching the CLI or evaluating a selected path as syntax.
@@ -176,7 +174,13 @@ fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
             parsed.stdout, expected,
             "retain every literal selected operand"
         );
-    }
+        recovery
+    };
+    #[cfg(not(unix))]
+    let recovery = {
+        assert_eq!(recovery, "re-run the same command");
+        recovery
+    };
     assert!(
         fault["detail"]
             .as_str()
