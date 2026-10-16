@@ -452,13 +452,19 @@ def evaluate_fleet(
             and start <= finish <= resource_at
             and all(-5 <= age <= max_age_seconds for age in ages)
         )
+        return_code = sample.get("return_code")
+        entries_omitted = census.get("entries_omitted_count")
+        groups_omitted = census.get("compiler_groups_omitted_count")
         complete = (
-            sample.get("return_code") == 0
+            type(return_code) is int
+            and return_code == 0
             and census.get("schema") == "build-census.v1"
             and census.get("complete") is True
             and census.get("resource_snapshot_complete") is True
-            and census.get("entries_omitted_count") == 0
-            and census.get("compiler_groups_omitted_count") == 0
+            and type(entries_omitted) is int
+            and entries_omitted == 0
+            and type(groups_omitted) is int
+            and groups_omitted == 0
             and time_valid
         )
         if not complete:

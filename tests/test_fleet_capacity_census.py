@@ -583,6 +583,31 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertFalse(invalid_policy["advisory_allowed"])
         self.assertIn("fleet-optional-host-policy-invalid", invalid_policy["reasons"])
 
+    def test_completion_counts_require_exact_ints_for_each_included_host(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        malformed_values = (False, True, 0.0, "0", None, 1)
+        fields = ("return_code", "entries_omitted_count", "compiler_groups_omitted_count")
+
+        for host in hosts:
+            for field in fields:
+                for value in malformed_values:
+                    with self.subTest(host=host, field=field, value=value):
+                        samples = empty_samples_for_hosts(self.now, hosts)
+                        if field == "return_code":
+                            samples[host][field] = value
+                        else:
+                            samples[host]["census"][field] = value
+                        result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+                        self.assertFalse(result["advisory_allowed"])
+                        self.assertIn(f"{host}:incomplete-or-stale-native-census", result["reasons"])
+                        self.assertFalse(result["hosts"][host]["complete"])
+
+        # The stricter evidence types do not change the established default
+        # three-host policy for well-formed census output.
+        legacy = self.evaluate()
+        self.assertTrue(legacy["advisory_allowed"], legacy["reasons"])
+        self.assertEqual(set(legacy["sample_scope"]["configured_hosts"]), set(fleet.DEFAULT_HOSTS))
+
     def test_four_host_scope_rejects_stale_incomplete_truncated_and_invalid_resources(self) -> None:
         hosts = host_configs(include_ilo_prod=True)
         mutations = (
