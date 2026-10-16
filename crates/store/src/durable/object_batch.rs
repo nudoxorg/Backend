@@ -707,15 +707,21 @@ mod tests {
             std::process::exit(78);
         }
         let directory = Directory::new("crash");
-        let status = std::process::Command::new(std::env::current_exe()?)
+        let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "durable::object_batch::tests::crash_during_a_batch_is_unselected_and_restart_reaps_only_private_temps",
                 "--nocapture",
             ])
             .env(CHILD_DIRECTORY, &directory.0)
-            .status()?;
-        assert_eq!(status.code(), Some(77));
+            .output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(77),
+            "crash child exited unexpectedly; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         let cold = directory.store()?;
         assert!(cold.head()?.is_none());
         assert_eq!(
