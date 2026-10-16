@@ -195,10 +195,14 @@ mod tests {
             assert_eq!(peer.read(&mut byte).expect("shutdown notification"), 0);
         });
         let mut client = UnixCommandTransport::from_stream(stream);
-        assert!(matches!(
-            client.request(request()),
-            Err(ClientError::ResponseFrameTooLarge { basis: None })
-        ));
+        let command = request();
+        let expected_basis = super::super::query_continuation::basis(&command.command);
+        let actual_basis = match client.request(command) {
+            Err(ClientError::ResponseFrameTooLarge { basis }) => basis,
+            other => panic!("oversized reply returned: {other:?}"),
+        };
+        assert!(expected_basis.is_some(), "fixture is a Search request");
+        assert_eq!(actual_basis, expected_basis);
         // `shutdown(Both)` may leave bytes already queued in the kernel's
         // receive buffer, but the transport cannot start another exchange on
         // that stream, so those bytes can never be decoded as a reply frame.
