@@ -37,6 +37,10 @@ fn empty_project_publication_and_repeat_keep_exact_receipts_without_source_captu
             .index_operations
             .entry(operation)
             .map_err(|error| error.to_string())?;
+        let retained_state = retained.as_ref().and_then(|entry| match entry {
+            JournalEntry::Retained(entry) => Some(&entry.state),
+            JournalEntry::OutsideReceiptWindow { .. } => None,
+        });
         assert!(
             matches!(
                 &retained,
@@ -44,7 +48,7 @@ fn empty_project_publication_and_repeat_keep_exact_receipts_without_source_captu
                     if matches!(entry.state, StoredOperationState::Published { .. })
                         && entry.source_capture.is_none()
             ),
-            "a real empty scan publishes without inventing a compiler capture: {retained:?}"
+            "a real empty scan publishes without inventing a compiler capture: operation={operation:?}, state={retained_state:?}"
         );
         let observed = adapter
             .resolve_index_operation(daemon, operation, None)
