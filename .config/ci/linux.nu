@@ -176,7 +176,7 @@ def main [
         true
     } else {
         ci-step "linux" "root flake check" {||
-            with-plain-tmp {|| run-bounded 45min "nix" "flake" "check" "-L" "--keep-going" "path:." }
+            with-plain-tmp {|| run-bounded 45min "python3" ($env.FILE_PWD | path join ".config" "ci" "linux-flake-check.py") }
         }
     }
 

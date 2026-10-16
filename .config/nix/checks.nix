@@ -189,6 +189,15 @@ in
         touch "$out"
       '';
 
+  linux-flake-runner-contract =
+    pkgs.runCommand "nudox-linux-flake-runner-contract" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        cp ${../ci/linux-flake-check.py} linux-flake-check.py
+        cp ${../ci/test_linux_flake_check.py} test_linux_flake_check.py
+        python3 test_linux_flake_check.py
+        touch "$out"
+      '';
+
   nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
