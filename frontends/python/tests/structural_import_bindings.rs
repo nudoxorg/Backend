@@ -100,7 +100,7 @@ fn from_import_fields_preserve_aliases_relative_multiline_and_real_repeated_bind
     assert_eq!(
         imports.iter().map(|d| d.name()).collect::<Vec<_>>(),
         [
-            "item", "renamed", "other", "alias", "copy", "copy", "copy", "copy"
+            "item", "renamed", "alias", "other", "copy", "copy", "copy", "copy"
         ]
     );
     assert!(
@@ -108,9 +108,22 @@ fn from_import_fields_preserve_aliases_relative_multiline_and_real_repeated_bind
             .iter()
             .all(|d| !["phantom_module", "relative_module", "wildcard_module"].contains(&d.name()))
     );
-    assert_eq!(imports[1].signature(), "value\nphantom_module\nitem");
-    assert_eq!(imports[2].signature(), "value\n/relative_module\nother");
-    assert_eq!(imports[3].signature(), "value\n/relative_module\nvalue");
+    // Public extraction sorts (statement line, kind, name). Multiline
+    // imports share the statement line, so alias precedes other.
+    for (name, signature) in [
+        ("renamed", "value\nphantom_module\nitem"),
+        ("other", "value\n/relative_module\nother"),
+        ("alias", "value\n/relative_module\nvalue"),
+    ] {
+        assert_eq!(
+            imports
+                .iter()
+                .find(|row| row.name() == name)
+                .expect("binding")
+                .signature(),
+            signature
+        );
+    }
     // Distinct source sites sharing one line/name/signature stay distinct.
     // Search must not deduplicate them by display coordinate.
     assert_eq!(
