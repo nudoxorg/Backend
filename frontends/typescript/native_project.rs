@@ -36,11 +36,11 @@ pub struct NativeProgram {
     pub checker: TszCheckerOptions,
     /// Source module requests with their resolver outcomes.
     pub resolutions: Vec<NativeModuleResolution>,
-    /// Canonical source paths paired with their ESM or CommonJS format.
+    /// Source paths paired with the resolver-selected ESM or CommonJS format.
     pub file_formats: Vec<(PathBuf, TszProjectFileFormat)>,
     /// Stable native options, including resolver policy, retained in the recipe.
     pub options_identity: String,
-    /// Selected project roots that seed module resolution.
+    /// Root source files selected by the project configuration or inferred inputs.
     pub root_names: Vec<PathBuf>,
     /// Diagnostics produced while loading and resolving project configuration.
     pub program_diagnostics: Vec<crate::TszDiagnostic>,
