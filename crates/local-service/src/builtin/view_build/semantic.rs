@@ -1211,21 +1211,61 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
     }
     let exact = match reader.image_facts().provenance {
         backend_semantic::ir::ImageProvenance::Captured { scope, .. } => {
-            match reader.atom(scope.path).and_then(|path| std::str::from_utf8(path).ok()) {
-                Some(path) => super::exact_sites::go_sites(profile, reader, session, path, declarations)?,
+            match reader
+                .atom(scope.path)
+                .and_then(|path| std::str::from_utf8(path).ok())
+            {
+                Some(path) => super::exact_sites::declaration_sites(
+                    profile,
+                    reader,
+                    session,
+                    path,
+                    declarations,
+                )?,
                 None => BTreeMap::new(),
             }
         }
         _ => BTreeMap::new(),
     };
-    let sites = if language == backend_semantic::vocabulary::Language::Go {
-        let written = declarations.iter().filter_map(|site| {
-            match site.binding_identity() {
-                backend_compile::SourceBindingIdentity::Exact(capture) => Some((capture.binding(), *site)),
+    let sites = if matches!(
+        language,
+        backend_semantic::vocabulary::Language::Go
+            | backend_semantic::vocabulary::Language::TypeScript
+    ) {
+        let written = declarations
+            .iter()
+            .filter_map(|site| match site.binding_identity() {
+                backend_compile::SourceBindingIdentity::Exact(capture) => {
+                    Some((capture.binding(), *site))
+                }
                 _ => None,
-            }
-        }).collect::<BTreeMap<_, _>>();
-        exact.iter().filter_map(|(identity, binding)| written.get(binding).map(|site| (*identity, *site))).collect()
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut sites = exact
+            .iter()
+            .filter_map(|(identity, binding)| written.get(binding).map(|site| (*identity, *site)))
+            .collect::<BTreeMap<_, _>>();
+        if language == backend_semantic::vocabulary::Language::TypeScript {
+            // Presentation pairing is not declaration identity. Preserve its
+            // existing metadata fallback where extent proof is unavailable,
+            // without allowing a fallback to consume an exactly owned site.
+            let unresolved = pairing
+                .into_iter()
+                .filter(|entity| !exact.contains_key(&entity.identity))
+                .collect::<Vec<_>>();
+            let bound = exact.values().copied().collect::<BTreeSet<_>>();
+            let remaining = declarations
+                .iter()
+                .copied()
+                .filter(|site| {
+                    !matches!(site.binding_identity(),
+                    backend_compile::SourceBindingIdentity::Exact(capture)
+                        if bound.contains(&capture.binding()))
+                })
+                .collect::<Vec<_>>();
+            sites.extend(kinds::pair_sites(language, &unresolved, &remaining));
+        }
+        sites
     } else {
         kinds::pair_sites(language, &pairing, declarations)
     };
