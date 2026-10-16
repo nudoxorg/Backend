@@ -427,6 +427,7 @@ mod tests {
             versions: 0,
             candidate_authority: None,
             source_metadata: Some(metadata()),
+            compiler_outcomes: None,
         };
         new.admit(crate::CommandId::PackageProfile)
             .expect("dynamic source metadata remains valid");

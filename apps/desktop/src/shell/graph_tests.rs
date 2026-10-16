@@ -907,6 +907,67 @@ fn publish_continuity(rig: &mut Rig) {
     rig.cx.run_until_parked();
 }
 
+/// Controlled indexed identities and real mounted header/history controls.
+/// This is a publication/reading regression, not native owner or pixel proof.
+#[gpui::test]
+fn publication_while_a_selected_declaration_is_open_preserves_the_graph_history_visit(cx: &mut TestAppContext) {
+    for (view, label) in [(View::Page, "Show Page view"), (View::Code, "Show Code view")] {
+        let route = view_route("RelationLabel", View::Graph);
+        let mut rig = continuity_rig(cx, route.clone());
+        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+        rig.settle();
+        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
+        let camera = facet::motion::Camera::new(17.25, -9.5, 127.75);
+        graph.update(rig.cx, |graph, cx| graph.fly_to(camera, cx));
+        rig.settle();
+        let reading = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+        let open = super::tests::native_bounds(&mut rig, "Button", label, true).expect("selected declaration header");
+        rig.cx.simulate_click(open.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), indexed_view_route("RelationDirection", view));
+        let departure = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+        assert_ne!(departure.session().reading.current.id, reading);
+
+        publish_continuity(&mut rig);
+        rig.settle();
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(),
+            "the publication actually retires the hidden scene");
+        let published = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+        assert_eq!(published.route(), departure.route(), "publication cannot navigate away from the selected declaration");
+        assert_eq!(published.session().back, departure.session().back, "publication preserves graph history");
+        assert_eq!(published.session().reading.current.id, departure.session().reading.current.id);
+        let back = super::tests::native_bounds(&mut rig, "Button", "Back to graph", true).expect("local graph return");
+        rig.cx.simulate_click(back.center(), gpui::Modifiers::none());
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), reading);
+        let restored = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("replacement graph"));
+        assert_ne!(restored.entity_id(), graph.entity_id(), "Back mounts a newly read scene");
+        assert_eq!(restored.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
+            "Back restores selected B and camera, rather than consuming graph route A again");
+        rig.keys("secondary-]");
+        assert_eq!(rig.route(), indexed_view_route("RelationDirection", view));
+        rig.keys("secondary-[");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("returned graph").read(cx).focused()), Some(1));
+    }
+}
+
+#[gpui::test]
+fn a_fresh_graph_visit_cannot_restore_a_hidden_history_visits_presentation(cx: &mut TestAppContext) {
+    let route = view_route("RelationLabel", View::Graph);
+    let mut rig = continuity_rig(cx, route.clone());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let reading = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+    rig.go(Intent::Navigate(page_route("RelationDirection")));
+    publish_continuity(&mut rig);
+    rig.go(Intent::Navigate(route.clone()));
+    assert_eq!(rig.route(), route);
+    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), reading);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh graph").read(cx).focused()), Some(0),
+        "a new visit consumes its own route A, instead of borrowing history visit B");
+}
+
 #[gpui::test]
 fn publication_preserves_selected_b_and_exact_camera_on_consumed_route_a(cx: &mut TestAppContext) {
     let route = view_route("RelationLabel", View::Graph);

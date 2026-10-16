@@ -160,7 +160,7 @@ impl<'a> CheckerState<'a> {
         self.json_module_type_for_file(target_file_idx)
     }
 
-    fn json_module_type_for_file(&mut self, target_file_idx: usize) -> Option<TypeId> {
+    pub(crate) fn json_module_type_for_file(&mut self, target_file_idx: usize) -> Option<TypeId> {
         if !self.ctx.compiler_options.resolve_json_module {
             return None;
         }

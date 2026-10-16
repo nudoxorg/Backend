@@ -637,7 +637,7 @@ fn append_clang(
             .to_le_bytes(),
     );
     out.extend_from_slice(&typed.canonical_atom_list(facts.includes)?.to_le_bytes());
-    Ok(())
+    append_optional_source(out, facts.declared_name, typed)
 }
 
 fn append_optional_type(

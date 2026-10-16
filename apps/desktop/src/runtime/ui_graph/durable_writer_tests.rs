@@ -730,3 +730,131 @@ fn close_rejects_an_unmatched_store_capture_before_admitting_durable_state(cx: &
     rig.release();
     rig.finish(cx);
 }
+
+/// Mount the production Library over this fixture's real held writer/actor.
+/// No synthetic cancellation capability is supplied to the view.
+fn mount_pending_index_controls(
+    rig: &Rig,
+    cx: &mut TestAppContext,
+) -> (gpui::WindowHandle<gpui_component::Root>, Entity<crate::shell::Shell>, &'static mut gpui::VisualTestContext) {
+    let graph = UiEntityGraph { root: rig.root.clone(), store: rig.store.clone() };
+    let window = cx.update(|cx| {
+        gpui_component::init(cx);
+        let _ = facet::fonts::install(cx);
+        cx.open_window(gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)), gpui::size(gpui::px(1440.0), gpui::px(900.0))))),
+            ..gpui::WindowOptions::default()
+        }, |window, cx| {
+            let shell = cx.new(|cx| crate::shell::Shell::new(&graph, window, cx));
+            cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
+        }).expect("native Library window")
+    });
+    let shell = window.root(cx).expect("component root").read_with(cx, |root, _|
+        root.view().clone().downcast::<crate::shell::Shell>().expect("mounted shell"));
+    let visual = gpui::VisualTestContext::from_window(window.into(), cx).into_mut();
+    visual.update(|window, cx| {
+        window.activate_window();
+        window.set_a11y_forced(true);
+        window.draw(cx).clear(cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| { window.draw(cx).clear(cx); });
+    (window, shell, visual)
+}
+
+#[gpui::test]
+fn native_stop_pending_request_cancels_only_its_held_preflight_and_retry_keeps_a_new_key(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let original = lineage(&rig, cx).expect("held first-send lineage");
+    let (_window, shell, visual) = mount_pending_index_controls(&rig, cx);
+    let expected = rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].clone());
+    let revision = rig.root.read_with(visual, |root, _| root.unsent_index_revision(&expected)).expect("positive runtime preflight proof");
+    let (target, bounds) = shell.read_with(visual, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.label == "Stop pending request").expect("mounted native stop control");
+    let native = visual.update(|window, _| window.a11y_tree().expect("native tree").nodes.iter()
+        .find(|(_, node)| node.label() == Some("Stop pending request") && node.supports_action(gpui::AccessibleAction::Click))
+        .map(|(id, _)| *id).expect("native actionable pending-request button"));
+    visual.simulate_click(bounds.center(), gpui::Modifiers::none());
+    assert_eq!(rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].phase), ProjectPhase::Cancelled);
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "native cancellation precedes the first send");
+    assert!(rig.root.read_with(visual, |root, _| root.index_preflights.is_empty()));
+
+    // The first save is still held. A fresh retry can look identical in the
+    // row, but its independent preflight must not borrow the old native input.
+    rig.root.update(visual, |root, cx| root.dispatch(Intent::RetryIndex(rig.project.clone()), cx));
+    visual.run_until_parked();
+    let next = rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].clone());
+    assert!(next.same_index_attempt(&expected), "before synchronization both rows are locally queued");
+    let next_revision = rig.root.read_with(visual, |root, _| root.unsent_index_revision(&next)).expect("new unsent preflight");
+    assert_ne!(revision, next_revision, "same folder and phase do not identify a pending first send");
+    let reduced = rig.root.read_with(visual, |root, _| root.reduced());
+    let frame = visual.update(|window, _| window.a11y_frame_number());
+    visual.update(|window, cx| {
+        assert!(!target.action.admits(cx));
+        target.action.run(window, cx);
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(window.a11y_frame_number(), frame, "stale committed native input is rejected before a repaint");
+    });
+    assert_eq!(rig.root.read_with(visual, |root, _| root.reduced()), reduced);
+    assert_eq!(rig.root.read_with(visual, |root, _| root.unsent_index_revision(&next)), Some(next_revision));
+    rig.release();
+    rig.settle(&mut visual.cx);
+    crate::runtime::wait::until("only the new retry enters the first-send adapter", || rig.sent.load(Ordering::SeqCst) == 1);
+    let Intent::IndexProject { request, operation, .. } = original else { panic!("index lineage"); };
+    let observed = rig.observed.lock().expect("first-send lineage");
+    assert_eq!(observed.len(), 1);
+    assert_ne!(observed[0].0, request);
+    assert_ne!(observed[0].1.key, operation.key);
+    assert_eq!(rig.persistence.load().expect("new durable claim").shelf[0].operation.as_ref(), Some(&observed[0].1));
+    drop(observed);
+    rig.release_actor();
+    rig.finish(&mut visual.cx);
+}
+
+#[gpui::test]
+fn native_pending_stop_retires_at_first_send_and_does_not_cancel_or_retry_owner_work(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let (_window, shell, visual) = mount_pending_index_controls(&rig, cx);
+    let (target, bounds) = shell.read_with(visual, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.label == "Stop pending request").expect("mounted native pending control");
+    let frame = visual.update(|window, _| window.a11y_frame_number());
+    visual.update(|window, cx| window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+        position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false,
+    }), cx));
+    rig.release();
+    rig.settle(&mut visual.cx);
+    crate::runtime::wait::until("actual first send enters the adapter", || rig.sent.load(Ordering::SeqCst) == 1);
+    let submitted = rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].clone());
+    assert!(submitted.operation.is_some() && submitted.request.is_some());
+    assert!(rig.root.read_with(visual, |root, _| root.unsent_index_revision(&submitted)).is_none());
+    let reduced = rig.root.read_with(visual, |root, _| root.reduced());
+    visual.update(|window, cx| {
+        assert!(!target.action.admits(cx));
+        target.action.run(window, cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        assert_eq!(window.a11y_frame_number(), frame, "the held native press cannot borrow an already submitted operation");
+    });
+    assert_eq!(rig.root.read_with(visual, |root, _| root.reduced()), reduced);
+    assert_eq!(rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].operation.clone()), submitted.operation);
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 1, "refused cancellation creates no replacement Start");
+    visual.update(|window, cx| { window.draw(cx).clear(cx); });
+    visual.update(|window, _| assert!(!window.a11y_tree().expect("submitted native tree").nodes.iter()
+        .any(|(_, node)| node.label() == Some("Stop pending request") && node.supports_action(gpui::AccessibleAction::Click)),
+        "submitted owner work exposes no fabricated cancellation control"));
+    rig.release_actor();
+    crate::runtime::wait::until("interrupted answer is reconciled truthfully", || {
+        visual.run_until_parked();
+        rig.root.update(visual, |root, cx| root.drain_engine(cx));
+        rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].phase == ProjectPhase::Unconfirmed)
+    });
+    let unknown = rig.root.read_with(visual, |root, _| root.snapshot().workspace().projects[0].clone());
+    assert_eq!(unknown.operation, submitted.operation, "recovery retains the same caller key and payload");
+    assert!(rig.root.read_with(visual, |root, _| root.unsent_index_revision(&unknown)).is_none());
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 1);
+    rig.finish(&mut visual.cx);
+}

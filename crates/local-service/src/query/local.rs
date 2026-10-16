@@ -641,6 +641,17 @@ impl SelectedCorpus {
 }
 
 impl Corpus {
+    /// The lexical revision already completed on this exclusively borrowed
+    /// corpus. Move the same admitted document selection into place once.
+    fn install_prepared(&mut self, prepared: PreparedCorpus) {
+        self.workspace = prepared.workspace;
+        self.view = prepared.view;
+        self.coverage = prepared.coverage;
+        self.lexical_binding = prepared.binding;
+        self.selected = prepared.selected;
+        self.semantic_evidence = prepared.semantic_evidence;
+    }
+
     fn placement_key(
         &self,
         entity: EntityId,
@@ -1182,13 +1193,20 @@ impl SearchSnapshotOwner {
             self.maintenance = Some(SnapshotMaintenance::Reused);
             return self.selected.as_ref().ok_or(QueryError::InvalidView);
         }
+        // One admitted current corpus serves both the revision attempt and a
+        // replacement build. A retained old answer can prohibit mutation, and
+        // lexical maintenance can request a rebuild, without repeating this
+        // complete row/evidence join and document-state construction.
+        let prepared = prepare_corpus(
+            workspace,
+            view,
+            &expected_view_capability,
+            coverage,
+            semantic_evidence,
+        )?;
         let revised = match self.selected.as_mut() {
             Some(selected) => selected.try_revise(
-                workspace,
-                &view,
-                &expected_view_capability,
-                coverage,
-                &semantic_evidence,
+                &prepared,
                 self.durable_root.as_deref(),
                 self.durable_budget,
                 cancelled,
@@ -1196,7 +1214,8 @@ impl SearchSnapshotOwner {
             None => Ok(None),
         };
         match revised {
-            Ok(Some(maintenance)) => {
+            Ok(Some((maintenance, corpus))) => {
+                corpus.install_prepared(prepared);
                 match maintenance {
                     SnapshotMaintenance::Rebuilt => {
                         self.builds = self.builds.saturating_add(1);
@@ -1220,12 +1239,8 @@ impl SearchSnapshotOwner {
                 }
             }
         }
-        let (selected, action) = QueryCoordinator::new_with_durable_root(
-            workspace,
-            view,
-            &expected_view_capability,
-            coverage,
-            semantic_evidence,
+        let (selected, action) = QueryCoordinator::from_prepared_corpus(
+            prepared,
             self.durable_root.clone(),
             self.durable_budget,
             cancelled,
@@ -1412,6 +1427,15 @@ impl QueryCoordinator {
             coverage,
             semantic_evidence,
         )?;
+        Self::from_prepared_corpus(prepared, durable_root, durable_budget, cancelled)
+    }
+
+    fn from_prepared_corpus(
+        prepared: PreparedCorpus,
+        durable_root: Option<PathBuf>,
+        durable_budget: lexical::DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
         let (source, action) = match (durable_root.as_deref(), cancelled) {
             (Some(root), Some(cancelled)) => lexical::TantivySource::open_or_build_cancelable(
                 &prepared.state,
@@ -1465,43 +1489,34 @@ impl QueryCoordinator {
 
     fn try_revise(
         &mut self,
-        workspace: WorkspaceRoot,
-        view: &ViewRoot,
-        expected_view_capability: &CoverageCapability,
-        coverage: CoverageWitness,
-        semantic_evidence: &SemanticQueryCorpus,
+        prepared: &PreparedCorpus,
         durable_root: Option<&Path>,
         durable_budget: lexical::DurableCacheBudget,
         cancelled: Option<&AtomicBool>,
-    ) -> Result<Option<SnapshotMaintenance>, QueryError> {
-        let prepared = prepare_corpus(
-            workspace,
-            view.clone(),
-            expected_view_capability,
-            coverage,
-            semantic_evidence.clone(),
-        )?;
+    ) -> Result<Option<(SnapshotMaintenance, &mut Corpus)>, QueryError> {
+        // Existing readers own the old immutable corpus. Detect that before
+        // reconstructing its document state; the replacement still consumes
+        // the identical already-admitted current corpus above.
+        let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
+            return Ok(None);
+        };
         let previous_state = if durable_root.is_some() {
-            let previous_view_capability = self
-                .corpus
+            let previous_view_capability = corpus
                 .view
                 .capability()
                 .ok_or(QueryError::StaleViewBinding)?;
             Some(
                 prepare_corpus(
-                    self.corpus.workspace,
-                    self.corpus.view.clone(),
+                    corpus.workspace,
+                    corpus.view.clone(),
                     &previous_view_capability,
-                    self.corpus.coverage,
-                    self.corpus.semantic_evidence.clone(),
+                    corpus.coverage,
+                    corpus.semantic_evidence.clone(),
                 )?
                 .state,
             )
         } else {
             None
-        };
-        let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
-            return Ok(None);
         };
         let durable_publication = match (durable_root, previous_state.as_ref(), cancelled) {
             (Some(root), Some(previous), Some(cancelled)) => Some(
@@ -1570,13 +1585,7 @@ impl QueryCoordinator {
                 },
             }
         };
-        corpus.workspace = prepared.workspace;
-        corpus.view = prepared.view;
-        corpus.coverage = prepared.coverage;
-        corpus.lexical_binding = prepared.binding;
-        corpus.selected = prepared.selected;
-        corpus.semantic_evidence = prepared.semantic_evidence;
-        Ok(Some(maintenance))
+        Ok(Some((maintenance, corpus)))
     }
 
     fn matches_selection(
@@ -2320,6 +2329,13 @@ struct PreparedCorpus {
     semantic_evidence: SemanticQueryCorpus,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    // Opt-in only: unrelated and parallel tests retain no observations or
+    // allocations, and no second global allocator is introduced.
+    static PREPARED_CORPORA: std::cell::RefCell<Option<Vec<backend_library::ViewStateRoot>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn prepare_corpus(
     workspace: WorkspaceRoot,
     view: ViewRoot,
@@ -2371,6 +2387,12 @@ fn prepare_corpus(
     ));
     let state = lexical::DocumentState::from_relation(binding, state, lexical::Limits::default())
         .map_err(QueryError::Lexical)?;
+    #[cfg(test)]
+    PREPARED_CORPORA.with_borrow_mut(|prepared| {
+        if let Some(prepared) = prepared {
+            prepared.push(view.root());
+        }
+    });
     Ok(PreparedCorpus {
         workspace,
         view,
@@ -2380,6 +2402,268 @@ fn prepare_corpus(
         selected,
         semantic_evidence,
     })
+}
+
+#[cfg(test)]
+mod prepared_corpus_tests {
+    use super::*;
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct Measurement;
+    impl Measurement {
+        fn start() -> Self {
+            PREPARED_CORPORA.with_borrow_mut(|work| *work = Some(Vec::new()));
+            Self
+        }
+        fn take(&self) -> Vec<backend_library::ViewStateRoot> {
+            PREPARED_CORPORA.with_borrow_mut(|work| work.replace(Vec::new()).unwrap_or_default())
+        }
+    }
+    impl Drop for Measurement {
+        fn drop(&mut self) {
+            PREPARED_CORPORA.with_borrow_mut(|work| *work = None);
+        }
+    }
+
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new() -> TestResult<Self> {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "nudox-search-prepare-{}-{unique}",
+                std::process::id()
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            builder.create(&path)?;
+            Ok(Self(path.canonicalize()?))
+        }
+        fn owner(&self, durable: bool, name: &str) -> SearchSnapshotOwner {
+            if durable {
+                SearchSnapshotOwner::with_durable_root(self.0.join(name))
+            } else {
+                SearchSnapshotOwner::default()
+            }
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn view_capability(view: &ViewRoot) -> TestResult<CoverageCapability> {
+        view.capability()
+            .ok_or_else(|| std::io::Error::other("missing view capability").into())
+    }
+
+    fn renamed_view(view: &ViewRoot) -> TestResult<ViewRoot> {
+        let mut rows = view.rows().to_vec();
+        rows.iter_mut()
+            .find(|row| row.label == "alpha exact")
+            .ok_or_else(|| std::io::Error::other("missing fixture symbol"))?
+            .label = "zephyr marker".to_owned();
+        Ok(ViewRoot::new_checked(
+            view.recipe(),
+            view.basis(),
+            view.frontier(),
+            rows,
+            vec![backend_engine::ViewCoverage::Complete],
+            view_capability(view)?,
+        )?)
+    }
+
+    fn select(
+        owner: &mut SearchSnapshotOwner,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+    ) -> TestResult {
+        owner.select(
+            workspace,
+            view.clone(),
+            view_capability(view)?,
+            crate::builtin::admitted_coverage()?,
+            super::super::tests::semantic_evidence(workspace, view),
+        )?;
+        Ok(())
+    }
+
+    // Preserve the original failed-revision path as a positive work control:
+    // current preparation, optional previous preparation, the failed exclusive
+    // borrow, then the real replacement constructor's repeated current work.
+    fn legacy_shared_replacement(
+        owner: &mut SearchSnapshotOwner,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+    ) -> TestResult {
+        let capability = view_capability(view)?;
+        let coverage = crate::builtin::admitted_coverage()?;
+        let evidence = super::super::tests::semantic_evidence(workspace, view);
+        let old = owner
+            .selected
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("missing previous selected snapshot"))?;
+        let _current = prepare_corpus(
+            workspace,
+            view.clone(),
+            &capability,
+            coverage,
+            evidence.clone(),
+        )?;
+        let _previous = owner
+            .durable_root
+            .as_ref()
+            .map(|_| -> TestResult<PreparedCorpus> {
+                prepare_corpus(
+                    old.corpus.workspace,
+                    old.corpus.view.clone(),
+                    &view_capability(&old.corpus.view)?,
+                    old.corpus.coverage,
+                    old.corpus.semantic_evidence.clone(),
+                )
+                .map_err(Into::into)
+            })
+            .transpose()?;
+        assert!(
+            Arc::get_mut(&mut old.corpus).is_none(),
+            "retained real answer prevents revision"
+        );
+        drop(_previous);
+        drop(_current);
+        let (replacement, _) = QueryCoordinator::new_with_durable_root(
+            workspace,
+            view.clone(),
+            &capability,
+            coverage,
+            evidence,
+            owner.durable_root.clone(),
+            owner.durable_budget,
+            None,
+        )?;
+        owner.selected = Some(replacement);
+        Ok(())
+    }
+
+    fn search(owner: &SearchSnapshotOwner, query: &str) -> TestResult<LocalAnswer> {
+        let selected = owner
+            .selected
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing selected snapshot"))?;
+        Ok(selected.search_local(LocalQuery::prefix(query, 4)?)?)
+    }
+
+    fn assert_equivalent_searches(
+        baseline: &SearchSnapshotOwner,
+        candidate: &SearchSnapshotOwner,
+        view: &ViewRoot,
+    ) -> TestResult {
+        for query in ["zephyr", "alphabet", "exact"] {
+            let baseline_answer = search(baseline, query)?;
+            let candidate_answer = search(candidate, query)?;
+            assert_eq!(
+                candidate_answer.total_matches,
+                baseline_answer.total_matches
+            );
+            assert_eq!(
+                candidate_answer.ranked_row_ids(),
+                baseline_answer.ranked_row_ids()
+            );
+            assert_eq!(candidate_answer.corpus.view.root(), view.root());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_answers_prepare_each_new_corpus_once_instead_of_legacy_fallback_duplicates()
+    -> TestResult {
+        for durable in [false, true] {
+            let directory = Directory::new()?;
+            let (workspace, old_view) = super::super::tests::selected_view();
+            let next_view = renamed_view(&old_view)?;
+            assert_ne!(old_view.root(), next_view.root());
+            let mut baseline = directory.owner(durable, "baseline");
+            let mut candidate = directory.owner(durable, "candidate");
+            select(&mut baseline, workspace, &old_view)?;
+            select(&mut candidate, workspace, &old_view)?;
+            let baseline_old = search(&baseline, "alpha")?;
+            let candidate_old = search(&candidate, "alpha")?;
+            let measure = Measurement::start();
+            legacy_shared_replacement(&mut baseline, workspace, &next_view)?;
+            let old_work = measure.take();
+            select(&mut candidate, workspace, &next_view)?;
+            let new_work = measure.take();
+            assert_eq!(
+                old_work
+                    .iter()
+                    .filter(|root| **root == next_view.root())
+                    .count(),
+                2
+            );
+            assert_eq!(
+                old_work
+                    .iter()
+                    .filter(|root| **root == old_view.root())
+                    .count(),
+                usize::from(durable)
+            );
+            assert_eq!(new_work, [next_view.root()]);
+            assert_equivalent_searches(&baseline, &candidate, &next_view)?;
+            assert_eq!(baseline_old.corpus.view.root(), old_view.root());
+            assert_eq!(candidate_old.corpus.view.root(), old_view.root());
+            assert!(
+                candidate_old
+                    .rows
+                    .iter()
+                    .any(|row| row.row.label == "alpha exact")
+            );
+            select(&mut candidate, workspace, &next_view)?;
+            assert!(
+                measure.take().is_empty(),
+                "the unchanged exact selection is still free"
+            );
+            assert_eq!(candidate.maintenance(), Some(SnapshotMaintenance::Reused));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_owned_revision_prepares_current_once_and_only_durable_previous_state_once() -> TestResult
+    {
+        for durable in [false, true] {
+            let directory = Directory::new()?;
+            let (workspace, old_view) = super::super::tests::selected_view();
+            let next_view = renamed_view(&old_view)?;
+            let mut owner = directory.owner(durable, "owned");
+            select(&mut owner, workspace, &old_view)?;
+            let measure = Measurement::start();
+            select(&mut owner, workspace, &next_view)?;
+            let work = measure.take();
+            assert_eq!(
+                work.iter()
+                    .filter(|root| **root == next_view.root())
+                    .count(),
+                1
+            );
+            assert_eq!(
+                work.iter().filter(|root| **root == old_view.root()).count(),
+                usize::from(durable)
+            );
+            assert_eq!(
+                owner.maintenance(),
+                Some(SnapshotMaintenance::Revised {
+                    rewritten_documents: 1
+                })
+            );
+            assert_eq!(owner.projection_builds(), 1);
+        }
+        Ok(())
+    }
 }
 
 fn validate_view_binding(

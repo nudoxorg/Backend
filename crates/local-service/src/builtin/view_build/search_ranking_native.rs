@@ -160,6 +160,8 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
             false,
             &path,
             &declarations,
+            None,
+            None,
         )
         .expect("product source projection");
         for projected in projected.rows {

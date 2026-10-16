@@ -203,7 +203,7 @@ fn card(
 
 /// One button that dispatches the command's intent for `project`, and the
 /// keyboard's way to it.
-fn act(
+pub(super) fn act(
     ctx: &mut Ctx<'_>,
     id: String,
     command: ProjectCommand,
@@ -221,8 +221,24 @@ fn act(
         .find(|row| row.id == project.id)
         .and_then(|row| row.operation.clone());
     let expected_attempt = project.clone();
+    let pending_revision = (command == ProjectCommand::StopPending).then(||
+        links.root.upgrade().and_then(|root| root.read(cx).unsent_index_revision(project))).flatten();
+    let cancellation_attempt = expected_attempt.clone();
     let project = project.id.clone();
     let act: Act = Rc::new(move |_, cx| {
+        if command == ProjectCommand::StopPending {
+            let Some(revision) = pending_revision else { return; };
+            if let Some(root) = links.root.upgrade() {
+                root.update(cx, |root, cx| {
+                    // Check and reduce in this same UI turn. Queuing CancelIndex
+                    // would let the held save hand off before cancellation ran.
+                    if root.unsent_index_revision(&cancellation_attempt) == Some(revision) {
+                        root.dispatch(intent.clone(), cx);
+                    }
+                });
+            }
+            return;
+        }
         if matches!(
             command,
             ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex
@@ -253,7 +269,7 @@ fn act(
     } else {
         ctx.target_local_action(act, cx)
     };
-    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume) {
+    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume | ProjectCommand::StopPending) {
         // Recovery remains local while the owner starts or fails, but cannot
         // borrow a different attempt of this folder before its next paint.
         let local = target_action;
@@ -264,7 +280,10 @@ fn act(
         target_action = TargetAction::new(Rc::new(move |cx| {
             local.admits(cx) && links.snapshot(cx).workspace().projects.iter()
                 .any(|row| row.same_index_attempt(&expected_attempt))
-        }), act).with_payload(payload);
+                && (command != ProjectCommand::StopPending || pending_revision.is_some()
+                    && links.root.upgrade().is_some_and(|root|
+                        root.read(cx).unsent_index_revision(&expected_attempt) == pending_revision))
+        }), act).with_payload((payload, pending_revision));
     }
     let act = target_action.callback();
     ctx.targets.push(Target {
@@ -281,7 +300,7 @@ fn act(
         &ctx.measure,
     )
     .on_click(move |window, cx| act(window, cx));
-    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume) {
+    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume | ProjectCommand::StopPending) {
         control = control.when_current(Rc::new(move |cx| target_action.admits(cx)));
     }
     let mut control = match command.weight() {

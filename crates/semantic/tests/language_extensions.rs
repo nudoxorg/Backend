@@ -400,6 +400,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: None,
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     assert_typed_round_trip!(builder.finish().expect("Clang IR"), clang, clang);
@@ -651,6 +652,7 @@ fn current_clang_plane_extent_and_fact_decode() {
             backend_semantic::ir::CxxStandard::Cxx26,
         ))
         .expect("profile");
+    let source_file = builder.intern_atom(b"include/sample.hpp").expect("source path");
     let clang = ClangFacts {
         qualifiers: ClangQualifiers {
             is_const: false,
@@ -664,6 +666,7 @@ fn current_clang_plane_extent_and_fact_decode() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: backend_semantic::ir::SourceSpan::new(source_file, 12, 18),
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
@@ -674,9 +677,34 @@ fn current_clang_plane_extent_and_fact_decode() {
         ir.language_extension_common_bounds().expect("bounds"),
     )
     .expect("current schema");
-    // One four-byte entity ordinal plus one 24-byte Clang fact.
-    assert_eq!(bytes[152..156], 28_u32.to_le_bytes());
+    // One four-byte entity ordinal plus one 36-byte Clang fact.
+    assert_eq!(bytes[152..156], 40_u32.to_le_bytes());
     assert_eq!(section.clang.get(EntityId::new(0)), Ok(Some(clang)));
+
+    // Schema 1 has the original 24-byte Clang row. Reading it preserves the
+    // other Clang facts while leaving the new native-name proof absent.
+    let mut legacy = bytes.clone();
+    legacy.truncate(legacy.len() - 12);
+    legacy[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    let legacy_len = u32::try_from(legacy.len()).expect("legacy length");
+    legacy[12..16].copy_from_slice(&legacy_len.to_le_bytes());
+    legacy[152..156].copy_from_slice(&28_u32.to_le_bytes());
+    let legacy_section = reopen_language_extension_section(
+        &legacy,
+        ir.storage_columns().authority,
+        ir.language_extension_common_bounds().expect("bounds"),
+    )
+    .expect("legacy section remains readable");
+    assert_eq!(
+        legacy_section
+            .clang
+            .get(EntityId::new(0))
+            .expect("legacy fact"),
+        Some(ClangFacts {
+            declared_name: None,
+            ..clang
+        })
+    );
 }
 
 #[test]
@@ -700,10 +728,11 @@ fn extension_schema_rejects_each_unadmitted_version_cell() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: None,
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
-    for observed in [0_u16, 2_u16, 3_u16] {
+    for observed in [0_u16, 3_u16] {
         let mut bytes = encode(&ir);
         bytes[4..6].copy_from_slice(&observed.to_le_bytes());
         assert!(matches!(

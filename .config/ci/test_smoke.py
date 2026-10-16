@@ -184,7 +184,7 @@ class SmokeContract(unittest.TestCase):
         self.assertLess(len(phases.encode()), 16 * 1024)
         self.assertIn("startup phase records omitted", phases)
 
-    def gui(self, visible=True, quit_code=0, ignore_quit=False):
+    def gui(self, visible=True, quit_code=0, ignore_quit=False, injection_error=False):
         def executable(name, code):
             path = self.bin_dir / name
             path.write_text(f"#!{os.sys.executable}\n" + code)
@@ -207,6 +207,13 @@ class SmokeContract(unittest.TestCase):
                    "if sys.argv[1] == 'search':\n"
                    "    if visible: print('123')\n"
                    "    sys.exit(0 if visible else 1)\n"
+                   "if sys.argv[1] == 'windowfocus':\n"
+                   "    assert sys.argv[2:] == ['--sync', '123'], 'focus and key must be separate'\n"
+                   "    sys.exit(0)\n"
+                   "assert sys.argv[1:] == ['key', '--clearmodifiers', 'super+q']\n"
+                   f"if {injection_error!r}:\n"
+                   "    print('fixture XTest delivery refused', file=sys.stderr)\n"
+                   "    sys.exit(4)\n"
                    "Path(os.environ['HOME'], 'quit').touch()\n")
         executable("backend-desktop", "import os, sys, time\nfrom pathlib import Path\n"
                    "assert 'GENERIC_CREDENTIAL_SENTINEL' not in os.environ\n"
@@ -246,6 +253,19 @@ class SmokeContract(unittest.TestCase):
 
     def test_gui_requires_visible_window_and_successful_public_quit(self):
         self.assertEqual(self.gui(), 0)
+
+    def test_gui_focus_and_key_share_original_five_second_budget(self):
+        import subprocess
+        success = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(smoke.time, "monotonic", side_effect=[10, 11, 14]), \
+                patch.object(smoke.subprocess, "run", return_value=success) as run:
+            self.assertEqual(smoke._deliver_gui_quit("xdotool", "123", {}), 0)
+        self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [4, 1])
+
+    def test_gui_quit_injection_failure_is_not_accepted_or_hidden(self):
+        self.assertEqual(self.gui(injection_error=True), 1)
+        self.assertIn("Quit key delivery failed with exit 4", self.gui_error)
+        self.assertIn("fixture XTest delivery refused", self.gui_error)
 
     def test_gui_paint_without_visible_window_fails(self):
         self.assertEqual(self.gui(visible=False), 1)

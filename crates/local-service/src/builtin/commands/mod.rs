@@ -7,6 +7,7 @@ mod graph;
 mod index;
 mod index_operation;
 mod journal_readiness;
+mod package_profile;
 mod search_lane;
 mod semantic_query;
 mod semantic_shapes;

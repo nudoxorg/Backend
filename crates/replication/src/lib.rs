@@ -31,7 +31,7 @@ mod transport;
 mod unix_endpoint;
 
 pub use authority::*;
-pub use codec::{decode_message, encode_message};
+pub use codec::{CHUNK_FRAME_OVERHEAD, decode_message, encode_message};
 pub use coverage::*;
 pub use deferred_command::*;
 pub use execution::*;

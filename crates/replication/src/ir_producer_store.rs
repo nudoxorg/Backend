@@ -3423,7 +3423,7 @@ mod tests {
             store.clone(),
             crate::TransportLimits {
                 max_chunk: 16 * 1024,
-                max_frame: 16 * 1024 + 192,
+                max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )
