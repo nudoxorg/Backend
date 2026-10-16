@@ -428,6 +428,7 @@ class NativeDefaultPackageTests(unittest.TestCase):
         release = json.loads((self.output / "release-manifest.json").read_text())
         self.assertEqual(release["source_sha"], self.build["source"]["commit"])
         self.assertEqual(release["packaging_manifest_sha256"], package.sha256(root / "packaging-manifest.json"))
+        self.assertEqual(manifest["checkpoint_shell_asset"], "install-linux-x64.sh")
         shell = self.output / "install-linux-x64.sh"
         self.assertEqual(shell.read_bytes(), package.checkpoint_shell(
             manifest["release_tag"], (self.output / "install-linux-x64.py").read_bytes(),

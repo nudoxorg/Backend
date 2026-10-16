@@ -663,6 +663,7 @@ def main() -> int:
         "embedding_setup": embedding_setup,
         "glibc_libraries_bundled": False,
         "runtime_acceptance": "external_native_qa_record_required",
+        "checkpoint_shell_asset": "install-linux-x64.sh",
     }
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
     sdk_note = ("This archive also includes a receipt-bound Node/TypeScript SDK for explicitly\n"

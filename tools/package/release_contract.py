@@ -291,6 +291,32 @@ def validate(directory, source=None, platform=None, require_qa=True):
     return manifest
 
 
+
+def linux_checkpoint_shell_assets(directory, manifest, *, required=False):
+    """Admit the optional legacy/new-required checkpoint shell and its exact sidecar."""
+    directory = Path(directory)
+    shell = directory / "install-linux-x64.sh"
+    sidecar = directory / "install-linux-x64.sh.sha256"
+    present = (os.path.lexists(shell), os.path.lexists(sidecar))
+    if not any(present) and not required:
+        return []  # Older portable-package records did not emit a shell asset.
+    if not all(present):
+        raise ValueError("Linux checkpoint shell requires both launcher and SHA-256 sidecar")
+    from linux_release_package import checkpoint_shell, read_regular_bytes
+    installer = read_regular_bytes(directory / "install-linux-x64.py", 1024 * 1024,
+                                   "Linux checkpoint installer")
+    manifest_digest = sha256(metadata_path(directory, "release-manifest", "linux-x64"))
+    tag = linux_checkpoint_tag(manifest, installer, manifest_digest)
+    raw = read_regular_bytes(shell, 64 * 1024, "Linux checkpoint shell")
+    if raw != checkpoint_shell(tag, installer, manifest["minimum_glibc"]):
+        raise ValueError("Linux checkpoint shell differs from its actual installer/tag/glibc pins")
+    digest = hashlib.sha256(raw).hexdigest()
+    if read_regular_bytes(sidecar, 256, "Linux checkpoint shell sidecar") != \
+            f"{digest}  {shell.name}\n".encode():
+        raise ValueError("Linux checkpoint shell sidecar differs from its exact bytes")
+    return [shell, sidecar]
+
+
 def validate_linux(directory, manifest, source=None, *, require_qa=True, manifest_sha256=None):
     """Validate a receipted Ubuntu x86-64 package and, by default, its native QA."""
     required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_glibc", "build_manifest_sha256", "packaging_manifest_sha256"}
@@ -435,6 +461,9 @@ def validate_linux(directory, manifest, source=None, *, require_qa=True, manifes
     release_tag = package.get("release_tag")
     if release_tag != pinned_tag:
         raise ValueError("Linux package release tag differs from its pinned installer")
+    if "checkpoint_shell_asset" in package and package["checkpoint_shell_asset"] != "install-linux-x64.sh":
+        raise ValueError("Linux package declares an unknown checkpoint shell asset")
+    linux_checkpoint_shell_assets(directory, manifest, required="checkpoint_shell_asset" in package)
 
     if require_qa:
         qa = read_json(directory / "native-qa-linux-x64.json")
@@ -578,6 +607,14 @@ class GitHub:
                 package = json.load(bundle.extractfile("nudox-linux-x86_64/packaging-manifest.json"))
             if tag != package.get("release_tag") and not re.fullmatch(re.escape("v" + manifest["version"]) + r"-rc\.[0-9]+", tag):
                 raise ValueError("candidate tag differs from its immutable Linux checkpoint")
+        shell_assets = []
+        if selected == "linux-x64" and not stable:
+            shell_assets = linux_checkpoint_shell_assets(directory, manifest)
+            if shell_assets:
+                pinned_tag = linux_checkpoint_tag(manifest, (directory / "install-linux-x64.py").read_bytes(),
+                                                  sha256(metadata_path(directory, "release-manifest", selected)))
+                if tag != pinned_tag:
+                    raise ValueError("Linux checkpoint shell can only publish under its exact pinned checkpoint tag")
         release = self.find_release(tag)
         if release is None:
             release = self.api("/releases", "POST", {"tag_name": tag, "name": "NuDox " + tag, "draft": True, "prerelease": not stable, "make_latest": "false", "body": f'Verified native artifacts. Canonical Forgejo Backend source: {manifest["source_sha"]}. The GitHub tag is a distribution identifier.'})
@@ -610,6 +647,7 @@ class GitHub:
                 published_bootstrap = staging / "install-linux-x64.py"
                 published_bootstrap.write_bytes(bootstrap.read_bytes())
                 paths.append(published_bootstrap)
+                paths.extend(shell_assets)
             self.publish_assets(release, paths, assets, stable)
         if release["draft"] and not draft_only:
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})
