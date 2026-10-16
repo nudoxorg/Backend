@@ -1562,3 +1562,4 @@ while IFS='|' read -r worktree build_dir target_dir command jobs wrapper; do
 done < "$warm_log"
 
 echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, cancellation and fork-kill recovery, stamps, provenance, managed cache lifetime, daemon protocol isolation, exit propagation, stale worktree recovery)"
+

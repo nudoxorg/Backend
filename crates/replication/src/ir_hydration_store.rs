@@ -547,11 +547,16 @@ impl VerifiedLocalSemanticCas for FileSemanticRangeStore {
 impl FileSemanticRangeStore {
     /// Opens the semantic sparse-transfer state adjacent to the FileStore.
     /// The FileStore continues to own all completed immutable object bytes.
+    /// Caller limits are ceilings. The persisted sparse format uses 16 KiB
+    /// extents, so a larger generic chunk ceiling is narrowed on every open.
     pub fn open(store: FileStore, limits: TransportLimits) -> Result<Self, String> {
-        let limits = limits.validate().map_err(display_error)?;
-        if limits.max_chunk != MAX_RANGE_BYTES || limits.max_frame < MAX_RANGE_BYTES + 192 {
+        let mut limits = limits.validate().map_err(display_error)?;
+        if limits.max_chunk < MAX_RANGE_BYTES
+            || limits.max_frame < MAX_RANGE_BYTES + crate::CHUNK_FRAME_OVERHEAD
+        {
             return Err("semantic range CAS requires 16 KiB chunks and frame headroom".to_owned());
         }
+        limits.max_chunk = MAX_RANGE_BYTES;
         let state_root = store.root().join("semantic-hydration");
         let sessions = state_root.join("sessions");
         let mappings = state_root.join("mappings");
@@ -3752,6 +3757,43 @@ fn display_error(error: impl fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_chunk_ceiling_opens_fixed_semantic_extents_with_exact_frame_headroom() {
+        let directory = TestDirectory::create();
+        let cas =
+            FileStore::open(directory.0.join("cas"), 4 * 1024 * 1024).expect("open semantic CAS");
+        let defaults = TransportLimits::default();
+        let semantic = FileSemanticRangeStore::open(cas.clone(), defaults)
+            .expect("generic defaults admit the semantic store used by source discovery");
+        assert_eq!(semantic.limits.max_chunk, MAX_RANGE_BYTES);
+        assert_eq!(semantic.limits.max_frame, defaults.max_frame);
+        drop(semantic);
+
+        let exact = TransportLimits {
+            max_chunk: MAX_RANGE_BYTES,
+            max_frame: MAX_RANGE_BYTES + crate::CHUNK_FRAME_OVERHEAD,
+            ..defaults
+        };
+        FileSemanticRangeStore::open(cas.clone(), exact)
+            .expect("reopen the same store at the exact encoded frame bound");
+        for invalid in [
+            TransportLimits {
+                max_chunk: MAX_RANGE_BYTES - 1,
+                ..exact
+            },
+            TransportLimits {
+                max_frame: exact.max_frame - 1,
+                ..exact
+            },
+            TransportLimits {
+                max_frame: MAX_RANGE_BYTES + 192,
+                ..exact
+            },
+        ] {
+            assert!(FileSemanticRangeStore::open(cas.clone(), invalid).is_err());
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

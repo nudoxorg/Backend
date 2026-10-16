@@ -135,12 +135,17 @@ impl<'image> FullSemanticImagePlan<'image> {
             ir.semantic_entity(row.entity)
                 .is_some_and(|entity| entity.name.anonymous_callable_anchor().is_some())
         });
+        // Every new Clang payload includes the optional native-name cell,
+        // even when its value is absent. Never label that grammar as schema 5.
+        let has_clang_extension = ir.clang_extensions().next().is_some();
         let has_publication_roles = semantic.entities.rows.iter().any(|row| {
             ir.semantic_entity(row.entity).is_some_and(|entity| {
                 entity.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable
             })
         });
-        let schema = if has_publication_roles {
+        let schema = if has_clang_extension {
+            super::wire::SCHEMA_NAME_SPANS
+        } else if has_publication_roles {
             super::wire::SCHEMA_PUBLICATION_ROLES
         } else if has_anonymous_callable {
             super::wire::SCHEMA_TYPED_NAMES
@@ -955,12 +960,12 @@ fn layout(
 ) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
     let kinds =
         FullDirectoryKind::kinds_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_TYPED_NAMES,
+            expected: super::wire::SCHEMA_NAME_SPANS,
             observed: schema,
         })?;
     let directory_count =
         FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_TYPED_NAMES,
+            expected: super::wire::SCHEMA_NAME_SPANS,
             observed: schema,
         })?;
     let directory_bytes = DIRECTORY_BYTES

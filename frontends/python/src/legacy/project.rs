@@ -28,6 +28,7 @@ thread_local! {
 #[path = "project_baseline.rs"]
 mod baseline;
 pub(super) use baseline::CapturedBaselines;
+pub(super) use baseline::EnvironmentReadSession;
 
 /// Reopens an explanatory config read under the existing captured-input bounds.
 pub(super) fn read_configuration_input(

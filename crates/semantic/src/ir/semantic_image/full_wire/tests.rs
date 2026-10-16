@@ -5,6 +5,7 @@
 //! writer/reopen boundary rather than a second fixture-only semantic model.
 
 use alloc::vec;
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
 #[cfg(feature = "mmap")]
 use crate::ir::DocInput;
@@ -12,14 +13,16 @@ use crate::ir::{
     AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, BorrowedTree, BuiltinType,
     CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
     CSharpVersion, CallableAnchorStep, CallableChildRole, CallableParentShape,
-    CallableTypeContainerKind, ConcreteType, CorePayloadHash, DeclarationFamilyId,
-    EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder,
-    ItemKind, LanguageExtensionInput, LanguageProfile, ParentageAuthority, RustEdition, RustFacts,
-    RustOwnership, SemanticCoreReader, SemanticImageAuthority, SemanticImageEncodeError,
+    CallableTypeContainerKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
+    ConcreteType, CorePayloadHash, CxxStandard, DeclarationFamilyId, EntityAuthorityFacts,
+    EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder, ItemKind,
+    LanguageExtensionInput, LanguageProfile, PackageLineage, ParentageAuthority, RustEdition,
+    RustFacts, RustOwnership, SemanticCoreReader, SemanticImageAuthority, SemanticImageEncodeError,
     SemanticReader, SignatureCarrierBinding, SignatureCarrierBindingRole,
     SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput, SignatureCarrierRole,
-    SignatureCarrierRoleObservation, TreeItemInput, TupleElement, TupleElementKind, TypeExpr,
-    TypeParameterBound, TypeScriptSource, VariadicForm, VariantFingerprint, Visibility,
+    SignatureCarrierRoleObservation, SourceIdentity, SourceSpan, TreeItemInput, TupleElement,
+    TupleElementKind, TypeExpr, TypeParameterBound, TypeScriptSource, VariadicForm,
+    VariantFingerprint, Visibility,
 };
 
 use super::wire::{
@@ -32,6 +35,7 @@ use super::{
     SemanticImageProofOwner, SemanticImageView, encode_full_semantic_image,
     full_semantic_image_len,
 };
+use crate::vocabulary::NativeTool;
 
 fn version(value: u8) -> EntityVersion {
     EntityVersion {
@@ -1057,7 +1061,11 @@ fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
     })?;
     let ir = builder.finish()?;
     let bytes = encoded(&ir)?;
-    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+    assert_eq!(
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+        super::wire::SCHEMA_TYPED_NAMES,
+        "anonymous callable names keep their existing schema-4 grammar"
+    );
     let view = SemanticImageView::reopen(&bytes).expect("typed-name schema reopens");
     let entity = SemanticCoreReader::core_entity(&view, EntityId::new(0))
         .expect("one typed anonymous entity");
@@ -1067,6 +1075,21 @@ fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
         .expect("name tag survives reopen");
     assert_eq!(
         SemanticCoreReader::atom(&view, anchor_atom),
+        Some(&anchor_bytes[..anchor_length])
+    );
+    let mut legacy_schema_four = bytes.clone();
+    legacy_schema_four[4..6].copy_from_slice(&super::wire::SCHEMA_TYPED_NAMES.to_le_bytes());
+    let legacy_view = SemanticImageView::reopen(&legacy_schema_four)
+        .expect("schema 4 remains readable without a Clang name-span plane");
+    assert!(legacy_view.clang_extensions().next().is_none());
+    let legacy_entity = SemanticCoreReader::core_entity(&legacy_view, EntityId::new(0))
+        .expect("legacy schema-4 anonymous entity reopens");
+    let legacy_anchor = legacy_entity
+        .name
+        .anonymous_callable_anchor()
+        .expect("schema-4 anchor remains available");
+    assert_eq!(
+        SemanticCoreReader::atom(&legacy_view, legacy_anchor),
         Some(&anchor_bytes[..anchor_length])
     );
     let anchor_view =
@@ -1911,6 +1934,182 @@ fn fact_value_range(bytes: &[u8], kind: FullDirectoryKind, row: u32) -> core::op
     let start = usize::try_from(start).expect("test start");
     let len = usize::try_from(len).expect("test length");
     values + start..values + start + len
+}
+
+fn clang_name_image() -> Result<Ir, crate::ir::BuildError> {
+    clang_name_image_with_span(true)
+}
+
+fn clang_name_image_with_span(with_name: bool) -> Result<Ir, crate::ir::BuildError> {
+    let profile = LanguageProfile::Cxx(CxxStandard::Cxx26);
+    let source = b"A Widget";
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
+    let toolchain = ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang frontier fixture");
+    let mut builder = IrBuilder::new();
+    builder.set_language_profile(profile)?;
+    builder.set_image_provenance(
+        SourceIdentity {
+            identity: source_identity,
+            byte_len: u32::try_from(source.len()).expect("source length fits"),
+        },
+        crate::vocabulary::CompileRecipeFact::derive(
+            profile,
+            crate::vocabulary::Stage::LowerIr,
+            NativeTool::Clang,
+            source_identity,
+            toolchain,
+        ),
+        PackageLineage::new("cargo", "clang-name-span-fixture").expect("lineage"),
+        "include/widget.hpp",
+    )?;
+    let path = builder.intern_atom(b"include/widget.hpp")?;
+    let facts = ClangFacts {
+        qualifiers: ClangQualifiers {
+            is_const: false,
+            is_volatile: false,
+            is_restrict: false,
+        },
+        storage: ClangStorageClass::None,
+        layout: ClangLayout {
+            size_bits: None,
+            align_bits: None,
+        },
+        templates: builder.intern_type_parameters(&[])?,
+        includes: builder.intern_attributes(&[])?,
+        declared_name: if with_name {
+            SourceSpan::new(path, 2, 8)
+        } else {
+            None
+        },
+    };
+    let item = crate::ir::TreeItemInput {
+        name: b"Widget",
+        anonymous_callable_anchor: None,
+        kind: ItemKind::Record,
+        visibility: Visibility::Public,
+        authority: EntityAuthorityFacts {
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
+            language_extension: FactAvailability::Captured,
+            publication: crate::ir::DeclarationPublicationRole::PrimaryOwned,
+            ..authority()
+        },
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: SourceSpan::new(path, 0, 8),
+        extension: Some(LanguageExtensionInput::Clang(&facts)),
+    };
+    let versions = [version(91)];
+    let items = [item];
+    builder.add_borrowed_tree(crate::ir::BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.finish()
+}
+
+#[test]
+fn clang_name_span_requires_schema_six_and_roundtrips_inside_captured_extent()
+-> Result<(), crate::ir::BuildError> {
+    let ir = clang_name_image()?;
+    let bytes = encoded(&ir)?;
+    assert_eq!(
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+        super::wire::SCHEMA_NAME_SPANS
+    );
+    let view = SemanticImageView::reopen(&bytes).expect("proof-bearing Clang image reopens");
+    let (entity, facts) = view.clang_extensions().next().expect("Clang fact row");
+    assert_eq!(
+        view.entity(entity)
+            .expect("owned native entity")
+            .authority
+            .publication,
+        crate::ir::DeclarationPublicationRole::PrimaryOwned,
+        "native source proof must retain schema-5 publication ownership"
+    );
+    for schema in [
+        super::wire::SCHEMA_TYPED_NAMES,
+        super::wire::SCHEMA_PUBLICATION_ROLES,
+    ] {
+        let mut downgraded = bytes.clone();
+        downgraded[4..6].copy_from_slice(&schema.to_le_bytes());
+        assert!(
+            SemanticImageView::reopen(&downgraded).is_err(),
+            "native source payload cannot be reinterpreted as schema {schema}"
+        );
+    }
+    let name = facts
+        .declared_name
+        .expect("declared-name proof survives NXFI");
+    let extent = view
+        .entity(entity)
+        .and_then(|row| row.source)
+        .expect("captured extent");
+    assert_eq!(view.atom(name.file()), Some(&b"include/widget.hpp"[..]));
+    assert_eq!((name.start(), name.end()), (2, 8));
+    assert_eq!(name.file(), extent.file());
+
+    let fact = fact_value_range(&bytes, FullDirectoryKind::ClangFacts, 0);
+    let mut out_of_extent = bytes.clone();
+    let end_cell = fact.end - 4;
+    set_u32(&mut out_of_extent, end_cell, 9);
+    assert!(matches!(
+        SemanticImageView::reopen(&out_of_extent),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SourceSpan { .. }
+        ))
+    ));
+
+    let mut reversed = bytes.clone();
+    set_u32(&mut reversed, fact.end - 8, 9);
+    set_u32(&mut reversed, fact.end - 4, 8);
+    assert!(matches!(
+        SemanticImageView::reopen(&reversed),
+        Err(super::FullSemanticImageError::Full(_))
+    ));
+
+    let mut foreign_file = bytes.clone();
+    let name_file_cell = fact.end - 12;
+    let foreign_atom = view
+        .canonical_entities()
+        .next()
+        .expect("entity")
+        .name
+        .atom()
+        .raw;
+    set_u32(&mut foreign_file, name_file_cell, foreign_atom);
+    assert!(matches!(
+        SemanticImageView::reopen(&foreign_file),
+        Err(super::FullSemanticImageError::Full(
+            FullSemanticImageFault::SourceSpan { .. }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn absent_clang_name_cell_still_uses_its_new_payload_schema() -> Result<(), crate::ir::BuildError> {
+    let ir = clang_name_image_with_span(false)?;
+    let bytes = encoded(&ir)?;
+    assert_eq!(
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+        super::wire::SCHEMA_NAME_SPANS
+    );
+    let view = SemanticImageView::reopen(&bytes).expect("absent native span reopens");
+    let (entity, facts) = view.clang_extensions().next().expect("Clang fact row");
+    assert!(facts.declared_name.is_none());
+    assert_eq!(
+        view.entity(entity).expect("entity").authority.publication,
+        crate::ir::DeclarationPublicationRole::PrimaryOwned
+    );
+    let mut downgraded = bytes.clone();
+    downgraded[4..6].copy_from_slice(&super::wire::SCHEMA_PUBLICATION_ROLES.to_le_bytes());
+    assert!(SemanticImageView::reopen(&downgraded).is_err());
+    Ok(())
 }
 
 #[test]

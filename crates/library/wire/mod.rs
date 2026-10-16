@@ -72,9 +72,10 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current matched-client transport cohort. Version 32 adds closed native
+/// Current matched-client transport cohort. Version 33 adds typed current
+/// package compiler-outcome discovery and exact diagnostic selectors. Version 32 adds closed native
 /// TypeScript session/module-reference refusal kinds. Version 31 settled
 /// `Gapped` coverage and compiler details, and version 30 catalog windows and
 /// predecessor spans remain strict; live peers must upgrade together.
 /// The view journal container stays version 3 and retains historical bytes.
-pub const DTO_VERSION: u16 = 32;
+pub const DTO_VERSION: u16 = 33;

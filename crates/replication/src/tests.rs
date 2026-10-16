@@ -940,6 +940,31 @@ fn unix_stream_roundtrip_uses_the_same_encoded_message() {
 }
 
 #[test]
+fn chunk_preflight_matches_exact_encoded_frame_and_preserves_integrity() {
+    let payload = vec![0x5a; 16 * 1024];
+    let mut chunk = frame(0, 0, &payload, ChunkChain([0; 32]));
+    chunk.object_len = payload.len() as u64;
+    let exact = TransportLimits {
+        max_frame: payload.len() + CHUNK_FRAME_OVERHEAD,
+        max_chunk: payload.len(),
+        max_object: payload.len() as u64,
+        ..limits()
+    };
+    let message = TransportMessage::Chunk(chunk.clone());
+    let encoded = must(message.encode(exact));
+    assert_eq!(encoded.len(), exact.max_frame);
+    assert_eq!(message.estimated_size(), encoded.len());
+    assert_eq!(must(TransportMessage::decode(&encoded, exact)), message);
+    for max_frame in [exact.max_frame - 1, payload.len() + 192] {
+        let low = TransportLimits { max_frame, ..exact };
+        assert_eq!(chunk.validate(low), Err(ReplicationError::MessageTooLarge));
+        assert_eq!(message.encode(low), Err(ReplicationError::MessageTooLarge));
+    }
+    chunk.payload[0] ^= 1;
+    assert_eq!(chunk.validate(exact), Err(ReplicationError::CorruptFrame));
+}
+
+#[test]
 fn capability_negotiation_and_local_transport_share_bounds() {
     let capabilities = capabilities();
     let message = TransportMessage::Capabilities(capabilities.clone());

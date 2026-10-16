@@ -467,21 +467,24 @@ impl MaterializedPythonEnvironment {
         &self,
         control: PythonProjectControl<'_>,
     ) -> Result<(), CheckerError> {
-        for (root, path, digest, length) in &self.files {
-            checkpoint(control)?;
-            let bytes = super::project::read_environment_input(
-                root,
-                Path::new(path),
-                control,
-                MAX_FILE_BYTES as u64,
-            )?
-            .ok_or_else(|| project_error("", "private dependency member disappeared"))?;
-            if bytes.len() as u64 != *length || blake3::hash(&bytes).as_bytes() != digest {
-                return Err(project_error(
-                    "",
-                    "private dependency member changed during native execution",
-                ));
+        for members in self.files.chunk_by(|left, right| left.0 == right.0) {
+            let mut session = super::project::EnvironmentReadSession::open(&members[0].0, control)?;
+            // Materialization retains canonical root/member ordering. Borrow
+            // those exact admitted paths; do not construct a second payload
+            // tree merely to compare its bytes after the native transaction.
+            for (_, path, digest, length) in members {
+                checkpoint(control)?;
+                let observed = session
+                    .digest(Path::new(path), control, MAX_FILE_BYTES as u64)?
+                    .ok_or_else(|| project_error("", "private dependency member disappeared"))?;
+                if observed != (*length, *digest) {
+                    return Err(project_error(
+                        "",
+                        "private dependency member changed during native execution",
+                    ));
+                }
             }
+            session.finish(control)?;
         }
         checkpoint(control)
     }
@@ -581,7 +584,7 @@ impl PythonEnvironmentCapture {
                 .ok_or_else(|| {
                     project_error(
                         "pyrightconfig.json",
-                        "selected Python venv is not installed (pyvenv.cfg is absent)",
+                        &missing_selected_venv_message(&relative, &cfg),
                     )
                 })?;
             probes.push(SelectionProbe {
@@ -1368,6 +1371,27 @@ fn site_packages_path(venv: &Path, version: [u32; 3]) -> PathBuf {
             version[0], version[1]
         ))
     }
+}
+
+fn missing_selected_venv_message(venv: &Path, configuration: &Path) -> String {
+    // Configuration strings can be much larger than a product response. Keep
+    // ordinary paths exact and mark clipped paths before formatting the fault.
+    fn bounded_path(path: &Path) -> String {
+        let text = path.as_os_str().to_string_lossy();
+        let mut characters = text.chars();
+        let prefix: String = characters.by_ref().take(128).collect();
+        let clipped = if characters.next().is_some() {
+            " (truncated)"
+        } else {
+            ""
+        };
+        format!("{prefix:?}{clipped}")
+    }
+    format!(
+        "selected Python venv {} from pyrightconfig.json is not installed ({} is absent); run this project's documented environment setup to create that venv and install its dependencies, or correct venvPath/venv in pyrightconfig.json, then retry",
+        bounded_path(venv),
+        bounded_path(configuration),
+    )
 }
 
 fn declared_relative(path: &str) -> Result<PathBuf, CheckerError> {
@@ -2431,6 +2455,38 @@ mod tests {
     }
 
     #[test]
+    fn private_environment_revalidation_checks_every_root_and_exact_member_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let mut input = transport_environment();
+        input.roots[1].members.push(Member {
+            path: "stdlib_member.py".into(),
+            payload: MemberPayload::Source(b"answer: int = 42\n".to_vec()),
+        });
+        let capture = PythonEnvironmentCapture::admit(input, control(&cancelled))?;
+        let private = capture.materialize(&root.path, control(&cancelled))?;
+        private.validate_current(control(&cancelled))?;
+        for (directory, relative, _, _) in &private.files {
+            let path = directory.join(relative);
+            let bytes = std::fs::read(&path)?;
+            // Equal extent cannot hide a changed digest, including in the
+            // second root after the first root's complete session succeeded.
+            let mut changed = bytes.clone();
+            changed[0] ^= 1;
+            std::fs::write(&path, changed)?;
+            assert!(private.validate_current(control(&cancelled)).is_err());
+            std::fs::write(&path, &bytes)?;
+            private.validate_current(control(&cancelled))?;
+            std::fs::remove_file(&path)?;
+            assert!(private.validate_current(control(&cancelled)).is_err());
+            std::fs::write(&path, &bytes)?;
+        }
+        private.validate_current(control(&cancelled))?;
+        Ok(())
+    }
+
+    #[test]
     fn stdlib_io_stops_outrank_operation_errors_success_and_outside_root_refusal()
     -> Result<(), CheckerError> {
         let root = fixture()?;
@@ -3124,6 +3180,64 @@ mod tests {
             assert!(PythonEnvironmentCapture::capture(&root.path, control(&cancelled)).is_err());
         }
         Ok(())
+    }
+
+    #[test]
+    fn missing_selected_venv_names_exact_setup_inputs_without_falling_back()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let configuration = br#"{"venvPath":"local","venv":"py3"}"#;
+        std::fs::write(root.path.join("pyrightconfig.json"), configuration).map_err(io_error)?;
+        // A different discovered configuration must not override the explicit selection.
+        std::fs::create_dir(root.path.join(".venv")).map_err(io_error)?;
+        std::fs::write(
+            root.path.join(".venv/pyvenv.cfg"),
+            "include-system-site-packages = false\n",
+        )
+        .map_err(io_error)?;
+        let error = PythonEnvironmentCapture::capture_with_matching_interpreter_provider(
+            &root.path,
+            |_| panic!("missing selected venv must refuse before resolving a host interpreter"),
+            control(&cancelled),
+        )
+        .unwrap_err();
+        let CheckerError::ProjectReport { path, message } = error else {
+            panic!("missing selected venv must retain its configuration refusal");
+        };
+        assert_eq!(path, Path::new("pyrightconfig.json"));
+        assert!(message.contains(&format!("{:?}", Path::new("local").join("py3"))));
+        assert!(message.contains("from pyrightconfig.json"));
+        assert!(message.contains(&format!(
+            "{:?}",
+            Path::new("local").join("py3").join("pyvenv.cfg")
+        )));
+        assert!(message.contains("documented environment setup"));
+        assert!(message.contains("install its dependencies"));
+        assert!(message.contains("correct venvPath/venv in pyrightconfig.json, then retry"));
+        assert_eq!(
+            std::fs::read(root.path.join("pyrightconfig.json"))
+                .map_err(io_error)?
+                .as_slice(),
+            configuration.as_slice(),
+        );
+        assert!(!root.path.join("local").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_selected_venv_diagnostic_bounds_untrusted_paths() {
+        let long_name = "\u{10ffff}".repeat(16_384);
+        let venv = Path::new(&long_name);
+        let message = missing_selected_venv_message(venv, &venv.join("pyvenv.cfg"));
+        assert!(
+            message.len() < 3072,
+            "diagnostic must fit inside a product fault"
+        );
+        assert_eq!(message.matches("(truncated)").count(), 2);
+        assert!(message.contains("pyrightconfig.json"));
+        assert!(message.contains("documented environment setup"));
+        assert!(message.contains("correct venvPath/venv"));
     }
 
     #[test]

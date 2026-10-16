@@ -1,0 +1,104 @@
+{
+  "artifact_manifest_sha256": "6175f2607a01b173a6707b004c7d804694eb3740fa6865836c2925bc20aad089",
+  "artifact_source_sha": "de9f6c8d81c8fa8b003472eda717c9c94fafd0a3",
+  "authored_search_rows": [
+    {
+      "line": 21,
+      "name": "NewString",
+      "path": "version4.go"
+    },
+    {
+      "line": 120,
+      "name": "ParseBytes",
+      "path": "uuid.go"
+    },
+    {
+      "line": 673,
+      "name": "parseBytesCopy",
+      "path": "uuid_test.go"
+    },
+    {
+      "line": 659,
+      "name": "parseBytesUnsafe",
+      "path": "uuid_test.go"
+    }
+  ],
+  "baseline_policy": "First full-proof sample, not maxima. No previous baseline; existing1.5xwall/CPU and1.25xRSS tolerances unchanged.",
+  "calibration_status": "UNSTABLE: third add106.82s fails first14.66s band. Retained as performance failure, no stable T2 claim.",
+  "evidence_kind": "Corrected-harness diagnostic against de9 binaries, not exact-source CI green",
+  "evidence_sha256": "a4f3ab487695fbf98188e2e67554d805d2eaab7f848a4d8a74c7fd59c6f5b63d",
+  "external_rows": "Three ParseBytes entries remain explicitly external/unknown without invented authored locations; local function independently present. Not proof all test-package reference resolution is complete.",
+  "harness_commit": "d8e2517a8",
+  "harness_source_sha256": "e88983c2607f62698bd254d734733a783bc414ed2cacfe17d13df47b5d5990ce",
+  "independent_parser": "Go go/parser and go/ast on all21 pinned Go files including tests",
+  "mcp_continuation": "All3 corrected-harness runs execute and check the executable-only advertised token before normalization; full answer packets identical.",
+  "outline_review": {
+    "declarations": 190,
+    "entries": 200,
+    "module_names_match_pinned_archive": true,
+    "modules": 10,
+    "name_and_kind_mismatches": 0,
+    "truncated": true
+  },
+  "pin_sha256": "d0f02f377217f42702e259684e06441edbf5140dddcc34ba9bea56038b38a6ed",
+  "reviewer": "Codex parent Go standard-library AST/source review independent of Luna runtime collection",
+  "samples": [
+    {
+      "answer_sha256": "ee9fc80cafdb2cd6472f8b216e3388573ac3d082fe14e08c7d1eec7266bcda67",
+      "performance": {
+        "cpu_seconds": 8.11,
+        "peak_rss_kib": 331892,
+        "seconds": {
+          "cli add": 14.66,
+          "cli outline": 0.11,
+          "cli packages": 0.39,
+          "cli search NewString": 2.26,
+          "cli search ParseBytes": 0.03,
+          "mcp": 0.66
+        }
+      },
+      "regressions_against_first_sample": [],
+      "run": 1
+    },
+    {
+      "answer_sha256": "ee9fc80cafdb2cd6472f8b216e3388573ac3d082fe14e08c7d1eec7266bcda67",
+      "performance": {
+        "cpu_seconds": 9.74,
+        "peak_rss_kib": 327092,
+        "seconds": {
+          "cli add": 16.19,
+          "cli outline": 0.12,
+          "cli packages": 0.41,
+          "cli search NewString": 2.26,
+          "cli search ParseBytes": 0.03,
+          "mcp": 0.84
+        }
+      },
+      "regressions_against_first_sample": [],
+      "run": 2
+    },
+    {
+      "answer_sha256": "ee9fc80cafdb2cd6472f8b216e3388573ac3d082fe14e08c7d1eec7266bcda67",
+      "performance": {
+        "cpu_seconds": 10.26,
+        "peak_rss_kib": 349472,
+        "seconds": {
+          "cli add": 106.82,
+          "cli outline": 0.08,
+          "cli packages": 0.4,
+          "cli search NewString": 8.31,
+          "cli search ParseBytes": 0.03,
+          "mcp": 0.69
+        }
+      },
+      "regressions_against_first_sample": [
+        "seconds[cli add]: 106.82 vs baseline 14.66 (allowed x1.5)",
+        "seconds[cli search NewString]: 8.31 vs baseline 2.26 (allowed x1.5)"
+      ],
+      "run": 3
+    }
+  ],
+  "schema": 1,
+  "source_declarations": 419,
+  "task": "W2 Go UUID native answer review"
+}

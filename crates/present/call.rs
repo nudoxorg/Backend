@@ -208,6 +208,7 @@ fn take_json(
                 | ArgumentKind::CargoPackageReadmeOrigin
                 | ArgumentKind::CargoPackageSourceRequest
                 | ArgumentKind::PackageSourceMembershipRequest
+                | ArgumentKind::PackageCompilerOutcomeSelector
                 | ArgumentKind::SemanticShapeRequest
                 | ArgumentKind::SemanticSourceRequest
         ) && scalar.is_object()
@@ -888,6 +889,10 @@ fn surface(
         CommandId::SelectSemanticVersion => select_semantic_version(invocation)?,
         CommandId::PackageProfile => SurfaceCommand::PackageProfile {
             package: package(invocation, 0)?,
+            compiler_outcome: invocation.option("compiler-outcome").map(|encoded| {
+                serde_json::from_str::<backend_library::PackageCompilerOutcomeRead>(encoded)
+                    .map_err(|error| Fault::usage("compiler-outcome", format!("copy the exact retained compiler outcome selector: {error}")))
+            }).transpose()?,
         },
         _ => return home_or_session(invocation, id, opener),
     };

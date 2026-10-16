@@ -10,6 +10,12 @@ const MAGIC: [u8; 4] = *b"RPL2";
 const VERSION: u8 = 3;
 const HEADER_BYTES: usize = 10;
 
+/// Exact RPL2 chunk envelope bytes, excluding its payload. Each wire identity
+/// carries a 32-byte digest and a five-byte context; authority adds an epoch.
+/// Keep this shared by preflight admission and the actual codec.
+pub const CHUNK_FRAME_OVERHEAD: usize =
+    HEADER_BYTES + 8 + 2 * (32 + 5) + 3 * 8 + 2 * 32 + 4 + (32 + 5 + 8);
+
 const TAG_CAPABILITIES: u8 = 1;
 const TAG_ROOT_SUMMARY: u8 = 2;
 const TAG_NODE_REQUEST: u8 = 3;
