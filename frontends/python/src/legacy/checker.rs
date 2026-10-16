@@ -138,7 +138,7 @@ pub enum CheckerError {
     },
     /// No member of the frozen independent host candidate set matches the venv.
     #[error(
-        "no admitted host interpreter matches the Python {major}.{minor} venv; install matching CPython or set NUDOX_PYTHON before restarting locald"
+        "no admitted host interpreter matches the Python {major}.{minor} venv; activate the venv or put matching CPython on PATH before starting or restarting locald, or explicitly set NUDOX_PYTHON"
     )]
     PythonInterpreterSelectionUnavailable {
         /// Selected venv major version.
