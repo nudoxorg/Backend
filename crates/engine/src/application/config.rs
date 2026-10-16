@@ -386,7 +386,7 @@ pub struct LocalCompilerScratch {
     pub(crate) rust_workspace_session_lane: RustWorkspaceSessionLane,
     /// One exact TypeScript forest per lane, borrowed through checking and
     /// selected-file lowering after fresh compiler-host closure admission.
-    pub(crate) typescript_program_lane: super::typescript_program_lane::TypeScriptProgramAuthorityLane,
+    pub(super) typescript_program_lane: super::typescript_program_lane::TypeScriptProgramAuthorityLane,
 }
 
 pub(crate) enum FragmentOutput {
