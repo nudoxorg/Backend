@@ -232,7 +232,7 @@ in
         mkdir -p repo/.config/scripts repo/.config/ci repo/tests \
           repo/frontends/rust/fixtures/toml_pin \
           repo/apps/desktop/tests/fixtures/browse_tree
-        cp -r ${../scripts} repo/.config/scripts
+        cp -r ${../scripts}/. repo/.config/scripts/
         cp ${../ci/linux.nu} ${../ci/lib.nu} repo/.config/ci/
         cp ${../../frontends/rust/fixtures/toml_pin/Cargo.lock} repo/frontends/rust/fixtures/toml_pin/Cargo.lock
         cp ${../../apps/desktop/tests/fixtures/browse_tree/Cargo.lock} repo/apps/desktop/tests/fixtures/browse_tree/Cargo.lock

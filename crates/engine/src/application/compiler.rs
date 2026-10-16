@@ -3628,6 +3628,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &go_first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,

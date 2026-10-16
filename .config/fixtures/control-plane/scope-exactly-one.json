@@ -56,7 +56,8 @@
       "tests/test_fleet_capacity_census.py",
       "tests/test_linux_proc_race.py",
       "tests/test_nix_runtime_overlay_guard.py",
-      "tools/observe-rust-ra-reads.sh"
+      "tools/observe-rust-ra-reads.sh",
+      "vendor/accesskit_atspi_common/README.md"
     ]
   },
   "cases": [
