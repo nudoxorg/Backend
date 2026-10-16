@@ -11373,3 +11373,7 @@ mod references_tests {
 #[cfg(test)]
 #[path = "selected_source_references_tests.rs"]
 mod selected_source_references_tests;
+
+#[cfg(test)]
+#[path = "python_alias_publication_tests.rs"]
+mod python_alias_publication_tests;

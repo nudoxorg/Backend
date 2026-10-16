@@ -35,6 +35,32 @@ mod semantic;
 mod source_availability;
 mod structural;
 
+/// Exercises the production semantic-row projection from command-boundary tests.
+#[cfg(test)]
+pub(in crate::builtin) fn image_publication_rows_for_test(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    project: &super::IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    basis: backend_engine::Basis,
+    path: &str,
+) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
+    let projected = semantic::project_image_rows(
+        image,
+        *blake3::hash(image.as_ref()).as_bytes(),
+        project,
+        profile,
+        basis,
+        false,
+        path,
+        &[],
+    )?;
+    Ok(projected
+        .rows
+        .into_iter()
+        .map(|projected| projected.row)
+        .collect())
+}
+
 /// Human-readable spelling; anonymous anchors remain identity evidence.
 pub(super) fn semantic_display_name(
     name: backend_semantic::ir::ItemNameView<'_>,
