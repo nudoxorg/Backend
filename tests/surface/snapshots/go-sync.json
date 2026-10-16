@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 39303,
+          "bytes": 35597,
           "bytesPerToken": 4,
-          "estimatedTokens": 9826
+          "estimatedTokens": 8900
         },
         "declarations": 200,
         "detail": "summary",
@@ -36,62 +36,62 @@
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ee494e2a506a92f3810b988967e26f2a29d4665ece094f1acd474aaa05ecb3c7::Wait",
                 "key": "51f4d25a",
-                "kind": "function",
+                "kind": "method",
                 "name": "Wait"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::18e2c5642e11f985d42cdfe205188bd08dc9b00927800a4ed13fc732ac78ccdf::TryGo",
                 "key": "c19ace9c",
-                "kind": "function",
+                "kind": "method",
                 "name": "TryGo"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::52e15ffebbb3e00d10b132725f272d222b49d5bf73fa6bedfe5db815b7e743f5::Go",
                 "key": "c8d06604",
-                "kind": "function",
+                "kind": "method",
                 "name": "Go"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f6ea7465bdee31b09a8a63ebe80309e897af3971c3e1ba08aefb54605dfdd99c::done",
                 "key": "cfdf6971",
-                "kind": "function",
+                "kind": "method",
                 "name": "done"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6a693c72abab438c67f8e40c5db78c439e8cc7aaaea8f181ddc9f299b364c4a8::SetLimit",
                 "key": "ff193453",
-                "kind": "function",
+                "kind": "method",
                 "name": "SetLimit"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::165221139350141b90f78d30a1333bf3ffa89692d85668be87f22ccdba3dd61a::sem",
-                "key": "3b39f9f8",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go:30::sem",
+                "key": "159ca08e",
                 "kind": "field",
                 "name": "sem"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::53ef2a950ab536880ad1e07c22a839b9bb85f1f92ac60506df26486ce1afc934::cancel",
-                "key": "782a0dc5",
-                "kind": "field",
-                "name": "cancel"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::39a9d811f1671e3118c16f2998b763bda8b5564df706b90423f6bfbfac663931::errOnce",
-                "key": "920bb4aa",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go:32::errOnce",
+                "key": "6a8ef1f0",
                 "kind": "field",
                 "name": "errOnce"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::34b1384013b6aab509004a87a71aa0df97807473941edf6b5336bb6118a7f9a8::wg",
-                "key": "a53ea396",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go:28::wg",
+                "key": "6d6346f3",
                 "kind": "field",
                 "name": "wg"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::603f79f6a6bd8db0c37b66c79a1640d9bf63bdaea30c0d1bab6be61fca803a23::err",
-                "key": "fcf912fd",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go:33::err",
+                "key": "8aca93a0",
                 "kind": "field",
                 "name": "err"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go:26::cancel",
+                "key": "b7344242",
+                "kind": "field",
+                "name": "cancel"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::330b8bdf99578a6472523660f08d3dc63e242898c22ce74cd82669dea817928d::Group",
@@ -102,16 +102,16 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::703d762516d145daba51015825cdd9e053617a9c353e165e94b585b7f99ec900::path",
-                "key": "5c28b9a8",
-                "kind": "field",
-                "name": "path"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::0e665eb3bd97b7368fd73953671b2089529b246fefbf48e33551df6f044fb7ed::sum",
-                "key": "be57ba57",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_example_md5all_test.go:35::sum",
+                "key": "23f3835a",
                 "kind": "field",
                 "name": "sum"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_example_md5all_test.go:34::path",
+                "key": "8163b53d",
+                "kind": "field",
+                "name": "path"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a22d9cd6b376ac10c4fab6cff8035b93e16d7277db75acb6de3df89b3df4236c::result",
@@ -120,66 +120,54 @@
             "name": "result"
           },
           {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1b1cc05b907e38f029ce676bf4f36f360b5780065474500e95aae661f71ac330::Result",
-            "key": "049c2baa",
-            "kind": "struct",
-            "name": "Result"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d980b54736f98a73603399b8f39145fda83c08abb9782e862c2f181e600dedbf::Search",
-            "key": "70aa1c2e",
-            "kind": "struct",
-            "name": "Search"
-          },
-          {
             "children": [
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f8f52a9a42a2eb17b470128d923e7be633c72a63e1ea9171d1b446207fe3f61d::TryAcquire",
                 "key": "026bc76a",
-                "kind": "function",
+                "kind": "method",
                 "name": "TryAcquire"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cc88359994c0ecfb1710add6ae773afd42bb7636191897d720d30452f8bb5df3::Release",
                 "key": "757c6e4b",
-                "kind": "function",
+                "kind": "method",
                 "name": "Release"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cbe564e8e85d010ad20475eb54c40fbf85d88e9e01d4d1104bfc0ed4184357f9::Acquire",
                 "key": "a2768865",
-                "kind": "function",
+                "kind": "method",
                 "name": "Acquire"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::7e8b3d392c8d62729551ce186c55ecf962a59a93440b19768d3123a3a2f11112::notifyWaiters",
                 "key": "f53f2ea8",
-                "kind": "function",
+                "kind": "method",
                 "name": "notifyWaiters"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::53f71e88d82cd181df05cb535022922f8841aa45d317b1c3292fa2dca2259219::waiters",
-                "key": "2e64034f",
-                "kind": "field",
-                "name": "waiters"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5481e403558590694ebff45e0bf107edbe8169d15ab8f67a91c4c2db7f0adc22::mu",
-                "key": "6e635c98",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:31::mu",
+                "key": "849c65ec",
                 "kind": "field",
                 "name": "mu"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f9f09f61dc361e1145c45437ff5bea412de6768d9d7155454cff491e567cd3c5::size",
-                "key": "6e8baa4e",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:30::cur",
+                "key": "96a3fb86",
+                "kind": "field",
+                "name": "cur"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:29::size",
+                "key": "b52a008c",
                 "kind": "field",
                 "name": "size"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c88a12154d5b0f76a958f1b5a1984ea2ec99b3686c19d902e504b227be945097::cur",
-                "key": "ac5f4887",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:32::waiters",
+                "key": "b9d2768e",
                 "kind": "field",
-                "name": "cur"
+                "name": "waiters"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::26b0ea7dadbc335f2f722afccb0f8b348d33ed09374fcd8c2f0f5376e7123696::Weighted",
@@ -190,16 +178,16 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::404b76e561551f4a2c9453e00235a2ac22070e646c27aa5bbcf95a8afc239c8a::n",
-                "key": "7cd7d88a",
-                "kind": "field",
-                "name": "n"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5a0bc3606d479732f66669ef684c695f733cd0ecd33fb96125ef096c1fd18719::ready",
-                "key": "dfbc61af",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:16::ready",
+                "key": "12775df6",
                 "kind": "field",
                 "name": "ready"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go:15::n",
+                "key": "8ba4d94b",
+                "kind": "field",
+                "name": "n"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::88a2dbc376eea810f82545f75cf3ced48a732ee1f95fc39ff3ec3dbbdadb6cde::waiter",
@@ -210,21 +198,33 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dae1b67a5bec2683a6bee98d56ba6fa0a4be991a56c356b2f267e12499d9f8aa::Release",
-                "key": "0ec37bf1",
-                "kind": "function",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:20::Release",
+                "key": "1b99e42c",
+                "kind": "method",
                 "name": "Release"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:19::TryAcquire",
+                "key": "2501be11",
+                "kind": "method",
+                "name": "TryAcquire"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:18::Acquire",
+                "key": "8e93fbaa",
+                "kind": "method",
+                "name": "Acquire"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::29c870de105bc0d030081fbab5332d587f51c18cac8f0a9fe152dc256f908f1c::Acquire",
+                "key": "515b71fe",
+                "kind": "method",
+                "name": "Acquire"
               }
             ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::17110b74b4b6953bccc4011f339f5152f119e8e57616c1c1c3b02c96280ba3ba::semChan",
-            "key": "95f6293d",
-            "kind": "struct",
-            "name": "semChan"
-          },
-          {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::09f506406986c7a715bc9d8bbe3bfe930f56616ac060db886c2bd366b9c3b687::weighted",
             "key": "f5d81bf9",
-            "kind": "trait",
+            "kind": "interface",
             "name": "weighted"
           },
           {
@@ -232,26 +232,26 @@
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::92893884181a52682f7509c8e0ba7f4fedbe7a121fdc86573a7daf78710bd9b2::Error",
                 "key": "546a9027",
-                "kind": "function",
+                "kind": "method",
                 "name": "Error"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::082b0eae3c65a90f9286b0713bab412a4fb6190c149e569502471201ac2c069e::Unwrap",
                 "key": "b872e640",
-                "kind": "function",
+                "kind": "method",
                 "name": "Unwrap"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dcd46259f70897e4c7d36ca6cacece0a1caac863baeb58658ce1b1339027988a::stack",
-                "key": "1119039f",
-                "kind": "field",
-                "name": "stack"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::2cefd8d4570b73abbd6d981b69ba141ff331bceaf2d411897b673f1c6e42680c::value",
-                "key": "d6842541",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:25::value",
+                "key": "125d5503",
                 "kind": "field",
                 "name": "value"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:26::stack",
+                "key": "e35ac051",
+                "kind": "field",
+                "name": "stack"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::54517390eb91e4167935ed68a11d2792d0a57b8d227b98355671214a054d0044::panicError",
@@ -262,22 +262,22 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::4e2bdfe2c48e0b4b0ef10922c799b1c2750aa0fdc2feaf544d4add1a9c5af52d::Val",
-                "key": "2183a10d",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:81::Val",
+                "key": "905b874b",
                 "kind": "field",
                 "name": "Val"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::39c3edb383318af542261d47cd6762a8afd780de66eb00ca5d10ebcb8d7a4aeb::Err",
-                "key": "69ac593a",
-                "kind": "field",
-                "name": "Err"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::647dcdfeebd4c4f0b3cf6aa9f3c45b3dcb0198a0a5ab5b463a131bfdbaffe682::Shared",
-                "key": "f904aaa1",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:83::Shared",
+                "key": "ceb8e461",
                 "kind": "field",
                 "name": "Shared"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:82::Err",
+                "key": "f0a95d2c",
+                "kind": "field",
+                "name": "Err"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::02547cfd3fd4527adeb72c67233db1c50b5780065474500e95aae661f71ac330::Result",
@@ -290,36 +290,36 @@
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c43519ef4a9f1ce67d7c3bb9ed3e9f6716ae47c23734a897ffa610b7ac94b54b::Do",
                 "key": "2f0d7110",
-                "kind": "function",
+                "kind": "method",
                 "name": "Do"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06544fe4bcebc8f001b1dc194e0e037dc9e8f4827cec82c29e20a4e93acf32b8::doCall",
                 "key": "53010885",
-                "kind": "function",
+                "kind": "method",
                 "name": "doCall"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b6b9fbbc335a95ba9b40adccc80aaa6e68cc8e94a6b6eccfd04d23e705227040::Forget",
                 "key": "8c3f04d2",
-                "kind": "function",
+                "kind": "method",
                 "name": "Forget"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::fa3c1220808522ffd9b91124d322af8dd7ca14e172b9653fda04c33c17911d28::DoChan",
                 "key": "99f0d7ab",
-                "kind": "function",
+                "kind": "method",
                 "name": "DoChan"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ca0ce669d6fd3f6655f38f2050f9f14fbe8169d15ab8f67a91c4c2db7f0adc22::mu",
-                "key": "1be6b8fd",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:74::mu",
+                "key": "815a8ce3",
                 "kind": "field",
                 "name": "mu"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::abc0b8aeb9033030a10fb9dc1636c941617af5c7fa6ebb39868760d4989a0bc0::m",
-                "key": "f22826f9",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:75::m",
+                "key": "9b257b8d",
                 "kind": "field",
                 "name": "m"
               }
@@ -332,34 +332,34 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9b83990aaccd4c386578467d63f8064d97807473941edf6b5336bb6118a7f9a8::wg",
-                "key": "3ca9a2ba",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:57::wg",
+                "key": "592905eb",
                 "kind": "field",
                 "name": "wg"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cdd33feb91a236f9925141cf599f6804e8e32ec3fbf895a1393621b97794f13d::dups",
-                "key": "8c813a35",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:68::chans",
+                "key": "59519331",
                 "kind": "field",
-                "name": "dups"
+                "name": "chans"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::0cf7daa8c303c2553cfe63d51baff07ca2e9173260aade60264deed1cfdb7bca::val",
-                "key": "b314036a",
-                "kind": "field",
-                "name": "val"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::30b4474102f36ca67f886ad8c67f442abf63bdaea30c0d1bab6be61fca803a23::err",
-                "key": "ce031e9d",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:62::err",
+                "key": "a25b7ea2",
                 "kind": "field",
                 "name": "err"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::3806ea4b434cbf3a6fb20235e261bc0e3dd1e3a6a0a806cf08cdb4404f557afb::chans",
-                "key": "f7581e81",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:61::val",
+                "key": "a86288f7",
                 "kind": "field",
-                "name": "chans"
+                "name": "val"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go:67::dups",
+                "key": "e910d275",
+                "kind": "field",
+                "name": "dups"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a3492d576654a603045f72084a1941a9196f74057edfc75f7d23d04564d2ba1f::call",
@@ -372,7 +372,7 @@
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c608fe1c6260c3b2aaeaf369f0b584e0bbf36786273c0a5d8e8015549c5cccb4::Error",
                 "key": "d2ec462b",
-                "kind": "function",
+                "kind": "method",
                 "name": "Error"
               }
             ],
@@ -384,14 +384,14 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9c955fe53693e6bc5b37621528dd67683e4ec76823ad883169323a7a1fba7c8e::perG",
-                "key": "2ab96827",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_bench_test.go:18::perG",
+                "key": "646cf929",
                 "kind": "field",
                 "name": "perG"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::00b3ebbe040cfe303a382d421cea070fbe2d9c62a957b28501afd7276ebe0f03::setup",
-                "key": "5d074fbb",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_bench_test.go:17::setup",
+                "key": "b6c3dc9e",
                 "kind": "field",
                 "name": "setup"
               }
@@ -404,8 +404,44 @@
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5d496bc50c07c849b92435ae488409a771dce275cf4ece31d5d5a0afb549b728::dirty",
-                "key": "5ec486eb",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6233fd36408bf5ff29141ea11ca187d4e6aa4f20ad180c5f0eb54b214acce361::LoadOrStore",
+                "key": "292459ac",
+                "kind": "method",
+                "name": "LoadOrStore"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d0bc9c6b977c9d042637022b958bd55a4f38597ae6a4ba10f54169ab0091f077::Delete",
+                "key": "6b5371e0",
+                "kind": "method",
+                "name": "Delete"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9f448d9dfe2cec4028dc9957c1e9b5979a25d371903719141100e14395141f56::Range",
+                "key": "731621ff",
+                "kind": "method",
+                "name": "Range"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6ba198b7fdb9704fb688b78f7936b1d7ba393a420661a8a14d53dfedd6f94885::Load",
+                "key": "dc03ba8b",
+                "kind": "method",
+                "name": "Load"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a11cfcd4eba1acbcfaf43d112da2634f0217d41272e8f0752a8aae331ec9e9fa::Store",
+                "key": "fe22cfbc",
+                "kind": "method",
+                "name": "Store"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:25::mu",
+                "key": "02c13005",
+                "kind": "field",
+                "name": "mu"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:26::dirty",
+                "key": "42361ac6",
                 "kind": "field",
                 "name": "dirty"
               }
@@ -418,22 +454,52 @@
           {
             "children": [
               {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06b9cd7f3cf72174d270200891590ab5b785415664361667ed425b2bfff6c7d5::Load",
+                "key": "0bde1432",
+                "kind": "method",
+                "name": "Load"
+              },
+              {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::802141fcc4db609f92b9389fe2c74134d9d5d7af13ee1be64ba592d1a10e95da::dirty",
                 "key": "370c4cde",
-                "kind": "function",
+                "kind": "method",
                 "name": "dirty"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ec7cbc56216c2a7f23366fd67a67d02ad03c25452133b035c33d03cc8233c70e::clean",
-                "key": "398b1743",
-                "kind": "field",
-                "name": "clean"
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::2ad4566dc31002db1e78e4d64ae8c7be79b5707b2d64ec0d6b3d69a47d04523f::Store",
+                "key": "4beb2c5a",
+                "kind": "method",
+                "name": "Store"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06b9cd7f3cf72174d270200891590ab5b785415664361667ed425b2bfff6c7d5::Load",
-                "key": "0bde1432",
-                "kind": "function",
-                "name": "Load"
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a3677cad5730e7b3e79a46172d442ce7b9bbec5d86dc9448786808ceb530d77f::LoadOrStore",
+                "key": "5982c2ad",
+                "kind": "method",
+                "name": "LoadOrStore"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ba3b132395c0f13426d16abc9535bd69d4f1ee4f2b5c3143e4e22f8456fee4e8::Range",
+                "key": "ab512263",
+                "kind": "method",
+                "name": "Range"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1e6d9a550757b2cac148be7018d24631c3b6db391f740d626ced7c8e1b116c69::Delete",
+                "key": "b65bed39",
+                "kind": "method",
+                "name": "Delete"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:88::mu",
+                "key": "158aadd6",
+                "kind": "field",
+                "name": "mu"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:89::clean",
+                "key": "201c6903",
+                "kind": "field",
+                "name": "clean"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d37b9269bdc8b19ac1c704bfd882b0e7b7d8e56d33d5ce6cc4c23be7a8b3a837::DeepCopyMap",
@@ -444,36 +510,60 @@
           {
             "children": [
               {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:19::Delete",
+                "key": "304c4d01",
+                "kind": "method",
+                "name": "Delete"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:16::Load",
+                "key": "4726a2c3",
+                "kind": "method",
+                "name": "Load"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:20::Range",
+                "key": "683d60ee",
+                "kind": "method",
+                "name": "Range"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:17::Store",
+                "key": "816ae61f",
+                "kind": "method",
+                "name": "Store"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:18::LoadOrStore",
+                "key": "b3e63c25",
+                "kind": "method",
+                "name": "LoadOrStore"
+              },
+              {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::3354ebbc61ffa9d56757513c87499ebace31b9d71a996f5adce9e4da0491acb4::LoadOrStore",
                 "key": "0c3449e0",
-                "kind": "function",
+                "kind": "method",
                 "name": "LoadOrStore"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c1311321838c30b3afcde71b0d3dd29ef081689bd56011f9b96ec0ab3f54c8de::mapInterface",
             "key": "e279fad2",
-            "kind": "trait",
+            "kind": "interface",
             "name": "mapInterface"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b9559fb0cf8f1e23c64d940c0ce7b0e06a521b2c8901c4622519ff30984bfbce::mapOp",
-            "key": "3fe14b3e",
-            "kind": "struct",
-            "name": "mapOp"
           },
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::8916b5ca93a99061121d1248b36f4f3cb1cee511d4f27f598de5cbd30423e29e::ok",
-                "key": "726098c0",
-                "kind": "field",
-                "name": "ok"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a44e7156d4622bf4a24c464e4ae6ba4df331bceaf2d411897b673f1c6e42680c::value",
-                "key": "f2f4b585",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go:53::value",
+                "key": "96be23cd",
                 "kind": "field",
                 "name": "value"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go:54::ok",
+                "key": "ef702593",
+                "kind": "field",
+                "name": "ok"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ab9d20388d622d474974eac751fddb3050bb534da9d3e5a0947003bdada18fc7::mapResult",
@@ -486,32 +576,32 @@
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::bd014b14993775258be09c3785be6c02b315f19be440bffdf1327f730a343866::Generate",
                 "key": "4a28afd9",
-                "kind": "function",
+                "kind": "method",
                 "name": "Generate"
               },
               {
                 "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5719ec96f17f6a1af5c72193851fc93beae81daf7b03cde1e254c4dd7996d5cf::apply",
                 "key": "d53733d5",
-                "kind": "function",
+                "kind": "method",
                 "name": "apply"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ad72a6d5fe8839e908cb2b9a55d8ca443f59a987723ead2d83c88398dedb9016::k",
-                "key": "0018119c",
-                "kind": "field",
-                "name": "k"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a6d99b6c04d8147ef4a98a6652bba09bdd599091ea365e1f69dc3cc54244f73a::v",
-                "key": "6a4c51ba",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go:32::v",
+                "key": "251c8478",
                 "kind": "field",
                 "name": "v"
               },
               {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dde6f85c1a46cfee55b00986f91555e3d3797b1644efda51e937227b971540e3::op",
-                "key": "d4d8c2a8",
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go:31::op",
+                "key": "4026cc09",
                 "kind": "field",
                 "name": "op"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go:32::k",
+                "key": "c6e93c95",
+                "kind": "field",
+                "name": "k"
               }
             ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f8943f019b8b36026afa951d2d1abb954ea8275da8f8563f3a4c6845325ae506::mapCall",
@@ -544,6 +634,12 @@
             "name": "TestGoLimit"
           },
           {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1b1cc05b907e38f029ce676bf4f36f360b5780065474500e95aae661f71ac330::Result",
+            "key": "049c2baa",
+            "kind": "type",
+            "name": "Result"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ad769c2542fdc4ab0ce51a8aa426ee05155989ca598562895631d3b07599cbb9::ExampleGroup_justErrors",
             "key": "1ad02791",
             "kind": "function",
@@ -562,12 +658,26 @@
             "name": "fakeSearch"
           },
           {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d980b54736f98a73603399b8f39145fda83c08abb9782e862c2f181e600dedbf::Search",
+            "key": "70aa1c2e",
+            "kind": "type",
+            "name": "Search"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::554c8ce01ec9d6e1354b7bad048343126f88e688108775e319b422bb1ad6a5a7::TestTryGo",
             "key": "79d5bf2c",
             "kind": "function",
             "name": "TestTryGo"
           },
           {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_test.go:109::errs",
+                "key": "bdf0bbdc",
+                "kind": "field",
+                "name": "errs"
+              }
+            ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a2ba961927a9e65fee1101f120cd3a6969d08a20e51e22e213df9766e291e0b6::TestZeroGroup",
             "key": "c2df4311",
             "kind": "function",
@@ -580,6 +690,20 @@
             "name": "BenchmarkGo"
           },
           {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_test.go:144::want",
+                "key": "358f4755",
+                "kind": "field",
+                "name": "want"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_test.go:143::errs",
+                "key": "3b083e65",
+                "kind": "field",
+                "name": "errs"
+              }
+            ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cc44eeb9c31ec77e5de106fd8df335e8af3fa10ec64342cea6b294cb096d184e::TestWithContext",
             "key": "c917b090",
             "kind": "function",
@@ -592,6 +716,20 @@
             "name": "withCancelCause"
           },
           {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/go120_test.go:21::errs",
+                "key": "20806db4",
+                "kind": "field",
+                "name": "errs"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/go120_test.go:22::want",
+                "key": "22641bca",
+                "kind": "field",
+                "name": "want"
+              }
+            ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c3d3b14debb6b28ff2e9b186f36bfd89b5d15bab1958bdacff860c4a667fc028::TestCancelCause",
             "key": "9c4a8077",
             "kind": "function",
@@ -610,6 +748,38 @@
             "name": "acquireN"
           },
           {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:115::name",
+                "key": "1a61dcf1",
+                "kind": "field",
+                "name": "name"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:101::N",
+                "key": "42021186",
+                "kind": "field",
+                "name": "N"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:100::cap",
+                "key": "a2ffa49c",
+                "kind": "field",
+                "name": "cap"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:116::w",
+                "key": "dae455cd",
+                "kind": "field",
+                "name": "w"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:100::size",
+                "key": "f508d11b",
+                "kind": "field",
+                "name": "size"
+              }
+            ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::446b04ac731dced328479221305ced7f3f89d620653a26a8e710477f0c918b74::BenchmarkAcquireSeq",
             "key": "6cc67b5c",
             "kind": "function",
@@ -626,6 +796,32 @@
             "key": "92ac7c30",
             "kind": "function",
             "name": "newSemChan"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dae1b67a5bec2683a6bee98d56ba6fa0a4be991a56c356b2f267e12499d9f8aa::Release",
+                "key": "0ec37bf1",
+                "kind": "method",
+                "name": "Release"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dddcc0b81e3f2f2ac08ecab88152975d8e124696d3a8b3ede0e2adb84aea672d::TryAcquire",
+                "key": "a1f5966b",
+                "kind": "method",
+                "name": "TryAcquire"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::faf26c3e94be2110c1cb3f682dc112fa74ec9bd1889980a202606baa79088638::Acquire",
+                "key": "f24dae91",
+                "kind": "method",
+                "name": "Acquire"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::17110b74b4b6953bccc4011f339f5152f119e8e57616c1c1c3b02c96280ba3ba::semChan",
+            "key": "95f6293d",
+            "kind": "type",
+            "name": "semChan"
           },
           {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cb10244b002b296f3175a4d4fe929eb5996b35eb637c0a9b841df412bc6fb2e3::BenchmarkNewSeq",
@@ -754,6 +950,26 @@
             "name": "TestGoexitDo"
           },
           {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight_test.go:34::wrappedErrorType",
+                "key": "06f59575",
+                "kind": "field",
+                "name": "wrappedErrorType"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight_test.go:32::name",
+                "key": "48b97e64",
+                "kind": "field",
+                "name": "name"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight_test.go:33::panicValue",
+                "key": "6ff9d832",
+                "kind": "field",
+                "name": "panicValue"
+              }
+            ],
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d12ca30019be6d53bff83badf3ddaf9ef4ab65e629935fd1ab86d2f65ac9c34b::TestPanicErrorUnwrap",
             "key": "8cf2ce61",
             "kind": "function",
@@ -782,6 +998,12 @@
             "key": "e312d5dc",
             "kind": "function",
             "name": "ExampleGroup"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ed80e108fe1ea0855eea3fb9f809adb46d205a1315b520739fedb73aa8c0ccda::Map",
+            "key": "a8cd1e7b",
+            "kind": "type",
+            "name": "Map"
           },
           {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::8ffb8df829139cc6f50ee1c5c8d809dbc1aff674fccbda4698241ebea406c329::BenchmarkAdversarialDelete",
@@ -836,6 +1058,12 @@
             "key": "fbc86a6b",
             "kind": "function",
             "name": "BenchmarkLoadOrStoreUnique"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b9559fb0cf8f1e23c64d940c0ce7b0e06a521b2c8901c4622519ff30984bfbce::mapOp",
+            "key": "3fe14b3e",
+            "kind": "type",
+            "name": "mapOp"
           },
           {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5a4d760a12dbd7af100500a7fa658d33a1409f9339abe148c16e6b6a6ae65cbe::randValue",
@@ -910,10 +1138,126 @@
             "name": "applyMap"
           },
           {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup.go",
+            "key": "0ba2c8e8",
+            "kind": "module",
+            "name": "errgroup.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_example_md5all_test.go",
+            "key": "8e6dae12",
+            "kind": "module",
+            "name": "errgroup_example_md5all_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5dc057d85f2d467f2e532600a1bb79b91ee02320a5ad3166ba4a5f1ee011799d::Web",
+            "key": "1563830b",
+            "kind": "variable",
+            "name": "Web"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::025a5406eb6f8b88165cafefd72fabdc896924240850c12632f5e17b4caef287::Image",
+            "key": "56d2cd7b",
+            "kind": "variable",
+            "name": "Image"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f611d514e1782d7ded03f6d39bbea8a24d371e1900cf9da1e8f8f2b64495dd93::Video",
+            "key": "a8af43d9",
+            "kind": "variable",
+            "name": "Video"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/errgroup_test.go",
+            "key": "ece91852",
+            "kind": "module",
+            "name": "errgroup_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/go120.go",
+            "key": "4ecf6f02",
+            "kind": "module",
+            "name": "go120.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/go120_test.go",
+            "key": "53111985",
+            "kind": "module",
+            "name": "go120_test.go"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/pre_go120.go:11::withCancelCause",
+                "key": "0cf486e7",
+                "kind": "function",
+                "name": "withCancelCause"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/pre_go120.go",
+            "key": "fd58fccd",
+            "kind": "module",
+            "name": "pre_go120.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore.go",
+            "key": "5aad7684",
+            "kind": "module",
+            "name": "semaphore.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go",
+            "key": "69557a78",
+            "kind": "module",
+            "name": "semaphore_bench_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_example_test.go",
+            "key": "0e32178f",
+            "kind": "module",
+            "name": "semaphore_example_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_test.go",
+            "key": "f87ed6e9",
+            "kind": "module",
+            "name": "semaphore_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight.go",
+            "key": "6c38eb40",
+            "kind": "module",
+            "name": "singleflight.go"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::797039390c87e42e2c4505ed2d77b970602e880842f4fc812da7c80060d48165::errGoexit",
             "key": "94ebea21",
             "kind": "variable",
             "name": "errGoexit"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::singleflight/singleflight_test.go",
+            "key": "2c9b4215",
+            "kind": "module",
+            "name": "singleflight_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map.go",
+            "key": "9b7bed55",
+            "kind": "module",
+            "name": "map.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_bench_test.go",
+            "key": "22d1d969",
+            "kind": "module",
+            "name": "map_bench_test.go"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go",
+            "key": "5fc846e5",
+            "kind": "module",
+            "name": "map_reference_test.go"
           },
           {
             "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9d3215ef0d8ab72eae65641e4385be997ffc590b15fda260e5d0a296589ad877::mapOps",
@@ -922,354 +1266,10 @@
             "name": "mapOps"
           },
           {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::63a1bbf97a27eeb115ed6919751069f76a521b2c8901c4622519ff30984bfbce::mapOp",
-            "key": "102fd3d2",
-            "kind": "struct",
-            "name": "mapOp"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::83439b5f1c9ce729363b9ddeb0b71af6a298f08cbed8623b5413d60580e30000::Range",
-                "key": "1bbf53c9",
-                "kind": "function",
-                "name": "Range"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::fd7a6b0bf6bde99e98c99a370c8b6832e5eeeb44ea8e8e9818accb97241f0eab::Store",
-                "key": "2514c087",
-                "kind": "function",
-                "name": "Store"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5cd47851ecf80da47cbcf11978fc4b39f081689bd56011f9b96ec0ab3f54c8de::mapInterface",
-            "key": "14f7ca84",
-            "kind": "trait",
-            "name": "mapInterface"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::80056c5cc86119d17278e9b659a30ac50b5780065474500e95aae661f71ac330::Result",
-            "key": "15774ae6",
-            "kind": "struct",
-            "name": "Result"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::8ffbc6abc7690a5b49b0b69e42d113af0b5780065474500e95aae661f71ac330::Result",
-            "key": "28ac57ba",
-            "kind": "struct",
-            "name": "Result"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c36ad6c9bbf2494982afa64eddf50ef85dc367b0883b351bfa8c273854d33e51::token",
-            "key": "319e0d87",
-            "kind": "struct",
-            "name": "token"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a3df311a1e9567e2bf4c15710f57b6dbeae81daf7b03cde1e254c4dd7996d5cf::apply",
-                "key": "22a7bb85",
-                "kind": "function",
-                "name": "apply"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::45e7449db73724508604c7c8d5f4250d4ea8275da8f8563f3a4c6845325ae506::mapCall",
-            "key": "3b653813",
-            "kind": "struct",
-            "name": "mapCall"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6bb6e264e9df00548fab110b33ac705cf119e8e57616c1c1c3b02c96280ba3ba::semChan",
-            "key": "3cf1f46b",
-            "kind": "struct",
-            "name": "semChan"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5ab5dcadcac0d3347951f56bba58cb3a7f51c18cac8f0a9fe152dc256f908f1c::Acquire",
-                "key": "0e712ca0",
-                "kind": "function",
-                "name": "Acquire"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dcb5a77cf3b2f046483e9b392079fbbb0f56616ac060db886c2bd366b9c3b687::weighted",
-            "key": "3dc499e0",
-            "kind": "trait",
-            "name": "weighted"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::33e1a69e052567d2d6ae94449651f2ad0b5780065474500e95aae661f71ac330::Result",
-            "key": "4198b8dc",
-            "kind": "struct",
-            "name": "Result"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::e961b6849cdfea55bedb7ddebbbfc8c7edbe7a121fdc86573a7daf78710bd9b2::Error",
-                "key": "10ec4d58",
-                "kind": "function",
-                "name": "Error"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::35f624b53a6c7ba15ea834156d2267bbd0a57b8d227b98355671214a054d0044::panicError",
-            "key": "4d5b17f4",
-            "kind": "struct",
-            "name": "panicError"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::990bc387f0d8b99102cc2d9c0010df27c141b38e445339424010c3c64e647b6c::bench",
-            "key": "5ad7cab8",
-            "kind": "struct",
-            "name": "bench"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b2d7438fb6ef1ec6eb5a4cab4e6170fe0f56616ac060db886c2bd366b9c3b687::weighted",
-            "key": "7ad7ef76",
-            "kind": "trait",
-            "name": "weighted"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::05695905f8f3053b2c9dc49eed47cc1850bb534da9d3e5a0947003bdada18fc7::mapResult",
-            "key": "7d638300",
-            "kind": "struct",
-            "name": "mapResult"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::a3a2df16accfe6e03766e6317f8fec1ae16d7277db75acb6de3df89b3df4236c::result",
-            "key": "8da39e34",
-            "kind": "struct",
-            "name": "result"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::40b72d9e000f85e6ecc4a8c88e82ef364ea8275da8f8563f3a4c6845325ae506::mapCall",
-            "key": "8ded14fa",
-            "kind": "struct",
-            "name": "mapCall"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::45bfa6c4edae192b51a20739be41acfb196f74057edfc75f7d23d04564d2ba1f::call",
-            "key": "96a43ac9",
-            "kind": "struct",
-            "name": "call"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::052010b7b57182c9f27f861084203a4ef119e8e57616c1c1c3b02c96280ba3ba::semChan",
-            "key": "99d14b3b",
-            "kind": "struct",
-            "name": "semChan"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ee9a31831cd735b14070b613bd7c5d8bf081689bd56011f9b96ec0ab3f54c8de::mapInterface",
-            "key": "9e66a418",
-            "kind": "trait",
-            "name": "mapInterface"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::db265c82746e82c5097226a73e25b47250bb534da9d3e5a0947003bdada18fc7::mapResult",
-            "key": "a76f7792",
-            "kind": "struct",
-            "name": "mapResult"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1d2f70ebdae488595681a5221a316b20d27c92bb65ab7aa4f5b5fb0474310aea::RWMutexMap",
-            "key": "a79d4609",
-            "kind": "struct",
-            "name": "RWMutexMap"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1b4ca07811e7c0c7c58122a7965d59f197af3971c3e1ba08aefb54605dfdd99c::done",
-                "key": "02c7b742",
-                "kind": "function",
-                "name": "done"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c80fd4c5910527549228adfdd6aae1208dc9b00927800a4ed13fc732ac78ccdf::TryGo",
-                "key": "0d0179d1",
-                "kind": "function",
-                "name": "TryGo"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::2d524dfd90a4b26cbf3255989753f5f83e242898c22ce74cd82669dea817928d::Group",
-            "key": "abd28124",
-            "kind": "struct",
-            "name": "Group"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::05625832ea5edb430af921651f69789bd27c92bb65ab7aa4f5b5fb0474310aea::RWMutexMap",
-            "key": "bcb46a13",
-            "kind": "struct",
-            "name": "RWMutexMap"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::3738940dc274be9f97ba1dff1924f903c9e8f4827cec82c29e20a4e93acf32b8::doCall",
-                "key": "00e89b9f",
-                "kind": "function",
-                "name": "doCall"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::15f1cc5985037e21cfeebb927b006d603e242898c22ce74cd82669dea817928d::Group",
-            "key": "c400e2bb",
-            "kind": "struct",
-            "name": "Group"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ab5d401d90d4c1b3fd61c33bd5432476b7d8e56d33d5ce6cc4c23be7a8b3a837::DeepCopyMap",
-            "key": "d0250a32",
-            "kind": "struct",
-            "name": "DeepCopyMap"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d04b684a167581ef2330a4a6e4465165a83c08abb9782e862c2f181e600dedbf::Search",
-            "key": "d7836aad",
-            "kind": "struct",
-            "name": "Search"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ddaa399da282e33bde64a2787e204e8ea83c08abb9782e862c2f181e600dedbf::Search",
-            "key": "d95b7afe",
-            "kind": "struct",
-            "name": "Search"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d97518bdc19bcc558308a3a3692c5cd0c141b38e445339424010c3c64e647b6c::bench",
-            "key": "dbd884d1",
-            "kind": "struct",
-            "name": "bench"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::36eba9549a8c80dd7701ec33446c67066a521b2c8901c4622519ff30984bfbce::mapOp",
-            "key": "e04ce904",
-            "kind": "struct",
-            "name": "mapOp"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::61f63bb9ba70d91ca4ad40ca93d687836c64edbab7f9cb509eb912bd5670a88c::errValue",
-            "key": "e6fb8d0c",
-            "kind": "struct",
-            "name": "errValue"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::64794936d8ff889492b425e312ca744679b5707b2d64ec0d6b3d69a47d04523f::Store",
-                "key": "1efa312e",
-                "kind": "function",
-                "name": "Store"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::447d9acd3ca9e0c2e52c59b57662844cb7d8e56d33d5ce6cc4c23be7a8b3a837::DeepCopyMap",
-            "key": "f61ba8be",
-            "kind": "struct",
-            "name": "DeepCopyMap"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::7497821edcdc8f7a7b958e6d434f3675e16d7277db75acb6de3df89b3df4236c::result",
-            "key": "fd5a8bc5",
-            "kind": "struct",
-            "name": "result"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::0ee07375b93c58f3755882f29ae8e76275eca373ad67b8e4fb06e5f5a5600cc1::applyMap",
-            "key": "0001a0a5",
-            "kind": "function",
-            "name": "applyMap"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::fc098dabd97523ebebb98e4e5aa6d740a2d8807b495bbc9a212a2a0b2e3a2fd1::acquireN",
-            "key": "02bfc870",
-            "kind": "function",
-            "name": "acquireN"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::98306d64273586dc0dba4eb159bb668d3dce874d378754ed6b968b55b4ea57ff::TestPanicDo",
-            "key": "048a6975",
-            "kind": "function",
-            "name": "TestPanicDo"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ffac1b07a0cc7eaf1718c30d1d83eadf47b0457e9d69d86d7563e1311a6cef1c::TestDoChan",
-            "key": "056a4840",
-            "kind": "function",
-            "name": "TestDoChan"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c561fbf3fbdde972d5d9f74479e763cf392193eaeab146d9c1b8926b9ba19a6c::TestMapMatchesDeepCopy",
-            "key": "08b188ab",
-            "kind": "function",
-            "name": "TestMapMatchesDeepCopy"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6dee84cb74526ce23c45a817726b06426f88e688108775e319b422bb1ad6a5a7::TestTryGo",
-            "key": "0c598db9",
-            "kind": "function",
-            "name": "TestTryGo"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ae2ef9c4f6cf9b434e8c14ad1287db06a30f0d90a31fe174724ddacf182dc4f7::TestDoErr",
-            "key": "1144954f",
-            "kind": "function",
-            "name": "TestDoErr"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::826109960c501e530ef2c86e6435518c1e8d3b001bfbe85463d161cb8eaf994c::tryAcquireN",
-            "key": "11851b78",
-            "kind": "function",
-            "name": "tryAcquireN"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::bc003c0ba5bd3680306d1c0df43777dd917641eb980d0921591c80c53f4725f0::maxSleep",
-            "key": "12e532e1",
-            "kind": "constant",
-            "name": "maxSleep"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::90daf3117423cf554e1fabb5617eee5969d08a20e51e22e213df9766e291e0b6::TestZeroGroup",
-            "key": "13a3a016",
-            "kind": "function",
-            "name": "TestZeroGroup"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::105190457d405e30d6c98ac6d367cfeec1aff674fccbda4698241ebea406c329::BenchmarkAdversarialDelete",
-            "key": "1b4fbd6c",
-            "kind": "function",
-            "name": "BenchmarkAdversarialDelete"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::e082b3f2ff0d3bf9aac7b6c23bafae49ce5cf62b0a26aa1eb9eaea86d0217363::HammerWeighted",
-            "key": "1e7da032",
-            "kind": "function",
-            "name": "HammerWeighted"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c7e98279bd7dd4fe45af4d2122d6a97deb51aae4f2ce955390d300f346ed6e14::opStore",
-            "key": "20f30864",
-            "kind": "constant",
-            "name": "opStore"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::386817ac19cfb034397f14c62d3a8d189dd5ade68ca62c8d83c46257cb15189f::TestAllocCancelDoesntStarve",
-            "key": "21bb53f8",
-            "kind": "function",
-            "name": "TestAllocCancelDoesntStarve"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::21187ad822e23be611379f5f678300fe21638c102b5f211921a3c5f36008acf2::TestConcurrentRange",
-            "key": "230c776a",
-            "kind": "function",
-            "name": "TestConcurrentRange"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::672ad1c95dfac855eab7c9355f0a8c7977a5256087498b8cae5ed88cb581773e::collatzSteps",
-            "key": "23bad22c",
-            "kind": "function",
-            "name": "collatzSteps"
+            "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_test.go",
+            "key": "9c2cdd68",
+            "kind": "module",
+            "name": "map_test.go"
           }
         ],
         "unnamed": 0
@@ -1280,9 +1280,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 370,
+          "bytes": 402,
           "bytesPerToken": 4,
-          "estimatedTokens": 93
+          "estimatedTokens": 101
         },
         "detail": "summary",
         "projects": [
@@ -1300,7 +1300,9 @@
             "readiness": "ready"
           }
         ],
-        "revision": "cb5ab50b"
+        "readiness": "ready",
+        "revision": "d9c5f5e0",
+        "rows": 757
       }
     },
     "cli search DoChan": {
@@ -1308,9 +1310,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2070,
+          "bytes": 1492,
           "bytesPerToken": 4,
-          "estimatedTokens": 518
+          "estimatedTokens": 373
         },
         "coverage": [
           {
@@ -1327,8 +1329,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -1385,7 +1386,7 @@
               "shape": "semantic",
               "trail": "project \u203a singleflight/singleflight.go:121 \u203a DoChan"
             },
-            "kind": "function",
+            "kind": "method",
             "language": "go",
             "score": 4294967295,
             "state": "ready",
@@ -1393,7 +1394,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cad83b7d310767729c2857a0ed729a24d7ca14e172b9653fda04c33c17911d28::DoChan",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:a6cab3fcd417981b784a2b61c176dbea7501f4d0710445d9adac22c5860020c3::DoChan",
               "name": "DoChan",
               "segments": [
                 "DoChan"
@@ -1401,98 +1402,45 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  168,
-                  125,
-                  14,
-                  28,
-                  46,
-                  247,
-                  78,
-                  26,
-                  56,
-                  222,
-                  76,
-                  157,
-                  90,
-                  169,
-                  56,
-                  81,
-                  59,
-                  116,
-                  14,
-                  153,
-                  63,
+                  166,
+                  202,
+                  179,
                   252,
-                  111,
-                  51,
-                  14,
-                  114,
-                  251,
-                  183,
-                  89,
+                  212,
+                  23,
+                  152,
+                  27,
                   120,
-                  8,
-                  199
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a DoChan"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967294,
-            "state": "ready",
-            "summary": "DoChan is like Do but returns a channel that will receive the"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:04522ff40dfb129ff755e1319c29df30fafdb260940e9cbe8b2690d57cd942d9::DoChan",
-              "name": "DoChan",
-              "segments": [
-                "DoChan"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  4,
-                  82,
-                  47,
+                  74,
+                  43,
+                  97,
+                  193,
+                  118,
+                  219,
+                  234,
+                  117,
+                  1,
                   244,
-                  13,
-                  251,
-                  18,
-                  159,
-                  247,
-                  85,
-                  225,
-                  49,
-                  156,
-                  41,
-                  223,
-                  48,
-                  250,
-                  253,
-                  178,
-                  96,
-                  148,
-                  14,
-                  156,
-                  190,
-                  139,
-                  38,
-                  144,
-                  213,
-                  124,
+                  208,
+                  113,
+                  4,
+                  69,
                   217,
-                  66,
-                  217
+                  173,
+                  172,
+                  34,
+                  197,
+                  134,
+                  0,
+                  32,
+                  195
                 ]
               },
               "shape": "external",
               "trail": "project \u203a DoChan"
             },
             "language": "unknown",
-            "score": 4294967293,
+            "score": 4294967294,
             "state": "ready"
           }
         ],
@@ -1507,9 +1455,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 14726,
+          "bytes": 11553,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3682
+          "estimatedTokens": 2889
         },
         "coverage": [
           {
@@ -1526,13 +1474,11 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
-        "more": true,
-        "nextCursor": "pc4-<live-validated>",
+        "more": false,
         "query": "Weighted",
         "readiness": "ready",
         "records": [
@@ -1640,172 +1586,11 @@
               "shape": "semantic",
               "trail": "project \u203a semaphore/semaphore_bench_test.go:17 \u203a weighted"
             },
-            "kind": "trait",
+            "kind": "interface",
             "language": "go",
             "score": 4294967294,
             "state": "ready",
             "summary": "weighted is an interface matching a subset of *Weighted.  It allows"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dcb5a77cf3b2f046483e9b392079fbbb0f56616ac060db886c2bd366b9c3b687::weighted",
-              "name": "weighted",
-              "segments": [
-                "weighted"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  61,
-                  196,
-                  153,
-                  224,
-                  63,
-                  227,
-                  164,
-                  66,
-                  205,
-                  228,
-                  120,
-                  230,
-                  131,
-                  232,
-                  116,
-                  34,
-                  104,
-                  4,
-                  221,
-                  106,
-                  147,
-                  21,
-                  185,
-                  232,
-                  139,
-                  149,
-                  196,
-                  72,
-                  183,
-                  56,
-                  250,
-                  11
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a weighted"
-            },
-            "kind": "trait",
-            "language": "unknown",
-            "score": 4294967293,
-            "state": "ready",
-            "summary": "weighted is an interface matching a subset of *Weighted.  It allows"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b2d7438fb6ef1ec6eb5a4cab4e6170fe0f56616ac060db886c2bd366b9c3b687::weighted",
-              "name": "weighted",
-              "segments": [
-                "weighted"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  122,
-                  215,
-                  239,
-                  118,
-                  181,
-                  66,
-                  9,
-                  193,
-                  106,
-                  108,
-                  37,
-                  102,
-                  34,
-                  211,
-                  214,
-                  190,
-                  151,
-                  234,
-                  202,
-                  101,
-                  223,
-                  110,
-                  105,
-                  241,
-                  18,
-                  201,
-                  30,
-                  186,
-                  136,
-                  14,
-                  185,
-                  84
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a weighted"
-            },
-            "kind": "trait",
-            "language": "unknown",
-            "score": 4294967292,
-            "state": "ready",
-            "summary": "weighted is an interface matching a subset of *Weighted.  It allows"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::17110b74b4b6953bccc4011f339f5152f119e8e57616c1c1c3b02c96280ba3ba::semChan",
-              "line": 25,
-              "name": "semChan",
-              "path": "semaphore/semaphore_bench_test.go",
-              "segments": [
-                "semChan"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  149,
-                  246,
-                  41,
-                  61,
-                  40,
-                  60,
-                  77,
-                  138,
-                  147,
-                  152,
-                  169,
-                  64,
-                  125,
-                  175,
-                  211,
-                  157,
-                  103,
-                  117,
-                  35,
-                  6,
-                  172,
-                  70,
-                  205,
-                  91,
-                  142,
-                  209,
-                  158,
-                  168,
-                  32,
-                  29,
-                  56,
-                  111
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a semaphore/semaphore_bench_test.go:25 \u203a semChan"
-            },
-            "kind": "struct",
-            "language": "go",
-            "score": 4294967291,
-            "state": "ready",
-            "summary": "semChan implements Weighted using a channel for"
           },
           {
             "identity": {
@@ -1858,9 +1643,64 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967290,
+            "score": 4294967293,
             "state": "ready",
             "summary": "NewWeighted creates a new weighted semaphore with the given"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::17110b74b4b6953bccc4011f339f5152f119e8e57616c1c1c3b02c96280ba3ba::semChan",
+              "line": 25,
+              "name": "semChan",
+              "path": "semaphore/semaphore_bench_test.go",
+              "segments": [
+                "semChan"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  149,
+                  246,
+                  41,
+                  61,
+                  40,
+                  60,
+                  77,
+                  138,
+                  147,
+                  152,
+                  169,
+                  64,
+                  125,
+                  175,
+                  211,
+                  157,
+                  103,
+                  117,
+                  35,
+                  6,
+                  172,
+                  70,
+                  205,
+                  91,
+                  142,
+                  209,
+                  158,
+                  168,
+                  32,
+                  29,
+                  56,
+                  111
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a semaphore/semaphore_bench_test.go:25 \u203a semChan"
+            },
+            "kind": "type",
+            "language": "go",
+            "score": 4294967292,
+            "state": "ready",
+            "summary": "semChan implements Weighted using a channel for"
           },
           {
             "identity": {
@@ -1913,7 +1753,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967289,
+            "score": 4294967291,
             "state": "ready"
           },
           {
@@ -1967,7 +1807,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967288,
+            "score": 4294967290,
             "state": "ready"
           },
           {
@@ -2021,7 +1861,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967287,
+            "score": 4294967289,
             "state": "ready"
           },
           {
@@ -2075,7 +1915,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967286,
+            "score": 4294967288,
             "state": "ready"
           },
           {
@@ -2129,7 +1969,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967285,
+            "score": 4294967287,
             "state": "ready"
           },
           {
@@ -2183,7 +2023,7 @@
             },
             "kind": "function",
             "language": "go",
-            "score": 4294967284,
+            "score": 4294967286,
             "state": "ready"
           },
           {
@@ -2237,633 +2077,472 @@
             },
             "kind": "function",
             "language": "go",
+            "score": 4294967285,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:116::w",
+              "line": 116,
+              "name": "w",
+              "path": "semaphore/semaphore_bench_test.go",
+              "segments": [
+                "w"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  218,
+                  228,
+                  85,
+                  205,
+                  130,
+                  57,
+                  157,
+                  12,
+                  78,
+                  205,
+                  127,
+                  157,
+                  19,
+                  244,
+                  67,
+                  255,
+                  56,
+                  34,
+                  180,
+                  1,
+                  245,
+                  33,
+                  127,
+                  86,
+                  126,
+                  175,
+                  228,
+                  56,
+                  170,
+                  114,
+                  19,
+                  38
+                ]
+              },
+              "shape": "declaration",
+              "trail": "project \u203a semaphore/semaphore_bench_test.go:116 \u203a w"
+            },
+            "kind": "field",
+            "language": "go",
+            "score": 4294967284,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::aeadb08d31c0f50004d5a73d0c6873ed82a2cb6e2745254ce462d33ad404432c::sem",
+              "name": "sem",
+              "segments": [
+                "sem"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  187,
+                  61,
+                  19,
+                  175,
+                  42,
+                  64,
+                  178,
+                  104,
+                  2,
+                  149,
+                  2,
+                  76,
+                  253,
+                  54,
+                  81,
+                  43,
+                  229,
+                  77,
+                  228,
+                  70,
+                  85,
+                  195,
+                  170,
+                  183,
+                  103,
+                  51,
+                  149,
+                  204,
+                  146,
+                  4,
+                  0,
+                  160
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a sem"
+            },
+            "kind": "variable",
+            "language": "unknown",
             "score": 4294967283,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6bb6e264e9df00548fab110b33ac705cf119e8e57616c1c1c3b02c96280ba3ba::semChan",
-              "name": "semChan",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::2b8ab1dde84821f7c4aaa15c67430a3882a2cb6e2745254ce462d33ad404432c::sem",
+              "name": "sem",
               "segments": [
-                "semChan"
+                "sem"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  60,
-                  241,
-                  244,
-                  107,
-                  172,
-                  42,
-                  162,
-                  35,
-                  126,
-                  55,
-                  28,
-                  52,
-                  195,
-                  114,
-                  63,
-                  68,
+                  200,
+                  252,
+                  180,
+                  118,
+                  82,
                   194,
-                  110,
-                  110,
-                  231,
-                  157,
-                  77,
-                  212,
-                  168,
-                  239,
-                  106,
-                  238,
-                  137,
-                  76,
-                  17,
-                  48,
-                  97
+                  68,
+                  207,
+                  183,
+                  20,
+                  64,
+                  141,
+                  127,
+                  184,
+                  135,
+                  67,
+                  15,
+                  19,
+                  152,
+                  240,
+                  69,
+                  183,
+                  252,
+                  71,
+                  138,
+                  222,
+                  111,
+                  12,
+                  47,
+                  33,
+                  206,
+                  182
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semChan"
+              "trail": "project \u203a sem"
             },
-            "kind": "struct",
+            "kind": "variable",
             "language": "unknown",
             "score": 4294967282,
-            "state": "ready",
-            "summary": "semChan implements Weighted using a channel for"
+            "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::052010b7b57182c9f27f861084203a4ef119e8e57616c1c1c3b02c96280ba3ba::semChan",
-              "name": "semChan",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d060bef632f62ae89fb7d9b9d855984bc5e64c9a7b9e9770dd10c27a7b56eb8f::_1",
+              "name": "_1",
               "segments": [
-                "semChan"
+                "_1"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  153,
-                  209,
-                  75,
-                  59,
-                  58,
-                  222,
-                  31,
-                  111,
-                  1,
                   236,
-                  240,
-                  174,
-                  200,
-                  143,
-                  34,
-                  250,
-                  238,
-                  77,
-                  134,
-                  181,
-                  136,
-                  60,
-                  217,
-                  254,
-                  84,
-                  146,
-                  213,
-                  230,
-                  225,
+                  97,
+                  224,
+                  117,
+                  31,
+                  43,
+                  211,
+                  52,
+                  112,
+                  218,
                   39,
-                  47,
-                  171
+                  4,
+                  78,
+                  18,
+                  0,
+                  177,
+                  54,
+                  136,
+                  148,
+                  251,
+                  156,
+                  6,
+                  73,
+                  238,
+                  253,
+                  232,
+                  245,
+                  65,
+                  101,
+                  28,
+                  157,
+                  16
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a semChan"
+              "trail": "project \u203a _1"
             },
-            "kind": "struct",
+            "kind": "variable",
             "language": "unknown",
             "score": 4294967281,
-            "state": "ready",
-            "summary": "semChan implements Weighted using a channel for"
+            "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ffbe9bec585cbdd828516a87e70f661c010bdc6a587807a18264b8e4f2a3c18c::TestWeighted",
-              "name": "TestWeighted",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:fecde70da1e1b3aa23291d116a83ebd18f543bf05e4fdafffd09674d42672919::Weighted",
+              "name": "Weighted",
               "segments": [
-                "TestWeighted"
+                "Weighted"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  196,
-                  229,
-                  159,
-                  25,
-                  10,
-                  91,
-                  3,
-                  105,
-                  65,
-                  102,
-                  0,
-                  213,
-                  119,
-                  230,
-                  234,
-                  192,
-                  68,
-                  161,
-                  48,
-                  219,
-                  117,
-                  160,
+                  254,
+                  205,
                   231,
-                  244,
-                  96,
+                  13,
+                  161,
+                  225,
+                  179,
+                  170,
+                  35,
+                  41,
+                  29,
+                  17,
+                  106,
+                  131,
+                  235,
+                  209,
+                  143,
                   84,
-                  61,
-                  139,
-                  0,
-                  208,
-                  105,
-                  173
+                  59,
+                  240,
+                  94,
+                  79,
+                  218,
+                  255,
+                  253,
+                  9,
+                  103,
+                  77,
+                  66,
+                  103,
+                  41,
+                  25
                 ]
               },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeighted"
+              "shape": "external",
+              "trail": "project \u203a Weighted"
             },
-            "kind": "function",
             "language": "unknown",
             "score": 4294967280,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1d5fae786f9f94a4c46b249867131aeb010bdc6a587807a18264b8e4f2a3c18c::TestWeighted",
-              "name": "TestWeighted",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:26f004482c0de0848363cd71f03fbfc09b219aee4b0a1518af252bb13504f8e8::weighted",
+              "name": "weighted",
               "segments": [
-                "TestWeighted"
+                "weighted"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  202,
-                  190,
-                  111,
-                  54,
-                  209,
-                  6,
-                  164,
-                  63,
-                  172,
-                  6,
-                  231,
-                  40,
-                  94,
-                  99,
-                  139,
-                  193,
                   38,
-                  147,
-                  57,
-                  56,
-                  218,
-                  133,
-                  93,
-                  215,
-                  82,
-                  27,
-                  103,
+                  240,
+                  4,
+                  72,
+                  44,
+                  13,
+                  224,
+                  132,
                   131,
-                  18,
-                  114,
-                  26,
-                  35
+                  99,
+                  205,
+                  113,
+                  240,
+                  63,
+                  191,
+                  192,
+                  155,
+                  33,
+                  154,
+                  238,
+                  75,
+                  10,
+                  21,
+                  24,
+                  175,
+                  37,
+                  43,
+                  177,
+                  53,
+                  4,
+                  248,
+                  232
                 ]
               },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeighted"
+              "shape": "external",
+              "trail": "project \u203a weighted"
             },
-            "kind": "function",
             "language": "unknown",
             "score": 4294967279,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::e082b3f2ff0d3bf9aac7b6c23bafae49ce5cf62b0a26aa1eb9eaea86d0217363::HammerWeighted",
-              "name": "HammerWeighted",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:7af02b125822b40f88304239e16b5e63ecf1a4d4c7afc3cce3c3c58b22b37c15::NewWeighted",
+              "name": "NewWeighted",
               "segments": [
-                "HammerWeighted"
+                "NewWeighted"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  30,
-                  125,
-                  160,
-                  50,
-                  125,
-                  252,
-                  194,
-                  14,
-                  206,
-                  24,
-                  161,
-                  111,
-                  218,
-                  66,
-                  176,
-                  203,
-                  128,
                   122,
-                  242,
-                  229,
-                  188,
-                  149,
-                  152,
-                  163,
-                  217,
-                  203,
-                  14,
-                  41,
-                  232,
-                  184,
-                  35,
-                  158
+                  240,
+                  43,
+                  18,
+                  88,
+                  34,
+                  180,
+                  15,
+                  136,
+                  48,
+                  66,
+                  57,
+                  225,
+                  107,
+                  94,
+                  99,
+                  236,
+                  241,
+                  164,
+                  212,
+                  199,
+                  175,
+                  195,
+                  204,
+                  227,
+                  195,
+                  197,
+                  139,
+                  34,
+                  179,
+                  124,
+                  21
                 ]
               },
-              "shape": "semantic",
-              "trail": "project \u203a HammerWeighted"
+              "shape": "external",
+              "trail": "project \u203a NewWeighted"
             },
-            "kind": "function",
             "language": "unknown",
             "score": 4294967278,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::fca343a8446126719525fae86fe9ea91ce5cf62b0a26aa1eb9eaea86d0217363::HammerWeighted",
-              "name": "HammerWeighted",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:91099e3a1febbd08e19791947bb2053d350084923cb6b38efb2afbeca4a83636::NewWeighted",
+              "name": "NewWeighted",
               "segments": [
-                "HammerWeighted"
+                "NewWeighted"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  112,
-                  5,
-                  39,
-                  144,
-                  187,
-                  207,
-                  251,
-                  1,
-                  141,
-                  11,
-                  184,
-                  176,
-                  109,
-                  129,
-                  113,
-                  251,
-                  3,
-                  54,
-                  70,
-                  174,
-                  38,
-                  162,
-                  45,
-                  57,
-                  231,
-                  218,
-                  111,
-                  88,
-                  156,
                   145,
-                  134,
-                  66
+                  9,
+                  158,
+                  58,
+                  31,
+                  235,
+                  189,
+                  8,
+                  225,
+                  151,
+                  145,
+                  148,
+                  123,
+                  178,
+                  5,
+                  61,
+                  53,
+                  0,
+                  132,
+                  146,
+                  60,
+                  182,
+                  179,
+                  142,
+                  251,
+                  42,
+                  251,
+                  236,
+                  164,
+                  168,
+                  54,
+                  54
                 ]
               },
-              "shape": "semantic",
-              "trail": "project \u203a HammerWeighted"
+              "shape": "external",
+              "trail": "project \u203a NewWeighted"
             },
-            "kind": "function",
             "language": "unknown",
             "score": 4294967277,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::e7cf0f40eaf8448a7d1d1e859a6e1e4954461eb47cd6dd20115c449b3f75cc69::TestWeightedPanic",
-              "name": "TestWeightedPanic",
+              "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:c8cfabcfdacbd0d345f56e54809b792ae784a73d931435bd95d89868abab844b::NewWeighted",
+              "name": "NewWeighted",
               "segments": [
-                "TestWeightedPanic"
+                "NewWeighted"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  147,
-                  63,
-                  131,
-                  148,
-                  178,
-                  70,
-                  13,
-                  226,
-                  164,
-                  197,
-                  8,
-                  9,
-                  139,
-                  234,
-                  34,
-                  146,
-                  230,
-                  248,
-                  180,
-                  65,
-                  186,
-                  230,
-                  2,
-                  163,
-                  178,
-                  10,
-                  33,
-                  33,
-                  212,
-                  198,
+                  200,
+                  207,
+                  171,
+                  207,
+                  218,
+                  203,
+                  208,
+                  211,
+                  69,
+                  245,
+                  110,
+                  84,
+                  128,
+                  155,
+                  121,
+                  42,
+                  231,
                   132,
-                  60
+                  167,
+                  61,
+                  147,
+                  20,
+                  53,
+                  189,
+                  149,
+                  216,
+                  152,
+                  104,
+                  171,
+                  171,
+                  132,
+                  75
                 ]
               },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedPanic"
+              "shape": "external",
+              "trail": "project \u203a NewWeighted"
             },
-            "kind": "function",
             "language": "unknown",
             "score": 4294967276,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06d68dc3731b39a714359298385caf8a54461eb47cd6dd20115c449b3f75cc69::TestWeightedPanic",
-              "name": "TestWeightedPanic",
-              "segments": [
-                "TestWeightedPanic"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  240,
-                  183,
-                  154,
-                  174,
-                  60,
-                  192,
-                  174,
-                  97,
-                  54,
-                  77,
-                  251,
-                  178,
-                  75,
-                  117,
-                  152,
-                  11,
-                  4,
-                  95,
-                  37,
-                  238,
-                  23,
-                  172,
-                  106,
-                  199,
-                  180,
-                  246,
-                  221,
-                  79,
-                  6,
-                  136,
-                  228,
-                  3
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedPanic"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967275,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::40b42897ad63a90ad2209f229de9521cac9fd898dcecbf38f3d7718fc54642a4::TestWeightedAcquire",
-              "name": "TestWeightedAcquire",
-              "segments": [
-                "TestWeightedAcquire"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  92,
-                  22,
-                  34,
-                  129,
-                  56,
-                  213,
-                  15,
-                  14,
-                  161,
-                  253,
-                  73,
-                  151,
-                  179,
-                  116,
-                  229,
-                  164,
-                  78,
-                  25,
-                  171,
-                  230,
-                  127,
-                  205,
-                  56,
-                  132,
-                  135,
-                  189,
-                  38,
-                  236,
-                  86,
-                  226,
-                  63,
-                  6
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedAcquire"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967274,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::79e028f56623b7a99d141fe685e7ab33ac9fd898dcecbf38f3d7718fc54642a4::TestWeightedAcquire",
-              "name": "TestWeightedAcquire",
-              "segments": [
-                "TestWeightedAcquire"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  148,
-                  149,
-                  126,
-                  62,
-                  116,
-                  204,
-                  128,
-                  103,
-                  53,
-                  228,
-                  183,
-                  155,
-                  23,
-                  151,
-                  186,
-                  129,
-                  123,
-                  249,
-                  224,
-                  147,
-                  197,
-                  241,
-                  134,
-                  244,
-                  148,
-                  26,
-                  194,
-                  89,
-                  56,
-                  232,
-                  165,
-                  111
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedAcquire"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967273,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::8ceee92b35ab457b87f1f3678bb9f9d9b1a57245f6c1f653ae3a3e67eec56370::TestWeightedTryAcquire",
-              "name": "TestWeightedTryAcquire",
-              "segments": [
-                "TestWeightedTryAcquire"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  113,
-                  158,
-                  218,
-                  168,
-                  71,
-                  199,
-                  210,
-                  110,
-                  216,
-                  216,
-                  87,
-                  154,
-                  179,
-                  151,
-                  234,
-                  208,
-                  201,
-                  38,
-                  184,
-                  234,
-                  203,
-                  99,
-                  122,
-                  145,
-                  4,
-                  222,
-                  86,
-                  251,
-                  33,
-                  90,
-                  246,
-                  183
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedTryAcquire"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967272,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6c5cfd1fa5ff6f0ea95143fe13c22aefb1a57245f6c1f653ae3a3e67eec56370::TestWeightedTryAcquire",
-              "name": "TestWeightedTryAcquire",
-              "segments": [
-                "TestWeightedTryAcquire"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  130,
-                  132,
-                  214,
-                  12,
-                  40,
-                  239,
-                  79,
-                  65,
-                  54,
-                  253,
-                  117,
-                  210,
-                  4,
-                  240,
-                  146,
-                  178,
-                  118,
-                  5,
-                  12,
-                  14,
-                  52,
-                  175,
-                  139,
-                  109,
-                  26,
-                  7,
-                  115,
-                  134,
-                  175,
-                  223,
-                  107,
-                  113
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a TestWeightedTryAcquire"
-            },
-            "kind": "function",
-            "language": "unknown",
-            "score": 4294967271,
             "state": "ready"
           }
         ],
@@ -2886,11 +2565,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
+                "bytes": 6887,
                 "bytesPerToken": 4,
+                "estimatedTokens": 1722,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 924,
-                "normalizedFrameBytesExcludingCounters": 3693,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2899,7 +2578,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `Weighted` \u00b7 struct \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::26b0ea7dadbc335f2f722afccb0f8b348d33ed09374fcd8c2f0f5376e7123696::Weighted`\n\u2022 `weighted` \u00b7 trait \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::09f506406986c7a715bc9d8bbe3bfe930f56616ac060db886c2bd366b9c3b687::weighted`\n\u2022 `weighted` \u00b7 trait \u00b7 unknown\n  `/tmp/nudox-surface/go-sync/project::semantic::dcb5a77cf3b2f046483e9b392079fbbb0f56616ac060db886c2bd366b9c3b687::weighted`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `Weighted` \u00b7 struct \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::26b0ea7dadbc335f2f722afccb0f8b348d33ed09374fcd8c2f0f5376e7123696::Weighted`\n\u2022 `weighted` \u00b7 interface \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::09f506406986c7a715bc9d8bbe3bfe930f56616ac060db886c2bd366b9c3b687::weighted`\n\u2022 `NewWeighted` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::0be468cefd0b7150983d0121b1d449ac9809648af8d1ca901854da747ac5a700::NewWeighted`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -2907,9 +2586,17 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2289,
+                "bytes": 5587,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 573
+                "estimatedTokens": 1397
+              },
+              "continuation_call": {
+                "arguments": {
+                  "cursor": "mcp2-1792132083-pc4-eJztmGt0FOUZx2d2CZDkAMopsYrHTocWQTbJ3G_hYsSIgYSEiAQtEt7rZmB3Js7MsgkhIFipUJHKAfGCR1FKvYAeUWuxSqWV46WKFSxCFKri9RCs0oKC0vTMJrtwiuckqP1gT-fL7Lzv8_7ned7_85ud3Uum1I5nWIaJ7Gjl5xLPt12Ht2Qpxnvk2hTxgwYb85YY45GbTAIH81YrP8cOz7xPgIca-RiPQQDC8YA0B7zF1xM73hgQzMf4hJ20A96SY3zadrCbDqNyNxFjvO37KYIzAZgk7LnEa-EtuS3GQ-DbPm_x2EQqVYmg6YJMAZFkSpBuyBSbBEtI0BSqiJIuYAKhpAmmZGgygIBKSDQpBJTyMR6lPN_1wjt7BNlNhLd4TVV0FQAEEQAKopggiiCFsiIADSrURCJQBFk1VVHGmECZSiIACFEKDdGQNJ2PnayCV0xT10wJacBAOqSyaBBJp5gQREVD0LBITBVIFAGiUgJFkyqmoIUjqqjICpH5GA894KDGUEtTBaBiCcsGUgUdaZIIoQ4wQaYmAwqQDrGuCBAiQxUEHYoIa4IJNJ1CSTGksNyEG-ctXpSAIkARmNiAMqCCKRFoqrqi6qqp6Ug0gYqhiYBiEExURZI0IhlUMmVNJLKuCXyM91EjSYKMN57rhsaaqqjJhggAlk1dUUQFyUjTkAx1ostUMQ2CIdFkaBoGUUyZAqgLpkaIICKREJ2EomFTOYjwlhTjr00Rr6XBpdQnXU3SNXBGrdIWNirADUng2JT4AW85qUSira2NZRimX-EDy4YvHVh16P62ZZ3iarqn36s3l_1m_vFnnYUja4ePeWL7tp7mi8Z8qudV9Hnkp8-Z4zuubB83cvfS2DuL4wvKjm-xTzz4-dAXJo7-7LkVO265Zkj5wAHxj64f9s66i-qWLNp39ZdnNcx97_g5DMO-WD-tVqyvvkyKMAzDMjV3jnu5_c6LH3r54uie_ve9vuCN7YfXLt_VsnvFvo-fvTFvyKL58nPb88pml0VmvnBgvbzznpmTX5rZvun3v3tk8JyySY8ey5_eXPbYo1uK9n9139Ha229ZsfgczxySeHrl_L9uLtxSnZ5wl72hcOw9q7am3HeKJ8qHR_2k3L3ii632_HV7Vs-7YcTGNa-xgImyPSXBMExkDRNhZ33a8uSUc__20fz3rxt9ZXrmHzf7pTutpFo1Yd9ua1PHvLvXMNHozNfee3jTh7uCeC3--dS1C_q8_MD2ylUGP6d8bXXxXz46NJ1hGKZ-fLUU6Wmv3l4Id6of1oxtfr1jx_H9F37esDXy9sCb3so_am5TmAsnfM6cPFL1tXVSpDeVLGFYdvayNmPr2rOi0tRhww--saK_f865Z7-68coBGzfPqLu8fUlptygHH19046jbf9Zy_4sVJ9i79p21fuLfV_95ad89z5cNmr6nf15nv4F7tx95Ox49_u64juZxew_F-taUXzjg4OZZK5dYTx3edvdTnWy_y2p_vXPXTbXz4dAnN3Xcah1__pmg8OkbmNbzd-dvWLj58vBefZLAdtj-g9cXnnfXL61PVx5cHdRfFd92xzVbXrr80PuXDH93xUjtAn1W2L8JG3rAa4nkkQlXb3z6waoTHV_94bGLNzx-bNv66FVTxux_7PB5G1_9ctHiOMMwdncZeRmKui-GIRCAhBsvzgwWd6FVPFdkWCaafU5ny--puO44lsnrW7nGjs2-qfUfP3x34f6Oz65LXrD63q8ebjh47j9_Re498gPlAMOwS6dVVtRPq6i7orJmctY2rhdlnEkqXE_4ZuN64UomrkdPov89xV7WHMnGry4yzttkBuVVo-mfnvxwXOXNb35QdtvNleMearr1E3bbJwtydvUd2HNo4QfTpMk1l1YwbIRlufB9oOso3JGT6T5roa_VFVPLc6b-36wezcrt50Vs9iM3YNDR947trTq26plLJx5deH3zm1vMPjOSbT8aGm_YdZt-f3tXWHRsuN91NfXMGS78HvjCNJcGyaZSJ4Xd5mI_5VGASGncLfZbHFTa5LmzCQosyydJ4AQ2sixJgwIBOgYYIllWqUR1SQIUIShQA8qKgWWZYMGUdYUibCCJClSVdY3ooiRrpmZZ2Uce29nZ2Znb0HV31sw48FSf6csr2p9YfuS3kwdNr583aXDdW0I7s-GVGcs2ZtPN5V2e1eGaPHeujYnPAS4NWrjA5aCbcjCHXAelPI84AQcQIr4fTgHOI76b8hApyUnJUxsJh0AiQTyfQ8Dhul-7s8vSdtDIAS5uzyUOl87ctiSb-KBcGn7gpVDADsjOFIWb1tToeqQ096kk7jIMc342ZPp_LOZaC_J9ex7hOI6znUBTCvJRyuNOuUymMldcaE9JdSogzQX5aWAHYeYJ2w9Kqmw_KMi8eIXHYiCaUKEqIjIEgqIaBlZUDKBqYKpCTSECVQ1V14ECRUmVMJIFDAQBaAiryADgOzA8kqPtFO6k2aPueMUxPx77IOhXVDRlRv-7f1EdHf3FCyOlS9rOjy56s9vr0adx17uF3wfuWs-MOwESRTMQoViAuqgKpiFjQZREKGJFMQEyDcHUFANQA4sImIJoqAoGuqIDpAJdECxrMkmfit6Jb45e2SlSHPIICDLwOSTdTUfY0NmW76InaCRd_ORESpKg2U6mkhxyk9B2CO5ey1HXOx3dHG_DaMpB3CkJjHC62BjJXZQrL9ozg0OyIRN7IRhymeasMdzw7EhriKnFOW0F-R4JUp7Dpb9T6r6t3V9L3ZE9Q49dMWrlvEns0cPXVV26t-iZoPWGFzeQyyYeeFivnbW82-aG06jr3cL_wW87waSqoCmCZhoa0oEuqhCFP-chkSElpixQVdNEDSBBEzA0DA1JEMuaBk0kQ83QLSt9CnL_-ubIjc-BZfscyHQoyWTPJUGAGm0nzgHOT0GfBJxLT3ZuCcdVBhxIJNy0nxPTQSIgngMCwtnJpgRJEicAge06fga-gPhBRtDBHCQOakwCb47txHMMDj6ZTDYNNi87-eOvQa4hI9MQCpdk6Ds7G01OlwphK0fXpmyPjECuE_6hVTK-6xzLkkk8z_UK8qd6LdnI7gnouomC_DqSIMDPDn63YH7Ljoiw7L8BEnrlKA-197767ecf256d742eb3cba091a52434c",
+                  "limit": 3,
+                  "query": "Weighted"
+                },
+                "name": "backend.search"
               },
               "coverage": [
                 {
@@ -2926,13 +2613,11 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
               "more": true,
-              "nextCursor": "mcp2-<live-validated>",
               "query": "Weighted",
               "readiness": "ready",
               "records": [
@@ -3040,7 +2725,7 @@
                     "shape": "semantic",
                     "trail": "project \u203a semaphore/semaphore_bench_test.go:17 \u203a weighted"
                   },
-                  "kind": "trait",
+                  "kind": "interface",
                   "language": "go",
                   "score": 4294967294,
                   "state": "ready",
@@ -3048,56 +2733,58 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dcb5a77cf3b2f046483e9b392079fbbb0f56616ac060db886c2bd366b9c3b687::weighted",
-                    "name": "weighted",
+                    "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::0be468cefd0b7150983d0121b1d449ac9809648af8d1ca901854da747ac5a700::NewWeighted",
+                    "line": 21,
+                    "name": "NewWeighted",
+                    "path": "semaphore/semaphore.go",
                     "segments": [
-                      "weighted"
+                      "NewWeighted"
                     ],
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        61,
-                        196,
-                        153,
-                        224,
-                        63,
-                        227,
-                        164,
-                        66,
-                        205,
-                        228,
-                        120,
-                        230,
-                        131,
-                        232,
-                        116,
-                        34,
-                        104,
-                        4,
-                        221,
+                        50,
                         106,
-                        147,
-                        21,
-                        185,
-                        232,
-                        139,
-                        149,
-                        196,
-                        72,
-                        183,
-                        56,
-                        250,
-                        11
+                        43,
+                        154,
+                        205,
+                        110,
+                        57,
+                        233,
+                        62,
+                        170,
+                        97,
+                        7,
+                        22,
+                        22,
+                        81,
+                        92,
+                        8,
+                        159,
+                        135,
+                        77,
+                        3,
+                        60,
+                        248,
+                        200,
+                        41,
+                        50,
+                        66,
+                        125,
+                        28,
+                        3,
+                        129,
+                        219
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a weighted"
+                    "trail": "project \u203a semaphore/semaphore.go:21 \u203a NewWeighted"
                   },
-                  "kind": "trait",
-                  "language": "unknown",
+                  "kind": "function",
+                  "language": "go",
                   "score": 4294967293,
                   "state": "ready",
-                  "summary": "weighted is an interface matching a subset of *Weighted.  It allows"
+                  "summary": "NewWeighted creates a new weighted semaphore with the given"
                 }
               ],
               "semantic_search": {
@@ -3118,9 +2805,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3344,
+                "bytes": 2436,
                 "bytesPerToken": 4,
-                "estimatedTokens": 836,
+                "estimatedTokens": 609,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -3131,7 +2818,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `DoChan` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::fa3c1220808522ffd9b91124d322af8dd7ca14e172b9653fda04c33c17911d28::DoChan`\n\u2022 `DoChan` \u00b7 function \u00b7 unknown\n  `/tmp/nudox-surface/go-sync/project::semantic::cad83b7d310767729c2857a0ed729a24d7ca14e172b9653fda04c33c17911d28::DoChan`\n\u2022 `DoChan` \u00b7 unknown\n  `/tmp/nudox-surface/go-sync/project::external::symbol:04522ff40dfb129ff755e1319c29df30fafdb260940e9cbe8b2690d57cd942d9::DoChan`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27132 names\u27132 graph\u27132 semantic\u27132\n\u2022 `DoChan` \u00b7 method \u00b7 go\n  `/tmp/nudox-surface/go-sync/project::semantic::fa3c1220808522ffd9b91124d322af8dd7ca14e172b9653fda04c33c17911d28::DoChan`\n\u2022 `DoChan` \u00b7 unknown\n  `/tmp/nudox-surface/go-sync/project::external::symbol:a6cab3fcd417981b784a2b61c176dbea7501f4d0710445d9adac22c5860020c3::DoChan`\n2 row(s) on this page; showing 2 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -3139,9 +2826,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2070,
+                "bytes": 1492,
                 "bytesPerToken": 4,
-                "estimatedTokens": 518
+                "estimatedTokens": 373
               },
               "coverage": [
                 {
@@ -3158,8 +2845,7 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
@@ -3216,7 +2902,7 @@
                     "shape": "semantic",
                     "trail": "project \u203a singleflight/singleflight.go:121 \u203a DoChan"
                   },
-                  "kind": "function",
+                  "kind": "method",
                   "language": "go",
                   "score": 4294967295,
                   "state": "ready",
@@ -3224,7 +2910,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cad83b7d310767729c2857a0ed729a24d7ca14e172b9653fda04c33c17911d28::DoChan",
+                    "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:a6cab3fcd417981b784a2b61c176dbea7501f4d0710445d9adac22c5860020c3::DoChan",
                     "name": "DoChan",
                     "segments": [
                       "DoChan"
@@ -3232,98 +2918,45 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        168,
-                        125,
-                        14,
-                        28,
-                        46,
-                        247,
-                        78,
-                        26,
-                        56,
-                        222,
-                        76,
-                        157,
-                        90,
-                        169,
-                        56,
-                        81,
-                        59,
-                        116,
-                        14,
-                        153,
-                        63,
+                        166,
+                        202,
+                        179,
                         252,
-                        111,
-                        51,
-                        14,
-                        114,
-                        251,
-                        183,
-                        89,
+                        212,
+                        23,
+                        152,
+                        27,
                         120,
-                        8,
-                        199
-                      ]
-                    },
-                    "shape": "semantic",
-                    "trail": "project \u203a DoChan"
-                  },
-                  "kind": "function",
-                  "language": "unknown",
-                  "score": 4294967294,
-                  "state": "ready",
-                  "summary": "DoChan is like Do but returns a channel that will receive the"
-                },
-                {
-                  "identity": {
-                    "coordinate": "/tmp/nudox-surface/go-sync/project::external::symbol:04522ff40dfb129ff755e1319c29df30fafdb260940e9cbe8b2690d57cd942d9::DoChan",
-                    "name": "DoChan",
-                    "segments": [
-                      "DoChan"
-                    ],
-                    "semantic_data": {
-                      "kind": "selected-symbol-id",
-                      "value": [
-                        4,
-                        82,
-                        47,
+                        74,
+                        43,
+                        97,
+                        193,
+                        118,
+                        219,
+                        234,
+                        117,
+                        1,
                         244,
-                        13,
-                        251,
-                        18,
-                        159,
-                        247,
-                        85,
-                        225,
-                        49,
-                        156,
-                        41,
-                        223,
-                        48,
-                        250,
-                        253,
-                        178,
-                        96,
-                        148,
-                        14,
-                        156,
-                        190,
-                        139,
-                        38,
-                        144,
-                        213,
-                        124,
+                        208,
+                        113,
+                        4,
+                        69,
                         217,
-                        66,
-                        217
+                        173,
+                        172,
+                        34,
+                        197,
+                        134,
+                        0,
+                        32,
+                        195
                       ]
                     },
                     "shape": "external",
                     "trail": "project \u203a DoChan"
                   },
                   "language": "unknown",
-                  "score": 4294967293,
+                  "score": 4294967294,
                   "state": "ready"
                 }
               ],
@@ -3345,8 +2978,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 7162,
-                "normalizedFrameBytesExcludingCounters": 28645,
+                "normalizedEstimatedTokensExcludingCounters": 7123,
+                "normalizedFrameBytesExcludingCounters": 28489,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3355,7 +2988,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/go-sync/project`\n\n\u0192 BenchmarkAdversarialDelete  `syncmap/map_bench_test.go:192 \u203a BenchmarkAdversarialDelete`\n\u0192 TestGoLimit  `errgroup/errgroup_test.go:231 \u203a TestGoLimit`\n\u25a3 Result  `errgroup/errgroup_test.go:26 \u203a Result`\n\u0192 BenchmarkLoadOrStoreBalanced  `syncmap/map_bench_test.go:84 \u203a BenchmarkLoadOrStoreBalanced`\n\u25a3 token  `errgroup/errgroup.go:18 \u203a token`\n\u0192 BenchmarkLoadMostlyMisses  `syncmap/map_bench_test.go:62 \u203a BenchmarkLoadMostlyMisses`\n\u0192 TestPanicDoSharedByDoChan  `singleflight/singleflight_test.go:344 \u203a TestPanicDoSharedByDoChan`\n\u25a3 Weighted  `semaphore/semaphore.go:28 \u203a Weighted`\n  \u0192 TryAcquire  `semaphore/semaphore.go:111 \u203a TryAcquire`\n  \u0192 Release  `semaphore/semaphore.go:122 \u203a Release`\n  \u0192 Acquire  `semaphore/semaphore.go:38 \u203a Acquire`\n  \u0192 notifyWaiters  `semaphore/semaphore.go:133 \u203a notifyWaiters`\n\u25a3 waiter  `semaphore/semaphore.go:14 \u203a waiter`\n\u0192 ExampleGroup_justErrors  `errgroup/errgroup_test.go:38 \u203a ExampleGroup_justErrors`\n\u0192 MD5All  `errgroup/errgroup_example_md5all_test.go:41 \u203a MD5All`\n\u25a3 RWMutexMap  `syncmap/map_reference_test.go:24 \u203a RWMutexMap`\n\u0192 WithContext  `errgroup/errgroup.go:48 \u203a WithContext`\n\u0192 benchMap  `syncmap/map_bench_test.go:21 \u203a benchMap`\n\u0192 executable  `singleflight/singleflight_test.go:289 \u203a executable`\n\u25aa maxSleep  `semaphore/semaphore_test.go:19 \u203a maxSleep`\n\u0192 TestWeightedPanic  `semaphore/semaphore_test.go:47 \u203a TestWeightedPanic`\n\u0192 NewWeighted  `semaphore/semaphore.go:21 \u203a NewWeighted`\n\u0192 TestPanicDo  `singleflight/singleflight_test.go:220 \u203a TestPanicDo`\n\u0192 withCancelCause  `errgroup/go120.go:11 \u203a withCancelCause`\n\u0192 BenchmarkLoadOrStoreCollision  `syncmap/map_bench_test.go:134 \u203a BenchmarkLoadOrStoreCollision`\n\u25a3 panicError  `singleflight/singleflight.go:24 \u203a panicError`\n  \u0192 Error  `singleflight/singleflight.go:30 \u203a Error`\n  \u0192 Unwrap  `singleflight/singleflight.go:34 \u203a Unwrap`\n\u0192 TestDoChan  `singleflight/singleflight_test.go:201 \u203a TestDoChan`\n\u25a3 mapOp  `syncmap/map_test.go:18 \u203a mapOp`\n\u0192 TestWeightedAcquire  `semaphore/semaphore_test.go:83 \u203a TestWeightedAcquire`\n\u0192 TestWeightedTryAcquire  `semaphore/semaphore_test.go:59 \u203a TestWeightedTryAcquire`\n\u0192 TestDoErr  `singleflight/singleflight_test.go:98 \u203a TestDoErr`\n\u0192 TestDo  `singleflight/singleflight_test.go:85 \u203a TestDo`\n\u0192 ExampleGroup_parallel  `errgroup/errgroup_test.go:67 \u203a ExampleGroup_parallel`\n\u0192 acquireN  `semaphore/semaphore_bench_test.go:56 \u203a acquireN`\n\u25a3 bench  `syncmap/map_bench_test.go:16 \u203a bench`\n\u0192 TestGoexitDo  `singleflight/singleflight_test.go:257 \u203a TestGoexitDo`\n\u0192 fakeSearch  `errgroup/errgroup_test.go:29 \u203a fakeSearch`\n\u0192 randValue  `syncmap/map_test.go:57 \u203a randValue`\n\u0192 BenchmarkAcquireSeq  `semaphore/semaphore_bench_test.go:98 \u203a BenchmarkAcquireSeq`\n\u25a3 Search  `errgroup/errgroup_test.go:27 \u203a Search`\n\u0192 newPanicError  `singleflight/singleflight.go:43 \u203a newPanicError`\n\u25a3 Group  `errgroup/errgroup.go:25 \u203a Group`\n  \u0192 Wait  `errgroup/errgroup.go:55 \u203a Wait`\n  \u0192 TryGo  `errgroup/errgroup.go:93 \u203a TryGo`\n  \u0192 Go  `errgroup/errgroup.go:69 \u203a Go`\n  \u0192 done  `errgroup/errgroup.go:36 \u203a done`\n  \u0192 SetLimit  `errgroup/errgroup.go:127 \u203a SetLimit`\n\u0192 applyCalls  `syncmap/map_test.go:74 \u203a applyCalls`\n\u0192 applyDeepCopyMap  `syncmap/map_test.go:97 \u203a applyDeepCopyMap`\n\u0192 TestTryGo  `errgroup/errgroup_test.go:180 \u203a TestTryGo`\n\u0192 TestConcurrentRange  `syncmap/map_test.go:113 \u203a TestConcurrentRange`\n\u25a3 Result  `singleflight/singleflight.go:80 \u203a Result`\n\u0192 TestWeightedAcquireCanceled  `semaphore/semaphore_test.go:204 \u203a TestWeightedAcquireCanceled`\n\u25a3 result  `errgroup/errgroup_example_md5all_test.go:33 \u203a result`\n\u0192 tryAcquireN  `semaphore/semaphore_bench_test.go:69 \u203a tryAcquireN`\n\u0192 Example_workerPool  `semaphore/semaphore_example_test.go:21 \u203a Example_workerPool`\n\u0192 TestPanicErrorUnwrap  `singleflight/singleflight_test.go:28 \u203a TestPanicErrorUnwrap`\n\u25a3 Group  `singleflight/singleflight.go:73 \u203a Group`\n  \u0192 Do  `singleflight/singleflight.go:91 \u203a Do`\n  \u0192 doCall  `singleflight/singleflight.go:144 \u203a doCall`\n  \u0192 Forget  `singleflight/singleflight.go:210 \u203a Forget`\n  \u0192 DoChan  `singleflight/singleflight.go:121 \u203a DoChan`\n\u0192 applyRWMutexMap  `syncmap/map_test.go:93 \u203a applyRWMutexMap`\n\u0192 TestPanicDoChan  `singleflight/singleflight_test.go:306 \u203a TestPanicDoChan`\n\u0192 newSemChan  `semaphore/semaphore_bench_test.go:27 \u203a newSemChan`\n\u0192 TestWeighted  `semaphore/semaphore_test.go:29 \u203a TestWeighted`\n\u0192 collatzSteps  `semaphore/semaphore_example_test.go:61 \u203a collatzSteps`\n\u25a3 semChan  `semaphore/semaphore_bench_test.go:25 \u203a semChan`\n\u0192 TestCancelCause  `errgroup/go120_test.go:17 \u203a TestCancelCause`\n\u0192 TestMapMatchesDeepCopy  `syncmap/map_test.go:107 \u203a TestMapMatchesDeepCopy`\n\u0192 TestWeightedDoesntBlockIfTooBig  `semaphore/semaphore_test.go:113 \u203a TestWeightedDoesntBlockIfTooBig`\n\u0192 TestLargeAcquireDoesntStarve  `semaphore/semaphore_test.go:142 \u203a TestLargeAcquireDoesntStarve`\n\u0192 TestAllocCancelDoesntStarve  `semaphore/semaphore_test.go:174 \u203a TestAllocCancelDoesntStarve`\n\u25aa opStore  `syncmap/map_test.go:22 \u203a opStore`\n\u25a3 DeepCopyMap  `syncmap/map_reference_test.go:87 \u203a DeepCopyMap`\n  \u0192 dirty  `syncmap/map_reference_test.go:144 \u203a dirty`\n\u0192 TestMapMatchesRWMutex  `syncmap/map_test.go:101 \u203a TestMapMatchesRWMutex`\n\u0192 BenchmarkRange  `syncmap/map_bench_test.go:148 \u203a BenchmarkRange`\n\u0192 TestForget  `singleflight/singleflight_test.go:160 \u203a TestForget`\n\u25a3 errValue  `singleflight/singleflight_test.go:22 \u203a errValue`\n  \u0192 Error  `singleflight/singleflight_test.go:24 \u203a Error`\n\u0192 TestZeroGroup  `errgroup/errgroup_test.go:104 \u203a TestZeroGroup`\n\u0192 HammerWeighted  `semaphore/semaphore_test.go:21 \u203a HammerWeighted`\n\u0192 BenchmarkGo  `errgroup/errgroup_test.go:253 \u203a BenchmarkGo`\n\u0192 BenchmarkNewSeq  `semaphore/semaphore_bench_test.go:83 \u203a BenchmarkNewSeq`\n\u0192 TestWithContext  `errgroup/errgroup_test.go:139 \u203a TestWithContext`\n\u25a3 mapResult  `syncmap/map_test.go:52 \u203a mapResult`\n\u0192 BenchmarkLoadMostlyHits  `syncmap/map_bench_test.go:40 \u203a BenchmarkLoadMostlyHits`\n\u0192 TestDoDupSuppress  `singleflight/singleflight_test.go:112 \u203a TestDoDupSuppress`\n\u25a3 call  `singleflight/singleflight.go:56 \u203a call`\n\u25c7 mapInterface  `syncmap/map_reference_test.go:15 \u203a mapInterface`\n\u0192 ExampleGroup  `singleflight/singleflight_test.go:394 \u203a ExampleGroup`\n\u25a3 mapCall  `syncmap/map_test.go:30 \u203a mapCall`\n  \u0192 Generate  `syncmap/map_test.go:65 \u203a Generate`\n\u0192 ExampleGroup_pipeline  `errgroup/errgroup_example_md5all_test.go:22 \u203a ExampleGroup_pipeline`\n\u0192 BenchmarkAdversarialAlloc  `syncmap/map_bench_test.go:171 \u203a BenchmarkAdversarialAlloc`\n\u25c7 weighted  `semaphore/semaphore_bench_test.go:17 \u203a weighted`\n\u0192 BenchmarkLoadOrStoreUnique  `syncmap/map_bench_test.go:118 \u203a BenchmarkLoadOrStoreUnique`\n100 declaration(s) \u00b7 truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/go-sync/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/go-sync/project`\n\n\u0192 BenchmarkAdversarialDelete  `syncmap/map_bench_test.go:192 \u203a BenchmarkAdversarialDelete`\n\u0192 TestGoLimit  `errgroup/errgroup_test.go:231 \u203a TestGoLimit`\n\u03c4 Result  `errgroup/errgroup_test.go:26 \u203a Result`\n\u0192 BenchmarkLoadOrStoreBalanced  `syncmap/map_bench_test.go:84 \u203a BenchmarkLoadOrStoreBalanced`\n\u25a3 token  `errgroup/errgroup.go:18 \u203a token`\n\u0192 BenchmarkLoadMostlyMisses  `syncmap/map_bench_test.go:62 \u203a BenchmarkLoadMostlyMisses`\n\u0192 TestPanicDoSharedByDoChan  `singleflight/singleflight_test.go:344 \u203a TestPanicDoSharedByDoChan`\n\u0192 withCancelCause  `errgroup/pre_go120.go:11 \u203a withCancelCause`\n\u25a3 Weighted  `semaphore/semaphore.go:28 \u203a Weighted`\n  \u0192 TryAcquire  `semaphore/semaphore.go:111 \u203a TryAcquire`\n  \u0192 Release  `semaphore/semaphore.go:122 \u203a Release`\n  \u0192 Acquire  `semaphore/semaphore.go:38 \u203a Acquire`\n  \u0192 notifyWaiters  `semaphore/semaphore.go:133 \u203a notifyWaiters`\n\u25a3 waiter  `semaphore/semaphore.go:14 \u203a waiter`\n\u0192 ExampleGroup_justErrors  `errgroup/errgroup_test.go:38 \u203a ExampleGroup_justErrors`\n\u0192 MD5All  `errgroup/errgroup_example_md5all_test.go:41 \u203a MD5All`\n\u25a3 RWMutexMap  `syncmap/map_reference_test.go:24 \u203a RWMutexMap`\n  \u0192 LoadOrStore  `syncmap/map_reference_test.go:45 \u203a LoadOrStore`\n\u0192 WithContext  `errgroup/errgroup.go:48 \u203a WithContext`\n\u0192 benchMap  `syncmap/map_bench_test.go:21 \u203a benchMap`\n\u0192 executable  `singleflight/singleflight_test.go:289 \u203a executable`\n\u25aa maxSleep  `semaphore/semaphore_test.go:19 \u203a maxSleep`\n\u0192 TestWeightedPanic  `semaphore/semaphore_test.go:47 \u203a TestWeightedPanic`\n\u0192 NewWeighted  `semaphore/semaphore.go:21 \u203a NewWeighted`\n\u0192 TestPanicDo  `singleflight/singleflight_test.go:220 \u203a TestPanicDo`\n\u0192 withCancelCause  `errgroup/go120.go:11 \u203a withCancelCause`\n\u0192 BenchmarkLoadOrStoreCollision  `syncmap/map_bench_test.go:134 \u203a BenchmarkLoadOrStoreCollision`\n\u25a3 panicError  `singleflight/singleflight.go:24 \u203a panicError`\n  \u0192 Error  `singleflight/singleflight.go:30 \u203a Error`\n  \u0192 Unwrap  `singleflight/singleflight.go:34 \u203a Unwrap`\n\u0192 TestDoChan  `singleflight/singleflight_test.go:201 \u203a TestDoChan`\n\u0192 TestWeightedAcquire  `semaphore/semaphore_test.go:83 \u203a TestWeightedAcquire`\n\u0192 TestWeightedTryAcquire  `semaphore/semaphore_test.go:59 \u203a TestWeightedTryAcquire`\n\u0192 TestDoErr  `singleflight/singleflight_test.go:98 \u203a TestDoErr`\n\u0192 TestDo  `singleflight/singleflight_test.go:85 \u203a TestDo`\n\u0192 ExampleGroup_parallel  `errgroup/errgroup_test.go:67 \u203a ExampleGroup_parallel`\n\u0192 acquireN  `semaphore/semaphore_bench_test.go:56 \u203a acquireN`\n\u25a3 bench  `syncmap/map_bench_test.go:16 \u203a bench`\n\u0192 TestGoexitDo  `singleflight/singleflight_test.go:257 \u203a TestGoexitDo`\n\u0192 fakeSearch  `errgroup/errgroup_test.go:29 \u203a fakeSearch`\n\u0192 BenchmarkAcquireSeq  `semaphore/semaphore_bench_test.go:98 \u203a BenchmarkAcquireSeq`\n\u03c4 Search  `errgroup/errgroup_test.go:27 \u203a Search`\n\u0192 newPanicError  `singleflight/singleflight.go:43 \u203a newPanicError`\n\u25a3 Group  `errgroup/errgroup.go:25 \u203a Group`\n  \u0192 Wait  `errgroup/errgroup.go:55 \u203a Wait`\n  \u0192 TryGo  `errgroup/errgroup.go:93 \u203a TryGo`\n  \u0192 Go  `errgroup/errgroup.go:69 \u203a Go`\n  \u0192 done  `errgroup/errgroup.go:36 \u203a done`\n  \u0192 SetLimit  `errgroup/errgroup.go:127 \u203a SetLimit`\n\u0192 TestTryGo  `errgroup/errgroup_test.go:180 \u203a TestTryGo`\n\u25a3 Result  `singleflight/singleflight.go:80 \u203a Result`\n\u0192 TestWeightedAcquireCanceled  `semaphore/semaphore_test.go:204 \u203a TestWeightedAcquireCanceled`\n\u25a3 result  `errgroup/errgroup_example_md5all_test.go:33 \u203a result`\n\u0192 tryAcquireN  `semaphore/semaphore_bench_test.go:69 \u203a tryAcquireN`\n\u0192 Example_workerPool  `semaphore/semaphore_example_test.go:21 \u203a Example_workerPool`\n\u0192 TestPanicErrorUnwrap  `singleflight/singleflight_test.go:28 \u203a TestPanicErrorUnwrap`\n\u25a3 Group  `singleflight/singleflight.go:73 \u203a Group`\n  \u0192 Do  `singleflight/singleflight.go:91 \u203a Do`\n  \u0192 doCall  `singleflight/singleflight.go:144 \u203a doCall`\n  \u0192 Forget  `singleflight/singleflight.go:210 \u203a Forget`\n  \u0192 DoChan  `singleflight/singleflight.go:121 \u203a DoChan`\n\u0192 TestPanicDoChan  `singleflight/singleflight_test.go:306 \u203a TestPanicDoChan`\n\u0192 newSemChan  `semaphore/semaphore_bench_test.go:27 \u203a newSemChan`\n\u0192 TestWeighted  `semaphore/semaphore_test.go:29 \u203a TestWeighted`\n\u0192 collatzSteps  `semaphore/semaphore_example_test.go:61 \u203a collatzSteps`\n\u03c4 semChan  `semaphore/semaphore_bench_test.go:25 \u203a semChan`\n  \u0192 Release  `semaphore/semaphore_bench_test.go:49 \u203a Release`\n  \u0192 TryAcquire  `semaphore/semaphore_bench_test.go:38 \u203a TryAcquire`\n  \u0192 Acquire  `semaphore/semaphore_bench_test.go:31 \u203a Acquire`\n\u0192 TestCancelCause  `errgroup/go120_test.go:17 \u203a TestCancelCause`\n\u0192 TestWeightedDoesntBlockIfTooBig  `semaphore/semaphore_test.go:113 \u203a TestWeightedDoesntBlockIfTooBig`\n\u03c4 Map  `syncmap/map.go:18 \u203a Map`\n\u0192 TestLargeAcquireDoesntStarve  `semaphore/semaphore_test.go:142 \u203a TestLargeAcquireDoesntStarve`\n\u0192 TestAllocCancelDoesntStarve  `semaphore/semaphore_test.go:174 \u203a TestAllocCancelDoesntStarve`\n\u25a3 DeepCopyMap  `syncmap/map_reference_test.go:87 \u203a DeepCopyMap`\n  \u0192 Load  `syncmap/map_reference_test.go:92 \u203a Load`\n\u0192 BenchmarkRange  `syncmap/map_bench_test.go:148 \u203a BenchmarkRange`\n\u0192 TestForget  `singleflight/singleflight_test.go:160 \u203a TestForget`\n\u25a3 errValue  `singleflight/singleflight_test.go:22 \u203a errValue`\n  \u0192 Error  `singleflight/singleflight_test.go:24 \u203a Error`\n\u0192 TestZeroGroup  `errgroup/errgroup_test.go:104 \u203a TestZeroGroup`\n\u0192 HammerWeighted  `semaphore/semaphore_test.go:21 \u203a HammerWeighted`\n\u0192 BenchmarkGo  `errgroup/errgroup_test.go:253 \u203a BenchmarkGo`\n\u0192 BenchmarkNewSeq  `semaphore/semaphore_bench_test.go:83 \u203a BenchmarkNewSeq`\n\u0192 TestWithContext  `errgroup/errgroup_test.go:139 \u203a TestWithContext`\n\u25a3 mapResult  `syncmap/map_test.go:52 \u203a mapResult`\n\u0192 BenchmarkLoadMostlyHits  `syncmap/map_bench_test.go:40 \u203a BenchmarkLoadMostlyHits`\n\u0192 TestDoDupSuppress  `singleflight/singleflight_test.go:112 \u203a TestDoDupSuppress`\n\u25a3 call  `singleflight/singleflight.go:56 \u203a call`\n\u25c7 mapInterface  `syncmap/map_reference_test.go:15 \u203a mapInterface`\n  \u0192 Delete  `syncmap/map_reference_test.go:19 \u203a Delete`\n\u0192 ExampleGroup  `singleflight/singleflight_test.go:394 \u203a ExampleGroup`\n\u25a3 mapCall  `syncmap/map_test.go:30 \u203a mapCall`\n\u0192 ExampleGroup_pipeline  `errgroup/errgroup_example_md5all_test.go:22 \u203a ExampleGroup_pipeline`\n\u0192 BenchmarkAdversarialAlloc  `syncmap/map_bench_test.go:171 \u203a BenchmarkAdversarialAlloc`\n\u25c7 weighted  `semaphore/semaphore_bench_test.go:17 \u203a weighted`\n  \u0192 Release  `semaphore/semaphore_bench_test.go:20 \u203a Release`\n  \u0192 TryAcquire  `semaphore/semaphore_bench_test.go:19 \u203a TryAcquire`\n  \u0192 Acquire  `semaphore/semaphore_bench_test.go:18 \u203a Acquire`\n\u0192 BenchmarkLoadOrStoreUnique  `syncmap/map_bench_test.go:118 \u203a BenchmarkLoadOrStoreUnique`\n100 declaration(s) \u00b7 truncated\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/go-sync/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3363,9 +2996,9 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 20962,
+                "bytesExcludingCursor": 20618,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5241
+                "estimatedTokensExcludingCursor": 5155
               },
               "declarations": 100,
               "detail": "summary",
@@ -3397,8 +3030,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "reason": "unconfigured",
-                    "state": "unavailable"
+                    "state": "complete"
                   }
                 ],
                 "limit": 100,
@@ -3407,7 +3039,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "cb5ab50bf487b13148c7e1d11f4c14a895b2054604778cf43021b182c561882b"
+                "source_root": "d9c5f5e06703fae23fec783fd9ed2c064f41270debb26092863abaf2c19fbaff"
               },
               "roots": [
                 {
@@ -3425,7 +3057,7 @@
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1b1cc05b907e38f029ce676bf4f36f360b5780065474500e95aae661f71ac330::Result",
                   "key": "049c2baa",
-                  "kind": "struct",
+                  "kind": "type",
                   "name": "Result"
                 },
                 {
@@ -3453,29 +3085,35 @@
                   "name": "TestPanicDoSharedByDoChan"
                 },
                 {
+                  "coordinate": "/tmp/nudox-surface/go-sync/project::errgroup/pre_go120.go:11::withCancelCause",
+                  "key": "0cf486e7",
+                  "kind": "function",
+                  "name": "withCancelCause"
+                },
+                {
                   "children": [
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f8f52a9a42a2eb17b470128d923e7be633c72a63e1ea9171d1b446207fe3f61d::TryAcquire",
                       "key": "026bc76a",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "TryAcquire"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cc88359994c0ecfb1710add6ae773afd42bb7636191897d720d30452f8bb5df3::Release",
                       "key": "757c6e4b",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Release"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::cbe564e8e85d010ad20475eb54c40fbf85d88e9e01d4d1104bfc0ed4184357f9::Acquire",
                       "key": "a2768865",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Acquire"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::7e8b3d392c8d62729551ce186c55ecf962a59a93440b19768d3123a3a2f11112::notifyWaiters",
                       "key": "f53f2ea8",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "notifyWaiters"
                     }
                   ],
@@ -3503,6 +3141,14 @@
                   "name": "MD5All"
                 },
                 {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6233fd36408bf5ff29141ea11ca187d4e6aa4f20ad180c5f0eb54b214acce361::LoadOrStore",
+                      "key": "292459ac",
+                      "kind": "method",
+                      "name": "LoadOrStore"
+                    }
+                  ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9708d35d2d408f5483e735c2b01bcbd1d27c92bb65ab7aa4f5b5fb0474310aea::RWMutexMap",
                   "key": "25c85aa8",
                   "kind": "struct",
@@ -3567,13 +3213,13 @@
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::92893884181a52682f7509c8e0ba7f4fedbe7a121fdc86573a7daf78710bd9b2::Error",
                       "key": "546a9027",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Error"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::082b0eae3c65a90f9286b0713bab412a4fb6190c149e569502471201ac2c069e::Unwrap",
                       "key": "b872e640",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Unwrap"
                     }
                   ],
@@ -3587,12 +3233,6 @@
                   "key": "3ee508d3",
                   "kind": "function",
                   "name": "TestDoChan"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b9559fb0cf8f1e23c64d940c0ce7b0e06a521b2c8901c4622519ff30984bfbce::mapOp",
-                  "key": "3fe14b3e",
-                  "kind": "struct",
-                  "name": "mapOp"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ec77ba802be28c06d173781468651cdbac9fd898dcecbf38f3d7718fc54642a4::TestWeightedAcquire",
@@ -3649,12 +3289,6 @@
                   "name": "fakeSearch"
                 },
                 {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::5a4d760a12dbd7af100500a7fa658d33a1409f9339abe148c16e6b6a6ae65cbe::randValue",
-                  "key": "6b993507",
-                  "kind": "function",
-                  "name": "randValue"
-                },
-                {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::446b04ac731dced328479221305ced7f3f89d620653a26a8e710477f0c918b74::BenchmarkAcquireSeq",
                   "key": "6cc67b5c",
                   "kind": "function",
@@ -3663,7 +3297,7 @@
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d980b54736f98a73603399b8f39145fda83c08abb9782e862c2f181e600dedbf::Search",
                   "key": "70aa1c2e",
-                  "kind": "struct",
+                  "kind": "type",
                   "name": "Search"
                 },
                 {
@@ -3677,31 +3311,31 @@
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ee494e2a506a92f3810b988967e26f2a29d4665ece094f1acd474aaa05ecb3c7::Wait",
                       "key": "51f4d25a",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Wait"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::18e2c5642e11f985d42cdfe205188bd08dc9b00927800a4ed13fc732ac78ccdf::TryGo",
                       "key": "c19ace9c",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "TryGo"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::52e15ffebbb3e00d10b132725f272d222b49d5bf73fa6bedfe5db815b7e743f5::Go",
                       "key": "c8d06604",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Go"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f6ea7465bdee31b09a8a63ebe80309e897af3971c3e1ba08aefb54605dfdd99c::done",
                       "key": "cfdf6971",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "done"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::6a693c72abab438c67f8e40c5db78c439e8cc7aaaea8f181ddc9f299b364c4a8::SetLimit",
                       "key": "ff193453",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "SetLimit"
                     }
                   ],
@@ -3711,28 +3345,10 @@
                   "name": "Group"
                 },
                 {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f01edd82e49203bcd59f1a02b5458430ee989071f817c97600e7152ea5537124::applyCalls",
-                  "key": "7548a07c",
-                  "kind": "function",
-                  "name": "applyCalls"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::09c199b81e40c9d6d6d47452424c2f6597608fed48fb59fe61ed3b2b79fea4a3::applyDeepCopyMap",
-                  "key": "76e6d773",
-                  "kind": "function",
-                  "name": "applyDeepCopyMap"
-                },
-                {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::554c8ce01ec9d6e1354b7bad048343126f88e688108775e319b422bb1ad6a5a7::TestTryGo",
                   "key": "79d5bf2c",
                   "kind": "function",
                   "name": "TestTryGo"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::18e5f157a1f34a1538e953359b71b6d721638c102b5f211921a3c5f36008acf2::TestConcurrentRange",
-                  "key": "7a9e97ef",
-                  "kind": "function",
-                  "name": "TestConcurrentRange"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::02547cfd3fd4527adeb72c67233db1c50b5780065474500e95aae661f71ac330::Result",
@@ -3775,25 +3391,25 @@
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c43519ef4a9f1ce67d7c3bb9ed3e9f6716ae47c23734a897ffa610b7ac94b54b::Do",
                       "key": "2f0d7110",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Do"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06544fe4bcebc8f001b1dc194e0e037dc9e8f4827cec82c29e20a4e93acf32b8::doCall",
                       "key": "53010885",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "doCall"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b6b9fbbc335a95ba9b40adccc80aaa6e68cc8e94a6b6eccfd04d23e705227040::Forget",
                       "key": "8c3f04d2",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Forget"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::fa3c1220808522ffd9b91124d322af8dd7ca14e172b9653fda04c33c17911d28::DoChan",
                       "key": "99f0d7ab",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "DoChan"
                     }
                   ],
@@ -3801,12 +3417,6 @@
                   "key": "8f432395",
                   "kind": "struct",
                   "name": "Group"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c223cae006c398e178085326fee6abe9a211569fdacb5e7ec8b5b7c7d1fd188b::applyRWMutexMap",
-                  "key": "90744ca6",
-                  "kind": "function",
-                  "name": "applyRWMutexMap"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::9d17b369dc7cf1b9f9b411cd9b61385fdb718ebccbc5ee089da7a0a38ea3fd7d::TestPanicDoChan",
@@ -3833,9 +3443,29 @@
                   "name": "collatzSteps"
                 },
                 {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dae1b67a5bec2683a6bee98d56ba6fa0a4be991a56c356b2f267e12499d9f8aa::Release",
+                      "key": "0ec37bf1",
+                      "kind": "method",
+                      "name": "Release"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::dddcc0b81e3f2f2ac08ecab88152975d8e124696d3a8b3ede0e2adb84aea672d::TryAcquire",
+                      "key": "a1f5966b",
+                      "kind": "method",
+                      "name": "TryAcquire"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::faf26c3e94be2110c1cb3f682dc112fa74ec9bd1889980a202606baa79088638::Acquire",
+                      "key": "f24dae91",
+                      "kind": "method",
+                      "name": "Acquire"
+                    }
+                  ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::17110b74b4b6953bccc4011f339f5152f119e8e57616c1c1c3b02c96280ba3ba::semChan",
                   "key": "95f6293d",
-                  "kind": "struct",
+                  "kind": "type",
                   "name": "semChan"
                 },
                 {
@@ -3845,16 +3475,16 @@
                   "name": "TestCancelCause"
                 },
                 {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::8a0ec05281010a6dac386a8db7194a45392193eaeab146d9c1b8926b9ba19a6c::TestMapMatchesDeepCopy",
-                  "key": "9f18eccb",
-                  "kind": "function",
-                  "name": "TestMapMatchesDeepCopy"
-                },
-                {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::b9d897ce95c58daa1344052f20ce2b9affcd2b6618289294ea14ab986e364a44::TestWeightedDoesntBlockIfTooBig",
                   "key": "a4e4e2b7",
                   "kind": "function",
                   "name": "TestWeightedDoesntBlockIfTooBig"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::ed80e108fe1ea0855eea3fb9f809adb46d205a1315b520739fedb73aa8c0ccda::Map",
+                  "key": "a8cd1e7b",
+                  "kind": "type",
+                  "name": "Map"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::3413d624c8e93874bab5e763d16f61ca05e53802e6cc3065855ca3f5da0c7053::TestLargeAcquireDoesntStarve",
@@ -3869,30 +3499,18 @@
                   "name": "TestAllocCancelDoesntStarve"
                 },
                 {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::1784453bfb871af28613e4a4da65c5fceb51aae4f2ce955390d300f346ed6e14::opStore",
-                  "key": "b5731e4e",
-                  "kind": "constant",
-                  "name": "opStore"
-                },
-                {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::802141fcc4db609f92b9389fe2c74134d9d5d7af13ee1be64ba592d1a10e95da::dirty",
-                      "key": "370c4cde",
-                      "kind": "function",
-                      "name": "dirty"
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::06b9cd7f3cf72174d270200891590ab5b785415664361667ed425b2bfff6c7d5::Load",
+                      "key": "0bde1432",
+                      "kind": "method",
+                      "name": "Load"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::d37b9269bdc8b19ac1c704bfd882b0e7b7d8e56d33d5ce6cc4c23be7a8b3a837::DeepCopyMap",
                   "key": "b64367fc",
                   "kind": "struct",
                   "name": "DeepCopyMap"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::3c33a35e0d9983b236192f2e31528c79ae85d24e08ec939c8047f52befd25af7::TestMapMatchesRWMutex",
-                  "key": "b8d887f6",
-                  "kind": "function",
-                  "name": "TestMapMatchesRWMutex"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::45c0b0c6a2a0c16739f15c88bad10bb0781b9a7995e18dbcd4b6a5a53d93f42e::BenchmarkRange",
@@ -3911,7 +3529,7 @@
                     {
                       "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c608fe1c6260c3b2aaeaf369f0b584e0bbf36786273c0a5d8e8015549c5cccb4::Error",
                       "key": "d2ec462b",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "Error"
                     }
                   ],
@@ -3975,9 +3593,17 @@
                   "name": "call"
                 },
                 {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::syncmap/map_reference_test.go:19::Delete",
+                      "key": "304c4d01",
+                      "kind": "method",
+                      "name": "Delete"
+                    }
+                  ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::c1311321838c30b3afcde71b0d3dd29ef081689bd56011f9b96ec0ab3f54c8de::mapInterface",
                   "key": "e279fad2",
-                  "kind": "trait",
+                  "kind": "interface",
                   "name": "mapInterface"
                 },
                 {
@@ -3987,14 +3613,6 @@
                   "name": "ExampleGroup"
                 },
                 {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::bd014b14993775258be09c3785be6c02b315f19be440bffdf1327f730a343866::Generate",
-                      "key": "4a28afd9",
-                      "kind": "function",
-                      "name": "Generate"
-                    }
-                  ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::f8943f019b8b36026afa951d2d1abb954ea8275da8f8563f3a4c6845325ae506::mapCall",
                   "key": "ec2f6512",
                   "kind": "struct",
@@ -4013,9 +3631,29 @@
                   "name": "BenchmarkAdversarialAlloc"
                 },
                 {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:20::Release",
+                      "key": "1b99e42c",
+                      "kind": "method",
+                      "name": "Release"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:19::TryAcquire",
+                      "key": "2501be11",
+                      "kind": "method",
+                      "name": "TryAcquire"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/go-sync/project::semaphore/semaphore_bench_test.go:18::Acquire",
+                      "key": "8e93fbaa",
+                      "kind": "method",
+                      "name": "Acquire"
+                    }
+                  ],
                   "coordinate": "/tmp/nudox-surface/go-sync/project::semantic::09f506406986c7a715bc9d8bbe3bfe930f56616ac060db886c2bd366b9c3b687::weighted",
                   "key": "f5d81bf9",
-                  "kind": "trait",
+                  "kind": "interface",
                   "name": "weighted"
                 },
                 {
@@ -4032,6 +3670,7 @@
       ],
       "exit": 0,
       "tools": [
+        "backend.call",
         "backend.document",
         "backend.graph",
         "backend.index",
