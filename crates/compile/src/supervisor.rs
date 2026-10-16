@@ -2273,10 +2273,35 @@ fn spawn(
 }
 
 /// Builds the exact child command, adding Unix resource ceilings before the
-/// authority's executable is `exec`'d.  The wrapper receives every executable
-/// argument as a positional parameter, so paths and values never pass through
-/// shell interpolation.
+/// authority's executable is `exec`'d. Linux uses the audited child syscall
+/// seam; other Unix targets retain their positional-argument shell wrapper.
 pub(crate) fn authority_command(command: &SupervisedCommand, executable: &Path) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut process = {
+        let mut process = Command::new(executable);
+        process.args(command.args());
+        backend_platform::linux_child_limits::configure_child_resource_limits(
+            &mut process,
+            backend_platform::linux_child_limits::LinuxChildResourceLimits {
+                cpu_seconds: command.limits().cpu_time_limit().map(|duration| {
+                    duration
+                        .as_secs()
+                        .saturating_add(u64::from(duration.subsec_nanos() != 0))
+                        .max(1)
+                }),
+                address_space_bytes: command
+                    .limits()
+                    .memory_bytes_limit()
+                    .map(|bytes| u64::try_from(bytes).unwrap_or(u64::MAX)),
+                processes: command
+                    .limits()
+                    .process_count_limit()
+                    .map(|count| u64::try_from(count).unwrap_or(u64::MAX)),
+            },
+        );
+        process
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut process = if command.limits().uses_unix_resource_limits() {
         let mut process = Command::new("/bin/sh");
         process
@@ -2302,6 +2327,7 @@ pub(crate) fn authority_command(command: &SupervisedCommand, executable: &Path) 
     process
 }
 
+#[cfg(not(target_os = "linux"))]
 const RESOURCE_LIMIT_SCRIPT: &str = r#"
 set -e
 if [ "$1" != "-" ]; then ulimit -t "$1"; fi
@@ -2311,6 +2337,7 @@ shift 3
 exec "$@"
 "#;
 
+#[cfg(not(target_os = "linux"))]
 fn cpu_limit_argument(command: &SupervisedCommand) -> String {
     command.limits().cpu_time_limit().map_or_else(
         || "-".to_owned(),
@@ -2326,24 +2353,12 @@ fn cpu_limit_argument(command: &SupervisedCommand) -> String {
     )
 }
 
-fn memory_limit_argument(command: &SupervisedCommand) -> String {
-    #[cfg(target_os = "linux")]
-    {
-        command.limits().memory_bytes_limit().map_or_else(
-            || "-".to_owned(),
-            |bytes| {
-                let kib = bytes.checked_add(1023).unwrap_or(usize::MAX) / 1024;
-                kib.max(1).to_string()
-            },
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = command;
-        "-".to_owned()
-    }
+#[cfg(not(target_os = "linux"))]
+fn memory_limit_argument(_command: &SupervisedCommand) -> String {
+    "-".to_owned()
 }
 
+#[cfg(not(target_os = "linux"))]
 fn process_count_limit_argument(command: &SupervisedCommand) -> String {
     command
         .limits()

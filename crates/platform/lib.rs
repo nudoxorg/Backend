@@ -12,7 +12,10 @@
 //! loaded-image checks also need native interfaces. Keeping these seams here
 //! means the workspace-wide `unsafe_code = "deny"` holds everywhere else,
 //! and each platform boundary can be reviewed in one module.
-#![cfg_attr(not(any(windows, target_os = "macos")), forbid(unsafe_code))]
+#![cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    forbid(unsafe_code)
+)]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod child_output;
@@ -23,11 +26,13 @@ pub mod durable;
 pub mod executable_identity;
 pub mod file_identity;
 mod linkage;
-pub mod local;
 #[cfg(target_os = "linux")]
-pub mod monotonic;
+pub mod linux_child_limits;
+pub mod local;
 #[cfg(target_os = "macos")]
 pub mod macos_process;
+#[cfg(target_os = "linux")]
+pub mod monotonic;
 mod native_path;
 mod retry;
 #[cfg(windows)]

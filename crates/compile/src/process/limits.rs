@@ -294,6 +294,7 @@ impl ProcessLimits {
         None
     }
 
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn uses_unix_resource_limits(&self) -> bool {
         #[cfg(unix)]
         {

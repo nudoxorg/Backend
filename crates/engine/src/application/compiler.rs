@@ -312,6 +312,30 @@ fn begin_rust_workspace_with_observation<'lane>(
     Ok(lease)
 }
 
+fn require_package_embedding_runtime(
+    path: &str,
+    configured: bool,
+    failure: Option<EmbeddingProvisioningFailure>,
+    requirement: EmbeddingRequirement,
+) -> Result<(), PackageSemanticError> {
+    if requirement != EmbeddingRequirement::Required {
+        return Ok(());
+    }
+    if let Some(cause) = failure {
+        return Err(PackageSemanticError::EmbeddingProvisioning {
+            path: path.into(),
+            cause,
+        });
+    }
+    if !configured {
+        return Err(PackageSemanticError::Embedding {
+            path: path.into(),
+            cause: "required embedding runtime is not configured".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Whether an embedding failure should leave a typed unavailable plane or fail compilation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EmbeddingRequirement {
@@ -2011,6 +2035,14 @@ pub enum PackageSemanticError {
         /// Exact embedding runtime or output-bound failure.
         cause: Box<str>,
     },
+    /// A configured required runtime failed cold provisioning before inference.
+    #[error("required package embedding provisioning failed for {path}: {cause:?}")]
+    EmbeddingProvisioning {
+        /// Source member whose required runtime was unavailable.
+        path: Box<str>,
+        /// Closed owner-admitted provisioning failure, without private paths.
+        cause: EmbeddingProvisioningFailure,
+    },
     /// Full native program membership could not be canonically admitted.
     #[error("native TypeScript program source manifest is invalid")]
     NativeProgramSources(#[source] backend_semantic::ir::NativeProgramSourceManifestError),
@@ -3236,14 +3268,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 }
             }
         }
-        if (embedding_runtime.is_none() || package.embedding_provisioning_failure.is_some())
-            && embedding_requirement == EmbeddingRequirement::Required
-        {
-            return Err(PackageSemanticError::Embedding {
-                path: first_source.relative_path.into(),
-                cause: "required embedding runtime is not configured".into(),
-            });
-        }
+        require_package_embedding_runtime(
+            first_source.relative_path,
+            embedding_runtime.is_some(),
+            package.embedding_provisioning_failure,
+            embedding_requirement,
+        )?;
         let embedding_execution_identity =
             embedding_runtime.map(EmbeddingExecutable::execution_identity);
         let embedding_identity = embedding_execution_identity
@@ -6189,6 +6219,59 @@ mod tests {
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
     use backend_version::{ContentId, SourceFactDomain};
+
+    #[test]
+    fn required_embedding_admission_preserves_configured_provisioning_cause() {
+        use super::{EmbeddingRequirement, require_package_embedding_runtime};
+        for cause in [
+            EmbeddingProvisioningFailure::ModelUnavailable,
+            EmbeddingProvisioningFailure::TokenizerUnavailable,
+            EmbeddingProvisioningFailure::ArtifactIdentityMismatch,
+            EmbeddingProvisioningFailure::ExecutableUnavailable,
+            EmbeddingProvisioningFailure::ActivationRejected,
+            EmbeddingProvisioningFailure::ResourceLimitUnavailable,
+            EmbeddingProvisioningFailure::PlatformUnsupported,
+        ] {
+            let error = require_package_embedding_runtime(
+                "main.ts",
+                false,
+                Some(cause),
+                EmbeddingRequirement::Required,
+            )
+            .expect_err("required provisioning must refuse");
+            assert!(
+                matches!(&error, PackageSemanticError::EmbeddingProvisioning { cause: actual, .. } if *actual == cause)
+            );
+            assert!(!error.to_string().contains("not configured"));
+            assert!(
+                require_package_embedding_runtime(
+                    "main.ts",
+                    false,
+                    Some(cause),
+                    EmbeddingRequirement::Optional
+                )
+                .is_ok()
+            );
+        }
+        assert!(matches!(
+            require_package_embedding_runtime(
+                "main.ts",
+                false,
+                None,
+                EmbeddingRequirement::Required
+            ),
+            Err(PackageSemanticError::Embedding { .. })
+        ));
+        assert!(
+            require_package_embedding_runtime(
+                "main.ts",
+                true,
+                None,
+                EmbeddingRequirement::Required
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn go_oracle_workspace_setup_errors_keep_open_authority_projection_and_cause_detail() {
