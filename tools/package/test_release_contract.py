@@ -433,6 +433,34 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable manifest"):
                 release.validate(root)
 
+    def test_linux_publication_includes_checkpoint_or_channel_installer_under_stable_asset_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "schema": 1, "version": "0.2.0", "source_sha": "a" * 40,
+                "source_tree": "b" * 40, "cargo_lock_sha256": "c" * 64,
+                "platform": "linux-x64", "target": "x86_64-unknown-linux-gnu",
+                "asset": "nudox-linux-x86_64-aaaaaaaaaa.tar.gz", "sha256": "d" * 64,
+            }
+            (root / manifest["asset"]).write_bytes(b"fixture archive bytes")
+            (root / (manifest["asset"] + ".sha256")).write_text("fixture checksum\n")
+            (root / "release-manifest.json").write_text("{}")
+            (root / "native-qa-linux-x64.json").write_text("{}")
+            (root / "install-linux-x64.py").write_bytes(b"pinned installer")
+            (root / "install-linux-x64-channel.py").write_bytes(b"channel installer")
+
+            github = FakeGitHub()
+            with patch.object(release, "validate", return_value=manifest):
+                github.publish(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
+            self.assertEqual(github.asset_data[4], b"pinned installer")
+            self.assertEqual(github.release["assets"][-1]["name"], "install-linux-x64.py")
+
+            stable_github = FakeGitHub()
+            with patch.object(release, "validate", return_value=manifest):
+                stable_github.publish(root, "v0.2.0", True, "linux-x64")
+            self.assertEqual(stable_github.asset_data[5], b"channel installer")
+            self.assertEqual(stable_github.release["assets"][-1]["name"], "install-linux-x64.py")
+
     def test_publication_is_read_back_verified_and_retry_does_not_replace_assets(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate(directory)
