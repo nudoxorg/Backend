@@ -15,7 +15,7 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, Stage};
 use std::collections::{BTreeMap, BTreeSet};
 
-const SITE_WORKING_BYTES: usize = 256;
+const SITE_WORKING_BYTES: usize = 768;
 const SITE_WORKING_BASE_BYTES: usize = 4096;
 
 pub(super) struct NativeCSharpProjection<'source> {
@@ -24,18 +24,29 @@ pub(super) struct NativeCSharpProjection<'source> {
     pub(super) max_working_bytes: usize,
 }
 
-pub(super) struct NativeCSharpSite {
+pub(super) struct NativeCSharpSite<'source> {
+    source: &'source VerifiedNativeSource,
     pub(super) line: u32,
-    pub(super) excerpt: backend_compile::SourceExcerpt,
+    start: usize,
+    end: usize,
 }
 
-pub(super) struct NativeCSharpSites {
-    sites: BTreeMap<DeclarationIdentity, NativeCSharpSite>,
+impl NativeCSharpSite<'_> {
+    pub(super) fn excerpt(&self) -> backend_compile::SourceExcerpt {
+        // The source and UTF-8 boundaries are verified when the site is built.
+        std::str::from_utf8(&self.source.bytes()[self.start..self.end])
+            .map(backend_compile::SourceExcerpt::capture_bounded)
+            .unwrap_or(backend_compile::SourceExcerpt::NotCaptured)
+    }
+}
+
+pub(super) struct NativeCSharpSites<'source> {
+    sites: BTreeMap<DeclarationIdentity, NativeCSharpSite<'source>>,
     pub(super) working_bytes: usize,
 }
 
-impl NativeCSharpSites {
-    pub(super) fn get(&self, identity: &DeclarationIdentity) -> Option<&NativeCSharpSite> {
+impl NativeCSharpSites<'_> {
+    pub(super) fn get(&self, identity: &DeclarationIdentity) -> Option<&NativeCSharpSite<'_>> {
         self.sites.get(identity)
     }
 }
@@ -44,11 +55,11 @@ impl NativeCSharpSites {
 /// selected C# candidate, root-bound bytes, source path, and authority tool all
 /// agree. Duplicate identities or identical declaration extents are refused;
 /// nested extents are expected and remain distinct Roslyn declarations.
-pub(super) fn prove_native_csharp_sites(
+pub(super) fn prove_native_csharp_sites<'source>(
     image: &SemanticImageView<'_>,
     project: [u8; 32],
-    projection: NativeCSharpProjection<'_>,
-) -> Result<NativeCSharpSites, BuiltinModelError> {
+    projection: NativeCSharpProjection<'source>,
+) -> Result<NativeCSharpSites<'source>, BuiltinModelError> {
     let source = projection.source;
     let source_bytes = source.bytes().len();
     if source_bytes > projection.max_working_bytes {
@@ -96,6 +107,9 @@ pub(super) fn prove_native_csharp_sites(
     for row in session.canonical_entities() {
         let row =
             row.map_err(|error| BuiltinModelError(format!("native C# site declaration: {error}")))?;
+        if !session.owns_declaration(&row.entity) {
+            continue;
+        }
         let Some(extent) = row.entity.source else {
             continue;
         };
@@ -185,8 +199,10 @@ pub(super) fn prove_native_csharp_sites(
         sites.insert(
             identity,
             NativeCSharpSite {
+                source,
                 line,
-                excerpt: backend_compile::SourceExcerpt::capture_bounded(declaration),
+                start,
+                end,
             },
         );
     }

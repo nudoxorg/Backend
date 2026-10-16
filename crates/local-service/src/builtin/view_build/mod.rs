@@ -9,6 +9,8 @@
 
 mod call_join;
 mod csharp_native_sites;
+#[cfg(test)]
+mod csharp_native_sites_tests;
 mod exact_sites;
 #[cfg(test)]
 mod foreign_target_display_tests;

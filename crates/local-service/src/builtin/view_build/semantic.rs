@@ -1658,12 +1658,13 @@ pub(super) fn project_image_rows(
                 .as_ref()
                 .and_then(|sites| sites.get(&identity))
             {
-                charges.push(Charge::Sub(site.excerpt.text().map_or(0, str::len)));
+                let excerpt = site.excerpt();
+                charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
                 let location =
                     backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
                         BuiltinModelError(format!("native C# declaration source site: {error}"))
                     })?;
-                row = row.with_source(location).with_excerpt(site.excerpt.clone());
+                row = row.with_source(location).with_excerpt(excerpt);
             }
         }
         // A reader's signature is the declaration as written. The semantic
