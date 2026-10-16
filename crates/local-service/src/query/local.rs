@@ -2464,7 +2464,7 @@ mod prepared_corpus_tests {
     }
 
     #[derive(Debug)]
-    struct ViewFixtureError(backend_engine::ViewError);
+    struct ViewFixtureError(backend_library::ViewError);
 
     impl std::fmt::Display for ViewFixtureError {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
