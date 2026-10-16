@@ -95,6 +95,27 @@ class OwnerLifecycleTests(unittest.TestCase):
     def test_failed_startup_releases_log_and_private_state(self):
         self.exercise(startup_failure=True)
 
+    def test_owner_retirement_failure_keeps_original_case_failure(self):
+        import tempfile
+        from unittest.mock import Mock, patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source").mkdir()
+            owner = Mock()
+            owner.stop.side_effect = RuntimeError("owner idle retirement failed")
+            original = RuntimeError("index refused authored source")
+            case = {"name": "failed-index", "project": "source", "languages": ["c"], "index_mode": "wait"}
+            with patch.object(surface, "ROOT", root), patch.object(surface, "SCRATCH", root / "scratch"), \
+                 patch.object(surface, "Owner", return_value=owner), \
+                 patch.object(surface, "run_cli", side_effect=original), \
+                 patch.object(surface, "_record_owner_threads"):
+                with self.assertRaises(RuntimeError) as failure:
+                    surface.run_case(case, root / "bin")
+            self.assertIn("index refused authored source", str(failure.exception))
+            self.assertIn("owner idle retirement failed", str(failure.exception))
+            self.assertIs(failure.exception.__cause__, original)
+            owner.stop.assert_called_once()
+
 
 class AdmissionTests(unittest.TestCase):
     def test_failed_index_is_never_a_golden_answer(self):

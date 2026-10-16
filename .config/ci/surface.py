@@ -1038,11 +1038,17 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
         record["performance"].update(owner.usage())
     finally:
+        case_error = sys.exc_info()[1]
         try:
             diagnostics = CASE_DIAGNOSTICS.get()
             _record_owner_threads(diagnostics, owner.process.pid)
         finally:
-            owner.stop()
+            try:
+                owner.stop()
+            except Exception as cleanup_error:
+                if case_error is not None:
+                    raise RuntimeError(f"{case_error}\nowner cleanup failed: {cleanup_error}") from case_error
+                raise
     record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
     return record
 
