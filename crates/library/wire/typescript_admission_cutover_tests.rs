@@ -8,8 +8,8 @@ use crate::interface::{
 fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape() {
     assert_eq!(
         super::DTO_VERSION,
-        31,
-        "coverage and populated TypeScript causes require a matched DTO31 cohort"
+        32,
+        "coverage and populated TypeScript causes require the current matched cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
         TypeScriptCompilerPackageRole::SelectedCompiler,
@@ -92,7 +92,7 @@ fn typescript_cause_requires_a_matched_cohort_before_strict_dto30_shape_admissio
     use crate::interface::{TypeScriptAuthorityFailureKind, TypeScriptFailureCause};
     assert_eq!(
         super::DTO_VERSION,
-        31,
+        32,
         "strict DTO30 readers reject the populated cause field"
     );
     #[derive(serde::Deserialize)]
@@ -165,8 +165,8 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
 }
 
 #[test]
-fn typescript_stop_site_is_a_new_strict_field_in_the_matched_dto31_cohort() {
-    assert_eq!(super::DTO_VERSION, 31);
+fn typescript_stop_site_current_cohort_refuses_dto30_before_the_strict_field() {
+    assert_eq!(super::DTO_VERSION, 32);
     let mut facts = plain_facts();
     facts.typescript_failure = Some(crate::interface::TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted);
     facts.typescript_stop_site = Some(crate::interface::TypeScriptStopSite::new(
@@ -183,4 +183,63 @@ fn typescript_stop_site_is_a_new_strict_field_in_the_matched_dto31_cohort() {
     let refusal = super::super::codec::check_version_header_against(&envelope, "reply", 30).unwrap_err();
     assert!(refusal.contains("this build supports 30"));
     assert!(!refusal.contains("unknown field"));
+}
+
+#[test]
+fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds() {
+    use crate::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
+        SourceAuthority, TypeScriptAuthorityFailureKind as F,
+    };
+    assert_eq!(super::DTO_VERSION, 32);
+    for kind in [
+        F::NativeSessionModuleResolution,
+        F::NativeModuleInvalidReference,
+        F::NativeProjectCheckModuleInvalidReference,
+    ] {
+        let source = b"import('./module')";
+        let private = b"private /home/user/captured-reference.ts:17";
+        let failure = crate::PackageCompilerFailure::from_package_terminal(
+            "src/main.ts",
+            &CompilerTerminal::AuthorityAdmission {
+                source: SourceAuthority {
+                    identity: backend_version::ContentId::from_canonical_bytes(source),
+                    byte_len: u32::try_from(source.len()).unwrap(),
+                },
+                language: backend_semantic::vocabulary::Language::TypeScript,
+                stage: backend_semantic::vocabulary::Stage::LowerIr,
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                    .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let reply = crate::ReplyDto::new(
+            1,
+            crate::CommandReply::Failed(crate::CommandFailure::CompilerRefused {
+                detail: failure.detail().to_owned(),
+                failure,
+            }),
+        );
+        let bytes = serde_json::to_vec(&reply).unwrap();
+        assert_eq!(crate::decode_reply_body(&bytes).unwrap(), reply);
+        assert!(!String::from_utf8_lossy(&bytes).contains("/home/user"));
+        // The maintained preflight parameterized as a DTO31 reader
+        // rejects this current payload before its closed enum is decoded.
+        let old_peer = super::super::codec::check_version_header_against(&bytes, "reply", 31)
+            .expect_err("DTO31 peer must reject the new enum cohort first");
+        assert!(old_peer.contains("reply DTO version 32"));
+        assert!(old_peer.contains("this build supports 31"));
+        assert!(old_peer.contains("same build"));
+        assert!(!old_peer.contains("unknown variant"));
+        // An old live envelope cannot be relabelled as a new typed success.
+        let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        old["version"] = serde_json::json!(31);
+        let error = crate::decode_reply_body(&serde_json::to_vec(&old).unwrap()).unwrap_err();
+        assert!(error.contains("reply DTO version 31"));
+        assert!(error.contains("this build supports 32"));
+        assert!(!error.contains("unknown variant"));
+    }
 }
