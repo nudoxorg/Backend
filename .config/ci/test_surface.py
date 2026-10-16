@@ -962,6 +962,7 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
         import io
         import json
         import tempfile
+        import time
         from unittest.mock import patch
 
         stdout = io.StringIO()
@@ -969,14 +970,20 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
             def __init__(self, **kwargs): pass
             def __enter__(self): return self
             def __exit__(self, *args): return False
+            def shutdown(self, **kwargs): pass
             def submit(self, function, case, *args):
                 future = Future()
                 if case["name"] == "first":
                     future.set_result(({"performance": {"seconds": {}}}, 0.1, None))
                 return future
 
-        def interrupted_completion(futures):
-            yield next(iter(futures))
+        wait_calls = 0
+        def interrupted_wait(futures, **kwargs):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                first = next(future for future in futures if future.done())
+                return {first}, set(futures) - {first}
             records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
                        for line in stdout.getvalue().splitlines()
                        if line.startswith("SURFACE-CASE-EVIDENCE ")]
@@ -997,11 +1004,177 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
                                       report=None, update=False, print_missing=False)
             with patch.object(surface, "SURFACE", root), \
                     patch.object(surface, "ThreadPoolExecutor", InterruptedExecutor), \
-                    patch.object(surface, "as_completed", interrupted_completion), \
+                    patch.object(surface, "wait", interrupted_wait), \
                     contextlib.redirect_stdout(stdout):
                 with self.assertRaisesRegex(RuntimeError, "later case interrupted"):
                     surface.compare_cases(args, argparse.ArgumentParser())
             self.assertFalse(packet.exists(), "partial verdicts cannot stand in for full acceptance")
+
+
+class SigtermEvidenceTests(unittest.TestCase):
+    def test_started_case_error_after_signal_is_interrupted_not_product_failure(self):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        import time
+        from unittest.mock import patch
+
+        class StopAfterEvidence(BaseException):
+            pass
+
+        class ImmediateExecutor:
+            def __init__(self, **kwargs): pass
+            def submit(self, function, case, *args):
+                future = Future()
+                try:
+                    future.set_result(function(case, *args))
+                except BaseException as error:
+                    future.set_exception(error)
+                return future
+            def shutdown(self, **kwargs): pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [{"name": "late"}]}))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+
+            def late_error(*_args):
+                surface.CI_SIGTERM_AT = time.monotonic()
+                surface.CI_SIGTERM.set()
+                return None, 0.0, "case raised after the signal"
+
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", ImmediateExecutor), \
+                    patch.object(surface, "_invoke_case", side_effect=late_error), \
+                    patch.object(surface.os, "_exit", side_effect=StopAfterEvidence), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(StopAfterEvidence):
+                    surface.compare_cases(args, argparse.ArgumentParser())
+            verdict = json.loads(packet.read_text())["cases"]["late"]
+            self.assertEqual(verdict["state"], "failed")
+            self.assertEqual(verdict["failure_kind"], "sigterm-interrupted")
+            self.assertIn("after the CI runner received SIGTERM", verdict["detail"])
+
+    def test_sigterm_emits_completed_and_started_vs_queued_verdicts_before_nonzero_exit(self):
+        import json
+        import os
+        import selectors
+        import signal
+        import subprocess
+        import sys
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = r'''\
+import json, os, sys, time
+from pathlib import Path
+sys.path.insert(0, os.environ["CI_DIR"])
+import surface
+import cpu_placement
+from contextlib import contextmanager
+
+root = Path(os.environ["CASE_ROOT"])
+corpus = root / "surface"
+(corpus / "snapshots").mkdir(parents=True)
+cases = ["completed", "started", "queued"]
+(corpus / "cases.json").write_text(json.dumps({"cases": [{"name": name} for name in cases]}))
+for name in cases:
+    (corpus / "snapshots" / (name + ".json")).write_text(json.dumps({
+        "answers": {"value": name}, "performance": {"seconds": {"cli add": 1}}
+    }))
+surface.SURFACE = corpus
+surface.SCRATCH = root / "scratch"
+surface.evidence_artifact = lambda _bin_dir, _sha: "b" * 64
+
+def run_case(case, _bin_dir):
+    name = case["name"]
+    if name == "started":
+        (root / "started").write_text("yes")
+        while True:
+            time.sleep(1)
+    return {"answers": {"value": name},
+            "performance": {"seconds": {"cli add": 1}, "cpu_seconds": 0.1}}
+
+surface.run_case = run_case
+@contextmanager
+def placement():
+    yield {"fixture": True}
+cpu_placement.measurement_placement = placement
+sys.argv = ["surface.py", "--bin-dir", str(root / "bin"), "--ci-report", str(root / "evidence.json"),
+            "--source-sha", "a" * 40, "--report", str(root / "performance.json"), "--jobs", "1"]
+sys.exit(surface.main())
+'''
+            env = dict(os.environ, CASE_ROOT=str(root), CI_DIR=str(Path(__file__).parent))
+            child = subprocess.Popen(
+                [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=env,
+            )
+            captured = bytearray()
+            deadline = time.monotonic() + 5
+            selector = selectors.DefaultSelector()
+            selector.register(child.stdout, selectors.EVENT_READ)
+            try:
+                while time.monotonic() < deadline:
+                    for _key, _mask in selector.select(timeout=0.02):
+                        captured.extend(os.read(child.stdout.fileno(), 4096))
+                    output = captured.decode("utf-8", errors="replace")
+                    if (root / "started").exists() and any(
+                        line.startswith("SURFACE-CASE-EVIDENCE ") and '"case":"completed"' in line
+                        for line in output.splitlines()
+                    ):
+                        break
+                    if child.poll() is not None:
+                        stdout, stderr = child.communicate(timeout=1)
+                        self.fail("evidence runner exited before the test could signal its owned child: " +
+                                  (bytes(captured) + stdout).decode("utf-8", errors="replace") +
+                                  stderr.decode("utf-8", errors="replace"))
+                else:
+                    self.fail("owned evidence runner did not start and complete the expected cases")
+                os.kill(child.pid, signal.SIGTERM)
+                stdout_tail, stderr = child.communicate(timeout=3)
+                complete_output = (bytes(captured) + stdout_tail).decode("utf-8", errors="replace")
+                self.assertNotEqual(child.returncode, 0, stderr.decode("utf-8", errors="replace") + complete_output)
+                output_lines = complete_output.splitlines()
+                self.assertTrue(any(line.startswith("SURFACE-CASE-EVIDENCE ") and '"case":"completed"' in line
+                                    for line in output_lines))
+                final_lines = [line.removeprefix("SURFACE-CI-EVIDENCE ") for line in output_lines
+                               if line.startswith("SURFACE-CI-EVIDENCE ")]
+                self.assertEqual(len(final_lines), 1)
+                final_packet = json.loads(final_lines[0])
+                self.assertEqual(final_packet["packet_kind"], "harness-interruption-summary")
+                self.assertIn("not reread or adapter-reverified", final_packet["verification"])
+                self.assertEqual(final_packet["source_sha"], "a" * 40)
+                self.assertEqual(final_packet["artifact_manifest_sha256"], "b" * 64)
+                packet = json.loads((root / "evidence.json").read_text())
+                self.assertEqual(packet["source_sha"], "a" * 40)
+                self.assertEqual(packet["artifact_manifest_sha256"], "b" * 64)
+                self.assertEqual(packet["selection"], "All catalog cases; no product-path narrowing.")
+                cases = packet["cases"]
+                self.assertEqual(cases["completed"]["state"], "passed")
+                self.assertEqual(cases["started"]["state"], "failed")
+                self.assertEqual(cases["started"]["failure_kind"], "sigterm-interrupted")
+                self.assertIn("received SIGTERM", cases["started"]["detail"])
+                self.assertEqual(cases["queued"]["state"], "failed")
+                self.assertEqual(cases["queued"]["failure_kind"], "infrastructure-not-run")
+                self.assertIn("not run", cases["queued"]["detail"])
+                self.assertIn("no product verdict", cases["queued"]["detail"])
+                self.assertEqual(set(json.loads((root / "performance.json").read_text())), {"completed"})
+            finally:
+                selector.close()
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=3)
+                if child.stdout:
+                    child.stdout.close()
+                if child.stderr:
+                    child.stderr.close()
 
 
 if __name__ == "__main__":

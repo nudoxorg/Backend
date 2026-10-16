@@ -24,7 +24,7 @@ Exit 0 when every case matches, 1 otherwise.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import ContextVar
 from contextlib import contextmanager
 import difflib
@@ -56,6 +56,8 @@ VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finish
 
 
 OUTPUT_LOCK = threading.Lock()
+CI_SIGTERM = threading.Event()
+CI_SIGTERM_AT = None
 CURRENT_CASE = ContextVar("surface_case", default=None)
 RUN_PROVENANCE = ContextVar("run_provenance", default=None)
 CASE_DIAGNOSTICS = ContextVar("case_diagnostics", default=None)
@@ -64,6 +66,9 @@ CASE_DIAGNOSTICS = ContextVar("case_diagnostics", default=None)
 def log(message: str) -> None:
     case = CURRENT_CASE.get()
     prefix = f"[{case}] " if case else ""
+    if CI_SIGTERM.is_set():
+        print(f"surface: {prefix}{message}", flush=True)
+        return
     with OUTPUT_LOCK:
         print(f"surface: {prefix}{message}", flush=True)
 
@@ -71,9 +76,13 @@ def log(message: str) -> None:
 def emit_performance(name: str, performance: dict) -> None:
     # Successful Concourse containers can expire after the next no-op poll.
     # Keep exact metrics in the retained event log as well as the report file.
+    line = "SURFACE-PERFORMANCE " + json.dumps(
+        {"schema": 1, "case": name, "performance": performance}, sort_keys=True)
+    if CI_SIGTERM.is_set():
+        print(line, flush=True)
+        return
     with OUTPUT_LOCK:
-        print("SURFACE-PERFORMANCE " + json.dumps(
-            {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
+        print(line, flush=True)
 
 
 @contextmanager
@@ -1169,75 +1178,197 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     provenance = ({"source_sha": args.source_sha,
                    "artifact_manifest_sha256": args.artifact_digest}
                   if args.ci_report else None)
-    with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        futures = {executor.submit(_invoke_case, case, args.bin_dir.resolve(), provenance): case
-                   for case in cases}
-        for future in as_completed(futures):
-            case = futures[future]
-            record, elapsed, error = future.result()
-            try:
-                entry = {"state": "failed", "seconds": {}}
-                evidence[case["name"]] = entry
-                if error is not None:
-                    entry["detail"] = bounded_text(error, 4096)
-                    log(f"case {case['name']} could not run: {error}")
+    global CI_SIGTERM_AT
+    CI_SIGTERM.clear()
+    CI_SIGTERM_AT = None
+    interrupted = CI_SIGTERM
+    started: set[str] = set()
+    completed_at: dict[str, float] = {}
+    start_lock = threading.Lock()
+    previous_sigterm = None
+    if args.ci_report:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def handle_sigterm(_signum, _frame):
+            global CI_SIGTERM_AT
+            if CI_SIGTERM_AT is None:
+                CI_SIGTERM_AT = time.monotonic()
+            interrupted.set()
+
+        signal.signal(signal.SIGTERM, handle_sigterm)
+
+    def invoke_tracked(case: dict) -> tuple[dict | None, float, str | None]:
+        with start_lock:
+            if interrupted.is_set():
+                return None, 0.0, "not run: CI runner received SIGTERM before the case started"
+            started.add(case["name"])
+        try:
+            return _invoke_case(case, args.bin_dir.resolve(), provenance)
+        finally:
+            with start_lock:
+                completed_at[case["name"]] = time.monotonic()
+
+    def emit_evidence(case: dict, entry: dict) -> None:
+        if args.ci_report:
+            print("SURFACE-CASE-EVIDENCE " + json.dumps({
+                **provenance, "case": case["name"], "verdict": entry,
+            }, sort_keys=True, separators=(",", ":")), flush=True)
+
+    def record_result(case: dict, future) -> None:
+        record, elapsed, error = future.result()
+        entry = {"state": "failed", "seconds": {}}
+        evidence[case["name"]] = entry
+        try:
+            if error is not None:
+                with start_lock:
+                    case_started = case["name"] in started
+                    finished = completed_at.get(case["name"])
+                if interrupted.is_set() and case_started and (
+                    finished is None or CI_SIGTERM_AT is None or finished > CI_SIGTERM_AT
+                ):
+                    entry["failure_kind"] = "sigterm-interrupted"
+                    entry["detail"] = "case started but completed with an error after the CI runner received SIGTERM; no product verdict"
+                    log(f"case {case['name']} returned an error after SIGTERM; classified as interrupted")
                     failed.append(case["name"])
-                    continue
-                entry.update(record["performance"])
-                if case.get("kind") == "cli-contract":
-                    entry["state"] = "passed"
-                    report[case["name"]] = record["performance"]
-                    emit_performance(case["name"], record["performance"])
-                    log(f"case {case['name']} passed ({elapsed:.1f}s)")
-                    continue
+                    return
+                if not case_started:
+                    entry["failure_kind"] = "infrastructure-not-run"
+                    entry["detail"] = "not run: CI runner received SIGTERM before this case started; no product verdict"
+                else:
+                    entry["detail"] = bounded_text(error, 4096)
+                log(f"case {case['name']} could not run: {error}")
+                failed.append(case["name"])
+                return
+            with start_lock:
+                finished = completed_at.get(case["name"])
+            if interrupted.is_set() and finished is not None and (
+                CI_SIGTERM_AT is None or finished > CI_SIGTERM_AT
+            ):
+                entry["failure_kind"] = "sigterm-interrupted"
+                entry["detail"] = "case returned after the CI runner received SIGTERM; no complete pre-deadline verdict"
+                failed.append(case["name"])
+                log(f"case {case['name']} completed after SIGTERM; classified as interrupted")
+                return
+            entry.update(record["performance"])
+            if case.get("kind") == "cli-contract":
+                entry["state"] = "passed"
                 report[case["name"]] = record["performance"]
                 emit_performance(case["name"], record["performance"])
-                snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
-                if args.update:
-                    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-                    snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-                    log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
-                    continue
-                if not snapshot_path.exists():
-                    entry["detail"] = "No reviewed snapshot; explicit review/update required."
-                    log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
-                    if args.print_missing:
-                        print_candidate(case["name"], record)
-                    failed.append(case["name"])
-                    continue
-                reviewed = json.loads(snapshot_path.read_text())
-                baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
-                indexed = record["performance"].get("seconds", {}).get("cli add")
-                if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
-                    entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
-                problems = []
-                if reviewed["answers"] != record["answers"]:
-                    old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-                    new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-                    diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
-                    entry["snapshot_diff"] = bounded_text(diff, 8192)
-                    problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
-                problems += regressions(reviewed.get("performance", {}), record["performance"])
-                if problems:
-                    entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
-                    failed.append(case["name"])
-                    for problem in problems:
-                        log(f"case {case['name']}: {problem}")
-                    if args.print_missing and reviewed["answers"] != record["answers"]:
-                        print_candidate(case["name"], record)
-                else:
-                    entry["state"] = "passed"
-                    log(f"case {case['name']} matches ({elapsed:.1f}s, "
-                        f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
-            finally:
-                if args.ci_report:
-                    print("SURFACE-CASE-EVIDENCE " + json.dumps({
-                        **provenance, "case": case["name"], "verdict": entry,
-                    }, sort_keys=True, separators=(",", ":")), flush=True)
+                log(f"case {case['name']} passed ({elapsed:.1f}s)")
+                return
+            report[case["name"]] = record["performance"]
+            emit_performance(case["name"], record["performance"])
+            snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
+            if args.update:
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+                log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
+                return
+            if not snapshot_path.exists():
+                entry["detail"] = "No reviewed snapshot; explicit review/update required."
+                log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
+                if args.print_missing:
+                    print_candidate(case["name"], record)
+                failed.append(case["name"])
+                return
+            reviewed = json.loads(snapshot_path.read_text())
+            baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
+            indexed = record["performance"].get("seconds", {}).get("cli add")
+            if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
+                entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
+            problems = []
+            if reviewed["answers"] != record["answers"]:
+                old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
+                entry["snapshot_diff"] = bounded_text(diff, 8192)
+                problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
+            problems += regressions(reviewed.get("performance", {}), record["performance"])
+            if problems:
+                entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
+                failed.append(case["name"])
+                for problem in problems:
+                    log(f"case {case['name']}: {problem}")
+                if args.print_missing and reviewed["answers"] != record["answers"]:
+                    print_candidate(case["name"], record)
+            else:
+                entry["state"] = "passed"
+                log(f"case {case['name']} matches ({elapsed:.1f}s, "
+                    f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+        finally:
+            emit_evidence(case, entry)
+
+    executor = ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface")
+    futures = {executor.submit(invoke_tracked, case): case for case in cases}
+    pending = set(futures)
+    processed = set()
+    was_interrupted = False
+    try:
+        while pending:
+            done, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            for future in done:
+                case = futures[future]
+                record_result(case, future)
+                pending.remove(future)
+                processed.add(future)
+            if interrupted.is_set():
+                was_interrupted = True
+                break
+    except BaseException:
+        executor.shutdown(wait=not interrupted.is_set(), cancel_futures=interrupted.is_set())
+        if previous_sigterm is not None and not interrupted.is_set():
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        raise
+
+    was_interrupted = was_interrupted or interrupted.is_set()
+    executor.shutdown(wait=not was_interrupted, cancel_futures=was_interrupted)
+    if was_interrupted:
+        with start_lock:
+            started_at_signal = set(started)
+        # Include results that finished as the signal arrived, then label only
+        # genuinely unfinished or never-started work as interruption evidence.
+        for future, case in futures.items():
+            if future in processed:
+                continue
+            if case["name"] in started_at_signal and future.done() and not future.cancelled():
+                record_result(case, future)
+            elif case["name"] in started_at_signal:
+                entry = {"state": "failed", "seconds": {}, "failure_kind": "sigterm-interrupted",
+                         "detail": "case started but did not complete before the CI runner received SIGTERM; outer exit status determines the deadline outcome"}
+                evidence[case["name"]] = entry
+                failed.append(case["name"])
+                log(f"case {case['name']} interrupted by SIGTERM before completion")
+                emit_evidence(case, entry)
+            else:
+                entry = {"state": "failed", "seconds": {}, "failure_kind": "infrastructure-not-run",
+                         "detail": "not run: CI runner received SIGTERM before this case started; no product verdict"}
+                evidence[case["name"]] = entry
+                failed.append(case["name"])
+                log(f"case {case['name']} not run: SIGTERM arrived before it started")
+                emit_evidence(case, entry)
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if args.ci_report:
         write_ci_evidence(args.ci_report, args.source_sha, args.artifact_digest, evidence, bool(args.case))
+    if was_interrupted or interrupted.is_set():
+        if previous_sigterm is not None:
+            final_packet = {
+                "schema": 1,
+                "source_sha": args.source_sha,
+                "artifact_manifest_sha256": args.artifact_digest,
+                "selection": "All catalog cases; no product-path narrowing." if not args.case else
+                             "Explicit case filter; see the case list.",
+                "cases": evidence,
+                "packet_kind": "harness-interruption-summary",
+                "verification": "source/artifact admission was checked before execution; this final log packet was not reread or adapter-reverified",
+            }
+            print("SURFACE-CI-EVIDENCE " + json.dumps(final_packet, sort_keys=True,
+                                                        separators=(",", ":")), flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(128 + signal.SIGTERM)
+    if previous_sigterm is not None:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     if failed:
         log(f"failed: {', '.join(failed)}")
         return 1
