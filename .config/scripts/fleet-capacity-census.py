@@ -2,7 +2,8 @@
 """One-sample-per-host advisory census for bounded compiler admission.
 
 This tool reads the local, ILO, and h16001mac process/resource snapshots once
-per invocation. It never reserves a slot, starts a compiler, or signals a
+per invocation, including ilo-prod only with explicit opt-in. It never
+reserves a slot, starts a compiler, or signals a
 process. An allowed result is only a fresh fleet-capacity observation; the
 caller must still acquire its existing managed permit for the destination.
 """
@@ -47,6 +48,14 @@ DEFAULT_HOSTS = {
         "limit": 8,
         "ssh_target": "h16001mac",
         "python": "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3",
+    },
+}
+
+OPTIONAL_HOSTS = {
+    "ilo-prod": {
+        "limit": 4,
+        "ssh_target": "ilo-prod",
+        "python": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
     },
 }
 
@@ -178,14 +187,14 @@ def _resolve_sample_scope(
     exclusion_reason: Any,
     hosts: Mapping[str, Mapping[str, Any]] = DEFAULT_HOSTS,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """Resolve the one approved temporary ILO scope without inferring outages."""
+    """Resolve explicit Mac-offline scopes without inferring outages."""
     if not exclude_hosts:
         if exclusion_reason is not None:
             raise ValueError("--exclusion-reason requires --exclude-host")
         return {name: dict(config) for name, config in hosts.items()}, {}
-    if destination != "ilo" or exclude_hosts != ["h16001mac"]:
+    if destination not in {"ilo", "ilo-prod"} or exclude_hosts != ["h16001mac"]:
         raise ValueError(
-            "the approved temporary exclusion is exactly one h16001mac exclusion for destination ilo"
+            "the approved temporary exclusion is exactly one h16001mac exclusion for destination ilo or ilo-prod"
         )
     if (
         type(exclusion_reason) is not str
@@ -196,6 +205,8 @@ def _resolve_sample_scope(
             "--exclude-host requires a non-empty --exclusion-reason of at most 500 characters"
         )
     active_hosts = {name: dict(config) for name, config in hosts.items()}
+    if destination == "ilo-prod" and "ilo-prod" not in active_hosts:
+        raise ValueError("ilo-prod exclusion scope requires explicit production-host inclusion")
     if "h16001mac" not in active_hosts:
         raise ValueError("the requested excluded host is not present in the configured fleet")
     active_hosts.pop("h16001mac")
@@ -368,10 +379,14 @@ def evaluate_fleet(
     allow_local_over_cap_for_remote: bool = False,
     destination_memory_only_for_remote: bool = False,
     excluded_hosts: Mapping[str, str] | None = None,
+    include_ilo_prod: bool = False,
 ) -> dict[str, Any]:
     """Fail closed on missing/stale/incomplete evidence and enforce fleet caps."""
     now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     reasons: list[str] = []
+    if type(include_ilo_prod) is not bool:
+        reasons.append("fleet-optional-host-policy-invalid")
+    configured_hosts = {**DEFAULT_HOSTS, **(OPTIONAL_HOSTS if include_ilo_prod is True else {})}
     if excluded_hosts is not None and not isinstance(excluded_hosts, Mapping):
         reasons.append("fleet-excluded-hosts-shape-invalid")
         excluded: dict[Any, Any] = {}
@@ -379,9 +394,13 @@ def evaluate_fleet(
         excluded = dict(excluded_hosts or {})
     if set(samples) != set(hosts):
         reasons.append("fleet-host-set-incomplete-or-unexpected")
-    if set(hosts).intersection(excluded) or set(hosts).union(excluded) != set(DEFAULT_HOSTS):
+    if set(hosts).intersection(excluded) or set(hosts).union(excluded) != set(configured_hosts):
         reasons.append("fleet-sample-scope-invalid")
-    if excluded and (set(excluded) != {"h16001mac"} or destination != "ilo"):
+    if excluded and (
+        set(excluded) != {"h16001mac"}
+        or destination not in {"ilo", "ilo-prod"}
+        or (destination == "ilo-prod" and include_ilo_prod is not True)
+    ):
         reasons.append("fleet-host-exclusion-not-authorized-for-this-scope")
     for name, reason in excluded.items():
         if type(reason) is not str or not reason.strip() or len(reason) > 500:
@@ -433,13 +452,19 @@ def evaluate_fleet(
             and start <= finish <= resource_at
             and all(-5 <= age <= max_age_seconds for age in ages)
         )
+        return_code = sample.get("return_code")
+        entries_omitted = census.get("entries_omitted_count")
+        groups_omitted = census.get("compiler_groups_omitted_count")
         complete = (
-            sample.get("return_code") == 0
+            type(return_code) is int
+            and return_code == 0
             and census.get("schema") == "build-census.v1"
             and census.get("complete") is True
             and census.get("resource_snapshot_complete") is True
-            and census.get("entries_omitted_count") == 0
-            and census.get("compiler_groups_omitted_count") == 0
+            and type(entries_omitted) is int
+            and entries_omitted == 0
+            and type(groups_omitted) is int
+            and groups_omitted == 0
             and time_valid
         )
         if not complete:
@@ -503,6 +528,8 @@ def evaluate_fleet(
         limit = config.get("limit")
         if type(limit) is not int or limit < 1:
             reasons.append(f"{name}:host-limit-invalid")
+        elif name == "ilo-prod" and limit > OPTIONAL_HOSTS["ilo-prod"]["limit"]:
+            reasons.append(f"{name}:host-limit-exceeds-4")
         elif admission_slots + (1 if name == destination else 0) > limit:
             if allow_local_over_cap_for_remote and name == "local" and destination != "local":
                 limitations.append("local:over-host-cap-remote-admission-authorized")
@@ -516,6 +543,15 @@ def evaluate_fleet(
             reasons.append(f"{name}:available-memory-below-8-gib-or-missing")
         elif not memory_floor_applies and memory < MIN_AVAILABLE_MEMORY:
             limitations.append(f"{name}:below-memory-floor-destination-only-admission-authorized")
+        if include_ilo_prod is True:
+            # A four-host witness must retain valid resource observations for
+            # every participant, even when only the destination needs the floor.
+            disk = resources.get("root_disk_available_bytes")
+            reserve = resources.get("root_disk_reserved_bytes", 0)
+            if type(disk) is not int or disk < 0:
+                reasons.append(f"{name}:root-disk-invalid-or-missing")
+            if type(reserve) is not int or reserve < 0:
+                reasons.append(f"{name}:root-disk-reserve-invalid")
         host_summaries[name] = {
             "complete": complete,
             "sample_started_at_utc": census.get("sample_started_at_utc"),
@@ -566,14 +602,21 @@ def evaluate_fleet(
         "sampled_at_utc": now.isoformat(),
         "destination": destination,
         "sample_scope": {
+            "configured_hosts": list(configured_hosts),
+            "optional_hosts_enabled": ["ilo-prod"] if include_ilo_prod is True else [],
             "requested_hosts": list(hosts),
             "sampled_hosts": successfully_sampled_hosts,
             "excluded_hosts": safe_excluded_hosts,
+            "exclusion_authorization": (
+                "2026-10-16 user request to use ILO PROD; fresh Mac-offline proof required in exclusion reason and managed review"
+                if set(excluded) == {"h16001mac"} and destination == "ilo-prod"
+                and include_ilo_prod is True else None
+            ),
             "full_fleet_sampled": (
                 not excluded
-                and set(hosts) == set(DEFAULT_HOSTS)
+                and set(hosts) == set(configured_hosts)
                 and set(samples) == set(hosts)
-                and set(successfully_sampled_hosts) == set(DEFAULT_HOSTS)
+                and set(successfully_sampled_hosts) == set(configured_hosts)
             ),
             "fleet_limit_applies_across_sampled_hosts": True,
         },
@@ -631,7 +674,11 @@ def _write_exclusive(path: pathlib.Path, report: Mapping[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--destination", choices=tuple(DEFAULT_HOSTS), required=True)
+    parser.add_argument("--destination", choices=tuple(DEFAULT_HOSTS) + tuple(OPTIONAL_HOSTS), required=True)
+    parser.add_argument(
+        "--include-ilo-prod", action="store_true",
+        help="Include the fourth production host in every capacity/freshness check; required for destination ilo-prod. Managed admissions during production QA must use this four-host scope on every destination.",
+    )
     parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS_PER_PROCESS)
     parser.add_argument(
         "--allow-local-over-cap-for-remote", action="store_true",
@@ -651,16 +698,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ilo-python", default=DEFAULT_HOSTS["ilo"]["python"])
     parser.add_argument("--mac-target", default=DEFAULT_HOSTS["h16001mac"]["ssh_target"])
     parser.add_argument("--mac-python", default=DEFAULT_HOSTS["h16001mac"]["python"])
+    parser.add_argument("--prod-target", default=OPTIONAL_HOSTS["ilo-prod"]["ssh_target"])
+    parser.add_argument("--prod-python", default=OPTIONAL_HOSTS["ilo-prod"]["python"])
     parser.add_argument(
         "--exclude-host", choices=("h16001mac",), action="append", default=[],
-        help="Explicitly omit the temporarily offline Mac only for ILO admission; the report records it as excluded, never sampled.",
+        help="Explicitly omit the temporarily offline Mac only for ILO or ILO PROD admission; the report records it as excluded, never sampled.",
     )
     parser.add_argument(
         "--exclusion-reason",
-        help="Required report-visible reason for the explicitly excluded host.",
+        help="Required report-visible reason for the explicitly excluded host. ILO PROD must cite the 2026-10-16 user request and fresh Mac-offline proof; that proof is reviewed with the managed permit, not inferred by this collector.",
     )
     args = parser.parse_args(argv)
+    if args.destination == "ilo-prod" and not args.include_ilo_prod:
+        parser.error("destination ilo-prod requires --include-ilo-prod")
     hosts = {name: dict(value) for name, value in DEFAULT_HOSTS.items()}
+    if args.include_ilo_prod:
+        hosts["ilo-prod"] = {
+            **OPTIONAL_HOSTS["ilo-prod"], "ssh_target": args.prod_target, "python": args.prod_python,
+        }
     hosts["ilo"].update(ssh_target=args.ilo_target, python=args.ilo_python)
     hosts["h16001mac"].update(ssh_target=args.mac_target, python=args.mac_python)
     try:
@@ -690,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_local_over_cap_for_remote=args.allow_local_over_cap_for_remote,
         destination_memory_only_for_remote=args.destination_memory_only_for_remote,
         excluded_hosts=excluded_hosts,
+        include_ilo_prod=args.include_ilo_prod,
     )
     report["collector_started_at_utc"] = started.isoformat()
     report["sampler_path"] = str(census_path.resolve())
