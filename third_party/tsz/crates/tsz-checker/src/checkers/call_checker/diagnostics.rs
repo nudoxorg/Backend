@@ -26,7 +26,7 @@ fn callback_mismatch_memo_disabled() -> bool {
 #[cfg(test)]
 mod void_callback_probe_tests {
     use super::*;
-    use crate::context::CheckerOptions;
+    use crate::context::{CheckerOptions, ProgramContext};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tsz_binder::BinderState;
@@ -124,17 +124,27 @@ mod void_callback_probe_tests {
         );
     }
 
+    #[derive(Clone, Copy)]
+    enum BodyContext {
+        Standalone,
+        OutcomesWithoutOwners,
+        Program,
+    }
+
     fn check_body_diagnostics(
         source: &str,
-        admitted_program: bool,
+        context: BodyContext,
     ) -> Vec<crate::diagnostics::Diagnostic> {
         let mut parser = ParserState::new("test.ts".into(), source.into());
         let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
         let mut binder = BinderState::new();
         binder.bind_source_file(parser.get_arena(), root);
+        let arena = Arc::new(parser.into_arena());
+        let binder = Arc::new(binder);
         let interner = TypeInterner::new();
         let mut checker = CheckerState::new(
-            parser.get_arena(),
+            &arena,
             &binder,
             &interner,
             "test.ts".into(),
@@ -143,20 +153,88 @@ mod void_callback_probe_tests {
                 ..Default::default()
             },
         );
-        assert!(
-            !checker.ctx.report_unresolved_imports,
-            "legacy standalone policy"
-        );
-        if admitted_program {
-            // This source has no module/directive requests. Install the same explicit
-            // closed outcome context as the native program: unlike bare standalone
-            // construction, it enables authoritative unresolved-name diagnostics.
-            checker
-                .ctx
-                .set_project_module_resolution_outcomes(Arc::new(Default::default()));
-            assert!(checker.ctx.report_unresolved_imports);
+        assert!(!checker.ctx.report_unresolved_imports);
+        match context {
+            BodyContext::Standalone => {}
+            BodyContext::OutcomesWithoutOwners => {
+                // Native07's incomplete fixture: outcomes select exact owner lookup,
+                // but a standalone binder has no registered program symbol owners.
+                checker
+                    .ctx
+                    .set_project_module_resolution_outcomes(Arc::new(Default::default()));
+                let sink = binder.file_locals.get("sink").expect("declared sink");
+                assert!(checker.ctx.project_source_symbol(sink).is_none());
+                assert_eq!(checker.get_type_of_symbol(sink), TypeId::UNKNOWN);
+            }
+            BodyContext::Program => {
+                // One file means every binder symbol has the same exact owner. Use
+                // the existing program installer, not just its outcome-map setter.
+                // There are no imports/directives, so the closed outcome map is empty.
+                let mut program = ProgramContext {
+                    all_arenas: Arc::new(vec![Arc::clone(&arena)]),
+                    all_binders: Arc::new(vec![Arc::clone(&binder)]),
+                    symbol_file_targets: Arc::new(
+                        binder.symbols.iter().map(|symbol| (symbol.id, 0)).collect(),
+                    ),
+                    project_module_resolution_outcomes: Some(Arc::new(Default::default())),
+                    ..ProgramContext::default()
+                };
+                program.build_global_indices();
+                program.build_global_symbol_file_index();
+                program.apply_to(&mut checker.ctx);
+                checker.ctx.set_current_file_idx(0);
+                assert!(checker.ctx.report_unresolved_imports);
+                for symbol in binder.symbols.iter() {
+                    assert_eq!(
+                        checker.ctx.resolve_symbol_declaring_file_index(symbol.id),
+                        Some(0)
+                    );
+                    assert!(std::ptr::eq(
+                        checker
+                            .ctx
+                            .project_source_symbol(symbol.id)
+                            .expect("program symbol owner"),
+                        symbol
+                    ));
+                }
+            }
         }
         checker.check_source_file(root);
+        if matches!(context, BodyContext::Program) {
+            // Check after the normal source pass so these assertions cannot warm
+            // function types before the callback diagnostic paths under test.
+            for (name, callback_return) in [("sink", TypeId::VOID), ("numberSink", TypeId::NUMBER)]
+            {
+                if let Some(symbol) = binder.file_locals.get(name) {
+                    let ty = checker.get_type_of_symbol(symbol);
+                    let signature = crate::query_boundaries::checkers::call::get_call_signature(
+                        checker.ctx.types,
+                        ty,
+                        1,
+                    )
+                    .expect("declared callee remains callable");
+                    assert_eq!(signature.return_type, TypeId::VOID);
+                    assert_eq!(signature.params.len(), 1);
+                    assert_eq!(
+                        stable_call_recovery_return_type(
+                            checker.ctx.types,
+                            signature.params[0].type_id
+                        ),
+                        Some(callback_return),
+                        "{name} retains its declared callback return"
+                    );
+                }
+            }
+            assert!(
+                checker
+                    .ctx
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| !matches!(diagnostic.code, 18046 | 7006)),
+                "declared callees and contextual parameters must stay typed: {:?}",
+                checker.ctx.diagnostics
+            );
+        }
         checker.ctx.diagnostics.clone()
     }
 
@@ -169,7 +247,7 @@ sink((event) => { const invalid: number = event; missingInsideCallback; return '
 sink((event: number) => { return event; });
 numberSink(() => { return 'rejected'; });
 "#;
-        let diagnostics = check_body_diagnostics(source, true);
+        let diagnostics = check_body_diagnostics(source, BodyContext::Program);
         assert!(
             diagnostics.iter().any(|diagnostic| diagnostic.code == 2322),
             "body assignment error: {diagnostics:?}"
@@ -199,12 +277,17 @@ numberSink(() => { return 'rejected'; });
     fn unresolved_name_policy_is_explicit_for_void_callback_diagnostics() {
         let source =
             "declare function sink(callback: () => void): void; sink(() => { missingInVoid; });";
-        let legacy = check_body_diagnostics(source, false);
+        let legacy = check_body_diagnostics(source, BodyContext::Standalone);
         assert!(
             legacy.iter().all(|diagnostic| diagnostic.code != 2304),
             "legacy standalone construction intentionally suppresses unresolved names: {legacy:?}"
         );
-        let admitted = check_body_diagnostics(source, true);
+        let incomplete = check_body_diagnostics(source, BodyContext::OutcomesWithoutOwners);
+        assert!(
+            incomplete.iter().any(|diagnostic| diagnostic.code == 18046),
+            "an outcome map without symbol ownership is not a program fixture: {incomplete:?}"
+        );
+        let admitted = check_body_diagnostics(source, BodyContext::Program);
         let missing = source.find("missingInVoid").expect("missing name");
         assert_eq!(admitted.iter().filter(|diagnostic| diagnostic.code == 2304
             && diagnostic.start as usize == missing).count(), 1,
@@ -222,7 +305,7 @@ sink((event) => {
 sink(function(event) { missingFunction; return event; });
 sink((event) => missingExpression);
 "#;
-        let diagnostics = check_body_diagnostics(source, true);
+        let diagnostics = check_body_diagnostics(source, BodyContext::Program);
         for name in [
             "missingNested",
             "missingOuter",
