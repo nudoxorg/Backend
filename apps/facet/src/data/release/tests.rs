@@ -249,21 +249,3 @@ fn the_comb_touches_only_releases_that_really_change_your_code() {
     let touches: Vec<String> = yours.touches().iter().map(ToString::to_string).collect();
     assert_eq!(touches, [TOML_NEXT]);
 }
-
-/// A manual inspection dump, not an assertion: run it with
-/// `cargo test -- --ignored debug_respelled_dump --nocapture`.
-#[test]
-#[ignore = "debug dump"]
-fn debug_respelled_dump() {
-    let krate = toml();
-    let changes = krate.changes(TOML_PIN, TOML_NEXT);
-    let mut n = 0;
-    for c in &changes {
-        if c.what == What::Changed && c.severity == super::Severity::Breaking && c.respelled() {
-            n += 1;
-            println!("RESPELLED[{n}] {} \n  before: {:?}\n  after:  {:?}", c.path, c.before, c.after);
-        }
-    }
-    println!("total respelled-breaking: {n}");
-    panic!("dump");
-}

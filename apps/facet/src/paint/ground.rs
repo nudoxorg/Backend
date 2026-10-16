@@ -467,27 +467,4 @@ mod tests {
 
 #[cfg(test)]
 mod stats {
-    #[test]
-    #[ignore = "prints the field's statistics"]
-    fn field_stats() {
-        let f = super::field(1440.0, 900.0, 0x00FA_CE7E);
-        let mut o: Vec<f32> = f.shards.iter().map(|s| s.opacity).collect();
-        o.sort_by(f32::total_cmp);
-        let tw = f.shards.iter().filter(|s| s.twinkle.is_some()).count();
-        let mint = f.shards.iter().filter(|s| s.mint).count();
-        #[allow(clippy::cast_precision_loss)]
-        let mean = o.iter().sum::<f32>() / o.len() as f32;
-        let area: f32 = f
-            .shards
-            .iter()
-            .map(|s| super::super::geom::Poly::new(s.points).area().abs())
-            .sum();
-        eprintln!(
-            "n={} tw={tw} mint={mint} min={} median={} mean={mean} max={} area={area}",
-            o.len(),
-            o[0],
-            o[o.len() / 2],
-            o[o.len() - 1]
-        );
-    }
 }

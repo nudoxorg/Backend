@@ -1,0 +1,1015 @@
+{
+  "schema": 1,
+  "task": "W1.3",
+  "batch": "DESKTOP-DIAGNOSTIC-RETIREMENTS-01",
+  "review_base": "bfd3fd807600d3b1cffecd2e05300e7980678900",
+  "source_audit": "/Users/robertmccrary/Code/NuDox/docs/testing/triage/desktop-facet-audit.json",
+  "scope_note": "153 function identities from nine desktop/facet test files. Existing audit dispositions were reused for non-candidates; all six proposed ignored diagnostics and their retained proof were independently rechecked at review_base. Eight file hashes match the frozen audit; owner_tests.rs differs and was inspected at review_base. audit_line is the original frozen-audit line, not a current line number.",
+  "files": [
+    {
+      "path": "apps/desktop/src/host/registry/configuration_tests.rs",
+      "source_sha256_at_review_base": "c43e0f5ea60af6c3b23af9e41d62636e885642cb4b15187a1f2c86d937649c7b",
+      "audit_source_sha256": "c43e0f5ea60af6c3b23af9e41d62636e885642cb4b15187a1f2c86d937649c7b",
+      "audit_test_count": 8,
+      "tests": [
+        {
+          "name": "owner_configuration_and_paths_survive_without_a_cargo_source",
+          "audit_line": 69,
+          "decision": "keep",
+          "reason": "Owner lease with nonexistent compiler yields serving config and endpoint but no Cargo capability; no fake source derived from paths."
+        },
+        {
+          "name": "replacement_without_cargo_withdraws_the_old_source_but_keeps_current_owner_context",
+          "audit_line": 92,
+          "decision": "keep",
+          "reason": "Replaces source-capable composition with no-Cargo composition; old registry capability is withdrawn while current owner/configuration remains available."
+        },
+        {
+          "name": "cargo_authority_uses_only_the_closed_selection_and_existing_default_cache",
+          "audit_line": 111,
+          "decision": "keep",
+          "reason": "Exercises explicit selected Cargo home, default home, ambient HOME and missing configured path; only closed selection/existing cache grants Cargo authority."
+        },
+        {
+          "name": "same_endpoint_replacement_revokes_old_snapshot_and_old_drop_keeps_new_host",
+          "audit_line": 145,
+          "decision": "keep",
+          "reason": "Installs replacement composition at same endpoint; old snapshot loses export authority and dropping old lease cannot clear new host."
+        },
+        {
+          "name": "a_dead_host_cannot_export_from_a_retained_composition",
+          "audit_line": 195,
+          "decision": "keep",
+          "reason": "Retains composition after host lease dies; configuration export becomes unavailable despite snapshot retaining fields."
+        },
+        {
+          "name": "starting_failed_panicked_lost_and_closed_owners_do_not_export",
+          "audit_line": 213,
+          "decision": "keep",
+          "reason": "Walks owner gate through Starting/Failed/Panicked/Lost/Closed and verifies registry capability withdrawn until valid restart and new lease."
+        },
+        {
+          "name": "attached_and_unowned_compositions_do_not_guess_compilers_or_policy",
+          "audit_line": 263,
+          "decision": "keep",
+          "reason": "Attached/no local compiler environment cannot export inferred config; producer observations/coverage still require explicit authorized evidence."
+        },
+        {
+          "name": "same_host_reacquisition_requires_a_fresh_certified_root_before_export_resumes",
+          "audit_line": 335,
+          "decision": "keep",
+          "reason": "After attachment renewal, old config snapshot loses export until fresh certified root observation completes; same endpoint alone cannot restore authority."
+        }
+      ]
+    },
+    {
+      "path": "apps/desktop/src/host/registry/owner_tests.rs",
+      "source_sha256_at_review_base": "bbbc828753369e2661716acc9bf0dfc88f8869541f3cbe63c7069f7890e48ab1",
+      "audit_source_sha256": "efba3f03f5ee23a46d686efc05be9c00bffe1070b72ebeb02e24250f13490a94",
+      "audit_test_count": 22,
+      "tests": [
+        {
+          "name": "a_release_from_the_cargo_cache_is_indexed_by_the_owner_and_its_page_reads_its_real_top_items",
+          "audit_line": 143,
+          "decision": "keep",
+          "reason": "Resolves anyhow from installed Cargo cache, indexes it through embedded owner, reads package page through app reader and compares all top-level source declarations against indexed outline."
+        },
+        {
+          "name": "a_release_only_its_archive_holds_is_unpacked_and_indexed_the_same_way",
+          "audit_line": 169,
+          "decision": "keep",
+          "reason": "Builds Cargo home containing only verified archive/index checksum, unpacks release into source cache, indexes it through owner and compares real source API names to page outline."
+        },
+        {
+          "name": "a_projects_packages_are_the_releases_its_lockfile_pins_each_found_on_this_machine",
+          "audit_line": 265,
+          "decision": "keep",
+          "reason": "Reads real toml_pin Cargo.lock and owner dependency list; checks each release unique, lockfile-pinned and present among actual Cargo build artifacts."
+        },
+        {
+          "name": "a_projects_packages_are_indexed_by_the_owner_and_their_pages_read_their_real_top_items",
+          "audit_line": 392,
+          "decision": "keep",
+          "reason": "Indexes a project with one dependency, checks async acquisition stage and exact dependency release, then reads owner package page and compares declarations to crate source."
+        },
+        {
+          "name": "a_multi_module_crates_names_carry_the_file_they_are_declared_in",
+          "audit_line": 545,
+          "decision": "keep",
+          "reason": "Builds expected public declarations by source file and compares complete owner outline placements, preserving each multi-module item\u2019s file context."
+        },
+        {
+          "name": "an_owner_reopens_its_workspace_after_indexing_a_crate_whose_docs_link_to_std",
+          "audit_line": 604,
+          "decision": "keep",
+          "reason": "Indexes toml_write with std-linked docs, restarts owner from same workspace and verifies package remains indexable/readable with expected names."
+        },
+        {
+          "name": "a_page_is_read_from_the_last_publication_while_the_owner_compiles_another_package",
+          "audit_line": 638,
+          "decision": "keep",
+          "reason": "Holds long toml_edit compile on worker while querying already published small crate page and package list; page response completes before compile and old publication remains readable."
+        },
+        {
+          "name": "crash_child",
+          "audit_line": 716,
+          "decision": "keep",
+          "reason": "Ignored child-process entry signals when compile begins, then blocks/executes controlled index request so paired crash integration can kill process at exact in-progress point; helper is required by parent test."
+        },
+        {
+          "name": "an_owner_killed_mid_compile_reopens_at_its_last_publication_and_indexes_again",
+          "audit_line": 743,
+          "decision": "keep",
+          "reason": "Starts child owner compile, kills it after observed compile start, reopens same workspace and verifies last published package list survives and subsequent compile succeeds."
+        },
+        {
+          "name": "a_package_the_compiler_could_not_finish_still_says_so_after_a_relaunch",
+          "audit_line": 826,
+          "decision": "keep",
+          "reason": "For serde_core partial compile, checks partial stage/refusal words persist, relaunch reports same partial limitation and does not fabricate full release listing."
+        },
+        {
+          "name": "a_relaunch_lands_what_the_owner_lists_before_it_lists_the_projects_packages",
+          "audit_line": 902,
+          "decision": "keep",
+          "reason": "Records listing and project-package publication order on relaunch; verifies preexisting owner packages land before project dependency list and page search follows current sequence."
+        },
+        {
+          "name": "search_child",
+          "audit_line": 1002,
+          "decision": "keep",
+          "reason": "Ignored child-process entry emits controlled search result fixture for paired integration, including valid rows and stderr diagnostics; required to isolate subprocess environment."
+        },
+        {
+          "name": "a_search_finds_names_in_every_package_the_library_holds_even_one_the_compiler_could_not_finish",
+          "audit_line": 1052,
+          "decision": "keep",
+          "reason": "Searches owner-held package corpus, checks exact package identity/name results including partial compiler package and validates malformed/duplicate rows are excluded."
+        },
+        {
+          "name": "every_place_a_use_is_named_at_is_the_name_in_code",
+          "audit_line": 1153,
+          "decision": "keep",
+          "reason": "Reads compiler reference spans from actual toml source and checks every reported span slices to the named identifier; only counts placed source-backed uses."
+        },
+        {
+          "name": "an_earlier_release_is_read_from_its_own_tree_once_it_is_added",
+          "audit_line": 1226,
+          "decision": "keep",
+          "reason": "Loads pinned and earlier toml release as distinct trees; adds earlier release and confirms route page key and source names point to earlier tree while original route retains pin."
+        },
+        {
+          "name": "refusal_words_are_kept_and_forgotten_by_release",
+          "audit_line": 1299,
+          "decision": "keep",
+          "reason": "Persists compiler refusal wording keyed by exact source path, reloads it, then removes release and verifies refusal record forgotten."
+        },
+        {
+          "name": "probe_reopen_after_each_package",
+          "audit_line": 1328,
+          "decision": "delete",
+          "reason": "Ignored manual per-package restart probe; no pass/fail assertions. Retained asserted test an_owner_reopens_its_workspace_after_indexing_a_crate_whose_docs_link_to_std covers persisted owner restart/read behavior."
+        },
+        {
+          "name": "the_compilers_own_rows_carry_the_file_each_type_is_declared_in",
+          "audit_line": 1396,
+          "decision": "keep",
+          "reason": "Extracts public type declarations from real cached source and checks compiler-produced outline rows carry matching source file for each type."
+        },
+        {
+          "name": "probe_outline_rows_named",
+          "audit_line": 1480,
+          "decision": "delete",
+          "reason": "Ignored manual row-name dump with no behavioral oracle. Retained a_multi_module_crates_names_carry_the_file_they_are_declared_in and the_compilers_own_rows_carry_the_file_each_type_is_declared_in assert source names and file placement."
+        },
+        {
+          "name": "a_registry_package_is_named_as_its_manifest_names_it_with_its_version_apart",
+          "audit_line": 1550,
+          "decision": "keep",
+          "reason": "Creates fake registry source with manifest name/version differing from folder stem; package identity uses manifest name/version and leaves stem-only folder untrusted."
+        },
+        {
+          "name": "probe_module_paths_on_a_real_owner",
+          "audit_line": 1590,
+          "decision": "delete",
+          "reason": "Ignored manual module-path probe, not an assertion test. Retained a_multi_module_crates_names_carry_the_file_they_are_declared_in checks concrete module/file mapping."
+        },
+        {
+          "name": "probe_registry_roots_on_a_real_owner",
+          "audit_line": 1637,
+          "decision": "delete",
+          "reason": "Ignored registry-root diagnostic. Retained a_release_only_its_archive_holds_is_unpacked_and_indexed_the_same_way plus active registry tests assert archive-only acquisition and exact source selection/refusal."
+        }
+      ]
+    },
+    {
+      "path": "apps/desktop/src/host/registry/tests.rs",
+      "source_sha256_at_review_base": "7a230970ad8d33eff4c91082b90044c3c27a4d3d2e49060dc151ad97f8933eb0",
+      "audit_source_sha256": "7a230970ad8d33eff4c91082b90044c3c27a4d3d2e49060dc151ad97f8933eb0",
+      "audit_test_count": 13,
+      "tests": [
+        {
+          "name": "a_stem_reads_back_as_the_longest_version_suffix",
+          "audit_line": 103,
+          "decision": "keep",
+          "reason": "Parses crate stem by longest valid version suffix and rejects traversal/invalid names; preserves canonical Cargo purl including build metadata."
+        },
+        {
+          "name": "toml_lists_every_published_release_and_knows_which_are_on_this_machine",
+          "audit_line": 141,
+          "decision": "keep",
+          "reason": "Reads fixture index metadata for all releases and distinguishes versions present in unpacked cache from remote-only entries."
+        },
+        {
+          "name": "a_query_finds_crates_on_this_machine_at_their_newest_release",
+          "audit_line": 193,
+          "decision": "keep",
+          "reason": "Offline search finds local crates, selects newest available release, and returns empty on blank or unmatched query."
+        },
+        {
+          "name": "a_tree_is_known_as_its_release_and_a_release_as_its_tree",
+          "audit_line": 214,
+          "decision": "keep",
+          "reason": "Roundtrips exact release/tree mapping and verifies resolved tree origin Cargo with canonical path."
+        },
+        {
+          "name": "repeated_release_trees_are_not_chosen_by_directory_order",
+          "audit_line": 236,
+          "decision": "keep",
+          "reason": "Creates two same-release trees and requires Ambiguous error listing both, independent of directory ordering."
+        },
+        {
+          "name": "only_a_uniquely_admitted_crates_io_tree_gets_an_unqualified_package_identity",
+          "audit_line": 277,
+          "decision": "keep",
+          "reason": "Default crates.io tree gets unqualified purl only when unique; custom index remains source-qualified."
+        },
+        {
+          "name": "duplicate_index_metadata_is_ambiguous_before_a_download_is_considered",
+          "audit_line": 325,
+          "decision": "keep",
+          "reason": "Duplicate metadata produces Ambiguous date/yanked facts even when archive exists; downloaded bytes cannot mask metadata ambiguity."
+        },
+        {
+          "name": "an_explicit_source_root_selects_the_matching_registry_metadata",
+          "audit_line": 356,
+          "decision": "keep",
+          "reason": "Explicit selected source root matches its own index metadata, date/yanked facts, and archive checksum rather than another index."
+        },
+        {
+          "name": "an_archive_unpacks_to_exactly_the_files_cargo_unpacked",
+          "audit_line": 403,
+          "decision": "keep",
+          "reason": "Downloads fixture archive only after checksum verification, extracts expected Cargo files, resolves package identity and compares unpacked result."
+        },
+        {
+          "name": "an_app_cache_is_rechecked_against_its_extracted_source_bytes",
+          "audit_line": 486,
+          "decision": "keep",
+          "reason": "Mutates existing extracted tree after archive resolution; availability rechecks bytes and falls back to Download rather than trusting cached directory."
+        },
+        {
+          "name": "an_archive_that_is_not_the_published_one_is_refused",
+          "audit_line": 506,
+          "decision": "keep",
+          "reason": "Supplies archive bytes inconsistent with published checksum; unpack refuses and avoids accepting resulting tree."
+        },
+        {
+          "name": "an_archive_without_an_effective_index_checksum_is_not_read",
+          "audit_line": 532,
+          "decision": "keep",
+          "reason": "Archive lacking effective index checksum is rejected before bytes are consumed/unpacked."
+        },
+        {
+          "name": "the_boundary_uses_the_resolver_the_edition_implies",
+          "audit_line": 549,
+          "decision": "keep",
+          "reason": "Uses edition-resolver fixtures to ensure workspace boundary detection follows actual Cargo resolver semantics for implied edition."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/data/release/tests.rs",
+      "source_sha256_at_review_base": "2308b5ba87362f65666041fcc7b746714cbfcb104e9d1bbf9802bab9164bfe4f",
+      "audit_source_sha256": "2308b5ba87362f65666041fcc7b746714cbfcb104e9d1bbf9802bab9164bfe4f",
+      "audit_test_count": 13,
+      "tests": [
+        {
+          "name": "every_use_the_toml_upgrade_touches_is_only_respelled",
+          "audit_line": 14,
+          "decision": "keep",
+          "reason": "Verifies four exact call sites are semantically unchanged, user impact remains zero, and summary words/count match per-use lens."
+        },
+        {
+          "name": "map_insert_is_a_real_change_marked_where_it_differs",
+          "audit_line": 47,
+          "decision": "keep",
+          "reason": "Pins before/after plain signatures and exact old/new changed subtrees, preserving shared return wording and punctuation."
+        },
+        {
+          "name": "deserializer_new_changes_is_deprecated_and_can_now_fail_once_each",
+          "audit_line": 67,
+          "decision": "keep",
+          "reason": "Separates changed fallible constructor from deprecated constructor row and checks the rendered failure phrase and marks."
+        },
+        {
+          "name": "the_value_page_shows_one_row_per_item_not_per_re_export",
+          "audit_line": 87,
+          "decision": "keep",
+          "reason": "Ensures re-export aliases collapse to one API row and both root and nested paths produce equal lens model."
+        },
+        {
+          "name": "smallvec_1_16_0_to_1_16_1_changes_nothing",
+          "audit_line": 100,
+          "decision": "keep",
+          "reason": "Checks no diff, impact, rows or affected uses and exact no-change summary for adjacent release versions."
+        },
+        {
+          "name": "a_release_without_local_source_is_said_so_without_claiming_its_date_is_known",
+          "audit_line": 113,
+          "decision": "keep",
+          "reason": "A date-only release is explicitly SourceUnavailable; API lens must not claim comparison or show rows."
+        },
+        {
+          "name": "a_local_release_without_the_exact_diff_is_not_called_absent_or_unchanged",
+          "audit_line": 128,
+          "decision": "keep",
+          "reason": "Removes the exact pair diff while retaining local source and verifies both summary and lens report DiffUnavailable, not no changes."
+        },
+        {
+          "name": "ambiguous_and_unverified_sources_are_not_collapsed_to_missing_or_available",
+          "audit_line": 148,
+          "decision": "keep",
+          "reason": "Mutates identical release fixture through ambiguous and unverified states and requires distinct statuses/diagnostic wording."
+        },
+        {
+          "name": "going_back_reads_as_going_back",
+          "audit_line": 165,
+          "decision": "keep",
+          "reason": "Checks older target version gets backward-direction heading while retaining a valid comparison."
+        },
+        {
+          "name": "the_toml_upgrade_counts_each_item_once",
+          "audit_line": 180,
+          "decision": "keep",
+          "reason": "Locks aggregate change counts and guards both re-export deduplication and same-tail distinct trait items; also checks local binding-only edit is respelled."
+        },
+        {
+          "name": "a_parameter_rename_alone_is_respelled_not_breaking",
+          "audit_line": 203,
+          "decision": "keep",
+          "reason": "Parameter-only rename has identical plain words, no old/new highlights and does not inflate breaking/use-impact counts."
+        },
+        {
+          "name": "the_comb_touches_only_releases_that_really_change_your_code",
+          "audit_line": 230,
+          "decision": "keep",
+          "reason": "No-op release changes yield no touched releases; injected real Map::insert impact selects only its exact target release."
+        },
+        {
+          "name": "debug_respelled_dump",
+          "audit_line": 255,
+          "decision": "delete",
+          "reason": "Ignored filtered inventory dump that ends in unconditional panic; it has no success oracle. Active neighboring tests assert exact TOML upgrade respelling/count and parameter-rename behavior."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/graph/discovery/tests.rs",
+      "source_sha256_at_review_base": "4240c8b56eb041c9de34fd93c635476c13ac7c76b7fdfcdc7bcb7bc8e00df751",
+      "audit_source_sha256": "4240c8b56eb041c9de34fd93c635476c13ac7c76b7fdfcdc7bcb7bc8e00df751",
+      "audit_test_count": 53,
+      "tests": [
+        {
+          "name": "arrows_and_words_select_shape_search",
+          "audit_line": 48,
+          "decision": "keep",
+          "reason": "Uses arrow and natural-language query forms against shape search, asserting both select the same intended shape-query behavior."
+        },
+        {
+          "name": "named_search_accepts_a_package_prefix_and_caches_the_same_result",
+          "audit_line": 62,
+          "decision": "keep",
+          "reason": "Queries a package-qualified name twice; checks prefix resolution and that repeated lookup returns the cached same result object."
+        },
+        {
+          "name": "shape_inputs_are_unordered_and_overloads_fold",
+          "audit_line": 79,
+          "decision": "keep",
+          "reason": "Permutes shape inputs and overload declarations; verifies input order does not alter query semantics and overloads fold into one result."
+        },
+        {
+          "name": "rust_wrappers_match_plain_words_and_optional_answers_rank_first",
+          "audit_line": 100,
+          "decision": "keep",
+          "reason": "Compares Rust wrapper names with plain-language forms and checks optional-result answers rank before weaker alternatives."
+        },
+        {
+          "name": "a_concrete_value_matches_its_derived_external_or_written_traits",
+          "audit_line": 119,
+          "decision": "keep",
+          "reason": "Constructs a concrete value with external and explicitly written trait evidence; confirms only those evidence paths satisfy capability matching."
+        },
+        {
+          "name": "the_road_consumes_your_value_and_folds_calls_into_type_places",
+          "audit_line": 142,
+          "decision": "keep",
+          "reason": "Builds a multi-call conversion from the supplied value and checks calls fold into the appropriate type-place road."
+        },
+        {
+          "name": "only_intermediate_optional_calls_are_unwrapped",
+          "audit_line": 163,
+          "decision": "keep",
+          "reason": "Uses optional outputs at intermediate versus terminal positions; only intermediate optionals may be unwrapped into a continuing road."
+        },
+        {
+          "name": "variants_are_places_but_never_hollow_method_detours",
+          "audit_line": 177,
+          "decision": "keep",
+          "reason": "Provides enum variants and method-like detours; verifies variants can be places but hollow getters/methods cannot create false roads."
+        },
+        {
+          "name": "constructor_getter_echoes_and_identity_views_are_not_roads",
+          "audit_line": 192,
+          "decision": "keep",
+          "reason": "Combines constructors, getters, echoes, and identity views; rejects paths that merely return the original value or expose an identity view."
+        },
+        {
+          "name": "plain_values_alone_and_four_calls_get_no_road",
+          "audit_line": 219,
+          "decision": "keep",
+          "reason": "Asserts plain values alone do not form a road and a four-call chain exceeds the allowed call limit."
+        },
+        {
+          "name": "a_side_input_that_only_your_value_can_make_is_not_opaque",
+          "audit_line": 238,
+          "decision": "keep",
+          "reason": "Creates a side input that only the initial supplied value can manufacture; confirms it is not treated as an independently available opaque input."
+        },
+        {
+          "name": "constellation_is_bounded_and_membership_is_cached",
+          "audit_line": 256,
+          "decision": "keep",
+          "reason": "Queries a bounded constellation repeatedly and checks membership is cached without exceeding the configured result bound."
+        },
+        {
+          "name": "pinned_recipe_fixture_has_deterministic_cached_queries",
+          "audit_line": 270,
+          "decision": "keep",
+          "reason": "Runs pinned recipe queries repeatedly and verifies deterministic cached answers for fixed fixture data."
+        },
+        {
+          "name": "generic_associated_outputs_never_match_unrelated_same_named_types",
+          "audit_line": 288,
+          "decision": "keep",
+          "reason": "Creates unrelated nominal types with identical final names and confirms generic associated outputs do not unify by spelling alone."
+        },
+        {
+          "name": "prepared_discovery_is_send_and_reconstructs_identical_answers",
+          "audit_line": 314,
+          "decision": "keep",
+          "reason": "Moves prepared discovery across a Send boundary and reconstructs it; results must be identical to direct preparation."
+        },
+        {
+          "name": "variants_can_start_a_real_three_call_conversion",
+          "audit_line": 327,
+          "decision": "keep",
+          "reason": "Builds a three-call conversion starting at a variant and checks the variant is an actual usable starting place."
+        },
+        {
+          "name": "a_trait_can_carry_your_value_along_the_spine",
+          "audit_line": 362,
+          "decision": "keep",
+          "reason": "Carries the supplied value through a trait-constrained spine and verifies the value remains available to later steps."
+        },
+        {
+          "name": "tuples_and_rust_or_plain_maps_use_the_shared_key_vocabulary",
+          "audit_line": 383,
+          "decision": "keep",
+          "reason": "Compares tuple, Rust-map, and plain-map inputs to ensure they share key vocabulary without accepting unrelated key forms."
+        },
+        {
+          "name": "full_world_startup_and_first_input_cost",
+          "audit_line": 404,
+          "decision": "rewrite_pending_keep",
+          "reason": "Keep for now: cache identity is asserted, but printed whole-world timings have no calibrated bound. A replacement requires a measured full-world surface baseline and review; deletion is not established."
+        },
+        {
+          "name": "generated_graph_permutations_preserve_the_same_semantic_roads",
+          "audit_line": 535,
+          "decision": "keep",
+          "reason": "Generates graph insertion permutations and checks semantic roads remain identical, guarding order-dependent traversal."
+        },
+        {
+          "name": "generated_irrelevant_producers_do_not_change_best_answers",
+          "audit_line": 555,
+          "decision": "keep",
+          "reason": "Adds generated irrelevant producers and verifies best answers remain unchanged, preventing unrelated nodes from perturbing ranking."
+        },
+        {
+          "name": "generated_chains_consume_the_input_never_cycle_and_can_build_every_side_input",
+          "audit_line": 583,
+          "decision": "keep",
+          "reason": "Generates chains with consumption, cycles, and side-input requirements; confirms inputs are consumed once, cycles rejected, and every legitimate side input can be built."
+        },
+        {
+          "name": "generated_overload_folding_is_stable_under_node_and_parameter_order",
+          "audit_line": 633,
+          "decision": "keep",
+          "reason": "Permutes overload nodes and parameter order and asserts a stable folded result independent of declaration ordering."
+        },
+        {
+          "name": "worker_results_share_indexes_and_enter_the_same_bounded_cache",
+          "audit_line": 665,
+          "decision": "keep",
+          "reason": "Runs queries through worker-produced results and verifies indexes are shared and repeated answers enter the bounded cache."
+        },
+        {
+          "name": "every_required_trait_must_hold_for_a_supplied_generic_value",
+          "audit_line": 693,
+          "decision": "keep",
+          "reason": "Uses a generic value with multiple required traits and confirms every bound must hold before it can satisfy the input."
+        },
+        {
+          "name": "same_named_traits_in_different_packages_are_distinct_capabilities",
+          "audit_line": 725,
+          "decision": "keep",
+          "reason": "Creates same-spelled traits in separate packages and verifies they remain distinct capabilities."
+        },
+        {
+          "name": "qualified_external_capabilities_do_not_collapse_by_final_name",
+          "audit_line": 800,
+          "decision": "keep",
+          "reason": "Uses qualified external trait names that share a final segment; checks full qualification prevents accidental collapse."
+        },
+        {
+          "name": "generated_input_assignment_matches_exhaustive_optima_and_is_permutation_invariant",
+          "audit_line": 820,
+          "decision": "keep",
+          "reason": "Compares generated assignment choices against exhaustive optima and permuted input ordering, validating both best-score selection and deterministic tie behavior."
+        },
+        {
+          "name": "presentation_plain_words_never_erase_additional_generic_requirements",
+          "audit_line": 889,
+          "decision": "keep",
+          "reason": "Adds further generic requirements while presenting plain words; verifies presentation aliases cannot erase the additional bounds."
+        },
+        {
+          "name": "a_custom_display_trait_is_not_the_standard_text_capability",
+          "audit_line": 916,
+          "decision": "keep",
+          "reason": "Defines a custom Display-like trait and verifies it does not satisfy the standard text capability."
+        },
+        {
+          "name": "an_intermediate_plain_output_cannot_bypass_an_additional_trait_bound",
+          "audit_line": 924,
+          "decision": "keep",
+          "reason": "Adds an intermediate plain output under an additional trait bound; verifies the plain result cannot bypass that unmet bound."
+        },
+        {
+          "name": "unmet_generic_bounds_cannot_fabricate_a_side_input",
+          "audit_line": 940,
+          "decision": "keep",
+          "reason": "Leaves generic bounds unmet and checks no side-input recipe is fabricated from the incomplete proof."
+        },
+        {
+          "name": "repeated_generic_inputs_must_unify_to_one_concrete_type",
+          "audit_line": 957,
+          "decision": "keep",
+          "reason": "Repeats a generic input position with conflicting concrete types; requires one consistent unification instead of independent per-position matches."
+        },
+        {
+          "name": "erased_nominal_arguments_never_prove_inputs_outputs_or_side_recipes",
+          "audit_line": 972,
+          "decision": "keep",
+          "reason": "Erases nominal generic arguments and checks the erased representation cannot prove inputs, outputs, or side-input recipes."
+        },
+        {
+          "name": "proof_status_tracks_preserved_generic_unknown_and_erased_representations",
+          "audit_line": 1009,
+          "decision": "keep",
+          "reason": "Compares preserved generic, unknown, and erased forms and verifies proof status follows representation certainty."
+        },
+        {
+          "name": "qualified_nominal_types_must_agree_with_the_retained_node_identity",
+          "audit_line": 1088,
+          "decision": "keep",
+          "reason": "Uses qualified nominal types with conflicting retained node identity and confirms the mismatch is rejected."
+        },
+        {
+          "name": "custom_canonical_constructor_names_do_not_inherit_standard_type_proofs",
+          "audit_line": 1136,
+          "decision": "keep",
+          "reason": "Uses a custom constructor whose canonical name resembles a standard type; verifies spelling does not grant standard type proofs."
+        },
+        {
+          "name": "nominal_nodes_cannot_be_mistaken_for_heuristic_generic_keys",
+          "audit_line": 1164,
+          "decision": "keep",
+          "reason": "Creates nominal nodes with generic-looking keys and ensures nominal identity is not mistaken for heuristic structural evidence."
+        },
+        {
+          "name": "generated_erased_arguments_remain_unproved_under_structural_composition",
+          "audit_line": 1177,
+          "decision": "keep",
+          "reason": "Generates erased arguments through structural composition and verifies uncertainty remains unproved through the composed path."
+        },
+        {
+          "name": "erased_constructor_inputs_cannot_supply_chain_riders",
+          "audit_line": 1208,
+          "decision": "keep",
+          "reason": "Uses erased constructor inputs as potential chain riders and confirms they cannot supply a later step without identity proof."
+        },
+        {
+          "name": "relative_trait_paths_are_scoped_to_their_package_and_module",
+          "audit_line": 1249,
+          "decision": "keep",
+          "reason": "Resolves relative trait paths from distinct packages/modules and verifies scope prevents cross-module capability matches."
+        },
+        {
+          "name": "generic_declarations_do_not_prove_conditional_instance_capabilities",
+          "audit_line": 1301,
+          "decision": "keep",
+          "reason": "Creates a generic wrapper whose trait implementation is conditional; the wrapper constructor/name alone must not prove capability, while the concrete unbounded Wrapper query remains discoverable."
+        },
+        {
+          "name": "unrepresented_hasher_allocator_and_error_arguments_cannot_claim_type_identity",
+          "audit_line": 1325,
+          "decision": "keep",
+          "reason": "Uses generic types with unrepresented hasher/allocator/error parameters; verifies those arguments cannot establish nominal identity or create false list/text roads, while valid fallible conversion remains."
+        },
+        {
+          "name": "semantic_names_and_package_items_are_shared_prepared_action_indexes",
+          "audit_line": 1399,
+          "decision": "keep",
+          "reason": "Compares prepared, attached, and worker discovery instances; semantic-name/package-item indexes must be shared by Arc and return exact Invocation candidates/items."
+        },
+        {
+          "name": "qualified_shape_names_compare_complete_segments_instead_of_substrings",
+          "audit_line": 1413,
+          "decision": "keep",
+          "reason": "Queries qualified shape words with partial and complete segments; only complete normalized path segments match, not substring coincidences."
+        },
+        {
+          "name": "trait_identity_includes_package_version_and_selected_dependency",
+          "audit_line": 1500,
+          "decision": "keep",
+          "reason": "Uses same trait identity across package versions and selected dependency contexts; package/version/dependency choice must participate in equality."
+        },
+        {
+          "name": "crate_type_paths_accept_normalized_full_and_short_package_names",
+          "audit_line": 1598,
+          "decision": "keep",
+          "reason": "Checks normalized full and short package-qualified crate type paths resolve the same consume road."
+        },
+        {
+          "name": "raw_pointer_identity_is_not_owned_value_proof",
+          "audit_line": 1626,
+          "decision": "keep",
+          "reason": "Uses raw pointer types and raw-pointer-consuming functions; raw ownership cannot satisfy owned Alpha/text proof, while the unsafe name remains searchable."
+        },
+        {
+          "name": "unsafe_calls_are_names_but_not_safe_callable_proofs",
+          "audit_line": 1644,
+          "decision": "keep",
+          "reason": "Keeps unsafe callable names in name search but excludes them from safe recipe proofs even when their signatures appear compatible."
+        },
+        {
+          "name": "shape_complexity_is_rejected_before_recursive_parsing",
+          "audit_line": 1654,
+          "decision": "keep",
+          "reason": "Feeds overly nested/large shape syntax and checks rejection occurs before recursive parsing with empty results and bounded cache growth."
+        },
+        {
+          "name": "prepared_focus_facts_preserve_member_callers_and_tours",
+          "audit_line": 1698,
+          "decision": "keep",
+          "reason": "Compares precomputed focus facts with independently derived used members, capability set, counts, callers, and tour data for every fixture node."
+        },
+        {
+          "name": "explicit_array_queries_do_not_erase_length_identity",
+          "audit_line": 1742,
+          "decision": "keep",
+          "reason": "Uses arrays with differing element/length identities; explicit array queries preserve length and cannot match list conversions by element type alone."
+        },
+        {
+          "name": "unsupported_callable_ir_is_distinct_from_unknown_and_complete_empty",
+          "audit_line": 1764,
+          "decision": "keep",
+          "reason": "Distinguishes unsupported callable IR, unknown query evidence, and complete empty results; user-facing messages and ordinary name facts remain available in the right states."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/graph/gallery_checks.rs",
+      "source_sha256_at_review_base": "ce1e59c1895a9b4ac92c8fcbbf93a8355036349b3573816c61c3561ceea67c9d",
+      "audit_source_sha256": "ce1e59c1895a9b4ac92c8fcbbf93a8355036349b3573816c61c3561ceea67c9d",
+      "audit_test_count": 14,
+      "tests": [
+        {
+          "name": "pinned_interruption_retargets_then_returns_to_exact_world_with_same_history",
+          "audit_line": 37,
+          "decision": "keep",
+          "reason": "Runs a pinned interruption script that retargets focus and returns to World; compares exact settled camera/history across sampled frames and proves neither camera drift nor live motion remains."
+        },
+        {
+          "name": "input_after_idle_really_opens_find_and_returns_to_quiet",
+          "audit_line": 85,
+          "decision": "keep",
+          "reason": "Runs leave\u2192Find\u2192query\u2192Escape\u2192leave after idle; verifies real Find opens from input, returns to quiet state, and does not retain scheduled tracks."
+        },
+        {
+          "name": "pinned_scene_has_named_relations_and_stable_identity",
+          "audit_line": 126,
+          "decision": "keep",
+          "reason": "Loads the pinned graph fixture and checks 14-node world plus named RelationLabel/from_str nodes and exact stable relation/identity mappings used by the journeys."
+        },
+        {
+          "name": "reduced_weather_lands_without_live_tracks_and_equals_fresh_narrow_light_world",
+          "audit_line": 142,
+          "decision": "keep",
+          "reason": "Compares reduced-motion scenario with a fresh narrow/light world at identical dimensions; both land without live tracks and resulting image dimensions/state agree after real Find round-trip."
+        },
+        {
+          "name": "pinned_chain_has_real_receiver_steps_and_preserves_optional_failure",
+          "audit_line": 178,
+          "decision": "keep",
+          "reason": "Builds a pinned optional conversion fixture, confirms one real chain path [10,12,13], exact code, and that optional failure remains represented rather than silently flattened."
+        },
+        {
+          "name": "narrow_graph_uses_its_measured_window_origin_and_leaves_room_for_card",
+          "audit_line": 200,
+          "decision": "keep",
+          "reason": "Uses offset narrow window and actual focus card bounds; verifies projected graph target uses measured window origin, card stays inside viewport, and graph has room above the card."
+        },
+        {
+          "name": "reach_and_tour_keys_show_the_pinned_content_and_walk_real_stops",
+          "audit_line": 253,
+          "decision": "keep",
+          "reason": "Exercises Reach and tour keyboard journeys against pinned nodes, asserting actual reachable set/source and stop sequence, then confirms repeated keys close/reset modes."
+        },
+        {
+          "name": "native_scenarios_preserve_state_picking_and_geometry_across_weather_and_cadence",
+          "audit_line": 322,
+          "decision": "keep",
+          "reason": "Runs seven native scenarios across weather/cadence and checks real hover/node IDs, relation packet, chain path/code, reach/tour visibility, finite geometry/text, and quiet tails; requires each scenario-specific observed state."
+        },
+        {
+          "name": "two_same_symbol_moves_without_a_frame_keep_the_real_peek_open",
+          "audit_line": 585,
+          "decision": "keep",
+          "reason": "Uses two native pointer moves to same symbol without an intervening frame; confirms real pick remains node 0, delayed peek stays open after intent, and leave clears hover/overlay."
+        },
+        {
+          "name": "parked_pointer_uses_current_prism_geometry_after_resize_and_text_scale",
+          "audit_line": 639,
+          "decision": "keep",
+          "reason": "Changes resize/text scale while pointer is parked; pointer coordinates stay fixed but hover slot is recalculated from current prism frame, then leaving clears hover and motion."
+        },
+        {
+          "name": "opening_find_during_focus_flight_and_closing_it_after_arrival_restores_prism",
+          "audit_line": 672,
+          "decision": "keep",
+          "reason": "Opens Find mid-flight and closes after arrival in normal/reduced modes; while searching prism frame is absent, then same focused node gathers with its actual return/call rows and final back is quiet."
+        },
+        {
+          "name": "real_native_zoom_and_drag_preserve_world_anchors_in_normal_and_offset_viewports",
+          "audit_line": 712,
+          "decision": "keep",
+          "reason": "Runs native wheel zoom and drag in normal and offset viewports; world anchor drift stays below 0.001px, drag changes exact camera translation without width change, zoom reaches expected factor, then settles."
+        },
+        {
+          "name": "input_timing_captures_real_adapter_work_and_resets_after_each_draw",
+          "audit_line": 755,
+          "decision": "keep",
+          "reason": "Injects a 6ms synchronous adapter as a canary; timer must report at least 6ms for the routed input and reset event count/max/cpu to zero on next no-input draw."
+        },
+        {
+          "name": "native_focus_card_padding_click_keeps_focus_and_does_not_drag_graph",
+          "audit_line": 786,
+          "decision": "keep",
+          "reason": "Clicks measured card padding in wide and narrow/high-scale setups; foreground padding cannot release focus, alter camera, or start motion at each checkpoint."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/graph/layout/tests.rs",
+      "source_sha256_at_review_base": "bb3c21e6fd95c8613ae11cedecefe4e21e4d7436d3108da6575dee66ee97a2a1",
+      "audit_source_sha256": "bb3c21e6fd95c8613ae11cedecefe4e21e4d7436d3108da6575dee66ee97a2a1",
+      "audit_test_count": 8,
+      "tests": [
+        {
+          "name": "the_same_world_gives_byte_identical_positions",
+          "audit_line": 122,
+          "decision": "keep",
+          "reason": "Computes layout twice for same content and compares exact float bits, while a changed world produces a different cache key."
+        },
+        {
+          "name": "no_level_overlaps_on_a_synthetic_world",
+          "audit_line": 206,
+          "decision": "keep",
+          "reason": "Asserts no level overlaps in a synthetic world using layout collision oracle."
+        },
+        {
+          "name": "shells_are_evenly_spaced_polygons",
+          "audit_line": 213,
+          "decision": "keep",
+          "reason": "Checks each package shell member count, shell/member radial separation, spacing between nested shells, and that parts do not escape method shell."
+        },
+        {
+          "name": "every_hull_contains_its_contents",
+          "audit_line": 302,
+          "decision": "keep",
+          "reason": "Runs hull containment oracle over every world layout to ensure all contained nodes/child geometry remain within parent hulls."
+        },
+        {
+          "name": "hulls_are_faceted_not_round",
+          "audit_line": 309,
+          "decision": "keep",
+          "reason": "Samples hull polygon turns and requires a measurable facet angle, preventing round/unfaceted hull regression."
+        },
+        {
+          "name": "pagerank_sums_to_one",
+          "audit_line": 331,
+          "decision": "keep",
+          "reason": "Checks PageRank vector sums to one and every item has positive mass."
+        },
+        {
+          "name": "the_cache_computes_once_per_content_hash",
+          "audit_line": 340,
+          "decision": "keep",
+          "reason": "Requests same content layout twice and asserts Arc pointer identity, proving cache computes/reuses one result."
+        },
+        {
+          "name": "the_real_workspace_lays_out_cleanly",
+          "audit_line": 351,
+          "decision": "keep",
+          "reason": "Loads actual workspace graph, checks deterministic repeat layout, normalized PageRank, no overlaps, and hull containment together."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/graph/scene.rs",
+      "source_sha256_at_review_base": "13cc3677ce1dbe6338cee20919d9b48308217629d0fc3eadd2447fa60d9cf4c1",
+      "audit_source_sha256": "13cc3677ce1dbe6338cee20919d9b48308217629d0fc3eadd2447fa60d9cf4c1",
+      "audit_test_count": 16,
+      "tests": [
+        {
+          "name": "zoom_detail_is_continuous_and_its_silhouette_is_the_hit_contract",
+          "audit_line": 1194,
+          "decision": "keep",
+          "reason": "Sweeps five node kinds across 2,000 zoom increments; checks radius/label-alpha continuity and that every glyph vertex remains inside both painted and hit silhouettes."
+        },
+        {
+          "name": "visible_members_are_pickable_through_the_former_half_alpha_gap",
+          "audit_line": 1219,
+          "decision": "keep",
+          "reason": "Places two nodes at a controlled 2-unit separation and checks bounds, ordinary picking, and stable picking all switch at the visibility threshold, including the low-alpha transition point."
+        },
+        {
+          "name": "cached_relations_keep_masks_and_exact_mixed_family_counts",
+          "audit_line": 1259,
+          "decision": "keep",
+          "reason": "Builds a neighborhood with incoming CALLS and outgoing USES/GIVES; asserts exact endpoint/relation/direction tuples and that family counts account for each edge exactly once."
+        },
+        {
+          "name": "visible_bounds_index_matches_brute_force_and_bounds_local_work",
+          "audit_line": 1298,
+          "decision": "keep",
+          "reason": "Compares the indexed visible-bounds query with brute force over a deterministic layout and verifies the index prunes work outside the queried view."
+        },
+        {
+          "name": "scene_visible_packets_match_occupied_geometry_across_scale_modes",
+          "audit_line": 1391,
+          "decision": "keep",
+          "reason": "Compares scene packets against occupied geometry in multiple scale modes, so render visibility and spatial occupancy cannot diverge."
+        },
+        {
+          "name": "hover_retention_is_bounded_by_shared_shape_and_nearest_margin",
+          "audit_line": 1458,
+          "decision": "keep",
+          "reason": "Varies candidate distance and shared glyph shape while hovering; proves retention is limited to the same shape and nearest-margin rule, avoiding sticky selection outside the hit contract."
+        },
+        {
+          "name": "relation_bows_are_finite_monotone_and_have_no_inflection",
+          "audit_line": 1516,
+          "decision": "keep",
+          "reason": "Samples generated relation bows and asserts finite coordinates, monotonic progress, and no curve inflection, catching unstable geometry before painting."
+        },
+        {
+          "name": "high_fanout_packets_preserve_group_counts_and_query_only_visible_leaves",
+          "audit_line": 1563,
+          "decision": "keep",
+          "reason": "Uses a high-fanout fixture to retain exact grouped edge counts while proving queries enumerate only visible leaves rather than expanding the whole neighborhood."
+        },
+        {
+          "name": "ambient_levels_do_not_change_when_large_hulls_leave_the_view",
+          "audit_line": 1727,
+          "decision": "keep",
+          "reason": "Moves large hulls outside the viewport and checks ambient emphasis levels for remaining visible content stay unchanged."
+        },
+        {
+          "name": "animated_hover_reuses_adjacency_and_keeps_the_members_owner_lit",
+          "audit_line": 1770,
+          "decision": "keep",
+          "reason": "Advances animated hover across frames and verifies cached adjacency reuse while lighting only members owned by the hovered node."
+        },
+        {
+          "name": "projection_and_picking_share_pixels_across_camera_and_view_offsets",
+          "audit_line": 1829,
+          "decision": "keep",
+          "reason": "Applies camera and view offsets together, then checks projection and picking resolve the same screen pixels across those transforms."
+        },
+        {
+          "name": "measured_foreground_room_preserves_fanout_across_card_placements",
+          "audit_line": 1872,
+          "decision": "keep",
+          "reason": "Uses measured foreground room and several card placements to confirm the fanout remains represented after layout space is reserved."
+        },
+        {
+          "name": "actual_picking_preserves_pixel_targets_at_every_zoom",
+          "audit_line": 1940,
+          "decision": "keep",
+          "reason": "Projects targets at each zoom and checks real pick results against pixel target positions, covering zoom-dependent hit accuracy."
+        },
+        {
+          "name": "sparse_picking_agrees_with_geometry_without_duplicate_candidates",
+          "audit_line": 1991,
+          "decision": "keep",
+          "reason": "Compares sparse-index picking to the geometry oracle and verifies candidates are unique, ruling out duplicate broad-phase hits."
+        },
+        {
+          "name": "cached_hover_curve_bounds_contain_every_sample",
+          "audit_line": 2020,
+          "decision": "keep",
+          "reason": "Samples the cached hover curve and asserts every point lies inside the reported bounds used for culling."
+        },
+        {
+          "name": "transition_bounds_only_describe_visible_painted_geometry",
+          "audit_line": 2043,
+          "decision": "keep",
+          "reason": "Checks transition bounds against visible painted geometry only, preventing offscreen or invisible transition content from expanding damage/culling regions."
+        }
+      ]
+    },
+    {
+      "path": "apps/facet/src/paint/ground.rs",
+      "source_sha256_at_review_base": "03f2388b5895396128ffa5faea51cc629575819c55df10f9fef5d2fa78f46e98",
+      "audit_source_sha256": "03f2388b5895396128ffa5faea51cc629575819c55df10f9fef5d2fa78f46e98",
+      "audit_test_count": 6,
+      "tests": [
+        {
+          "name": "same_seed_same_field",
+          "audit_line": 378,
+          "decision": "keep",
+          "reason": "Same seed deterministically reproduces shards and changing seed changes generated field."
+        },
+        {
+          "name": "resizing_keeps_the_lattice",
+          "audit_line": 387,
+          "decision": "keep",
+          "reason": "Comparing unchanged top-left region at two canvas sizes requires at least 80% of triangle geometry to remain identical."
+        },
+        {
+          "name": "opacities_stay_in_the_boards_range_and_the_light_comes_from_the_top_left",
+          "audit_line": 405,
+          "decision": "keep",
+          "reason": "Checks every shard opacity range, minimum field population, directional brightness/density and sparse but nonzero twinklers."
+        },
+        {
+          "name": "twinkle_peaks_at_three_point_two",
+          "audit_line": 438,
+          "decision": "keep",
+          "reason": "Pins amplitude at phase values including quarter/half-wave peak to preserve 3.2\u00d7 twinkle multiplier."
+        },
+        {
+          "name": "paint_batches_are_few_and_cheap",
+          "audit_line": 445,
+          "decision": "keep",
+          "reason": "Across two canvas sizes and 120 phases bounds generated draw paths per frame; timing is diagnostic only, count is stable oracle."
+        },
+        {
+          "name": "field_stats",
+          "audit_line": 470,
+          "decision": "delete",
+          "reason": "Ignored statistics-only output of counts/quantiles/area with no assertion. Geometry and paint behavior remain asserted by active field determinism/invariant and bounded-batch tests."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "reviewed_bodies": 153,
+    "delete": 6,
+    "keep_or_rewrite_pending": 147,
+    "performance_rewrite_pending": [
+      "full_world_startup_and_first_input_cost"
+    ],
+    "execution": "Not run; no Cargo/build/test invocation. Source-only change; git diff --check is the only validation.",
+    "runtime_effect": "All six deleted functions are #[ignore] manual diagnostics. The source inventory drops by six; default CI runtime selection is unchanged because they were ignored.",
+    "limits": [
+      "This is a focused disposition batch, not a fresh review of all 153 bodies. Existing frozen per-body audit reasons are retained for non-candidates.",
+      "The retained test evidence was inspected, but exact-head runtime proof is pending; no deletion is represented as runtime-tested.",
+      "No guards, deadlines, tolerances, baselines, fixtures, or acceptance criteria were changed."
+    ]
+  }
+}
