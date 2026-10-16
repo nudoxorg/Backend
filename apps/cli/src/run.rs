@@ -329,6 +329,7 @@ mod graph_admission_tests {
     };
     use std::sync::{Arc, Mutex};
 
+    #[derive(Clone)]
     struct CheckedGraphFixture {
         graph: Arc<IndexedCheckedPackageGraph>,
         source: PackageGraphSourceKey,
