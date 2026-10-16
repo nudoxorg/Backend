@@ -336,6 +336,10 @@ fn rust_real_corpus_regression_fixtures() {
     // reach the written pass; the rejected twin must also be covered so the
     // HIR module walk cannot re-emit it with the same declaration identity.
     let rustversion_item_twins = "#[rustversion::not(nightly)] #[test] fn test_backtrace() {} #[rustversion::nightly] #[test] fn test_backtrace() {}";
+    // A macro can stamp same-named, same-signature functions into sibling
+    // modules at one invocation span. HIR module ancestry distinguishes
+    // these legal declarations without weakening same-scope identity checks.
+    let expanded_functions_in_sibling_modules = "macro_rules! generated { ($name:ident) => { mod left { fn $name() {} } mod right { fn $name() {} } }; } generated!(same);";
     // Two distinct raw-pointer compounds in one signature are distinct
     // carriers, while the shared leaf stays one deduped row.
     let repeated_raw_pointer =
@@ -352,6 +356,10 @@ fn rust_real_corpus_regression_fixtures() {
         ("generic-defaults", generic_defaults),
         ("where-free-predicate", where_free_predicate),
         ("rustversion-item-twins", rustversion_item_twins),
+        (
+            "expanded-functions-in-sibling-modules",
+            expanded_functions_in_sibling_modules,
+        ),
         ("repeated-raw-pointer", repeated_raw_pointer),
     ] {
         let outcome = compile_corpus_file(body.as_bytes());
