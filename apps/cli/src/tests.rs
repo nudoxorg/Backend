@@ -335,6 +335,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         payload: package.as_bytes().to_vec().into_boxed_slice(),
     });
     let (mut server, client) = endpoint::pair();
+    let (reply_checked_tx, reply_checked_rx) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -346,6 +347,9 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
             &serde_json::to_vec(&reply).expect("reply body"),
         )
         .expect("reply frame");
+        reply_checked_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("client checked certified response before peer close");
     });
     let mut transport = UnixCommandTransport::from_stream(client);
     let request = CommandDto::new(
@@ -356,13 +360,17 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         },
     )
     .with_certificate(request_certificate);
-    let reply = transport
-        .request_with_certificate(request, None)
-        .expect("certified success");
+    let reply_result = transport.request_with_certificate(request, None);
+    // Keep the peer alive through the client's socket setup and response
+    // admission. macOS may report InvalidInput when applying a socket option
+    // after the peer has already closed, before the buffered reply is read.
+    reply_checked_tx.send(()).expect("signal response checked");
+    let reply = reply_result.expect("certified success");
     assert_eq!(reply.reply, CommandReply::Added(intent));
     server_thread.join().expect("server");
 
     let (mut server, client) = endpoint::pair();
+    let (reply_checked_tx, reply_checked_rx) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -384,6 +392,9 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
             &serde_json::to_vec(&value).expect("forged reply body"),
         )
         .expect("reply frame");
+        reply_checked_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("client checked forged response before peer close");
     });
     let mut transport = UnixCommandTransport::from_stream(client);
     let request = CommandDto::new(
@@ -398,7 +409,9 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         id: encode_id(package_key("pkg").as_bytes()),
         value: "pkg".to_owned(),
     }));
-    assert!(transport.request(request).is_err());
+    let reply_result = transport.request(request);
+    reply_checked_tx.send(()).expect("signal response checked");
+    assert!(reply_result.is_err());
     server_thread.join().expect("server");
 }
 
