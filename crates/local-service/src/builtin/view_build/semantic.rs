@@ -2042,7 +2042,6 @@ mod tests {
                 },
                 templates,
                 includes,
-                declared_name: None,
             })),
         }];
         let versions = [EntityVersion {
