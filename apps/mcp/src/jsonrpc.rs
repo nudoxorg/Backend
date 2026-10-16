@@ -335,39 +335,33 @@ impl reconnect::Endpoint for SessionEndpoint {
         if let Some(context) = &self.request_context {
             context.check()?;
         }
-        let read_budget = self
-            .request_context
-            .as_ref()
-            .map(RequestContext::remaining_read_budget)
-            .transpose()?
-            .flatten();
-        let endpoint =
-            match backend_runtime::ensure_locald_cancellable(&self.paths, read_budget, || {
-                self.request_context
-                    .as_ref()
-                    .is_none_or(|context| context.cancellation_reason().is_none())
-            }) {
-                Ok(endpoint) => endpoint,
-                Err(error) => {
-                    return Err(map_runtime_startup_error(
-                        error,
-                        self.request_context.as_ref(),
-                    ));
-                }
-            };
-        let connected = match &self.request_context {
-            Some(context) => Session::connect_with_context(endpoint, context.clone()),
-            None => Session::connect(endpoint),
-        };
-        let mut session = match connected {
-            Ok(session) => session,
-            Err(error) => {
-                if let Some(context) = &self.request_context {
+        let context = self.request_context.as_ref();
+        let mut session = connect_session_owner_with(
+            self.paths.endpoint(),
+            context,
+            |endpoint| {
+                let connected = match context {
+                    Some(context) => Session::connect_with_context(endpoint, context.clone()),
+                    None => Session::connect(endpoint),
+                };
+                if connected.is_err()
+                    && let Some(context) = context
+                {
                     context.check()?;
                 }
-                return Err(error);
-            }
-        };
+                connected
+            },
+            || {
+                let read_budget = context
+                    .map(RequestContext::remaining_read_budget)
+                    .transpose()?
+                    .flatten();
+                backend_runtime::ensure_locald_cancellable(&self.paths, read_budget, || {
+                    context.is_none_or(|context| context.cancellation_reason().is_none())
+                })
+                .map_err(|error| map_runtime_startup_error(error, context))
+            },
+        )?;
         if let Some(state) = self.pending_continuation_state.take() {
             session.restore_continuation_state(state);
         }
@@ -378,6 +372,25 @@ impl reconnect::Endpoint for SessionEndpoint {
         let mut session = previous.into_session();
         self.pending_continuation_state = Some(session.take_continuation_state());
     }
+}
+
+/// Initial safe-read connections use the same bounded owner convergence as
+/// CLI recovery. A readiness probe is not a lease: its final dial may refuse.
+/// Unbounded mutation contexts keep their existing single startup/dial policy;
+/// connection recovery never submits a product command or installs a deadline.
+fn connect_session_owner_with<T>(
+    endpoint: &std::path::Path,
+    context: Option<&RequestContext>,
+    mut dial: impl FnMut(&std::path::Path) -> Result<T, ClientError>,
+    mut bootstrap: impl FnMut() -> Result<std::path::PathBuf, ClientError>,
+) -> Result<T, ClientError> {
+    if let Some(context) = context
+        && context.remaining_read_budget()?.is_some()
+    {
+        return backend_client::connect_local_owner_with(context, endpoint, dial, bootstrap);
+    }
+    let ready = bootstrap()?;
+    dial(&ready)
 }
 
 pub(super) type ReconnectingProduct = reconnect::Reconnecting<SessionEndpoint>;

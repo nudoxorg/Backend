@@ -25,6 +25,8 @@ use backend_present::{domain_name, grammar_for, grammar_for_tool};
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
 mod index_overlap;
+#[path = "tests/initial_owner.rs"]
+mod initial_owner;
 #[path = "tests/named_call.rs"]
 mod named_call;
 #[path = "tests/package_graph_budget.rs"]
@@ -570,6 +572,7 @@ fn actual_go_25_row_summary_retains_typed_facts_and_a_valid_binary_owner_mac() {
 /// A fixture product with one project, one module, and one declaration.
 #[derive(Default)]
 struct Fake {
+    health_calls: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// When set, every probe reports the endpoint as unreachable.
     offline: bool,
     /// A registered project with no published declarations has no outline.
@@ -922,6 +925,9 @@ impl Engine for Fake {
     }
 
     fn health(&mut self) -> Result<HealthReport, ClientError> {
+        if let Some(calls) = &self.health_calls {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let library = backend_library::Library::new();
         Ok(HealthReport::from_root(library.view(), library.cursor()))
     }
