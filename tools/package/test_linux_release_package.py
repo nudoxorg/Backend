@@ -404,10 +404,11 @@ class NativeDefaultPackageTests(unittest.TestCase):
             self.node_probes.append(command[1:])
             version = self.node_versions[0 if command[1:] == ["--version"] else 1]
             return subprocess.CompletedProcess(command, 0, version, "")
+        self.packaging_stdout = io.StringIO()
         with patch.object(package.sys, "argv", [*self.arguments, *extra]), \
              patch.object(package, "run", side_effect=tool_run), \
              patch.object(package.subprocess, "run", side_effect=process_run), \
-             redirect_stdout(io.StringIO()):
+             redirect_stdout(self.packaging_stdout):
             return package.main()
 
     def test_default_native_package_preserves_source_and_closure_without_sdk_or_probes(self):
@@ -427,6 +428,15 @@ class NativeDefaultPackageTests(unittest.TestCase):
         release = json.loads((self.output / "release-manifest.json").read_text())
         self.assertEqual(release["source_sha"], self.build["source"]["commit"])
         self.assertEqual(release["packaging_manifest_sha256"], package.sha256(root / "packaging-manifest.json"))
+        shell = self.output / "install-linux-x64.sh"
+        self.assertEqual(shell.read_bytes(), package.checkpoint_shell(
+            manifest["release_tag"], (self.output / "install-linux-x64.py").read_bytes(),
+            release["minimum_glibc"]))
+        self.assertEqual((self.output / "install-linux-x64.sh.sha256").read_text(),
+                         f"{package.sha256(shell)}  install-linux-x64.sh\n")
+        self.assertEqual(json.loads(self.packaging_stdout.getvalue())["shell_installer"],
+                         {"path": str(shell), "sha256": package.sha256(shell),
+                          "size_bytes": shell.stat().st_size})
         with tarfile.open(self.output / release["asset"]) as archive:
             self.assertFalse(any("/typescript/" in name for name in archive.getnames()))
         import install_linux as installer
