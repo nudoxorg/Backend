@@ -140,6 +140,20 @@ fn next_session_name() -> String {
     format!("session-{}-{ordinal}", std::process::id())
 }
 
+fn valid_session_name(name: &str) -> bool {
+    let Some((pid, ordinal)) = name
+        .strip_prefix("session-")
+        .and_then(|name| name.split_once('-'))
+    else {
+        return false;
+    };
+    pid.parse::<u32>()
+        .is_ok_and(|value| value != 0 && value.to_string() == pid)
+        && ordinal
+            .parse::<u64>()
+            .is_ok_and(|value| value.to_string() == ordinal)
+}
+
 pub(super) struct ArtifactDirectory {
     file: File,
     path: PathBuf,
@@ -644,8 +658,15 @@ mod imp {
             let file = open_file_at(directory, name, OFlags::RDONLY)?.ok_or(StoreError::Corrupt)?;
             drop(file);
         }
-        for name in names {
-            unlinkat(directory, &name, AtFlags::empty()).map_err(error)?;
+        // Keep the lease until every payload removal is durable. An interrupted
+        // retirement may leave only an empty, lease-less directory, never
+        // unleased payloads that a later writer could mistake for abandoned data.
+        for name in names.iter().filter(|name| name.as_str() != LOCK_FILE) {
+            unlinkat(directory, name.as_str(), AtFlags::empty()).map_err(error)?;
+        }
+        directory.sync_all().map_err(|error| io_error(&error))?;
+        if names.iter().any(|name| name == LOCK_FILE) {
+            unlinkat(directory, LOCK_FILE, AtFlags::empty()).map_err(error)?;
         }
         directory.sync_all().map_err(|error| io_error(&error))
     }
@@ -657,6 +678,10 @@ mod imp {
         store: Option<&FileStore>,
     ) -> Result<(), StoreError> {
         remove_session_contents(directory, store)?;
+        #[cfg(test)]
+        if take_test_fault(17) {
+            wait_test_link_barrier();
+        }
         unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(error)?;
         parent.sync_all().map_err(|error| io_error(&error))
     }
@@ -666,12 +691,30 @@ mod imp {
         parent: &ArtifactDirectory,
     ) -> Result<(), StoreError> {
         for name in directory_names(&parent.file)? {
-            if !name.starts_with("session-") {
+            if !valid_session_name(&name) {
                 return Err(StoreError::Corrupt);
             }
             let directory = open_dir_at(parent, &name)?;
-            let lease = open_file_at(&directory.file, LOCK_FILE, OFlags::RDWR)?
-                .ok_or(StoreError::Corrupt)?;
+            let Some(lease) = open_file_at(&directory.file, LOCK_FILE, OFlags::RDWR)? else {
+                // The caller holds the process lock, as do session creation and
+                // teardown. Only an empty directory can be a completed cleanup
+                // or interrupted mkdir; an unleased payload remains corruption.
+                if !directory_names(&directory.file)?.is_empty() {
+                    return Err(StoreError::Corrupt);
+                }
+                let current = open_dir_at(parent, &name)?;
+                let held = directory
+                    .file
+                    .metadata()
+                    .map_err(|error| io_error(&error))?;
+                let named = current.file.metadata().map_err(|error| io_error(&error))?;
+                if held.dev() != named.dev() || held.ino() != named.ino() {
+                    return Err(StoreError::UnsafePath);
+                }
+                unlinkat(&parent.file, &name, AtFlags::REMOVEDIR).map_err(error)?;
+                parent.sync_all()?;
+                continue;
+            };
             match lease.try_lock() {
                 Ok(()) => {
                     remove_session_at(&parent.file, &name, &directory.file, Some(store))?;
@@ -928,7 +971,10 @@ mod imp {
             // Exercise the first admission of the fresh writer's inode. A
             // prewarming read would hide a redundant permission/write barrier.
             assert_eq!(
-                fixture.store.read_object(object.id()).expect("first admission"),
+                fixture
+                    .store
+                    .read_object(object.id())
+                    .expect("first admission"),
                 object
             );
             assert_eq!(
@@ -1098,9 +1144,13 @@ mod imp {
                 return Err(StoreError::Corrupt);
             }
         }
-        for name in names {
+        for name in names.iter().filter(|name| name.as_str() != LOCK_FILE) {
             let path = directory.path.join(&name);
             fs::remove_file(path).map_err(|error| io_error(&error))?;
+        }
+        directory.sync_all()?;
+        if names.iter().any(|name| name == LOCK_FILE) {
+            fs::remove_file(directory.path.join(LOCK_FILE)).map_err(|error| io_error(&error))?;
         }
         directory.sync_all()
     }
@@ -1112,6 +1162,10 @@ mod imp {
         store: Option<&FileStore>,
     ) -> Result<(), StoreError> {
         remove_session_contents(directory, store)?;
+        #[cfg(test)]
+        if take_test_fault(17) {
+            wait_test_link_barrier();
+        }
         fs::remove_dir(&directory.path).map_err(|error| io_error(&error))?;
         parent.sync_all()?;
         let _ = name;
@@ -1207,7 +1261,7 @@ mod imp {
         parent: &ArtifactDirectory,
     ) -> Result<(), StoreError> {
         for name in read_directory_names(parent)? {
-            if !name.starts_with("session-") {
+            if !valid_session_name(&name) {
                 return Err(StoreError::Corrupt);
             }
             let path = parent.path.join(&name);
@@ -1216,7 +1270,21 @@ mod imp {
                 path: path.clone(),
             };
             let lease_path = path.join(LOCK_FILE);
-            let metadata = fs::symlink_metadata(&lease_path).map_err(|error| io_error(&error))?;
+            let metadata = match fs::symlink_metadata(&lease_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    if !read_directory_names(&directory)?.is_empty() {
+                        return Err(StoreError::Corrupt);
+                    }
+                    // Creation and cleanup both hold the same process lock;
+                    // an empty lease-less directory has no live producer.
+                    check_directory(&path)?;
+                    fs::remove_dir(&path).map_err(|error| io_error(&error))?;
+                    parent.sync_all()?;
+                    continue;
+                }
+                Err(error) => return Err(io_error(&error)),
+            };
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(StoreError::Corrupt);
             }

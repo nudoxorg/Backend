@@ -457,7 +457,9 @@ impl StreamingClosureBuilder {
         let _process_lock = self.store.acquire_process_lock()?;
         let pin = self.gc_pin.as_ref().ok_or(StoreError::Corrupt)?;
         let mut admission = nodes::RelationAdmission::new(&self.store, pin)?;
-        let relation_write = self.store.write_lazy_relation_update_admitted(&update, &mut admission)?;
+        let relation_write = self
+            .store
+            .write_lazy_relation_update_admitted(&update, &mut admission)?;
         let facts = verify_closure_tree(
             &self.store,
             update.target_root(),
@@ -611,12 +613,16 @@ fn same_claim(left: MemberRecord, right: MemberRecord) -> bool {
 
 impl Drop for StreamingClosureBuilder {
     fn drop(&mut self) {
-        let _ = artifact_fs::cleanup_session(
-            &self.store,
-            &self.staging_parent,
-            &self.staging_name,
-            &self.staging_dir,
-        );
+        // Reapers and creators use this lock too. They must never observe the
+        // interval after ACTIVE.lock is unlinked and before the directory goes.
+        if let Ok(_process_lock) = self.store.acquire_process_lock() {
+            let _ = artifact_fs::cleanup_session(
+                &self.store,
+                &self.staging_parent,
+                &self.staging_name,
+                &self.staging_dir,
+            );
+        }
         self.lease_file.take();
         self.gc_pin.take();
     }
@@ -1006,6 +1012,126 @@ mod tests {
     }
 
     #[test]
+    fn empty_unleased_sessions_recover_without_changing_existing_cas() {
+        let test = TestStore::new();
+        let item = object(88, 41);
+        test.store
+            .write_object(&item)
+            .expect("retain existing CAS member");
+        let orphan = test.path.join("staging/artifacts/session-1103908-24");
+        fs::create_dir_all(&orphan).expect("exact empty interrupted session");
+
+        let cold = FileStore::open(&test.path, 64 * 1024).expect("recover empty orphan at open");
+        assert!(
+            !orphan.exists(),
+            "only the empty session directory is retired"
+        );
+        assert_eq!(
+            cold.read_object(item.id()).expect("existing CAS member"),
+            item
+        );
+        let mut followup = cold
+            .begin_streaming_closure(budget(4))
+            .expect("later capture");
+        stream_object(&mut followup, &item);
+        let receipt = followup.seal().expect("seal after orphan recovery");
+        assert_eq!(receipt.closure(), expected_closure(&[item]));
+    }
+
+    #[test]
+    fn unleased_nonempty_and_unknown_sessions_are_not_removed() {
+        for (name, payload) in [
+            ("session-1103908-24", Some("object-0.tmp")),
+            ("session-not-a-pid-24", None),
+        ] {
+            let test = TestStore::new();
+            let orphan = test.path.join("staging/artifacts").join(name);
+            fs::create_dir_all(&orphan).expect("refused orphan fixture");
+            if let Some(name) = payload {
+                fs::write(orphan.join(name), b"unleased payload must remain").unwrap();
+            }
+            assert!(matches!(
+                test.store.begin_streaming_closure(budget(4)),
+                Err(StoreError::Corrupt)
+            ));
+            assert!(orphan.is_dir(), "refusal preserves the unknown session");
+            if let Some(name) = payload {
+                assert_eq!(
+                    fs::read(orphan.join(name)).unwrap(),
+                    b"unleased payload must remain"
+                );
+            }
+        }
+    }
+
+    fn assert_cleanup_serialized(store: FileStore, drop_session: impl FnOnce() + Send + 'static) {
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let cleanup = thread::spawn(move || {
+            artifact_fs::set_test_link_barrier(reached_tx, release_rx);
+            artifact_fs::set_test_fault(17);
+            drop_session();
+        });
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cleanup paused after lease removal");
+        let probe = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(store.root().join("LOCK"))
+            .expect("open process lock probe");
+        assert!(
+            matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "normal Drop must retain the process lock across the lease-less window"
+        );
+        let (started_tx, started_rx) = mpsc::channel();
+        let reaper = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            store
+                .begin_streaming_closure(budget(4))
+                .expect("concurrent capture after cleanup")
+                .seal()
+                .expect("concurrent capture remains usable");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("concurrent begin entered");
+        release_tx.send(()).expect("finish normal cleanup");
+        cleanup.join().expect("cleanup worker");
+        reaper
+            .join()
+            .expect("concurrent reaper does not report corruption");
+    }
+
+    #[test]
+    fn streaming_cleanup_holds_process_lock_until_session_removal() {
+        let test = TestStore::new();
+        let builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("streaming session");
+        assert_cleanup_serialized(test.store.clone(), move || drop(builder));
+    }
+
+    #[test]
+    fn artifact_cleanup_holds_process_lock_until_session_removal() {
+        let test = TestStore::new();
+        let item = object(91, 37);
+        let plan = ArtifactPlan::new(
+            None,
+            ArtifactClosureClaim::from_id(expected_closure(std::slice::from_ref(&item))),
+            vec![object_claim(&item)],
+            Vec::new(),
+        );
+        let session = test
+            .store
+            .artifact_sink(ArtifactBudget::new(4, 4, 2 * 1024 * 1024, 16 * 1024, 4096))
+            .begin(plan)
+            .expect("affine artifact session");
+        assert_cleanup_serialized(test.store.clone(), move || drop(session));
+    }
+
+    #[test]
     fn zero_byte_object_finishes_without_a_payload_frame() {
         let test = TestStore::new();
         let item = object(7, 0);
@@ -1127,7 +1253,7 @@ mod tests {
             set_test_fault(point);
         }
         stream.finish().expect("finish child object");
-        if point == 13 || point == 14 {
+        if point == 13 || point == 14 || point == 17 {
             set_test_fault(point);
         }
         let _ = builder.seal();
@@ -1139,7 +1265,7 @@ mod tests {
         const CHILD_TEST: &str = "durable::streaming_closure::tests::simulated_process_crash_child";
         let item = object(19, 83);
         let expected = expected_closure(std::slice::from_ref(&item));
-        for point in [12_u8, 14, 13] {
+        for point in [12_u8, 14, 13, 17] {
             let test = TestStore::new();
             let status = Command::new(std::env::current_exe().expect("test executable"))
                 .arg("--exact")
@@ -1154,6 +1280,18 @@ mod tests {
                 "child missed crash point {point}: {}",
                 String::from_utf8_lossy(&status.stderr)
             );
+
+            if point == 17 {
+                let sessions = fs::read_dir(test.path.join("staging/artifacts"))
+                    .expect("read interrupted retirement")
+                    .map(|entry| entry.expect("session entry").path())
+                    .collect::<Vec<_>>();
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(
+                    fs::read_dir(&sessions[0]).expect("empty session").count(),
+                    0
+                );
+            }
 
             let reopened =
                 FileStore::open(&test.path, 64 * 1024).expect("cold-open store after child exit");
@@ -1211,7 +1349,10 @@ mod tests {
         let sessions = fs::read_dir(test.path.join("staging").join("artifacts"))
             .expect("read staging sessions")
             .count();
-        assert_eq!(sessions, 0, "the dead process's session is recovered at open");
+        assert_eq!(
+            sessions, 0,
+            "the dead process's session is recovered at open"
+        );
     }
 
     #[test]
