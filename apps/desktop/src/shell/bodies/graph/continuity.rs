@@ -56,6 +56,10 @@ pub(super) struct Restoration {
 }
 
 impl RetainedPresentation {
+    pub fn visit(&self) -> &PresentationVisit {
+        &self.visit
+    }
+
     pub fn capture(
         graph: &GraphView,
         identities: &IdentityAdapter,
