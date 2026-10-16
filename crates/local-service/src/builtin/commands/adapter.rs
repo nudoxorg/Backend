@@ -5754,11 +5754,33 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
-            backend_engine::SurfaceCommand::PackageProfile { package,compiler_outcome:Some(read) } => {
-                super::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&self.index_operations,&package,Some(&read))
-                    .and_then(|outcomes| outcomes.ok_or_else(|| BuiltinModelError("compiler outcome reads require an exact local package".to_owned())))
-                    .map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
-                        |outcomes| CommandReply::Surface(backend_engine::SurfaceReply::PackageCompilerOutcomes(outcomes)))
+            backend_engine::SurfaceCommand::PackageProfile {
+                package,
+                compiler_outcome: Some(read)
+            } => {
+                super::package_profile::read(
+                    &daemon.engine().daemon().owner().snapshot(),
+                    &self.index_operations,
+                    &package,
+                    Some(&read)
+                )
+                .and_then(|outcomes|
+                    outcomes.ok_or_else(||
+                        BuiltinModelError(
+                            "compiler outcome reads require an exact local package".to_owned()
+                        )
+                    )
+                )
+                .map_or_else(
+                    |error|
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                            error.to_string()
+                        )),
+                    |outcomes|
+                        CommandReply::Surface(
+                            backend_engine::SurfaceReply::PackageCompilerOutcomes(outcomes)
+                        )
+                )
             },
             backend_engine::SurfaceCommand::Advisory {
                 package,
@@ -6176,13 +6198,21 @@ impl CommandAdapter {
                 });
                 let reply = reply.and_then(|mut reply| {
                     if let (
-                        backend_engine::SurfaceCommand::PackageProfile { package, compiler_outcome },
-                        backend_engine::SurfaceReply::PackageProfile { compiler_outcomes, .. },
+                        backend_engine::SurfaceCommand::PackageProfile {
+                            package,
+                            compiler_outcome
+                        },
+                        backend_engine::SurfaceReply::PackageProfile {
+                            compiler_outcomes, ..
+                        },
                     ) = (&surface, &mut reply) {
                         *compiler_outcomes = super::package_profile::read(
-                            &daemon.engine().daemon().owner().snapshot(), &self.index_operations,
-                            package, compiler_outcome.as_ref(),
-                        ).map_err(|error| error.to_string())?;
+                            &daemon.engine().daemon().owner().snapshot(),
+                            &self.index_operations,
+                            package,
+                            compiler_outcome.as_ref(),
+                        )
+                        .map_err(|error| error.to_string())?;
                     }
                     Ok(reply)
                 });

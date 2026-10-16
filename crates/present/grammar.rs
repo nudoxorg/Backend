@@ -20,7 +20,8 @@ use core::fmt::Write as _;
 
 /// What one operand means, and therefore how each surface validates it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ArgumentKind {    /// An exact declaration coordinate returned by a previous result.
+pub enum ArgumentKind {
+    /// An exact declaration coordinate returned by a previous result.
     Coordinate,
     /// An absolute path to a project directory on this host.
     ProjectPath,

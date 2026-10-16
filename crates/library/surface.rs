@@ -3280,7 +3280,8 @@ fn default_semantic_versions_limit() -> u16 { 1 }
 /// Exact request for one daemon-owned product operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum SurfaceCommand {    /// Read the complete advisory decision for one exact package version.
+pub enum SurfaceCommand {
+    /// Read the complete advisory decision for one exact package version.
     Advisory {
         /// Package locator.
         package: PackageReference,
@@ -3645,10 +3646,13 @@ impl SurfaceCommand {
             Self::PackageSourceMembership { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::PackageSourceMembershipShape)
             }
-            Self::PackageProfile { package, compiler_outcome: Some(selector) }
+            Self::PackageProfile {
+                package,
+                compiler_outcome: Some(selector)
+            }
                 if !matches!(package, PackageReference::Local(_))
-                    || !selector.has_admissible_shape()
- => {
+                    || !selector.has_admissible_shape() =>
+            {
                 Err(ProductAdmissionError::IndexOperationShape)
             }
             Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {
@@ -5064,7 +5068,8 @@ pub struct TreeNodeRecord {
 /// Typed result algebra for durable product commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
-pub enum SurfaceReply {    /// Complete advisory facts and typed acquisition decision.
+pub enum SurfaceReply {
+    /// Complete advisory facts and typed acquisition decision.
     Advisory(AdvisoryPackageDto),
     /// Per-locator declaration results.
     Read(Box<[DeclarationRecord]>),
@@ -5236,7 +5241,8 @@ impl SurfaceReply {
             Self::IndexProgress(_) => CommandId::IndexProgress,
             Self::IndexCancellation(_) => CommandId::IndexCancel,
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
-            Self::PackageProfile { .. } | Self::PackageCompilerOutcomes(_) => CommandId::PackageProfile,
+            Self::PackageProfile { .. } | Self::PackageCompilerOutcomes(_) =>
+                CommandId::PackageProfile,
             Self::Subscribed(_) => CommandId::Subscribe,
             Self::Unsubscribed(_) => CommandId::Unsubscribe,
             Self::Subscriptions(_) => CommandId::Subscriptions,
@@ -5356,7 +5362,10 @@ impl SurfaceReply {
                     .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
                 export.entry_count()
             }
-            Self::PackageCompilerOutcomes(outcomes) => { outcomes.admit()?; 1 },
+            Self::PackageCompilerOutcomes(outcomes) => {
+                outcomes.admit()?;
+                1
+            },
             Self::PackageSourceMembershipPage(result) => {
                 if !result.has_admissible_shape() {
                     return Err(ProductAdmissionError::PackageSourceMembershipShape);
@@ -5537,7 +5546,9 @@ impl SurfaceReply {
                             return Err(ProductAdmissionError::RegistryAuthority);
                         }
                     }
-                    if let Some(outcomes) = compiler_outcomes { outcomes.admit()?; }
+                    if let Some(outcomes) = compiler_outcomes {
+                        outcomes.admit()?;
+                    }
                     if let Some(metadata) = source_metadata {
                         metadata.admit()?;
                         if latest.as_ref().is_some_and(|row| {
