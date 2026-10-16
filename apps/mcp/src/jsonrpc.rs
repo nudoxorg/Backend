@@ -1065,6 +1065,14 @@ impl<P: Product> Server<P> {
                     package_graph::GraphToolProjection::Registered,
                 )
             }
+            Ok(Request::Surface(command))
+                if matches!(command.as_ref(), SurfaceCommand::PackageSourceMembership { .. }) =>
+            {
+                let SurfaceCommand::PackageSourceMembership { request } = command.as_ref() else {
+                    unreachable!()
+                };
+                self.source_membership_tool(request, detail, invocation, response_id)
+            }
             Ok(request) if matches!(&request, Request::Search { .. } | Request::Resolve { .. }) => {
                 self.records_tool(&request, detail, continuation, invocation, response_id)
             }
@@ -1487,6 +1495,9 @@ impl<P: Product> Server<P> {
         }
         if let SurfaceCommand::SemanticSource { request } = &command {
             return self.semantic_source_tool(request, detail, invocation, response_id);
+        }
+        if let SurfaceCommand::PackageSourceMembership { request } = &command {
+            return self.source_membership_tool(request, detail, invocation, response_id);
         }
         let operand = surface_error_operand(&command);
         let reply = self
