@@ -711,6 +711,8 @@ impl SyntaxFrontend {
         // cached name/line deduplication even when its own query is unchanged.
         let capture_contract: &[u8] = if language == SourceLanguage::Go {
             b"syntax-capture/exact-owner-name-source-kinds-macros-docs-go-extents-v4\0"
+        } else if language == SourceLanguage::TypeScript {
+            b"syntax-capture/exact-owner-name-source-kinds-macros-docs-typescript-extents-v4\0"
         } else {
             b"syntax-capture/exact-owner-name-source-kinds-macros-docs-v3\0"
         };
@@ -984,16 +986,17 @@ fn captured_definitions<'a>(
         let owner_node = captured_owner_node(language, node, name);
         let name_node = name;
         let binding_identity = if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
-            let extent = if language == SourceLanguage::Go {
-                go_declaration_extent(node, name_node)
+            let (start, end) = if language == SourceLanguage::Go {
+                let extent = go_declaration_extent(node, name_node);
+                (extent.start_byte(), extent.end_byte())
             } else {
-                owner_node
+                typescript_declaration_extent(owner_node)
             };
             SourceBindingIdentity::Exact(
                 SourceBindingCapture::new(
-                    u32::try_from(extent.start_byte())
+                    u32::try_from(start)
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
-                    u32::try_from(extent.end_byte())
+                    u32::try_from(end)
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
                     u32::try_from(name_node.start_byte())
                         .map_err(|_| SyntaxError::TooManySourceBytes)?,
@@ -1096,6 +1099,44 @@ fn captured_owner_node<'a>(
         }
     }
     definition
+}
+
+/// TypeScript's native declaration range includes field terminators and
+/// method decorators. The grammar owns these as class-body siblings rather
+/// than children of the captured declaration. Only those grammar edges may
+/// widen identity; containment and the written excerpt retain their nodes.
+fn typescript_declaration_extent(definition: Node<'_>) -> (usize, usize) {
+    let mut start = definition.start_byte();
+    let mut end = definition.end_byte();
+    if definition
+        .parent()
+        .is_some_and(|parent| parent.kind() == "class_body")
+    {
+        if definition.kind() == "public_field_definition" {
+            let mut next = definition.next_sibling();
+            while let Some(node) = next {
+                if node.kind() == "comment" {
+                    next = node.next_sibling();
+                } else {
+                    if node.kind() == ";" {
+                        end = node.end_byte();
+                    }
+                    break;
+                }
+            }
+        } else if definition.kind() == "method_definition" {
+            let mut previous = definition.prev_sibling();
+            while let Some(node) = previous {
+                match node.kind() {
+                    "decorator" => start = node.start_byte(),
+                    "comment" => {}
+                    _ => break,
+                }
+                previous = node.prev_sibling();
+            }
+        }
+    }
+    (start, end)
 }
 
 /// The Go authority's exact declaration extent (`oracle/docs.go`). A sole
