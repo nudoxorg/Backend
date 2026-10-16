@@ -214,12 +214,35 @@ def _gui_process_diagnostics(pid: int, proc_root: Path = Path("/proc")) -> str:
     """
     deadline = time.monotonic() + 0.5
     proc = proc_root / str(pid)
-    try:
-        child_text = _proc_text(proc / "task" / str(pid) / "children", 256)
-        child_pids = [int(value) for value in child_text.split() if value.isdecimal()]
-    except (OSError, ValueError):
-        child_pids = []
-    pids = [pid, *child_pids[:3]]
+
+    def task_ids(process_pid: int) -> list[int]:
+        task_dir = proc_root / str(process_pid) / "task"
+        try:
+            found = []
+            with os.scandir(task_dir) as entries:
+                for entry in entries:
+                    if time.monotonic() >= deadline:
+                        break
+                    if entry.name.isdecimal():
+                        found.append(int(entry.name))
+                    if len(found) >= 128:
+                        break
+            return found or [process_pid]
+        except OSError:
+            return [process_pid]
+
+    root_tasks = task_ids(pid)
+    child_pids = set()
+    for tid in root_tasks:
+        if time.monotonic() >= deadline:
+            break
+        child_text = _proc_text(proc / "task" / str(tid) / "children", 256)
+        child_pids.update(
+            int(value) for value in child_text.split() if value.isdecimal()
+        )
+        if len(child_pids) >= 3:
+            break
+    pids = [pid, *sorted(child_pids)[:3]]
     details = []
     threads = []
     cwd_details = []
@@ -233,16 +256,7 @@ def _gui_process_diagnostics(pid: int, proc_root: Path = Path("/proc")) -> str:
             cwd = f"unavailable ({error.__class__.__name__})"
         cwd_details.append(f"pid={child_pid} cwd={cwd!r}")
         task_dir = proc_root / str(child_pid) / "task"
-        try:
-            task_entries = []
-            with os.scandir(task_dir) as entries:
-                for entry in entries:
-                    if entry.name.isdecimal():
-                        task_entries.append(int(entry.name))
-                    if len(task_entries) >= 128:
-                        break
-        except OSError:
-            task_entries = [child_pid]
+        task_entries = root_tasks if child_pid == pid else task_ids(child_pid)
         for tid in task_entries:
             if time.monotonic() >= deadline:
                 break
