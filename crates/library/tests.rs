@@ -1676,34 +1676,7 @@ fn one_scalar_query_seeks_its_posting_instead_of_scanning_the_corpus() {
 }
 
 #[test]
-fn cold_index_build_does_not_retain_a_second_copy_of_all_rows() {
-    let (basis, object) = source();
-    let rows = (0..10_000)
-        .map(|index| {
-            Row::new(
-                RowId::Symbol(symbol_key(&format!("pkg::{index:05}"))),
-                Basis::new(basis, object),
-                format!("Name {index:05}"),
-            )
-        })
-        .collect();
-    let library = projection(rows);
-    assert!(!library.view.compatibility_rows_are_materialized());
-    assert_eq!(
-        library
-            .view
-            .row_ref(RowId::Symbol(symbol_key("pkg::00000")))
-            .map(|row| row.label.as_str()),
-        Some("Name 00000")
-    );
-    assert!(!library.view.compatibility_rows_are_materialized());
-
-    assert_eq!(library.view.rows().len(), 10_000);
-    assert!(library.view.compatibility_rows_are_materialized());
-}
-
-#[test]
-fn sequential_one_row_edits_do_not_retain_a_view_history_chain() {
+fn sequential_one_row_edits_preserve_latest_row_state() {
     let source = view_state_root(&[]);
     let object = object_version(b"source");
     let basis = Basis::new(source, object);
@@ -1727,8 +1700,6 @@ fn sequential_one_row_edits_do_not_retain_a_view_history_chain() {
         view.row(id).map(|row| row.label),
         Some("stable-99999".to_owned())
     );
-    let first_rows = view.rows().as_ptr();
-    assert_eq!(view.rows().as_ptr(), first_rows);
 }
 
 #[test]

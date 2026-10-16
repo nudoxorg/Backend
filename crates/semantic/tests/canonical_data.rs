@@ -5,8 +5,6 @@
     clippy::indexing_slicing,
     reason = "fixtures slice fixed arrays to emulate short caller lanes and index snapshots only after exact-equality assertions; out-of-range access in a test is a loud failure, not a silent invariant breach"
 )]
-use core::mem::{align_of, size_of};
-
 use backend_semantic::ir::{
     AtomId, ExternalCoordinate, ExternalFragmentId, ListSpan, ProductChildRole, ProductChildren,
     ProductConstructorFault, ProductConstructorTag, ProductId, ProductListId, ProductRef,
@@ -1486,21 +1484,6 @@ fn malformed_list_and_local_edge_fail_with_exact_coordinates() {
     assert_eq!(after_products, sentinel_product);
     assert_eq!(after_lists, sentinel_list);
     assert_eq!(after_children, []);
-}
-
-#[test]
-fn representation_is_compact_and_scratch_is_explicit() {
-    assert_eq!(size_of::<SemanticAtom<'static>>(), size_of::<&[u8]>());
-    assert_eq!(align_of::<SemanticAtom<'static>>(), align_of::<&[u8]>());
-    assert_eq!(size_of::<SemanticProduct>(), size_of::<u32>() * 2);
-    assert_eq!(
-        size_of::<SemanticProductConstructor>(),
-        size_of::<u32>() * 3
-    );
-    assert_eq!(size_of::<ProductListId>(), size_of::<u32>());
-    assert_eq!(size_of::<DataScratchLane>(), 1);
-    let _ = DataOutputLane::Atoms;
-    let _ = DataResource::Work;
 }
 
 #[test]

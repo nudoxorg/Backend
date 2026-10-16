@@ -4,17 +4,13 @@
 //! Public laws for the minimal immutable-index identity vocabulary.
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_semantic::ir::{DeclarationIdentity, PackageLineage, SemanticImageIdentity};
-use core::{
-    mem::{align_of, size_of},
-    ops::Deref,
-};
-use backend_version::{
-    CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
-};
 use backend_semantic::index_vocabulary::{
     CanonicalEntityLocator, ExactSegmentId, IndexLocatorFacts, IndexSnapshotId, LexicalSegmentId,
     PackageVersion, SemanticImageExtent, SemanticImageLocator, VectorSegmentId,
+};
+use backend_semantic::ir::{DeclarationIdentity, PackageLineage, SemanticImageIdentity};
+use backend_version::{
+    CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
 };
 use std::hint::black_box;
 
@@ -77,22 +73,6 @@ fn lexical_wire_bytes_cannot_be_rebranded_as_an_exact_segment() {
             raw,
         })
     );
-}
-
-#[test]
-fn ids_retain_the_content_digest_layout() {
-    type SnapshotDigest = <IndexSnapshotId as Deref>::Target;
-    type ExactDigest = <ExactSegmentId as Deref>::Target;
-    type LexicalDigest = <LexicalSegmentId as Deref>::Target;
-    type VectorDigest = <VectorSegmentId as Deref>::Target;
-    assert_eq!(size_of::<IndexSnapshotId>(), size_of::<SnapshotDigest>());
-    assert_eq!(align_of::<IndexSnapshotId>(), align_of::<SnapshotDigest>());
-    assert_eq!(size_of::<ExactSegmentId>(), size_of::<ExactDigest>());
-    assert_eq!(align_of::<ExactSegmentId>(), align_of::<ExactDigest>());
-    assert_eq!(size_of::<LexicalSegmentId>(), size_of::<LexicalDigest>());
-    assert_eq!(align_of::<LexicalSegmentId>(), align_of::<LexicalDigest>());
-    assert_eq!(size_of::<VectorSegmentId>(), size_of::<VectorDigest>());
-    assert_eq!(align_of::<VectorSegmentId>(), align_of::<VectorDigest>());
 }
 
 #[test]

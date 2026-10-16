@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "task_id": "W1.3",
+  "title": "Semantic/library representation-only retirements",
+  "review_base": "59281338cf3588795bbecb99acd69cf46393a24d",
+  "cohort": {
+    "reviewed_bodies": 195,
+    "source_files": [
+      {
+        "path": "crates/library/tests.rs",
+        "audited_test_bodies": 40,
+        "base_592_sha256": "ed4d2b47574521c555f36522658111262bc6e719632c190825f06707a1b9391c",
+        "current_sha256": "ce3991672fd9040465c086d399b2c8d030767cbc68e564aa8594df1b0cd71f98",
+        "current_test_bodies": 39
+      },
+      {
+        "path": "crates/semantic/src/tests.rs",
+        "audited_test_bodies": 36,
+        "base_592_sha256": "ce7dc3fde46857b3e699a2e149a7297a1df20c0d913c901e426694045dd63268",
+        "current_sha256": "b83cf1227154bdbc79f0c5079251a7dff4678d80911b61549c991fa890b025a9",
+        "current_test_bodies": 35
+      },
+      {
+        "path": "crates/semantic/tests/semantic_ir.rs",
+        "audited_test_bodies": 21,
+        "base_592_sha256": "55890dd2908eb90e2f0fd5fb109e6698c4200ebd8b1aadf3bc99aef2e4034ffa",
+        "current_sha256": "64122bab45d4cc15c40dc5af10cedb3c7f0bfb816098a16d6c84cfad1df31e1a",
+        "current_test_bodies": 21
+      },
+      {
+        "path": "crates/semantic/tests/canonical_data.rs",
+        "audited_test_bodies": 18,
+        "base_592_sha256": "7a4b55f28786b31cb62b6580598c273f78ecbde4ffe6a799a4ab98851c8fa750",
+        "current_sha256": "c449ca10e0127208e142ae22892cb092453fee92e8b8727d3c9b14959de0388d",
+        "current_test_bodies": 17
+      },
+      {
+        "path": "crates/semantic/tests/type_facts.rs",
+        "audited_test_bodies": 17,
+        "base_592_sha256": "f6431d627169462fe237a8d4ca4121b8b4e7d4268bf0ce84d3be3db49c413658",
+        "current_sha256": "f6431d627169462fe237a8d4ca4121b8b4e7d4268bf0ce84d3be3db49c413658",
+        "current_test_bodies": 17
+      },
+      {
+        "path": "crates/semantic/tests/type_lattice.rs",
+        "audited_test_bodies": 18,
+        "base_592_sha256": "30804129f4db3a8a0ec8b6f8a45343644af615bf82395bf869d824f3e0e0f018",
+        "current_sha256": "30804129f4db3a8a0ec8b6f8a45343644af615bf82395bf869d824f3e0e0f018",
+        "current_test_bodies": 18
+      },
+      {
+        "path": "crates/semantic/tests/index_catalog.rs",
+        "audited_test_bodies": 16,
+        "base_592_sha256": "563146176bdf98450d068d7dbedcfc06fb34d6ab87d4076b2bddcfac10a7e6c3",
+        "current_sha256": "563146176bdf98450d068d7dbedcfc06fb34d6ab87d4076b2bddcfac10a7e6c3",
+        "current_test_bodies": 16
+      },
+      {
+        "path": "crates/semantic/tests/semantic_attacks.rs",
+        "audited_test_bodies": 12,
+        "base_592_sha256": "dbf8bcf8fd1d502ab528a3eec33f998db30a5696aca6a965904fd001b144240b",
+        "current_sha256": "dbf8bcf8fd1d502ab528a3eec33f998db30a5696aca6a965904fd001b144240b",
+        "current_test_bodies": 12
+      },
+      {
+        "path": "crates/semantic/tests/declaration_identity.rs",
+        "audited_test_bodies": 12,
+        "base_592_sha256": "8c971c92c77f4cb71dd53128544f7734ab65b54ffedbcee57854829fb4b0fd7a",
+        "current_sha256": "8c971c92c77f4cb71dd53128544f7734ab65b54ffedbcee57854829fb4b0fd7a",
+        "current_test_bodies": 12
+      },
+      {
+        "path": "crates/semantic/tests/index_vocabulary.rs",
+        "audited_test_bodies": 5,
+        "base_592_sha256": "7d81d8fcc93de2848ec5a375308d3adeb74bc3e12d54c9168ca33dcc369f9689",
+        "current_sha256": "cb1a83d07add78da383facc7963ab1bf609d402f19600990bc2a39c3e6b44eed",
+        "current_test_bodies": 4
+      }
+    ],
+    "prior_per_body_audit": "workspace docs/testing/triage/semantic-library-audit.json, source commit 63c2adffa3e62e0717a87a7267b3bdd41513a48b",
+    "method": "Reuse the existing 998-body per-test dispositions for the cohort; independently recheck only changed tests and named replacement laws. Source hashes identify files only and are not treated as behavior equivalence."
+  },
+  "changes": {
+    "deleted": [
+      {
+        "test": "crates/library/tests.rs::cold_index_build_does_not_retain_a_second_copy_of_all_rows",
+        "reason": "Only the private compatibility-row materialization toggle is unique; exact large-view query result, zero scans and output are retained.",
+        "retained_test": "crates/library/tests.rs::one_scalar_query_seeks_its_posting_instead_of_scanning_the_corpus"
+      },
+      {
+        "test": "crates/semantic/src/tests.rs::immutable_semantic_values_retain_shared_backing_storage",
+        "reason": "All assertions pin Arc pointer identity after clone; there is no value-equality or observable behavior assertion."
+      },
+      {
+        "test": "crates/semantic/tests/canonical_data.rs::representation_is_compact_and_scratch_is_explicit",
+        "reason": "Only private Rust size/alignment and unused enum-variant constructions; typed canonical results and fault operands remain covered."
+      },
+      {
+        "test": "crates/semantic/tests/index_vocabulary.rs::ids_retain_the_content_digest_layout",
+        "reason": "Only private ID newtype size/alignment; canonical-byte equality and typed cross-domain refusal remain covered."
+      }
+    ],
+    "rewritten": [
+      {
+        "from": "crates/library/tests.rs::sequential_one_row_edits_do_not_retain_a_view_history_chain",
+        "to": "crates/library/tests.rs::sequential_one_row_edits_preserve_latest_row_state",
+        "change": "Keep all 100,000 sequential upserts and final-row assertion; remove only pointer self-comparison, which cannot establish history retention."
+      },
+      {
+        "from": "crates/semantic/tests/semantic_ir.rs::transparent_state_terms_pack_directly_without_interning_allocations",
+        "to": "crates/semantic/tests/semantic_ir.rs::interned_nominal_types_preserve_entity_indices",
+        "change": "Keep valid frontend entity setup and exact typed ID mapping; remove private layout, allocation-count and storage-column width assertions."
+      }
+    ]
+  },
+  "counts": {
+    "reviewed_bodies": 195,
+    "deleted_bodies": 4,
+    "rewritten_bodies": 2,
+    "current_bodies": 191,
+    "expected_default_runtime_test_reduction": 4
+  },
+  "validation": {
+    "git_diff_check": "pass",
+    "rustfmt_check": "pass on four modified Rust files; library/tests.rs has unrelated pre-existing rustfmt drift in adjacent code at base 592",
+    "ledger_json_parse": "pass",
+    "Cargo_or_tests_run": false,
+    "exact_required_and_affected_CI_required_before_merge": true
+  }
+}

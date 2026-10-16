@@ -444,20 +444,7 @@ fn exact_reservation_keeps_builder_allocation_calls_constant_as_rows_scale() {
 }
 
 #[test]
-fn transparent_state_terms_pack_directly_without_interning_allocations() {
-    assert_eq!(
-        size_of::<GuardedType<ConcreteState>>(),
-        size_of::<ConcreteType>()
-    );
-    assert_eq!(
-        size_of::<GuardedType<ComputedState>>(),
-        size_of::<ComputedType>()
-    );
-    assert_eq!(
-        size_of::<GuardedType<UnknownState>>(),
-        size_of::<UnknownType>()
-    );
-
+fn interned_nominal_types_preserve_entity_indices() {
     let versions = (0_usize..64)
         .map(|index| {
             let bytes = index.to_le_bytes();
@@ -474,30 +461,19 @@ fn transparent_state_terms_pack_directly_without_interning_allocations() {
         names: &names,
     };
     let mut builder = IrBuilder::new();
-    let reservation = measure(|| builder.reserve_types(versions.len()));
-    assert_eq!(reservation.count_total, 2, "{reservation:?}");
-    assert_eq!(reservation.bytes_total, 1_536, "{reservation:?}");
-    let interning = measure(|| {
-        for raw in 0..versions.len() {
-            let id = builder
-                .intern_guarded(GuardedType::concrete(ConcreteType::Nominal(
-                    backend_semantic::ir::EntityId::new(raw as u32),
-                )))
-                .expect("reserved packed type");
-            assert_eq!(id.erase().raw, raw as u32);
-        }
-    });
-    assert_eq!(interning, AllocationInfo::default());
     builder
         .add_frontend_tree(&tree)
         .expect("valid entity range");
+    for raw in 0..versions.len() {
+        let id = builder
+            .intern_guarded(GuardedType::concrete(ConcreteType::Nominal(
+                backend_semantic::ir::EntityId::new(raw as u32),
+            )))
+            .expect("valid nominal type");
+        assert_eq!(id.erase().raw, raw as u32);
+    }
     let ir = builder.finish().expect("nominal targets become valid");
-    let types = ir.storage_columns().types;
-    assert_eq!(types.headers.len(), versions.len());
-    assert!(types.pairs.is_empty());
-    assert!(types.triples.is_empty());
-    assert!(types.quads.is_empty());
-    assert_eq!(size_of_val(types.headers), versions.len() * 8);
+    assert_eq!(ir.entity_count(), versions.len());
 }
 
 #[test]

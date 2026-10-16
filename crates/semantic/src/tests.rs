@@ -1131,29 +1131,6 @@ fn replacement_deletion_checks_expected_scope() {
 }
 
 #[test]
-fn immutable_semantic_values_retain_shared_backing_storage() {
-    let value = FacetValue::new(FacetKind::Documentation, vec![7; 4096]);
-    assert!(std::sync::Arc::ptr_eq(
-        &value.shared_bytes(),
-        &value.clone().shared_bytes()
-    ));
-
-    let manifest =
-        ReadManifest::new(vec![Read::exact(FacetKind::Name, test_scope(1))]).expect("manifest");
-    assert!(std::sync::Arc::ptr_eq(
-        &manifest.shared_reads(),
-        &manifest.clone().shared_reads()
-    ));
-
-    let facts =
-        FactSet::new(FacetCoverage::complete(complete(8)), vec![1_u32, 3, 5]).expect("fact set");
-    assert!(std::sync::Arc::ptr_eq(
-        &facts.shared_facts(),
-        &facts.clone().shared_facts()
-    ));
-}
-
-#[test]
 fn prefix_range_intersection_matches_implicit_successor() {
     let scope = test_scope(31);
     let prefix = ScopedRead::prefix(FacetKind::Name, scope, vec![0x10, 0xff]);
