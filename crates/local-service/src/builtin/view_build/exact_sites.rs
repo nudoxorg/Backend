@@ -251,6 +251,7 @@ mod tests {
                     authority: EntityAuthorityFacts {
                         source: FactAvailability::Captured,
                         source_file: FactAvailability::Captured,
+                        visibility: FactAvailability::Captured,
                         ..EntityAuthorityFacts::default()
                     },
                     parent: None,
@@ -266,7 +267,11 @@ mod tests {
         items.push(TreeItemInput {
             name: b"parameter_only",
             kind: ItemKind::Parameter,
-            authority: EntityAuthorityFacts::default(),
+            // Visibility is retained from items[0], while source remains unavailable.
+            authority: EntityAuthorityFacts {
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
             source: None,
             ..items[0]
         });
