@@ -9,22 +9,23 @@
   "platforms": {
     "linux-x64": {
       "status": "diagnostic-preview",
-      "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
-      "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
+      "source": "df93af4890005c2bb748928c5a524d1f203fe04f",
+      "tag": "checkpoint-20261016-df93af4890-linux-x64",
       "known_failures": [
-        "Ubuntu 24.04+ / glibc 2.39+ only; October 8 diagnostic binaries.",
-        "Original GNU install/reinstall passed; packed native runtime control timed out.",
-        "Fresh whole-application acceptance remains open; October 9 Rust repairs are not included."
+        "Requires Ubuntu 24.04 or newer with glibc 2.39 or newer; older glibc versions are unsupported.",
+        "Whole-application Angular indexing remains partial: 41 of 50 checks passed.",
+        "SearXNG TypeScript/JavaScript and Python indexing remain incomplete under current deadlines.",
+        "GUI acceptance, semantic vector setup, and upgrades from older releases have not been proven."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/install-linux-x64-8baa4a60be98ee4e.py",
-        "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9",
-        "bytes": 46973
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/install-linux-x64.py",
+        "sha256": "423adce9c0d78a106f71c41cbce980e00bd78bdf90a80c9e5c73c26e528c2cdb",
+        "bytes": 58492
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz",
-        "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
-        "bytes": 133556631
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/nudox-linux-x86_64-df93af4890.tar.gz",
+        "sha256": "3e0a50ac59712eb208bbcb300325866b04a2961cf195c9efa71449625a31cf45",
+        "bytes": 185968883
       }
     },
     "macos-arm64": {
