@@ -1,0 +1,3232 @@
+{
+  "answers": {
+    "cli add": {
+      "exit": 0
+    },
+    "cli outline": {
+      "exit": 0,
+      "json": {
+        "answer": "outline",
+        "budget": {
+          "bytes": 28196,
+          "bytesPerToken": 4,
+          "estimatedTokens": 7049
+        },
+        "declarations": 126,
+        "detail": "summary",
+        "extent": "complete",
+        "package": {
+          "coordinate": "/tmp/nudox-surface/java-jsr305/project",
+          "key": "309d6b17",
+          "name": "project",
+          "project": "/tmp/nudox-surface/java-jsr305/project",
+          "segments": [],
+          "shape": "package",
+          "trail": "project"
+        },
+        "roots": [
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::1468786b9adec583fa9b5ad7ff2d9bef08bfb76e77ee8013326a6ef58012385d::javax.annotation.CheckForNull",
+            "key": "2764fa1b",
+            "kind": "trait",
+            "name": "javax.annotation.CheckForNull"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4a06eb9e749f4f5ee1fea81018c0fb35cd8d0d10f3cfbd6d3cde7ffb8f0ed91e::javax.annotation.CheckForSigned",
+            "key": "88a06ab8",
+            "kind": "trait",
+            "name": "javax.annotation.CheckForSigned"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9cd1e928dcfc49a7a47aed74649f9582e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "832859c5",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::db8bb8831d00cf90095adf6f80be6a3ff8f3f5afcd2f3e38dad25f87efcc4123::when",
+                "key": "e0b5bd76",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::37d6643281837c3871fa7234ffaa677c32bd0baf31f75b00b5c2599ba41c6a1c::javax.annotation.CheckReturnValue",
+            "key": "f7fc3f4a",
+            "kind": "trait",
+            "name": "javax.annotation.CheckReturnValue"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::325391d419482a6309df61fe0b80b39d1b69b45ae6e2800b6ad6c68fb4ecdcc6::javax.annotation.Detainted",
+            "key": "863f5d11",
+            "kind": "trait",
+            "name": "javax.annotation.Detainted"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fd6bf8a60b1e4384a64d8a653820d8007f49a64ee162b7da664ea05cebcd890b::annotation",
+                        "key": "06e25938",
+                        "kind": "variable",
+                        "name": "annotation"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6044fdd946bd3e9628a28fe9e7e05ba8cc5623f419ee19480852755f3d631e51::value",
+                        "key": "18ac68e0",
+                        "kind": "variable",
+                        "name": "value"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c8c721382e109fb1969b4b168c64779ee64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                        "key": "98dea1b5",
+                        "kind": "variable",
+                        "name": "javax.annotation.meta.When"
+                      }
+                    ],
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e3a1f3e995fc8c8fd7cfd38d728d3c0ae887816211a67736542051bb764583fa::forConstantValue",
+                    "key": "f9c805db",
+                    "kind": "function",
+                    "name": "forConstantValue"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c92641116fc231c8f0f9a49ca6d64d395337f69e8da027b97d0663a19de55565::<init>",
+                    "key": "c71c8afe",
+                    "kind": "function",
+                    "name": "<init>"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::890905ef8dbcf6c5968909135537cdcd1cdbf21e13f9ce3743b424de1fca27a7::javax.annotation.MatchesPattern.Checker",
+                "key": "61cf0d83",
+                "kind": "struct",
+                "name": "javax.annotation.MatchesPattern.Checker"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ba0fae27829bab1f57b1a4775caf11ebb64beb792889b0bda7792787824a5326::int",
+                    "key": "1e90a4d5",
+                    "kind": "variable",
+                    "name": "int"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::558a2a4e60e49c79caca015230df353871a69706e58906da91239a50f09aa423::flags",
+                "key": "6cb5f306",
+                "kind": "function",
+                "name": "flags"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a3a90d3fcda1ad378de83011030de6b8c60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                    "key": "97da992b",
+                    "kind": "variable",
+                    "name": "java.lang.String"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::38e17fe8d68879ae87b57d717a45ebe8306dc849cd26fe041a23aeb5fb6e607f::value",
+                "key": "dcbe789e",
+                "kind": "function",
+                "name": "value"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::7e5e4d00d4f7443072306c069a6210a281bfba256611737798d74dea48e7b916::javax.annotation.MatchesPattern",
+            "key": "1bad99c2",
+            "kind": "trait",
+            "name": "javax.annotation.MatchesPattern"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::03a57fc5e8ace7029b5502b5a601c0eda8f23bd788a43d19c7d8101905bfd4dc::annotation",
+                        "key": "14d1bc5d",
+                        "kind": "variable",
+                        "name": "annotation"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::41367b50862513c99c2cf8d46511a601e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                        "key": "1d062ace",
+                        "kind": "variable",
+                        "name": "javax.annotation.meta.When"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::19853fb641a6462479883ac1fe13fcb6c167cad27a74069800d1ab610e8e48eb::v",
+                        "key": "64d3c47d",
+                        "kind": "variable",
+                        "name": "v"
+                      }
+                    ],
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ed97626d8c4c37e5c933bb82c4313b1b7f00089aa37d4cf58a63df4912d70356::forConstantValue",
+                    "key": "a6761b4a",
+                    "kind": "function",
+                    "name": "forConstantValue"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2ec31a89bb44f27119e6033b68a481f15337f69e8da027b97d0663a19de55565::<init>",
+                    "key": "713c42ef",
+                    "kind": "function",
+                    "name": "<init>"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::86ee2ceae241785441680fe1f5c26085673bdb9bc1d5d414dbfff401ed9a322b::javax.annotation.Nonnegative.Checker",
+                "key": "77d8eb6a",
+                "kind": "struct",
+                "name": "javax.annotation.Nonnegative.Checker"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::61d5f784d48f8880749be91b5a81bdd8e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "f9dd452d",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::5df49f5bbd424748f4f19b70f7fc86330aeb2dbe77fa16d796333d35447fd324::when",
+                "key": "20373867",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fa921cb198b50d442a5e9bc972a7c9f5db796d00a6f9e757aed8dec1025a0f0d::javax.annotation.Nonnegative",
+            "key": "ed5af013",
+            "kind": "trait",
+            "name": "javax.annotation.Nonnegative"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::78f2ee4fba8e27aaf8d37a34914279d0e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                        "key": "333559d3",
+                        "kind": "variable",
+                        "name": "javax.annotation.meta.When"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6e810af2a4a1a0a38a2186cfacb8c6e2cc5623f419ee19480852755f3d631e51::value",
+                        "key": "7972bff6",
+                        "kind": "variable",
+                        "name": "value"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b7d12d713afdd138c7587789411a5eef58dabab7f43139aaa6e98fe7c2287fbc::qualifierArgument",
+                        "key": "92ed60f9",
+                        "kind": "variable",
+                        "name": "qualifierArgument"
+                      }
+                    ],
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0672c592d849ab093aa678b4b96c9f5cc154994a3c9dc5197a8fd29f44e8281d::forConstantValue",
+                    "key": "c4e557d0",
+                    "kind": "function",
+                    "name": "forConstantValue"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3ce1b7331d80fe761bc36e411298ef905337f69e8da027b97d0663a19de55565::<init>",
+                    "key": "25462dd2",
+                    "kind": "function",
+                    "name": "<init>"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b351e73305039e888f6bd14fd0bd567ed50d1fc1a6399437769449a3710d5ff6::javax.annotation.Nonnull.Checker",
+                "key": "83289102",
+                "kind": "struct",
+                "name": "javax.annotation.Nonnull.Checker"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f106fa73afb79b59bf2f1432dd553775e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "c4f1d306",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::1c98f61f8db25ae9e9528bda39ba79655442acf341952c449439ddbc2e40facd::when",
+                "key": "f5c4f518",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull",
+            "key": "fe3155be",
+            "kind": "trait",
+            "name": "javax.annotation.Nonnull"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+            "key": "83261468",
+            "kind": "trait",
+            "name": "javax.annotation.Nullable"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::944ec7f3eaaad3b0400d6fd3562877bb8e445691fb850dc644c4fa7984796d1b::javax.annotation.OverridingMethodsMustInvokeSuper",
+            "key": "554fcda5",
+            "kind": "trait",
+            "name": "javax.annotation.OverridingMethodsMustInvokeSuper"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+            "key": "ed71e2a4",
+            "kind": "trait",
+            "name": "javax.annotation.ParametersAreNonnullByDefault"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault",
+            "key": "b6ccf4cb",
+            "kind": "trait",
+            "name": "javax.annotation.ParametersAreNullableByDefault"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4f12abaf07c321449264df0971fc7fd8e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "1988600c",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::d114066c7caddc2c7800a540b0cc16dba177b210728cbb53fec6f5350111359a::when",
+                "key": "e0af6e2c",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3e45e980ca210d5fb1cad86e6fe281cd093d4801fef64b2e66cadb283267a176::javax.annotation.PropertyKey",
+            "key": "0aa463aa",
+            "kind": "trait",
+            "name": "javax.annotation.PropertyKey"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::51b64ae9bdbcbf249cdd6318877c13e4cc5623f419ee19480852755f3d631e51::value",
+                        "key": "739bf2a2",
+                        "kind": "variable",
+                        "name": "value"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0d96cccc59f15f3bef6dfc9c44852ff7654ba06f0e744bc21802fcdb50fdf9c3::annotation",
+                        "key": "8d8d604c",
+                        "kind": "variable",
+                        "name": "annotation"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a15b7726e9873a0458d703aadcf0bcf3e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                        "key": "907de4b0",
+                        "kind": "variable",
+                        "name": "javax.annotation.meta.When"
+                      }
+                    ],
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f879a00c63db14674d087c71f8329d0ab22765c1553926e5225183f8b4f1817b::forConstantValue",
+                    "key": "1ce756c3",
+                    "kind": "function",
+                    "name": "forConstantValue"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2ac83339bd9b96bda243603fe7d219b85337f69e8da027b97d0663a19de55565::<init>",
+                    "key": "61e97459",
+                    "kind": "function",
+                    "name": "<init>"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::959a118586da34529895dc2bad4f1f03b0e0f0141079769ea5092f0c61df11ad::javax.annotation.RegEx.Checker",
+                "key": "aea70b78",
+                "kind": "struct",
+                "name": "javax.annotation.RegEx.Checker"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::41a2d6343c402f6e897aa57923cd8229e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "02cdff9d",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::82c214a30edd284d3fc2edb5c05d00894a63df1ebc47e9a1095905fad761ca72::when",
+                "key": "b83c2316",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::048abeeced745a923a304d97a427dfad231a87d7689b52e4f277e196304ddee5::javax.annotation.RegEx",
+            "key": "b713e326",
+            "kind": "trait",
+            "name": "javax.annotation.RegEx"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2f66cdd7196631e3f9747ab31c435bb88f4041b51ed4f6bdbbfe2fd9fa618a47::javax.annotation.Signed",
+            "key": "0857ce38",
+            "kind": "trait",
+            "name": "javax.annotation.Signed"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::77f8a06df82f8a543d9fd24d644abdfdc60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                    "key": "24832755",
+                    "kind": "variable",
+                    "name": "java.lang.String"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9140b7670f9b06e77e2f5b1e101bdc1d3bc690f5967316a48c2de3e0b0347680::value",
+                "key": "2748b0db",
+                "kind": "function",
+                "name": "value"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::58d6b18e65309a289ddb91b85d222147e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "7b43baa4",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2c394dc5cb91f508e07fef2e84d626ff33c132be26f2634cb270e06aca02b452::when",
+                "key": "8f09c248",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4fac6a3b4a16a9c47d12d940ff40b27e916b56464d4203074935496bd0a11b4e::javax.annotation.Syntax",
+            "key": "e3153d6d",
+            "kind": "trait",
+            "name": "javax.annotation.Syntax"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4f2915511b70fad01cc7a0c32f169c7850406d9c2b88e9aaadb5ae5d175322b6::javax.annotation.Tainted",
+            "key": "f17c124d",
+            "kind": "trait",
+            "name": "javax.annotation.Tainted"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a5943ab188c10e4ad271f645c06180d0e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "914c38a8",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::be343733f0dd9a9c6d661bb1ad7dfba21c2cca7394649184c085343e51879bb4::when",
+                "key": "66b499ee",
+                "kind": "function",
+                "name": "when"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::55b78db3c18513d197becf160c3e269d4370a928b7b8b46e78ba25f84edb7450::javax.annotation.Untainted",
+            "key": "4875e8b8",
+            "kind": "trait",
+            "name": "javax.annotation.Untainted"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::255dea1b32787a1c8a02822adba821b8d579bdc24a1f0baff68f875dcd274801::javax.annotation.WillClose",
+            "key": "a1c2858a",
+            "kind": "trait",
+            "name": "javax.annotation.WillClose"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::baf406d860e376baf87754e29ef2494d70a0365719b9df2f4d6ed819f7ff9479::javax.annotation.WillCloseWhenClosed",
+            "key": "10003e07",
+            "kind": "trait",
+            "name": "javax.annotation.WillCloseWhenClosed"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a710868c5a094ba44d4f81106eb9fa5c8f9e6ec3069a379075d6700c17103f82::javax.annotation.WillNotClose",
+            "key": "23e58e5a",
+            "kind": "trait",
+            "name": "javax.annotation.WillNotClose"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::253e56da5c638659604dd02b0c5b0768c60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                    "key": "778044a5",
+                    "kind": "variable",
+                    "name": "java.lang.String"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a0016d32f0e228ba8a94b2897eeafa40aa647db52416959b31fab15f3655c3df::value",
+                "key": "4875dbdf",
+                "kind": "function",
+                "name": "value"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::68121b5ea1127ae50ef9d1dcea6c9fb08f2819f5c60fb8579f6137184bcc94c9::javax.annotation.concurrent.GuardedBy",
+            "key": "3ed41f4c",
+            "kind": "trait",
+            "name": "javax.annotation.concurrent.GuardedBy"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::962d2da5fc99f40fe4540405be468469c5fcc44a7ec0132435f1f293f64a862d::javax.annotation.concurrent.Immutable",
+            "key": "057a3b73",
+            "kind": "trait",
+            "name": "javax.annotation.concurrent.Immutable"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::06ee1624b7831843e1d138786b1f3a342c1898338cc81df124948ddb85fdcb51::javax.annotation.concurrent.NotThreadSafe",
+            "key": "57464327",
+            "kind": "trait",
+            "name": "javax.annotation.concurrent.NotThreadSafe"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::680fabcfb7c68b51fe6c11b237a141ec2e3768d2e93aeb10d6d0fa701a04c79a::javax.annotation.concurrent.ThreadSafe",
+            "key": "004b0f76",
+            "kind": "trait",
+            "name": "javax.annotation.concurrent.ThreadSafe"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::33249fcfa1b9638d5e3ab1c274defdb4f4ee9c546806e720d7ad82a2e205359a::javax.annotation.meta.Exclusive",
+            "key": "258d221d",
+            "kind": "trait",
+            "name": "javax.annotation.meta.Exclusive"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ea15f5329c47485ecfe6bc8664e458a80c69dde1add3ef50e9260eeae32cff82::javax.annotation.meta.Exhaustive",
+            "key": "3ae9bd43",
+            "kind": "trait",
+            "name": "javax.annotation.meta.Exhaustive"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e3f2302ccacc5ea83d6556ce9bd547826d05f20e8f1807a424389dcae43b9640::java.lang.Class",
+                    "key": "8c92a7c5",
+                    "kind": "variable",
+                    "name": "java.lang.Class"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9fe411f5143d9000112d6d288a3754c282f21b895402080d239f68353dd7f349::applicableTo",
+                "key": "9e0513c9",
+                "kind": "function",
+                "name": "applicableTo"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ff9d23437c4a9443179d69a1f55130ca5f73413d1c176ec9b439ec53e76f0e0f::javax.annotation.meta.TypeQualifier",
+            "key": "767685aa",
+            "kind": "trait",
+            "name": "javax.annotation.meta.TypeQualifier"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::51f589fbffab607c2f898bfc758e1e6a5297502aa1b561961572cdec61693fee::java.lang.annotation.ElementType",
+                    "key": "f77e11fe",
+                    "kind": "variable",
+                    "name": "java.lang.annotation.ElementType"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ce287f8849c7d5f4be5712881657eafea8ff575a30259e3c24de37f69503788d::value",
+                "key": "74437208",
+                "kind": "function",
+                "name": "value"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0ce52513b4ac5b38ffef02682587f14e9d15be56d6d8a6d299eb93a97f59fa8e::javax.annotation.meta.TypeQualifierDefault",
+            "key": "8b1d1c7d",
+            "kind": "trait",
+            "name": "javax.annotation.meta.TypeQualifierDefault"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ba625836b55743ebf1b14578221537a6ed468ec182b317dfa6af8b559fc1276b::javax.annotation.meta.TypeQualifierNickname",
+            "key": "8cbf6b7f",
+            "kind": "trait",
+            "name": "javax.annotation.meta.TypeQualifierNickname"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fb9e4a080e9b846adb3b183431ca025ae64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                    "key": "3b35fa0e",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6ebf1f7dbb072b25acabaceb18c66a40c40be52b34a02ded9886482a8d39a998::annotation",
+                    "key": "4aa3c27f",
+                    "kind": "variable",
+                    "name": "annotation"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::55994cdd9871ebe5ce8bd0851e0c66e8cc5623f419ee19480852755f3d631e51::value",
+                    "key": "aa799c0f",
+                    "kind": "variable",
+                    "name": "value"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::454c25f336344d6464e809c6e33097dd1688b886f5a74eaa6d4c78cb471f2082::forConstantValue",
+                "key": "5b3d43b1",
+                "kind": "function",
+                "name": "forConstantValue"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a3cf29f2bb8931a11d1adc335423b5aa4ce76c783d5c88fb0b82294e734a8b20::javax.annotation.meta.TypeQualifierValidator",
+            "key": "6ada4a5b",
+            "kind": "trait",
+            "name": "javax.annotation.meta.TypeQualifierValidator"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::70d3c3ea10ca750dd725ef30c6faeb172b5900048e3a8c7f707650c0423eddd0::ALWAYS",
+                "key": "609aa9c9",
+                "kind": "constant",
+                "name": "ALWAYS"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::373a297cb05dc4cc70737366a4156b3d726d3f9b461689676f9d7a1d682b0059::MAYBE",
+                "key": "7187b3fc",
+                "kind": "constant",
+                "name": "MAYBE"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f90819de3defe517feb81655468e4f924ad4e022f1ce9391e2ed6babd11ee685::NEVER",
+                "key": "8d19d34c",
+                "kind": "constant",
+                "name": "NEVER"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::61fb96534dc5228e352f3849139c8c653f4665b936584ad3ddaa7fb5be7a5ff2::UNKNOWN",
+                "key": "8f02cb57",
+                "kind": "constant",
+                "name": "UNKNOWN"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3e7994385d02f4a53e975ffb51e0eb8ea46f2830808037b9cbb958f1b47adc82::javax.annotation.meta.When",
+                    "key": "5e431c2e",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4c8886fff9e7bd28bbd9b014133ac14218886abae6e8e589f2af4bc52b2dd1bc::name",
+                    "key": "e3cf9ed2",
+                    "kind": "variable",
+                    "name": "name"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a310b83a79c06c2fdb89e219958b61c9a0e28978e5646ccbfcde8209002e8331::valueOf",
+                "key": "60b88bff",
+                "kind": "function",
+                "name": "valueOf"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a1c1ed1f92a588ef8369141fa384faf45337f69e8da027b97d0663a19de55565::<init>",
+                "key": "ead1392f",
+                "kind": "function",
+                "name": "<init>"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ef75718cb5c035f9345d9a384015f3bda323046b148337a3e4886c4b5b6493a8::javax.annotation.meta.When",
+                    "key": "352e3d7d",
+                    "kind": "variable",
+                    "name": "javax.annotation.meta.When"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b2e3c40ee9e0aaac54a923dc35f299d3dc2e4974ba572220c3b0809e77517638::values",
+                "key": "f9cd3532",
+                "kind": "function",
+                "name": "values"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c35fd6d8420e20b7f1f213771edf5c22aadb8848619021908547d43097e42f56::javax.annotation.meta.When",
+            "key": "386c2c98",
+            "kind": "enum",
+            "name": "javax.annotation.meta.When"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fd769a2fb093a93aac27cc5466c31c4fe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "11eaf7d6",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::eb351982280e25deb2eeb5c20241c90ae37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "2160e654",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::477b06d3b1fefd0c4396604ecd242ed3bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+            "key": "2718c945",
+            "kind": "module",
+            "name": "javax.annotation.concurrent"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4d387b5799b4fe560ba352ed4956ff89c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "37c43f1e",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::53837f1b02403e7d84556f13e3e93fe9c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "3dd35010",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e0b135587cfb5cbd6628f363793ee2c8c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "4d22679e",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::dee3f6eb35b893a6067924cff5a70719e37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "5e26c205",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9d546a51a085ed97d0c229f2ff986928c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "5eaa7b3c",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4970f86247a14e59df23d2eebf64fa23c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "66eba26d",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::8de38b1951cffb41eb225f6ebb145fa8c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "6a3ddfd9",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::8cd0ac7aeee56a1f28a6c4c812047794c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "75107802",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fa52e099b5fe9efcd8a2a3ac3add56f0bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+            "key": "7959702a",
+            "kind": "module",
+            "name": "javax.annotation.concurrent"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::bbf8dc5ad4379934072dfcc925385c24c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "7d538375",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e19cca2187a4fb9c2c8840693c8e5f3ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "84e8399b",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c594e6ceb0405348301606c22697b8e1bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+            "key": "8cf61779",
+            "kind": "module",
+            "name": "javax.annotation.concurrent"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c958fa74129066ce9559965cd6f75e59c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "a05cbd49",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::7a9d1cb09502914c3d206b2dcd0d090ac0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "b15d4d26",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ccef0b8985bfc2b78227c1533aded152c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "b5f2dd32",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4ab79af22e1e5d6c6c802e4548be249ee37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "b98e288a",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2d6ad8df9e4a22b51f52e309f59daebbe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "bf2bff9a",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::66f729e1321a91d8d65891e60706efd5bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+            "key": "c139bf0f",
+            "kind": "module",
+            "name": "javax.annotation.concurrent"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e61d0f95a4f283e7392e0edeef6630d4c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "c17204df",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e99562897344278b13e9efa3aeff07d6c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "c547231e",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f3af5a2cd1eae6fbbcf6178dd7d6dc75c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "c85a4669",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::144d39100828ed5534bceabcd107dcaae37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "cc1b13bb",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ad2250415e91800844872e9c94644176c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "d072ac24",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::33926ab5596b0840e43a57c9345efc9ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "d315b399",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::637fbd46f7eb6ec416a731a4e9c6b924c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "e4055e35",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::d54388454a2cec2025cdf4f39b70138fe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+            "key": "ecbab8e1",
+            "kind": "module",
+            "name": "javax.annotation.meta"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::12a21cc448855a1465292f6ea662311ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "ee601682",
+            "kind": "module",
+            "name": "javax.annotation"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::5bdc8c45da1b07b0b359cc502bd6f74fc0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+            "key": "f98c3274",
+            "kind": "module",
+            "name": "javax.annotation"
+          }
+        ],
+        "unnamed": 0
+      }
+    },
+    "cli packages": {
+      "exit": 0,
+      "json": {
+        "answer": "shelf",
+        "budget": {
+          "bytes": 378,
+          "bytesPerToken": 4,
+          "estimatedTokens": 95
+        },
+        "detail": "summary",
+        "projects": [
+          {
+            "declarations": null,
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project",
+              "key": "309d6b17",
+              "name": "project",
+              "project": "/tmp/nudox-surface/java-jsr305/project",
+              "segments": [],
+              "shape": "package",
+              "trail": "project"
+            },
+            "readiness": "ready"
+          }
+        ],
+        "revision": "20f65202"
+      }
+    },
+    "cli search Nonnull": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 7426,
+          "bytesPerToken": 4,
+          "estimatedTokens": 1857
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Nonnull",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+              "line": 25,
+              "name": "javax.annotation.Nullable",
+              "path": "javax/annotation/Nullable.java",
+              "segments": [
+                "javax.annotation.Nullable"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  131,
+                  38,
+                  20,
+                  104,
+                  107,
+                  187,
+                  202,
+                  88,
+                  1,
+                  143,
+                  96,
+                  168,
+                  255,
+                  111,
+                  22,
+                  178,
+                  32,
+                  61,
+                  171,
+                  179,
+                  35,
+                  144,
+                  209,
+                  88,
+                  101,
+                  90,
+                  10,
+                  252,
+                  232,
+                  161,
+                  184,
+                  121
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "The annotated element could be null under some circumstances."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+              "line": 23,
+              "name": "javax.annotation.ParametersAreNonnullByDefault",
+              "path": "javax/annotation/ParametersAreNonnullByDefault.java",
+              "segments": [
+                "javax.annotation.ParametersAreNonnullByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  237,
+                  113,
+                  226,
+                  164,
+                  155,
+                  224,
+                  141,
+                  119,
+                  112,
+                  27,
+                  14,
+                  7,
+                  120,
+                  22,
+                  23,
+                  74,
+                  227,
+                  115,
+                  249,
+                  138,
+                  102,
+                  77,
+                  16,
+                  15,
+                  157,
+                  195,
+                  132,
+                  247,
+                  192,
+                  58,
+                  255,
+                  78
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967294,
+            "state": "ready",
+            "summary": "This annotation can be applied to a package, class or method to indicate that"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull",
+              "line": 18,
+              "name": "javax.annotation.Nonnull",
+              "path": "javax/annotation/Nonnull.java",
+              "segments": [
+                "javax.annotation.Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  254,
+                  49,
+                  85,
+                  190,
+                  173,
+                  23,
+                  100,
+                  64,
+                  134,
+                  233,
+                  180,
+                  57,
+                  243,
+                  196,
+                  190,
+                  101,
+                  3,
+                  3,
+                  217,
+                  104,
+                  207,
+                  192,
+                  235,
+                  94,
+                  69,
+                  158,
+                  17,
+                  80,
+                  48,
+                  58,
+                  121,
+                  135
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/Nonnull.java:18 › javax.annotation.Nonnull"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967293,
+            "state": "ready",
+            "summary": "The annotated element must not be null."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault",
+              "line": 25,
+              "name": "javax.annotation.ParametersAreNullableByDefault",
+              "path": "javax/annotation/ParametersAreNullableByDefault.java",
+              "segments": [
+                "javax.annotation.ParametersAreNullableByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  182,
+                  204,
+                  244,
+                  203,
+                  100,
+                  118,
+                  114,
+                  129,
+                  110,
+                  14,
+                  120,
+                  250,
+                  88,
+                  97,
+                  99,
+                  238,
+                  118,
+                  15,
+                  81,
+                  184,
+                  214,
+                  122,
+                  194,
+                  91,
+                  8,
+                  53,
+                  22,
+                  159,
+                  172,
+                  200,
+                  46,
+                  80
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967292,
+            "state": "ready",
+            "summary": "This annotation can be applied to a package, class or method to indicate that"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b351e73305039e888f6bd14fd0bd567ed50d1fc1a6399437769449a3710d5ff6::javax.annotation.Nonnull.Checker",
+              "line": 24,
+              "name": "javax.annotation.Nonnull.Checker",
+              "path": "javax/annotation/Nonnull.java",
+              "segments": [
+                "javax.annotation.Nonnull.Checker"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  131,
+                  40,
+                  145,
+                  2,
+                  61,
+                  5,
+                  240,
+                  61,
+                  94,
+                  171,
+                  100,
+                  5,
+                  190,
+                  242,
+                  32,
+                  242,
+                  161,
+                  70,
+                  62,
+                  0,
+                  196,
+                  246,
+                  121,
+                  156,
+                  220,
+                  149,
+                  215,
+                  5,
+                  33,
+                  208,
+                  18,
+                  233
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/Nonnull.java:24 › javax.annotation.Nonnull.Checker"
+            },
+            "kind": "struct",
+            "language": "java",
+            "score": 4294967291,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:517a689c38f6d56ae121126f681308ff9affec5332482cf5d88d436c92f5972d::Nonnull",
+              "name": "Nonnull",
+              "segments": [
+                "Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  81,
+                  122,
+                  104,
+                  156,
+                  56,
+                  246,
+                  213,
+                  106,
+                  225,
+                  33,
+                  18,
+                  111,
+                  104,
+                  19,
+                  8,
+                  255,
+                  154,
+                  255,
+                  236,
+                  83,
+                  50,
+                  72,
+                  44,
+                  245,
+                  216,
+                  141,
+                  67,
+                  108,
+                  146,
+                  245,
+                  151,
+                  45
+                ]
+              },
+              "shape": "external",
+              "trail": "project › Nonnull"
+            },
+            "language": "unknown",
+            "score": 4294967290,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:11fb3f28f6f367711f84fb9f45435ebc92d98048c785b609477af70aced2001f::javax.annotation.Nonnull",
+              "name": "javax.annotation.Nonnull",
+              "segments": [
+                "javax.annotation.Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  17,
+                  251,
+                  63,
+                  40,
+                  246,
+                  243,
+                  103,
+                  113,
+                  31,
+                  132,
+                  251,
+                  159,
+                  69,
+                  67,
+                  94,
+                  188,
+                  146,
+                  217,
+                  128,
+                  72,
+                  199,
+                  133,
+                  182,
+                  9,
+                  71,
+                  122,
+                  247,
+                  10,
+                  206,
+                  210,
+                  0,
+                  31
+                ]
+              },
+              "shape": "external",
+              "trail": "project › javax.annotation.Nonnull"
+            },
+            "language": "unknown",
+            "score": 4294967289,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:25d57ce131454ab26fa7193dcddd68e15925bacd18f9cfc0f92f4fe6334da178::javax.annotation.Nonnull",
+              "name": "javax.annotation.Nonnull",
+              "segments": [
+                "javax.annotation.Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  37,
+                  213,
+                  124,
+                  225,
+                  49,
+                  69,
+                  74,
+                  178,
+                  111,
+                  167,
+                  25,
+                  61,
+                  205,
+                  221,
+                  104,
+                  225,
+                  89,
+                  37,
+                  186,
+                  205,
+                  24,
+                  249,
+                  207,
+                  192,
+                  249,
+                  47,
+                  79,
+                  230,
+                  51,
+                  77,
+                  161,
+                  120
+                ]
+              },
+              "shape": "external",
+              "trail": "project › javax.annotation.Nonnull"
+            },
+            "language": "unknown",
+            "score": 4294967288,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:3d3600582e617628b1860d0022c278d3e9d63bd59fb71eba20d7ef6269d735e0::javax.annotation.Nonnull",
+              "name": "javax.annotation.Nonnull",
+              "segments": [
+                "javax.annotation.Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  61,
+                  54,
+                  0,
+                  88,
+                  46,
+                  97,
+                  118,
+                  40,
+                  177,
+                  134,
+                  13,
+                  0,
+                  34,
+                  194,
+                  120,
+                  211,
+                  233,
+                  214,
+                  59,
+                  213,
+                  159,
+                  183,
+                  30,
+                  186,
+                  32,
+                  215,
+                  239,
+                  98,
+                  105,
+                  215,
+                  53,
+                  224
+                ]
+              },
+              "shape": "external",
+              "trail": "project › javax.annotation.Nonnull"
+            },
+            "language": "unknown",
+            "score": 4294967287,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:9d9fa283f500a7cd50adbdcd3ef9ff5f8a6f6e6a4c29b2bd0cccc105eaa8d5f9::javax.annotation.Nonnull",
+              "name": "javax.annotation.Nonnull",
+              "segments": [
+                "javax.annotation.Nonnull"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  157,
+                  159,
+                  162,
+                  131,
+                  245,
+                  0,
+                  167,
+                  205,
+                  80,
+                  173,
+                  189,
+                  205,
+                  62,
+                  249,
+                  255,
+                  95,
+                  138,
+                  111,
+                  110,
+                  106,
+                  76,
+                  41,
+                  178,
+                  189,
+                  12,
+                  204,
+                  193,
+                  5,
+                  234,
+                  168,
+                  213,
+                  249
+                ]
+              },
+              "shape": "external",
+              "trail": "project › javax.annotation.Nonnull"
+            },
+            "language": "unknown",
+            "score": 4294967286,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:623cf53ecd64137e0d3b27f259062385c69aea6bca1b0ebbedfdf84a2feb6c92::ParametersAreNonnullByDefault",
+              "name": "ParametersAreNonnullByDefault",
+              "segments": [
+                "ParametersAreNonnullByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  98,
+                  60,
+                  245,
+                  62,
+                  205,
+                  100,
+                  19,
+                  126,
+                  13,
+                  59,
+                  39,
+                  242,
+                  89,
+                  6,
+                  35,
+                  133,
+                  198,
+                  154,
+                  234,
+                  107,
+                  202,
+                  27,
+                  14,
+                  187,
+                  237,
+                  253,
+                  248,
+                  74,
+                  47,
+                  235,
+                  108,
+                  146
+                ]
+              },
+              "shape": "external",
+              "trail": "project › ParametersAreNonnullByDefault"
+            },
+            "language": "unknown",
+            "score": 4294967285,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search Nullable": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 3976,
+          "bytesPerToken": 4,
+          "estimatedTokens": 994
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Nullable",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault",
+              "line": 25,
+              "name": "javax.annotation.ParametersAreNullableByDefault",
+              "path": "javax/annotation/ParametersAreNullableByDefault.java",
+              "segments": [
+                "javax.annotation.ParametersAreNullableByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  182,
+                  204,
+                  244,
+                  203,
+                  100,
+                  118,
+                  114,
+                  129,
+                  110,
+                  14,
+                  120,
+                  250,
+                  88,
+                  97,
+                  99,
+                  238,
+                  118,
+                  15,
+                  81,
+                  184,
+                  214,
+                  122,
+                  194,
+                  91,
+                  8,
+                  53,
+                  22,
+                  159,
+                  172,
+                  200,
+                  46,
+                  80
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "This annotation can be applied to a package, class or method to indicate that"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+              "line": 25,
+              "name": "javax.annotation.Nullable",
+              "path": "javax/annotation/Nullable.java",
+              "segments": [
+                "javax.annotation.Nullable"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  131,
+                  38,
+                  20,
+                  104,
+                  107,
+                  187,
+                  202,
+                  88,
+                  1,
+                  143,
+                  96,
+                  168,
+                  255,
+                  111,
+                  22,
+                  178,
+                  32,
+                  61,
+                  171,
+                  179,
+                  35,
+                  144,
+                  209,
+                  88,
+                  101,
+                  90,
+                  10,
+                  252,
+                  232,
+                  161,
+                  184,
+                  121
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967294,
+            "state": "ready",
+            "summary": "The annotated element could be null under some circumstances."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+              "line": 23,
+              "name": "javax.annotation.ParametersAreNonnullByDefault",
+              "path": "javax/annotation/ParametersAreNonnullByDefault.java",
+              "segments": [
+                "javax.annotation.ParametersAreNonnullByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  237,
+                  113,
+                  226,
+                  164,
+                  155,
+                  224,
+                  141,
+                  119,
+                  112,
+                  27,
+                  14,
+                  7,
+                  120,
+                  22,
+                  23,
+                  74,
+                  227,
+                  115,
+                  249,
+                  138,
+                  102,
+                  77,
+                  16,
+                  15,
+                  157,
+                  195,
+                  132,
+                  247,
+                  192,
+                  58,
+                  255,
+                  78
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
+            },
+            "kind": "trait",
+            "language": "java",
+            "score": 4294967293,
+            "state": "ready",
+            "summary": "This annotation can be applied to a package, class or method to indicate that"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:aeaf85667fee3c61c285564d539a45aec9b11a818f9528ad5d79da3a0f93c507::javax.annotation.Nullable",
+              "name": "javax.annotation.Nullable",
+              "segments": [
+                "javax.annotation.Nullable"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  174,
+                  175,
+                  133,
+                  102,
+                  127,
+                  238,
+                  60,
+                  97,
+                  194,
+                  133,
+                  86,
+                  77,
+                  83,
+                  154,
+                  69,
+                  174,
+                  201,
+                  177,
+                  26,
+                  129,
+                  143,
+                  149,
+                  40,
+                  173,
+                  93,
+                  121,
+                  218,
+                  58,
+                  15,
+                  147,
+                  197,
+                  7
+                ]
+              },
+              "shape": "external",
+              "trail": "project › javax.annotation.Nullable"
+            },
+            "language": "unknown",
+            "score": 4294967292,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/java-jsr305/project::external::symbol:dc8976b1f2224cd134921afd594487337d0a24207451b15f32aea27b14fd546c::ParametersAreNullableByDefault",
+              "name": "ParametersAreNullableByDefault",
+              "segments": [
+                "ParametersAreNullableByDefault"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  220,
+                  137,
+                  118,
+                  177,
+                  242,
+                  34,
+                  76,
+                  209,
+                  52,
+                  146,
+                  26,
+                  253,
+                  89,
+                  68,
+                  135,
+                  51,
+                  125,
+                  10,
+                  36,
+                  32,
+                  116,
+                  81,
+                  177,
+                  95,
+                  50,
+                  174,
+                  162,
+                  123,
+                  20,
+                  253,
+                  84,
+                  108
+                ]
+              },
+              "shape": "external",
+              "trail": "project › ParametersAreNullableByDefault"
+            },
+            "language": "unknown",
+            "score": 4294967291,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "mcp": {
+      "calls": [
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "Nonnull"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytesPerToken": 4,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 1064,
+                "normalizedFrameBytesExcludingCounters": 4255,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `javax.annotation.Nullable` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n• `javax.annotation.ParametersAreNonnullByDefault` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n• `javax.annotation.Nonnull` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytesExcludingCursor": 2697,
+                "bytesPerToken": 4,
+                "estimatedTokensExcludingCursor": 675
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": true,
+              "nextCursor": "mcp2-<live-validated>",
+              "query": "Nonnull",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+                    "line": 25,
+                    "name": "javax.annotation.Nullable",
+                    "path": "javax/annotation/Nullable.java",
+                    "segments": [
+                      "javax.annotation.Nullable"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        131,
+                        38,
+                        20,
+                        104,
+                        107,
+                        187,
+                        202,
+                        88,
+                        1,
+                        143,
+                        96,
+                        168,
+                        255,
+                        111,
+                        22,
+                        178,
+                        32,
+                        61,
+                        171,
+                        179,
+                        35,
+                        144,
+                        209,
+                        88,
+                        101,
+                        90,
+                        10,
+                        252,
+                        232,
+                        161,
+                        184,
+                        121
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "The annotated element could be null under some circumstances."
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+                    "line": 23,
+                    "name": "javax.annotation.ParametersAreNonnullByDefault",
+                    "path": "javax/annotation/ParametersAreNonnullByDefault.java",
+                    "segments": [
+                      "javax.annotation.ParametersAreNonnullByDefault"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        237,
+                        113,
+                        226,
+                        164,
+                        155,
+                        224,
+                        141,
+                        119,
+                        112,
+                        27,
+                        14,
+                        7,
+                        120,
+                        22,
+                        23,
+                        74,
+                        227,
+                        115,
+                        249,
+                        138,
+                        102,
+                        77,
+                        16,
+                        15,
+                        157,
+                        195,
+                        132,
+                        247,
+                        192,
+                        58,
+                        255,
+                        78
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967294,
+                  "state": "ready",
+                  "summary": "This annotation can be applied to a package, class or method to indicate that"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull",
+                    "line": 18,
+                    "name": "javax.annotation.Nonnull",
+                    "path": "javax/annotation/Nonnull.java",
+                    "segments": [
+                      "javax.annotation.Nonnull"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        254,
+                        49,
+                        85,
+                        190,
+                        173,
+                        23,
+                        100,
+                        64,
+                        134,
+                        233,
+                        180,
+                        57,
+                        243,
+                        196,
+                        190,
+                        101,
+                        3,
+                        3,
+                        217,
+                        104,
+                        207,
+                        192,
+                        235,
+                        94,
+                        69,
+                        158,
+                        17,
+                        80,
+                        48,
+                        58,
+                        121,
+                        135
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/Nonnull.java:18 › javax.annotation.Nonnull"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967293,
+                  "state": "ready",
+                  "summary": "The annotated element must not be null."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "Nullable"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytesPerToken": 4,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 1120,
+                "normalizedFrameBytesExcludingCounters": 4480,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `javax.annotation.ParametersAreNullableByDefault` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault`\n• `javax.annotation.Nullable` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable`\n• `javax.annotation.ParametersAreNonnullByDefault` · trait · java\n  `/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytesExcludingCursor": 2876,
+                "bytesPerToken": 4,
+                "estimatedTokensExcludingCursor": 719
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": true,
+              "nextCursor": "mcp2-<live-validated>",
+              "query": "Nullable",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault",
+                    "line": 25,
+                    "name": "javax.annotation.ParametersAreNullableByDefault",
+                    "path": "javax/annotation/ParametersAreNullableByDefault.java",
+                    "segments": [
+                      "javax.annotation.ParametersAreNullableByDefault"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        182,
+                        204,
+                        244,
+                        203,
+                        100,
+                        118,
+                        114,
+                        129,
+                        110,
+                        14,
+                        120,
+                        250,
+                        88,
+                        97,
+                        99,
+                        238,
+                        118,
+                        15,
+                        81,
+                        184,
+                        214,
+                        122,
+                        194,
+                        91,
+                        8,
+                        53,
+                        22,
+                        159,
+                        172,
+                        200,
+                        46,
+                        80
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "This annotation can be applied to a package, class or method to indicate that"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+                    "line": 25,
+                    "name": "javax.annotation.Nullable",
+                    "path": "javax/annotation/Nullable.java",
+                    "segments": [
+                      "javax.annotation.Nullable"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        131,
+                        38,
+                        20,
+                        104,
+                        107,
+                        187,
+                        202,
+                        88,
+                        1,
+                        143,
+                        96,
+                        168,
+                        255,
+                        111,
+                        22,
+                        178,
+                        32,
+                        61,
+                        171,
+                        179,
+                        35,
+                        144,
+                        209,
+                        88,
+                        101,
+                        90,
+                        10,
+                        252,
+                        232,
+                        161,
+                        184,
+                        121
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/Nullable.java:25 › javax.annotation.Nullable"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967294,
+                  "state": "ready",
+                  "summary": "The annotated element could be null under some circumstances."
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+                    "line": 23,
+                    "name": "javax.annotation.ParametersAreNonnullByDefault",
+                    "path": "javax/annotation/ParametersAreNonnullByDefault.java",
+                    "segments": [
+                      "javax.annotation.ParametersAreNonnullByDefault"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        237,
+                        113,
+                        226,
+                        164,
+                        155,
+                        224,
+                        141,
+                        119,
+                        112,
+                        27,
+                        14,
+                        7,
+                        120,
+                        22,
+                        23,
+                        74,
+                        227,
+                        115,
+                        249,
+                        138,
+                        102,
+                        77,
+                        16,
+                        15,
+                        157,
+                        195,
+                        132,
+                        247,
+                        192,
+                        58,
+                        255,
+                        78
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault"
+                  },
+                  "kind": "trait",
+                  "language": "java",
+                  "score": 4294967293,
+                  "state": "ready",
+                  "summary": "This annotation can be applied to a package, class or method to indicate that"
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {},
+            "tool": "backend.outline"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 36853,
+                "bytesPerToken": 4,
+                "estimatedTokens": 9214,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "# project\n`/tmp/nudox-surface/java-jsr305/project`\n\n◇ javax.annotation.concurrent.ThreadSafe  `javax/annotation/concurrent/ThreadSafe.java:24 › javax.annotation.concurrent.ThreadSafe`\n◇ javax.annotation.concurrent.Immutable  `javax/annotation/concurrent/Immutable.java:29 › javax.annotation.concurrent.Immutable`\n◇ javax.annotation.Signed  `javax/annotation/Signed.java:13 › javax.annotation.Signed`\n◇ javax.annotation.PropertyKey  `javax/annotation/PropertyKey.java:10 › javax.annotation.PropertyKey`\n  ƒ when  `when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.WillCloseWhenClosed  `javax/annotation/WillCloseWhenClosed.java:14 › javax.annotation.WillCloseWhenClosed`\n▦ javax.annotation.meta  `javax.annotation.meta`\n◇ javax.annotation.MatchesPattern  `javax/annotation/MatchesPattern.java:17 › javax.annotation.MatchesPattern`\n  ▣ javax.annotation.MatchesPattern.Checker  `javax/annotation/MatchesPattern.java:26 › javax.annotation.MatchesPattern.Checker`\n    ƒ <init>  `<init>`\n    ƒ forConstantValue  `javax/annotation/MatchesPattern.java:27 › forConstantValue`\n      ▫ annotation  `annotation`\n      ▫ value  `value`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n  ƒ flags  `flags`\n    ▫ int  `int`\n  ƒ value  `value`\n    ▫ java.lang.String  `java.lang.String`\n▦ javax.annotation.meta  `javax.annotation.meta`\n◇ javax.annotation.WillNotClose  `javax/annotation/WillNotClose.java:14 › javax.annotation.WillNotClose`\n◇ javax.annotation.meta.Exclusive  `javax/annotation/meta/Exclusive.java:23 › javax.annotation.meta.Exclusive`\n▦ javax.annotation.concurrent  `javax.annotation.concurrent`\n◇ javax.annotation.CheckForNull  `javax/annotation/CheckForNull.java:15 › javax.annotation.CheckForNull`\n▦ javax.annotation  `javax.annotation`\n⊞ javax.annotation.meta.When  `javax/annotation/meta/When.java:13 › javax.annotation.meta.When`\n  ▪ ALWAYS  `javax/annotation/meta/When.java:15 › ALWAYS`\n  ƒ valueOf  `valueOf`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n    ▫ name  `name`\n  ▪ MAYBE  `javax/annotation/meta/When.java:19 › MAYBE`\n  ▪ NEVER  `javax/annotation/meta/When.java:21 › NEVER`\n  ▪ UNKNOWN  `javax/annotation/meta/When.java:17 › UNKNOWN`\n  ƒ <init>  `<init>`\n  ƒ values  `values`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n◇ javax.annotation.meta.Exhaustive  `javax/annotation/meta/Exhaustive.java:31 › javax.annotation.meta.Exhaustive`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.concurrent.GuardedBy  `javax/annotation/concurrent/GuardedBy.java:31 › javax.annotation.concurrent.GuardedBy`\n  ƒ value  `value`\n    ▫ java.lang.String  `java.lang.String`\n◇ javax.annotation.Untainted  `javax/annotation/Untainted.java:21 › javax.annotation.Untainted`\n  ƒ when  `when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.OverridingMethodsMustInvokeSuper  `javax/annotation/OverridingMethodsMustInvokeSuper.java:16 › javax.annotation.OverridingMethodsMustInvokeSuper`\n◇ javax.annotation.concurrent.NotThreadSafe  `javax/annotation/concurrent/NotThreadSafe.java:23 › javax.annotation.concurrent.NotThreadSafe`\n▦ javax.annotation.meta  `javax.annotation.meta`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.meta.TypeQualifierValidator  `javax/annotation/meta/TypeQualifierValidator.java:7 › javax.annotation.meta.TypeQualifierValidator`\n  ƒ forConstantValue  `javax/annotation/meta/TypeQualifierValidator.java:19 › forConstantValue`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n    ▫ annotation  `annotation`\n    ▫ value  `value`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.meta.TypeQualifier  `javax/annotation/meta/TypeQualifier.java:13 › javax.annotation.meta.TypeQualifier`\n  ƒ applicableTo  `applicableTo`\n    ▫ java.lang.Class  `java.lang.Class`\n▦ javax.annotation.concurrent  `javax.annotation.concurrent`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.Nullable  `javax/annotation/Nullable.java:25 › javax.annotation.Nullable`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.Detainted  `javax/annotation/Detainted.java:10 › javax.annotation.Detainted`\n◇ javax.annotation.CheckForSigned  `javax/annotation/CheckForSigned.java:17 › javax.annotation.CheckForSigned`\n◇ javax.annotation.meta.TypeQualifierDefault  `javax/annotation/meta/TypeQualifierDefault.java:15 › javax.annotation.meta.TypeQualifierDefault`\n  ƒ value  `value`\n    ▫ java.lang.annotation.ElementType  `java.lang.annotation.ElementType`\n◇ javax.annotation.meta.TypeQualifierNickname  `javax/annotation/meta/TypeQualifierNickname.java:25 › javax.annotation.meta.TypeQualifierNickname`\n▦ javax.annotation.concurrent  `javax.annotation.concurrent`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.WillClose  `javax/annotation/WillClose.java:14 › javax.annotation.WillClose`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.ParametersAreNullableByDefault  `javax/annotation/ParametersAreNullableByDefault.java:25 › javax.annotation.ParametersAreNullableByDefault`\n◇ javax.annotation.RegEx  `javax/annotation/RegEx.java:19 › javax.annotation.RegEx`\n  ▣ javax.annotation.RegEx.Checker  `javax/annotation/RegEx.java:26 › javax.annotation.RegEx.Checker`\n    ƒ forConstantValue  `javax/annotation/RegEx.java:28 › forConstantValue`\n      ▫ value  `value`\n      ▫ annotation  `annotation`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n    ƒ <init>  `<init>`\n  ƒ when  `when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n▦ javax.annotation.meta  `javax.annotation.meta`\n▦ javax.annotation.meta  `javax.annotation.meta`\n▦ javax.annotation.concurrent  `javax.annotation.concurrent`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation.meta  `javax.annotation.meta`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation  `javax.annotation`\n◇ javax.annotation.Syntax  `javax/annotation/Syntax.java:18 › javax.annotation.Syntax`\n  ƒ value  `value`\n    ▫ java.lang.String  `java.lang.String`\n  ƒ when  `when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n▦ javax.annotation  `javax.annotation`\n▦ javax.annotation.meta  `javax.annotation.meta`\n◇ javax.annotation.Nonnegative  `javax/annotation/Nonnegative.java:16 › javax.annotation.Nonnegative`\n  ƒ when  `when`\n    ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n  ▣ javax.annotation.Nonnegative.Checker  `javax/annotation/Nonnegative.java:22 › javax.annotation.Nonnegative.Checker`\n    ƒ <init>  `<init>`\n    ƒ forConstantValue  `javax/annotation/Nonnegative.java:24 › forConstantValue`\n      ▫ annotation  `annotation`\n      ▫ javax.annotation.meta.When  `javax.annotation.meta.When`\n      ▫ v  `v`\n◇ javax.annotation.ParametersAreNonnullByDefault  `javax/annotation/ParametersAreNonnullByDefault.java:23 › javax.annotation.ParametersAreNonnullByDefault`\n▦ javax.annotation  `javax\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "outline",
+              "budget": {
+                "bytes": 28754,
+                "bytesPerToken": 4,
+                "estimatedTokens": 7189
+              },
+              "declarations": 126,
+              "detail": "summary",
+              "extent": "complete",
+              "package": {
+                "coordinate": "/tmp/nudox-surface/java-jsr305/project",
+                "key": "309d6b17",
+                "name": "project",
+                "project": "/tmp/nudox-surface/java-jsr305/project",
+                "segments": [],
+                "shape": "package",
+                "trail": "project"
+              },
+              "page": {
+                "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+                "coverage": [
+                  {
+                    "lane": "exact",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "names",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "graph",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "semantic",
+                    "reason": "unconfigured",
+                    "state": "unavailable"
+                  }
+                ],
+                "limit": 200,
+                "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+                "more": false,
+                "schema": 3,
+                "sequence": 2,
+                "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+                "source_root": "20f65202540341553a85bf32ed7a4614ae2c36cfcbc1cfc0781637cb081ef4bb"
+              },
+              "roots": [
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::680fabcfb7c68b51fe6c11b237a141ec2e3768d2e93aeb10d6d0fa701a04c79a::javax.annotation.concurrent.ThreadSafe",
+                  "key": "004b0f76",
+                  "kind": "trait",
+                  "name": "javax.annotation.concurrent.ThreadSafe"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::962d2da5fc99f40fe4540405be468469c5fcc44a7ec0132435f1f293f64a862d::javax.annotation.concurrent.Immutable",
+                  "key": "057a3b73",
+                  "kind": "trait",
+                  "name": "javax.annotation.concurrent.Immutable"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2f66cdd7196631e3f9747ab31c435bb88f4041b51ed4f6bdbbfe2fd9fa618a47::javax.annotation.Signed",
+                  "key": "0857ce38",
+                  "kind": "trait",
+                  "name": "javax.annotation.Signed"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4f12abaf07c321449264df0971fc7fd8e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "1988600c",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::d114066c7caddc2c7800a540b0cc16dba177b210728cbb53fec6f5350111359a::when",
+                      "key": "e0af6e2c",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3e45e980ca210d5fb1cad86e6fe281cd093d4801fef64b2e66cadb283267a176::javax.annotation.PropertyKey",
+                  "key": "0aa463aa",
+                  "kind": "trait",
+                  "name": "javax.annotation.PropertyKey"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::baf406d860e376baf87754e29ef2494d70a0365719b9df2f4d6ed819f7ff9479::javax.annotation.WillCloseWhenClosed",
+                  "key": "10003e07",
+                  "kind": "trait",
+                  "name": "javax.annotation.WillCloseWhenClosed"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fd769a2fb093a93aac27cc5466c31c4fe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "11eaf7d6",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c92641116fc231c8f0f9a49ca6d64d395337f69e8da027b97d0663a19de55565::<init>",
+                          "key": "c71c8afe",
+                          "kind": "function",
+                          "name": "<init>"
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fd6bf8a60b1e4384a64d8a653820d8007f49a64ee162b7da664ea05cebcd890b::annotation",
+                              "key": "06e25938",
+                              "kind": "variable",
+                              "name": "annotation"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6044fdd946bd3e9628a28fe9e7e05ba8cc5623f419ee19480852755f3d631e51::value",
+                              "key": "18ac68e0",
+                              "kind": "variable",
+                              "name": "value"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c8c721382e109fb1969b4b168c64779ee64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                              "key": "98dea1b5",
+                              "kind": "variable",
+                              "name": "javax.annotation.meta.When"
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e3a1f3e995fc8c8fd7cfd38d728d3c0ae887816211a67736542051bb764583fa::forConstantValue",
+                          "key": "f9c805db",
+                          "kind": "function",
+                          "name": "forConstantValue"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::890905ef8dbcf6c5968909135537cdcd1cdbf21e13f9ce3743b424de1fca27a7::javax.annotation.MatchesPattern.Checker",
+                      "key": "61cf0d83",
+                      "kind": "struct",
+                      "name": "javax.annotation.MatchesPattern.Checker"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ba0fae27829bab1f57b1a4775caf11ebb64beb792889b0bda7792787824a5326::int",
+                          "key": "1e90a4d5",
+                          "kind": "variable",
+                          "name": "int"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::558a2a4e60e49c79caca015230df353871a69706e58906da91239a50f09aa423::flags",
+                      "key": "6cb5f306",
+                      "kind": "function",
+                      "name": "flags"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a3a90d3fcda1ad378de83011030de6b8c60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                          "key": "97da992b",
+                          "kind": "variable",
+                          "name": "java.lang.String"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::38e17fe8d68879ae87b57d717a45ebe8306dc849cd26fe041a23aeb5fb6e607f::value",
+                      "key": "dcbe789e",
+                      "kind": "function",
+                      "name": "value"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::7e5e4d00d4f7443072306c069a6210a281bfba256611737798d74dea48e7b916::javax.annotation.MatchesPattern",
+                  "key": "1bad99c2",
+                  "kind": "trait",
+                  "name": "javax.annotation.MatchesPattern"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::eb351982280e25deb2eeb5c20241c90ae37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "2160e654",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a710868c5a094ba44d4f81106eb9fa5c8f9e6ec3069a379075d6700c17103f82::javax.annotation.WillNotClose",
+                  "key": "23e58e5a",
+                  "kind": "trait",
+                  "name": "javax.annotation.WillNotClose"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::33249fcfa1b9638d5e3ab1c274defdb4f4ee9c546806e720d7ad82a2e205359a::javax.annotation.meta.Exclusive",
+                  "key": "258d221d",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.Exclusive"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::477b06d3b1fefd0c4396604ecd242ed3bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+                  "key": "2718c945",
+                  "kind": "module",
+                  "name": "javax.annotation.concurrent"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::1468786b9adec583fa9b5ad7ff2d9bef08bfb76e77ee8013326a6ef58012385d::javax.annotation.CheckForNull",
+                  "key": "2764fa1b",
+                  "kind": "trait",
+                  "name": "javax.annotation.CheckForNull"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4d387b5799b4fe560ba352ed4956ff89c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "37c43f1e",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::70d3c3ea10ca750dd725ef30c6faeb172b5900048e3a8c7f707650c0423eddd0::ALWAYS",
+                      "key": "609aa9c9",
+                      "kind": "constant",
+                      "name": "ALWAYS"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3e7994385d02f4a53e975ffb51e0eb8ea46f2830808037b9cbb958f1b47adc82::javax.annotation.meta.When",
+                          "key": "5e431c2e",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4c8886fff9e7bd28bbd9b014133ac14218886abae6e8e589f2af4bc52b2dd1bc::name",
+                          "key": "e3cf9ed2",
+                          "kind": "variable",
+                          "name": "name"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a310b83a79c06c2fdb89e219958b61c9a0e28978e5646ccbfcde8209002e8331::valueOf",
+                      "key": "60b88bff",
+                      "kind": "function",
+                      "name": "valueOf"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::373a297cb05dc4cc70737366a4156b3d726d3f9b461689676f9d7a1d682b0059::MAYBE",
+                      "key": "7187b3fc",
+                      "kind": "constant",
+                      "name": "MAYBE"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f90819de3defe517feb81655468e4f924ad4e022f1ce9391e2ed6babd11ee685::NEVER",
+                      "key": "8d19d34c",
+                      "kind": "constant",
+                      "name": "NEVER"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::61fb96534dc5228e352f3849139c8c653f4665b936584ad3ddaa7fb5be7a5ff2::UNKNOWN",
+                      "key": "8f02cb57",
+                      "kind": "constant",
+                      "name": "UNKNOWN"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a1c1ed1f92a588ef8369141fa384faf45337f69e8da027b97d0663a19de55565::<init>",
+                      "key": "ead1392f",
+                      "kind": "function",
+                      "name": "<init>"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ef75718cb5c035f9345d9a384015f3bda323046b148337a3e4886c4b5b6493a8::javax.annotation.meta.When",
+                          "key": "352e3d7d",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b2e3c40ee9e0aaac54a923dc35f299d3dc2e4974ba572220c3b0809e77517638::values",
+                      "key": "f9cd3532",
+                      "kind": "function",
+                      "name": "values"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c35fd6d8420e20b7f1f213771edf5c22aadb8848619021908547d43097e42f56::javax.annotation.meta.When",
+                  "key": "386c2c98",
+                  "kind": "enum",
+                  "name": "javax.annotation.meta.When"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ea15f5329c47485ecfe6bc8664e458a80c69dde1add3ef50e9260eeae32cff82::javax.annotation.meta.Exhaustive",
+                  "key": "3ae9bd43",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.Exhaustive"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::53837f1b02403e7d84556f13e3e93fe9c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "3dd35010",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::253e56da5c638659604dd02b0c5b0768c60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                          "key": "778044a5",
+                          "kind": "variable",
+                          "name": "java.lang.String"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a0016d32f0e228ba8a94b2897eeafa40aa647db52416959b31fab15f3655c3df::value",
+                      "key": "4875dbdf",
+                      "kind": "function",
+                      "name": "value"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::68121b5ea1127ae50ef9d1dcea6c9fb08f2819f5c60fb8579f6137184bcc94c9::javax.annotation.concurrent.GuardedBy",
+                  "key": "3ed41f4c",
+                  "kind": "trait",
+                  "name": "javax.annotation.concurrent.GuardedBy"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a5943ab188c10e4ad271f645c06180d0e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "914c38a8",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::be343733f0dd9a9c6d661bb1ad7dfba21c2cca7394649184c085343e51879bb4::when",
+                      "key": "66b499ee",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::55b78db3c18513d197becf160c3e269d4370a928b7b8b46e78ba25f84edb7450::javax.annotation.Untainted",
+                  "key": "4875e8b8",
+                  "kind": "trait",
+                  "name": "javax.annotation.Untainted"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e0b135587cfb5cbd6628f363793ee2c8c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "4d22679e",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::944ec7f3eaaad3b0400d6fd3562877bb8e445691fb850dc644c4fa7984796d1b::javax.annotation.OverridingMethodsMustInvokeSuper",
+                  "key": "554fcda5",
+                  "kind": "trait",
+                  "name": "javax.annotation.OverridingMethodsMustInvokeSuper"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::06ee1624b7831843e1d138786b1f3a342c1898338cc81df124948ddb85fdcb51::javax.annotation.concurrent.NotThreadSafe",
+                  "key": "57464327",
+                  "kind": "trait",
+                  "name": "javax.annotation.concurrent.NotThreadSafe"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::dee3f6eb35b893a6067924cff5a70719e37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "5e26c205",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9d546a51a085ed97d0c229f2ff986928c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "5eaa7b3c",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4970f86247a14e59df23d2eebf64fa23c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "66eba26d",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::8de38b1951cffb41eb225f6ebb145fa8c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "6a3ddfd9",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fb9e4a080e9b846adb3b183431ca025ae64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "3b35fa0e",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6ebf1f7dbb072b25acabaceb18c66a40c40be52b34a02ded9886482a8d39a998::annotation",
+                          "key": "4aa3c27f",
+                          "kind": "variable",
+                          "name": "annotation"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::55994cdd9871ebe5ce8bd0851e0c66e8cc5623f419ee19480852755f3d631e51::value",
+                          "key": "aa799c0f",
+                          "kind": "variable",
+                          "name": "value"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::454c25f336344d6464e809c6e33097dd1688b886f5a74eaa6d4c78cb471f2082::forConstantValue",
+                      "key": "5b3d43b1",
+                      "kind": "function",
+                      "name": "forConstantValue"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a3cf29f2bb8931a11d1adc335423b5aa4ce76c783d5c88fb0b82294e734a8b20::javax.annotation.meta.TypeQualifierValidator",
+                  "key": "6ada4a5b",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.TypeQualifierValidator"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::8cd0ac7aeee56a1f28a6c4c812047794c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "75107802",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e3f2302ccacc5ea83d6556ce9bd547826d05f20e8f1807a424389dcae43b9640::java.lang.Class",
+                          "key": "8c92a7c5",
+                          "kind": "variable",
+                          "name": "java.lang.Class"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9fe411f5143d9000112d6d288a3754c282f21b895402080d239f68353dd7f349::applicableTo",
+                      "key": "9e0513c9",
+                      "kind": "function",
+                      "name": "applicableTo"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ff9d23437c4a9443179d69a1f55130ca5f73413d1c176ec9b439ec53e76f0e0f::javax.annotation.meta.TypeQualifier",
+                  "key": "767685aa",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.TypeQualifier"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fa52e099b5fe9efcd8a2a3ac3add56f0bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+                  "key": "7959702a",
+                  "kind": "module",
+                  "name": "javax.annotation.concurrent"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::bbf8dc5ad4379934072dfcc925385c24c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "7d538375",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::cc5ae96a3794a82d0fe5b8ff27ef80de0c6d322d473968d1ec75c11e815de069::javax.annotation.Nullable",
+                  "key": "83261468",
+                  "kind": "trait",
+                  "name": "javax.annotation.Nullable"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e19cca2187a4fb9c2c8840693c8e5f3ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "84e8399b",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::325391d419482a6309df61fe0b80b39d1b69b45ae6e2800b6ad6c68fb4ecdcc6::javax.annotation.Detainted",
+                  "key": "863f5d11",
+                  "kind": "trait",
+                  "name": "javax.annotation.Detainted"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4a06eb9e749f4f5ee1fea81018c0fb35cd8d0d10f3cfbd6d3cde7ffb8f0ed91e::javax.annotation.CheckForSigned",
+                  "key": "88a06ab8",
+                  "kind": "trait",
+                  "name": "javax.annotation.CheckForSigned"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::51f589fbffab607c2f898bfc758e1e6a5297502aa1b561961572cdec61693fee::java.lang.annotation.ElementType",
+                          "key": "f77e11fe",
+                          "kind": "variable",
+                          "name": "java.lang.annotation.ElementType"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ce287f8849c7d5f4be5712881657eafea8ff575a30259e3c24de37f69503788d::value",
+                      "key": "74437208",
+                      "kind": "function",
+                      "name": "value"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0ce52513b4ac5b38ffef02682587f14e9d15be56d6d8a6d299eb93a97f59fa8e::javax.annotation.meta.TypeQualifierDefault",
+                  "key": "8b1d1c7d",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.TypeQualifierDefault"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ba625836b55743ebf1b14578221537a6ed468ec182b317dfa6af8b559fc1276b::javax.annotation.meta.TypeQualifierNickname",
+                  "key": "8cbf6b7f",
+                  "kind": "trait",
+                  "name": "javax.annotation.meta.TypeQualifierNickname"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c594e6ceb0405348301606c22697b8e1bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+                  "key": "8cf61779",
+                  "kind": "module",
+                  "name": "javax.annotation.concurrent"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::c958fa74129066ce9559965cd6f75e59c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "a05cbd49",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::255dea1b32787a1c8a02822adba821b8d579bdc24a1f0baff68f875dcd274801::javax.annotation.WillClose",
+                  "key": "a1c2858a",
+                  "kind": "trait",
+                  "name": "javax.annotation.WillClose"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::7a9d1cb09502914c3d206b2dcd0d090ac0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "b15d4d26",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ccef0b8985bfc2b78227c1533aded152c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "b5f2dd32",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b69074973d0f9dc4481c17cf3d8ad32c3fe9f2ce3b1f837bd5f4e4d4177d4b7d::javax.annotation.ParametersAreNullableByDefault",
+                  "key": "b6ccf4cb",
+                  "kind": "trait",
+                  "name": "javax.annotation.ParametersAreNullableByDefault"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::51b64ae9bdbcbf249cdd6318877c13e4cc5623f419ee19480852755f3d631e51::value",
+                              "key": "739bf2a2",
+                              "kind": "variable",
+                              "name": "value"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0d96cccc59f15f3bef6dfc9c44852ff7654ba06f0e744bc21802fcdb50fdf9c3::annotation",
+                              "key": "8d8d604c",
+                              "kind": "variable",
+                              "name": "annotation"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::a15b7726e9873a0458d703aadcf0bcf3e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                              "key": "907de4b0",
+                              "kind": "variable",
+                              "name": "javax.annotation.meta.When"
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f879a00c63db14674d087c71f8329d0ab22765c1553926e5225183f8b4f1817b::forConstantValue",
+                          "key": "1ce756c3",
+                          "kind": "function",
+                          "name": "forConstantValue"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2ac83339bd9b96bda243603fe7d219b85337f69e8da027b97d0663a19de55565::<init>",
+                          "key": "61e97459",
+                          "kind": "function",
+                          "name": "<init>"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::959a118586da34529895dc2bad4f1f03b0e0f0141079769ea5092f0c61df11ad::javax.annotation.RegEx.Checker",
+                      "key": "aea70b78",
+                      "kind": "struct",
+                      "name": "javax.annotation.RegEx.Checker"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::41a2d6343c402f6e897aa57923cd8229e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "02cdff9d",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::82c214a30edd284d3fc2edb5c05d00894a63df1ebc47e9a1095905fad761ca72::when",
+                      "key": "b83c2316",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::048abeeced745a923a304d97a427dfad231a87d7689b52e4f277e196304ddee5::javax.annotation.RegEx",
+                  "key": "b713e326",
+                  "kind": "trait",
+                  "name": "javax.annotation.RegEx"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4ab79af22e1e5d6c6c802e4548be249ee37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "b98e288a",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2d6ad8df9e4a22b51f52e309f59daebbe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "bf2bff9a",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::66f729e1321a91d8d65891e60706efd5bc49403e57591d9381a30a4dd5ef0ef8::javax.annotation.concurrent",
+                  "key": "c139bf0f",
+                  "kind": "module",
+                  "name": "javax.annotation.concurrent"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e61d0f95a4f283e7392e0edeef6630d4c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "c17204df",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::e99562897344278b13e9efa3aeff07d6c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "c547231e",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f3af5a2cd1eae6fbbcf6178dd7d6dc75c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "c85a4669",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::144d39100828ed5534bceabcd107dcaae37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "cc1b13bb",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ad2250415e91800844872e9c94644176c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "d072ac24",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::33926ab5596b0840e43a57c9345efc9ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "d315b399",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::77f8a06df82f8a543d9fd24d644abdfdc60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                          "key": "24832755",
+                          "kind": "variable",
+                          "name": "java.lang.String"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9140b7670f9b06e77e2f5b1e101bdc1d3bc690f5967316a48c2de3e0b0347680::value",
+                      "key": "2748b0db",
+                      "kind": "function",
+                      "name": "value"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::58d6b18e65309a289ddb91b85d222147e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "7b43baa4",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2c394dc5cb91f508e07fef2e84d626ff33c132be26f2634cb270e06aca02b452::when",
+                      "key": "8f09c248",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4fac6a3b4a16a9c47d12d940ff40b27e916b56464d4203074935496bd0a11b4e::javax.annotation.Syntax",
+                  "key": "e3153d6d",
+                  "kind": "trait",
+                  "name": "javax.annotation.Syntax"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::637fbd46f7eb6ec416a731a4e9c6b924c0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "e4055e35",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::d54388454a2cec2025cdf4f39b70138fe37798c75e995bf9268506d82cca7fa9::javax.annotation.meta",
+                  "key": "ecbab8e1",
+                  "kind": "module",
+                  "name": "javax.annotation.meta"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::61d5f784d48f8880749be91b5a81bdd8e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "f9dd452d",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::5df49f5bbd424748f4f19b70f7fc86330aeb2dbe77fa16d796333d35447fd324::when",
+                      "key": "20373867",
+                      "kind": "function",
+                      "name": "when"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::2ec31a89bb44f27119e6033b68a481f15337f69e8da027b97d0663a19de55565::<init>",
+                          "key": "713c42ef",
+                          "kind": "function",
+                          "name": "<init>"
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::03a57fc5e8ace7029b5502b5a601c0eda8f23bd788a43d19c7d8101905bfd4dc::annotation",
+                              "key": "14d1bc5d",
+                              "kind": "variable",
+                              "name": "annotation"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::41367b50862513c99c2cf8d46511a601e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                              "key": "1d062ace",
+                              "kind": "variable",
+                              "name": "javax.annotation.meta.When"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::19853fb641a6462479883ac1fe13fcb6c167cad27a74069800d1ab610e8e48eb::v",
+                              "key": "64d3c47d",
+                              "kind": "variable",
+                              "name": "v"
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::ed97626d8c4c37e5c933bb82c4313b1b7f00089aa37d4cf58a63df4912d70356::forConstantValue",
+                          "key": "a6761b4a",
+                          "kind": "function",
+                          "name": "forConstantValue"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::86ee2ceae241785441680fe1f5c26085673bdb9bc1d5d414dbfff401ed9a322b::javax.annotation.Nonnegative.Checker",
+                      "key": "77d8eb6a",
+                      "kind": "struct",
+                      "name": "javax.annotation.Nonnegative.Checker"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::fa921cb198b50d442a5e9bc972a7c9f5db796d00a6f9e757aed8dec1025a0f0d::javax.annotation.Nonnegative",
+                  "key": "ed5af013",
+                  "kind": "trait",
+                  "name": "javax.annotation.Nonnegative"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::851c59abacad71ded636eaf397559f6260a4976686f770c9cd9ebc546b6ee4fd::javax.annotation.ParametersAreNonnullByDefault",
+                  "key": "ed71e2a4",
+                  "kind": "trait",
+                  "name": "javax.annotation.ParametersAreNonnullByDefault"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::12a21cc448855a1465292f6ea662311ec0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "ee601682",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::4f2915511b70fad01cc7a0c32f169c7850406d9c2b88e9aaadb5ae5d175322b6::javax.annotation.Tainted",
+                  "key": "f17c124d",
+                  "kind": "trait",
+                  "name": "javax.annotation.Tainted"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::9cd1e928dcfc49a7a47aed74649f9582e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "832859c5",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::db8bb8831d00cf90095adf6f80be6a3ff8f3f5afcd2f3e38dad25f87efcc4123::when",
+                      "key": "e0b5bd76",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::37d6643281837c3871fa7234ffaa677c32bd0baf31f75b00b5c2599ba41c6a1c::javax.annotation.CheckReturnValue",
+                  "key": "f7fc3f4a",
+                  "kind": "trait",
+                  "name": "javax.annotation.CheckReturnValue"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::5bdc8c45da1b07b0b359cc502bd6f74fc0447aa3a35ab999a27fa063dc4fb03f::javax.annotation",
+                  "key": "f98c3274",
+                  "kind": "module",
+                  "name": "javax.annotation"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::3ce1b7331d80fe761bc36e411298ef905337f69e8da027b97d0663a19de55565::<init>",
+                          "key": "25462dd2",
+                          "kind": "function",
+                          "name": "<init>"
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::78f2ee4fba8e27aaf8d37a34914279d0e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                              "key": "333559d3",
+                              "kind": "variable",
+                              "name": "javax.annotation.meta.When"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::6e810af2a4a1a0a38a2186cfacb8c6e2cc5623f419ee19480852755f3d631e51::value",
+                              "key": "7972bff6",
+                              "kind": "variable",
+                              "name": "value"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b7d12d713afdd138c7587789411a5eef58dabab7f43139aaa6e98fe7c2287fbc::qualifierArgument",
+                              "key": "92ed60f9",
+                              "kind": "variable",
+                              "name": "qualifierArgument"
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::0672c592d849ab093aa678b4b96c9f5cc154994a3c9dc5197a8fd29f44e8281d::forConstantValue",
+                          "key": "c4e557d0",
+                          "kind": "function",
+                          "name": "forConstantValue"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::b351e73305039e888f6bd14fd0bd567ed50d1fc1a6399437769449a3710d5ff6::javax.annotation.Nonnull.Checker",
+                      "key": "83289102",
+                      "kind": "struct",
+                      "name": "javax.annotation.Nonnull.Checker"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::f106fa73afb79b59bf2f1432dd553775e64d087208c8842808cf1df0b1253deb::javax.annotation.meta.When",
+                          "key": "c4f1d306",
+                          "kind": "variable",
+                          "name": "javax.annotation.meta.When"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::1c98f61f8db25ae9e9528bda39ba79655442acf341952c449439ddbc2e40facd::when",
+                      "key": "f5c4f518",
+                      "kind": "function",
+                      "name": "when"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/java-jsr305/project::semantic::42ab1d9a59a7a663cdbceb98a9282e8eda8de0b6a9a6e696938d944586f9acb9::javax.annotation.Nonnull",
+                  "key": "fe3155be",
+                  "kind": "trait",
+                  "name": "javax.annotation.Nonnull"
+                }
+              ],
+              "unnamed": 0
+            }
+          }
+        }
+      ],
+      "exit": 0,
+      "tools": [
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.status"
+      ]
+    }
+  },
+  "performance": {
+    "cpu_seconds": 5.87,
+    "peak_rss_kib": 276252,
+    "seconds": {
+      "cli add": 67.25,
+      "cli outline": 0.08,
+      "cli packages": 0.02,
+      "cli search Nonnull": 4.94,
+      "cli search Nullable": 0.03,
+      "mcp": 1.29
+    }
+  }
+}

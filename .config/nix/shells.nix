@@ -329,6 +329,7 @@ let
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;
+      NUDOX_SURFACE_JAVA_JSR305 = toString (import ./surface-corpus.nix { inherit pkgs; }).java-jsr305;
       NUDOX_SURFACE_GO_XXHASH = toString (import ./surface-corpus.nix { inherit pkgs; }).go-xxhash;
       NUDOX_SURFACE_PYTHON_BLINKER =
         toString

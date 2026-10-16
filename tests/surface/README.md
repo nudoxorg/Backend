@@ -464,3 +464,16 @@ They are not a claim of authored declarations or exhaustive Digest coverage.
 Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
 snapshots retain every prior performance baseline and tolerance. Rust measured
 20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.
+
+## Whole Java project: JSR305 3.0.2 (W2.3)
+
+Add the complete pinned Maven sources archive, with all 31 Java source files.
+CLI and MCP must find ready `javax.annotation.Nonnull` and
+`javax.annotation.Nullable` in their exact authored paths; the harness distinguishes
+short search text from the compiler's fully qualified declaration identity.
+The existing JDK25 authority indexes the project. No upstream build scripts run.
+
+The source/result review is in `reviews/2026-10-15-java-jsr305.json`. Historical
+Linux40 returned the reviewed answers twice (96.0/96.8s; MCP1.31s each).
+The existing reviewed baseline and ratios are retained unchanged; current
+canonical exact-head T1/T2 acceptance remains required before merge.

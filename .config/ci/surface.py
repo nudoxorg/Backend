@@ -848,7 +848,16 @@ def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
 
 
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
-    for name, filename in expected.items():
+    for query, declaration in expected.items():
+        # Search text need not be the compiler's canonical identity. Java,
+        # for example, finds a type by its short name but reports its FQN.
+        if isinstance(declaration, str):
+            name, filename = query, declaration
+        elif (isinstance(declaration, dict) and set(declaration) == {"name", "path"}
+              and all(isinstance(value, str) and value for value in declaration.values())):
+            name, filename = declaration["name"], declaration["path"]
+        else:
+            raise RuntimeError(f"real corpus: invalid authored declaration for {query}")
         if not any(row.get("identity", {}).get("name") == name
                    and row.get("identity", {}).get("path") == filename and row.get("language") == language
                    and row.get("state") == "ready"

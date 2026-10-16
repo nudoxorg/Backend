@@ -220,6 +220,61 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "java-jsr305",
+      "project_env": "NUDOX_SURFACE_JAVA_JSR305",
+      "upstream": "maven:com.google.code.findbugs:jsr305@3.0.2",
+      "languages": [
+        "java"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "Nonnull": {
+          "name": "javax.annotation.Nonnull",
+          "path": "javax/annotation/Nonnull.java"
+        },
+        "Nullable": {
+          "name": "javax.annotation.Nullable",
+          "path": "javax/annotation/Nullable.java"
+        }
+      },
+      "cli": [
+        [
+          "search",
+          "Nonnull"
+        ],
+        [
+          "search",
+          "Nullable"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Nonnull",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Nullable",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

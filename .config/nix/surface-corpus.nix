@@ -22,8 +22,22 @@ let
   percentEncodingArchive =
     assert builtins.length percentEncodingPin == 1;
     pkgs.fetchurl { inherit (builtins.head percentEncodingPin) url hash; };
+  javaPin = builtins.filter (
+    candidate: candidate.coordinate == "maven:com.google.code.findbugs:jsr305@3.0.2"
+  ) pins;
+  javaArchive =
+    assert builtins.length javaPin == 1;
+    pkgs.fetchurl { inherit (builtins.head javaPin) url hash; };
 in
 {
+  java-jsr305 =
+    pkgs.runCommand "nudox-surface-java-jsr305-3.0.2" { nativeBuildInputs = [ pkgs.unzip ]; }
+      ''
+        mkdir "$out"
+        unzip -q ${javaArchive} -d "$out"
+        test -f "$out/javax/annotation/Nonnull.java"
+        test -f "$out/javax/annotation/Nullable.java"
+      '';
   rust-percent-encoding =
     pkgs.runCommand "nudox-surface-rust-percent-encoding-2.3.2"
       {
