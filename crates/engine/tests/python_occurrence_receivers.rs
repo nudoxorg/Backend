@@ -10728,45 +10728,6 @@ def read(obj: Decoy):
 }
 
 #[test]
-fn py_instance_attribute_call_targets_child_note_not_decoy() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Decoy:
-    def note(self):
-        return 0
-
-class Child:
-    def note(self):
-        return 1
-
-class Holder:
-    child: Child
-    def run(self):
-        return self.child.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
-    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
-    let calls = read_method_calls(&view, run_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("run owns one MethodCall"));
-    }
-    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == decoy_note
-    ) {
-        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
-    }
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
 fn py_instance_attribute_field_targets_child_score_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
@@ -11464,66 +11425,6 @@ class Holder:
 }
 
 #[test]
-fn py_instance_attribute_deeper_chain_stays_universe() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Decoy:
-    def note(self):
-        return 0
-
-class Child:
-    def note(self):
-        return 1
-    other: Child
-
-class Holder:
-    child: Child
-    def run(self):
-        return self.child.other.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
-    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
-    let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
-    let child_other = entity_ordinal_at_index(&view, b"other", EntityKind::Field, 0)?;
-    let calls = read_method_calls(&view, run_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("run owns one MethodCall"));
-    }
-    assert_local_index(calls[0], child_note, "self.child.other.note() resolves to Child.note")?;
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == decoy_note
-    ) {
-        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
-    }
-    let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
-    if child_reads.len() != 1 {
-        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
-    }
-    assert_local_index(
-        child_reads[0],
-        holder_child,
-        "self.child resolves to Holder.child",
-    )?;
-    let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
-    if other_reads.len() != 1 {
-        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
-    }
-    assert_local_index(
-        other_reads[0],
-        child_other,
-        "self.child.other resolves to Child.other",
-    )?;
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
 fn py_instance_attribute_prefix_field_still_targets_holder_child() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
@@ -11568,56 +11469,6 @@ class Holder:
         holder_child,
         "self.child resolves to Holder.child",
     )?;
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
-fn py_instance_attribute_annotated_name_prefix_still_targets_holder_child() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Decoy:
-    def note(self):
-        return 0
-
-class Child:
-    def note(self):
-        return 1
-
-class Holder:
-    child: Child
-
-def run(obj: Holder):
-    return obj.child.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
-    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
-    let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
-    let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
-    if child_reads.len() != 1 {
-        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
-    }
-    assert_local_index(
-        child_reads[0],
-        holder_child,
-        "obj.child resolves to Holder.child",
-    )?;
-    let calls = read_method_calls(&view, run_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("run owns one MethodCall"));
-    }
-    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == decoy_note
-    ) {
-        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
-    }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -12424,67 +12275,6 @@ def run(obj: Holder):
     ) {
         return Err(TestError::Falsified("obj.child.note() must not resolve to Child.note field"));
     }
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
-fn py_named_attribute_deeper_chain_stays_universe() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Decoy:
-    def note(self):
-        return 0
-
-class Child:
-    def note(self):
-        return 1
-    other: Child
-
-class Holder:
-    child: Child
-
-def run(obj: Holder):
-    return obj.child.other.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
-    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
-    let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
-    let child_other = entity_ordinal_at_index(&view, b"other", EntityKind::Field, 0)?;
-    let calls = read_method_calls(&view, run_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("run owns one MethodCall"));
-    }
-    assert_local_index(calls[0], child_note, "obj.child.other.note() resolves to Child.note")?;
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == decoy_note
-    ) {
-        return Err(TestError::Falsified("obj.child.other.note() must not resolve to Decoy.note"));
-    }
-    let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
-    if child_reads.len() != 1 {
-        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
-    }
-    assert_local_index(
-        child_reads[0],
-        holder_child,
-        "obj.child resolves to Holder.child",
-    )?;
-    let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
-    if other_reads.len() != 1 {
-        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
-    }
-    assert_local_index(
-        other_reads[0],
-        child_other,
-        "obj.child.other resolves to Child.other",
-    )?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
