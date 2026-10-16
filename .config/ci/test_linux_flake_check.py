@@ -79,6 +79,12 @@ class LinuxFlakeCheckTests(unittest.TestCase):
             self.assertEqual(runner.main(), 0)
         self.assertIn("current-system checks: control-plane, formatting", output.getvalue())
         self.assertIn("--no-build", calls[0][0])
+        # All flake consumers recreate attributes whose disposable-store
+        # derivations may have been collected between commands.
+        for command, _ in calls:
+            if any(value.startswith("path:.") for value in command):
+                option = command.index("eval-cache")
+                self.assertEqual(command[option - 1:option + 2], ["--option", "eval-cache", "false"])
         self.assertEqual(len([call for call in calls if call[0][1:2] == ["build"]]), 1)
         build = calls[-1][0]
         self.assertEqual(build[build.index("--max-jobs") + 1], "1")

@@ -62,6 +62,7 @@ def current_check_installables(system: str) -> list[str]:
             "--json",
             "--apply",
             "builtins.attrNames",
+            "--option", "eval-cache", "false",
             f"path:.#checks.{system}",
         ],
         capture=True,
@@ -90,7 +91,13 @@ def main() -> int:
         return run(["nix", "flake", "check", "-L", "--keep-going", "path:."]).returncode
 
     # Evaluate and validate the whole flake without realizing outputs first.
-    checked = run(["nix", "flake", "check", "-L", "--keep-going", "--no-build", "path:."])
+    # Cached flake attributes can retain derivation paths already collected
+    # from this disposable store. Re-evaluate them so each command recreates
+    # the graph it hands to the live store instead of trusting dangling paths.
+    checked = run([
+        "nix", "flake", "check", "-L", "--keep-going", "--no-build",
+        "--option", "eval-cache", "false", "path:.",
+    ])
     if checked.returncode:
         return checked.returncode
 
@@ -118,6 +125,7 @@ def main() -> int:
             store,
             "--max-jobs",
             "1",
+            "--option", "eval-cache", "false",
             *installables,
         ]
     ).returncode
