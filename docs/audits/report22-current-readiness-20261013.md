@@ -1,5 +1,13 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-16, Native10–12 and current runtime gates
+
+This checkpoint is based on canonical `12502ae36375ad2806529a2da6fa8e5fc9395e90`, tree `ad45516aed3ce78b858129815d0652afcb3326a5`, after PR407 merged the authored TypeScript coordinate recovery. Native10 source `4451de291a1b3d36cb32571888ffce66c560d80f` compiled two phases but the third failed on two `ItemNameView` comparisons in new `typescript_lower` tests, so zero test bodies ran. Native11 source `f2f90232c174a4e558669d8eaef1548191450981` compiled all three phases but passed 15 of 17 selected bodies; two fixture cases failed.
+
+Native12 source `7f0516a60ea316449e6bea91bf483b9ddae8547f`, tree `0eab1b1a7c80bfc0d3186f11adea2e351c380183`, passed all three Cargo phases with zero compiler errors and all 17 selected test bodies. The targeted cases cover cold TypeScript source coordinates, exact import-site pairing, and parameter/field/type-support roles. Root's independent proof records 160 files (23,839,586 raw bytes), 46 streams, six loan-chain records, closed custody and released permit, unchanged protected images, and no ordinary application build or run: `/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/actual-report26-repairs12/ROOT-INDEPENDENT-NATIVE12.json`, SHA-256 `7587969b147453ca4974c7b650b04f0a347dd7e2793c9946874743f4f26aea56`. This closes the selected source/test gates only; it does not establish full Report26 or product acceptance.
+
+The public Linux CLI/MCP baseline remains `df93af4890005c2bb748928c5a524d1f203fe04f`, with Angular04 still the actual partial-scope baseline; no newer app image was built or run. The ILO5 runtime attempt is still compiling with no pass recorded, PR403 remains pending, and the seven Python PR410 tests are native-unrun. The source-only 33-control Angular validator is not candidate or runtime proof; no ASP/GBA closure is inferred. Report26 and the broader actual runtime gates remain open.
+
 ## Follow-up: 2026-10-16, Native07–09 results and Native08 preparation failure
 
 At this checkpoint, canonical is `40d1500b0394e2e690c396efad18ab227b76c6e9`, tree `a50f9edeca4309312edfc0e9581377fea57b64a9`. PR397 and PR398, which carry the Python import-alias and TSZ fixture corrections described below, are merged source changes. PR394 and PR406 are also merged; their separately recorded N22 preparation cohort (16/16) and Python streaming/phase controls (7/7) remain bounded results. The published Linux checkpoint is still `df93af4890005c2bb748928c5a524d1f203fe04f`; there is no new validated application binary or release.
