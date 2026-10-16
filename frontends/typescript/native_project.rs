@@ -135,11 +135,6 @@ pub fn build(
         }
         let text =
             String::from_utf8(bytes).map_err(|_| "native TSZ source is not UTF-8".to_owned())?;
-        let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.clone());
-        parser
-            .parse_source_file_with_execution_checkpoint(checkpoint)
-            .map_err(|error| format!("native TSZ source parse stopped: {error:?}"))?;
-        let arena = &parser.arena;
         let format = match resolver.get_importing_module_kind(&path) {
             ImportingModuleKind::Esm => TszProjectFileFormat::EsModule,
             ImportingModuleKind::CommonJs => TszProjectFileFormat::CommonJs,
@@ -148,6 +143,19 @@ pub fn build(
             .check_file_system_error()
             .map_err(|error| error.to_string())?;
         file_formats.push((path.clone(), format));
+        if path.extension().is_some_and(|extension| extension == "json") {
+            // A resolved JSON module is a real program member, not a TS
+            // import-scanning input. The authority's existing native JSON
+            // parse/bind path validates its syntax and the checker derives
+            // its value type from the retained text. Keep the exact bytes.
+            sources.insert(path, text);
+            continue;
+        }
+        let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.clone());
+        parser
+            .parse_source_file_with_execution_checkpoint(checkpoint)
+            .map_err(|error| format!("native TSZ source parse stopped: {error:?}"))?;
+        let arena = &parser.arena;
         {
             let mut type_imports = BTreeSet::new();
             for mut name in arena

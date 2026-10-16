@@ -424,6 +424,7 @@ pub(super) fn build_direct_inputs_for_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod mixed_sources;
     use crate::application::typescript_host::{
         AdmittedTypeScriptProject, TypeScriptProjectHost, TypeScriptProjectInputAuthority,
     };
