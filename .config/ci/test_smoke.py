@@ -71,7 +71,7 @@ class SmokeContract(unittest.TestCase):
             out.write('\n{"name":"frame","draw_ms":0.8}\n')
         self.assertTrue(smoke.drew_a_frame(trace))
 
-    def gui(self, visible=True, quit_code=0):
+    def gui(self, visible=True, quit_code=0, ignore_quit=False):
         def executable(name, code):
             path = self.bin_dir / name
             path.write_text(f"#!{os.sys.executable}\n" + code)
@@ -87,6 +87,7 @@ class SmokeContract(unittest.TestCase):
                    "assert os.environ.get('VK_DRIVER_FILES') == '/nix/mesa/lvp.json'\n"
                    "assert os.environ.get('VK_ICD_FILENAMES') == '/nix/mesa/lvp.json'\n"
                    "assert os.environ.get('FONTCONFIG_FILE') == '/nix/fonts/fonts.conf'\n"
+                   "print('fixture X server', file=sys.stderr, flush=True)\n"
                    "os.write(int(sys.argv[2]), b'91\\n')\ntime.sleep(30)\n")
         executable("xdotool", "import os, sys\nfrom pathlib import Path\n"
                    f"visible = {visible!r}\n"
@@ -109,7 +110,10 @@ class SmokeContract(unittest.TestCase):
                    "while not Path(os.environ['HOME'], 'quit').exists():\n"
                    "    if time.monotonic() > deadline: sys.exit(9)\n"
                    "    time.sleep(0.01)\n"
+                   "print('fixture received Quit', flush=True)\n"
+                   f"if {ignore_quit!r}: time.sleep(30)\n"
                    f"sys.exit({quit_code})\n")
+        stderr = io.StringIO()
         with patch.dict(os.environ, {
             "PATH": str(self.bin_dir),
             "GENERIC_CREDENTIAL_SENTINEL": "must-not-cross-boundary",
@@ -122,8 +126,10 @@ class SmokeContract(unittest.TestCase):
             "VK_ICD_FILENAMES": "/nix/mesa/lvp.json",
             "FONTCONFIG_FILE": "/nix/fonts/fonts.conf",
         }), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return smoke.smoke_gui(self.bin_dir, self.home, 5)
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            result = smoke.smoke_gui(self.bin_dir, self.home, 5)
+        self.gui_error = stderr.getvalue()
+        return result
 
     def test_gui_requires_visible_window_and_successful_public_quit(self):
         self.assertEqual(self.gui(), 0)
@@ -133,6 +139,14 @@ class SmokeContract(unittest.TestCase):
 
     def test_gui_crash_on_quit_fails(self):
         self.assertEqual(self.gui(quit_code=7), 1)
+
+    def test_gui_hanging_after_public_quit_fails_with_diagnostics(self):
+        self.assertEqual(self.gui(ignore_quit=True), 1)
+        self.assertIn("did not shut down within 10s after Quit", self.gui_error)
+        self.assertIn("fixture received Quit", self.gui_error)
+        self.assertIn("desktop.log:", self.gui_error)
+        self.assertIn("xvfb.log:", self.gui_error)
+        self.assertIn("trace.jsonl:", self.gui_error)
 
     def test_environment_cannot_attach_to_real_workspace(self):
         with patch.dict(os.environ, {

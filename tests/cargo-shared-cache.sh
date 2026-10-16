@@ -23,10 +23,11 @@ repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # A Nix check runs this file as a lone store path, where the repository layout
 # is gone; it names the script under test explicitly instead.
 source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
-# macOS TMPDIR normally ends in '/'. Keep the actual Cargo path spelling
-# equal to pathlib's expected spelling instead of introducing a doubled '/'.
+# macOS TMPDIR normally ends in '/'. Normalize it once so the actual Cargo path
+# spelling matches pathlib's spelling instead of introducing a doubled '/'.
 test_tmpdir="${TMPDIR:-/tmp}"
-test_root="$(mktemp -d "${test_tmpdir%/}/nudox-cargo-cache.XXXXXX")"
+test_tmpdir="${test_tmpdir%/}"
+test_root="$(mktemp -d "$test_tmpdir/nudox-cargo-cache.XXXXXX")"
 cleanup() {
   if [ -n "${signal_release:-}" ]; then touch "$signal_release"; fi
   if [ -n "${signal_pid:-}" ]; then wait "$signal_pid" 2>/dev/null || true; fi
@@ -34,6 +35,8 @@ cleanup() {
   if [ -n "${election_owner:-}" ]; then wait "$election_owner" 2>/dev/null || true; fi
   if [ -n "${ceiling_release:-}" ]; then touch "$ceiling_release"; fi
   if [ -n "${ceiling_owner:-}" ]; then wait "$ceiling_owner" 2>/dev/null || true; fi
+  if [ -n "${copy_fetch_release:-}" ]; then touch "$copy_fetch_release"; fi
+  if [ -n "${copy_fetch_owner:-}" ]; then wait "$copy_fetch_owner" 2>/dev/null || true; fi
   if [ -n "${socket_pid:-}" ]; then
     kill "$socket_pid" 2>/dev/null || true
     wait "$socket_pid" 2>/dev/null || true
@@ -69,7 +72,7 @@ printf '%s\n' '#!/bin/sh' \
 '  if [ -n "$git_directory" ] && [ -n "${NUDOX_TEST_MANIFEST_WORKTREE:-}" ]; then' \
 '    case "$git_directory" in' \
 '      "$NUDOX_TEST_MANIFEST_WORKTREE"|"$NUDOX_TEST_MANIFEST_WORKTREE"/*) printf "%s\\n" "$NUDOX_TEST_MANIFEST_WORKTREE" ;;' \
-'      *) printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}" ;;' \
+'      *) if [ "${NUDOX_TEST_ALL_MANIFESTS_EXTERNAL:-0}" = 1 ]; then printf "%s\\n" "$NUDOX_TEST_MANIFEST_WORKTREE"; else printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}"; fi ;;' \
 '    esac' \
 '  else' \
 '    printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}"' \
@@ -92,6 +95,7 @@ printf '%s\n' '#!/bin/sh' \
 'if [ -n "${NUDOX_TEST_TOOLCHAIN_LOG:-}" ]; then printf "%s|%s\\n" "$RUSTC" "$RUSTDOC" >> "$NUDOX_TEST_TOOLCHAIN_LOG"; fi' \
 'if [ -n "${NUDOX_TEST_CACHE_ENDPOINT_LOG:-}" ]; then printf "%s|%s\\n" "$SCCACHE_SERVER_UDS" "$SCCACHE_DIR" >> "$NUDOX_TEST_CACHE_ENDPOINT_LOG"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
+'if [ -n "${NUDOX_TEST_WARM_SENTINEL:-}" ] && [ "$*" = "fetch --locked" ]; then printf "pooled graph stays warm\\n" > "$CARGO_BUILD_BUILD_DIR/$NUDOX_TEST_WARM_SENTINEL"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
   '  if [ -n "${NUDOX_TEST_REQUIRE_BUILD_MARKER:-}" ]; then' \
   '    required_marker="$CARGO_BUILD_BUILD_DIR/$NUDOX_TEST_REQUIRE_BUILD_MARKER"' \
@@ -540,6 +544,66 @@ assert_eq "$manifest_workspace_root" "$(cat "$manifest_explicit_graph/.nudox-wor
 assert_eq "$manifest_workspace_root" "$(cat "$manifest_explicit_target/.nudox-worktree-root")"
 assert_eq "$test_root/roots/a" "$(cat "$manifest_explicit_cache/affinity/slot-0.owner")"
 assert_eq 'warm pooled graph' "$(cat "$manifest_explicit_cache/build/slot-0/preserved.rmeta")"
+
+# A copied registry release is outside the checkout and therefore has its own
+# manifest root. Its fetch must use a copy-local role graph: claiming the
+# ordinary pooled slot would retire the checkout's warm compiler graph just
+# to resolve the copied manifest. Keep fake Cargo held so the same case proves
+# that an explicit role still consumes the ordinary host-capacity slot.
+copy_fetch_root="$test_root/copied-release"
+copy_fetch_manifest_dir="$copy_fetch_root/crates/example"
+copy_fetch_manifest="$copy_fetch_manifest_dir/Cargo.toml"
+copy_fetch_cache="$test_root/copied-fetch-cache"
+copy_fetch_build="$copy_fetch_root/.cargo-fetch-build"
+copy_fetch_log="$test_root/copied-fetch.log"
+copy_fetch_contender_log="$test_root/copied-fetch-contender.log"
+copy_fetch_release="$test_root/copied-fetch.release"
+mkdir -p "$copy_fetch_manifest_dir" "$copy_fetch_cache/build/slot-0" "$copy_fetch_cache/affinity"
+: > "$copy_fetch_manifest"
+printf '%s\n' "$manifest_invoking_root" > "$copy_fetch_cache/build/slot-0/.nudox-worktree-root"
+printf 'checkout warm compiler graph\n' > "$copy_fetch_cache/build/slot-0/checkout-warm.rmeta"
+printf '%s\n' "$manifest_invoking_root" > "$copy_fetch_cache/affinity/slot-0.owner"
+NUDOX_TEST_WORKTREE="$manifest_invoking_root" \
+  NUDOX_TEST_MANIFEST_WORKTREE="$copy_fetch_root" \
+  NUDOX_TEST_LOG="$copy_fetch_log" NUDOX_TEST_CARGO_RELEASE_FILE="$copy_fetch_release" \
+  NUDOX_BUILD_CACHE_ROOT="$copy_fetch_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 CARGO_BUILD_BUILD_DIR="$copy_fetch_build" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" fetch --manifest-path "$copy_fetch_manifest" &
+copy_fetch_owner="$!"
+copy_fetch_waited=0
+while [ "$copy_fetch_waited" -lt 80 ] \
+  && { [ ! -f "$copy_fetch_log" ] || [ "$(wc -l < "$copy_fetch_log" | tr -d ' ')" != 1 ]; }; do
+  sleep 0.05
+  copy_fetch_waited="$((copy_fetch_waited + 1))"
+done
+assert_file_lines "$copy_fetch_log" 1
+copy_fetch_graph="$copy_fetch_build/.nudox-cargo/slot-0"
+assert_eq "$copy_fetch_graph" "$(cut -d '|' -f 2 "$copy_fetch_log")"
+assert_eq "fetch --manifest-path $copy_fetch_manifest" "$(cut -d '|' -f 4 "$copy_fetch_log")"
+assert_eq "$copy_fetch_root" "$(cat "$copy_fetch_graph/.nudox-worktree-root")"
+assert_eq "$copy_fetch_root" "$(cat "$copy_fetch_cache/locks/slot-0.lock/workspace")"
+assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/build/slot-0/.nudox-worktree-root")"
+assert_eq 'checkout warm compiler graph' "$(cat "$copy_fetch_cache/build/slot-0/checkout-warm.rmeta")"
+assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/affinity/slot-0.owner")"
+if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$copy_fetch_contender_log" \
+  NUDOX_BUILD_CACHE_ROOT="$copy_fetch_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" check 2> "$test_root/copied-fetch-contender.stderr"; then
+  fail "copy-local fetch role bypassed the ordinary host capacity slot"
+else
+  assert_eq 75 "$?"
+fi
+[ ! -e "$copy_fetch_contender_log" ] || fail "busy copied-fetch permit admitted another Cargo process"
+touch "$copy_fetch_release"
+wait "$copy_fetch_owner"
+copy_fetch_owner=""
+assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/build/slot-0/.nudox-worktree-root")"
+assert_eq 'checkout warm compiler graph' "$(cat "$copy_fetch_cache/build/slot-0/checkout-warm.rmeta")"
+assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/affinity/slot-0.owner")"
+[ ! -d "$copy_fetch_cache/locks/slot-0.lock" ] || fail "copy-local fetch leaked its host capacity lease"
+[ ! -d "$copy_fetch_build/.nudox-cargo/leases/slot-0.lock" ] \
+  || fail "copy-local fetch leaked its role graph lease"
 
 # An explicit build role or target that resolves through a symlink into any
 # pooled Cargo slot is refused before either caller path or pooled graph is
@@ -1366,4 +1430,53 @@ assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint
 [ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
 [ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
 
-echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, managed cache lifetime, daemon protocol isolation, exit propagation, stale worktree recovery)"
+# Exercise the real warmup function through the managed Cargo wrapper. The fake
+# git classifies every manifest root as external, while the first root fetch
+# marks the pooled Backend graph. Any manifest fetch that omits its disposable
+# explicit graph will therefore evict the sentinel.
+warm_repo="${NUDOX_LINUX_CI_REPO:-$repo_root}"
+warm_home="$test_root/warm-cargo-home"
+warm_worktree="$test_root/roots/warmup"
+warm_external_root="$test_root/roots/external-manifests"
+warm_cache="$test_root/warm-cache"
+warm_log="$test_root/warmup-cargo.log"
+warm_sentinel="backend-pooled-sentinel.rmeta"
+warm_copy="$test_root/managed-bin"
+mkdir -p "$warm_home/registry/src/test-index/toml-0.5.11" \
+  "$warm_home/registry/src/test-index/anyhow-1.0.104" \
+  "$warm_home/registry/src/test-index/log-0.4.34" \
+  "$warm_worktree" "$warm_external_root" "$warm_copy"
+for release in toml-0.5.11 anyhow-1.0.104 log-0.4.34; do
+  printf '[package]\nname = "warm-%s"\nversion = "0.0.0"\n' "$release" \
+    > "$warm_home/registry/src/test-index/$release/Cargo.toml"
+done
+cp "$test_root/wrapper" "$warm_copy/cargo"
+chmod +x "$warm_copy/cargo"
+if ! (cd "$warm_repo" && \
+  PATH="$warm_copy:$PATH" CARGO_HOME="$warm_home" HOME="$test_root/home" \
+  NUDOX_TEST_WORKTREE="$warm_worktree" NUDOX_TEST_MANIFEST_WORKTREE="$warm_external_root" \
+  NUDOX_TEST_ALL_MANIFESTS_EXTERNAL=1 NUDOX_TEST_WARM_SENTINEL="$warm_sentinel" \
+  NUDOX_TEST_LOG="$warm_log" NUDOX_BUILD_CACHE_ROOT="$warm_cache" \
+  NUDOX_CARGO_BUILD_SLOTS=1 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  CARGO_TARGET_DIR="$warm_worktree/.local/target" \
+  nu -c 'source .config/ci/linux.nu; warm-registry-cache'); then
+  fail "warm-registry-cache mocked managed-Cargo run failed"
+fi
+assert_file_lines "$warm_log" 7
+warm_pooled_graph="$(cut -d '|' -f 2 "$warm_log" | sed -n '1p')"
+[ -f "$warm_pooled_graph/$warm_sentinel" ] || fail "manifest warmup evicted the checkout pooled graph"
+assert_eq "$warm_worktree" "$(cat "$warm_cache/affinity/slot-0.owner")"
+while IFS='|' read -r worktree build_dir target_dir command jobs wrapper; do
+  case "$command" in
+    *--manifest-path*)
+      [ -n "$build_dir" ] || fail "manifest fetch lacked an explicit build graph: $command"
+      [ "$build_dir" != "$warm_pooled_graph" ] || fail "manifest fetch reused the checkout pooled graph: $command"
+      ;;
+    "fetch --locked")
+      [ "$build_dir" = "$warm_pooled_graph" ] || fail "root workspace fetch did not use its pooled graph"
+      ;;
+    *) fail "unexpected Cargo command in registry warmup: $command" ;;
+  esac
+done < "$warm_log"
+
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, daemon protocol isolation, exit propagation, stale worktree recovery)"

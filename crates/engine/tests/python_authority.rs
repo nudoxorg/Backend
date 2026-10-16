@@ -2,7 +2,8 @@
 //!
 //! Every falsifier hand-constructs a `CheckerReport` (no pyrefly/uvx) and
 //! pins the extractor's exact spans: the `target` call in `caller` owns
-//! span 109..115, the `osp` binding call in `foreign` owns span 152..155,
+//! absolute span109..115 (caller-relative32..38); `osp` in `foreign` owns
+//! absolute span152..155 (foreign-relative33..36),
 //! and the unannotated parameter `p` of `site` owns name span 9..10.
 
 use std::{
@@ -15,12 +16,14 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
+use backend_frontend_python::legacy::checker::DefinitionTarget;
+use backend_frontend_python::legacy::{
+    CheckerReport, DeclarationKind, Inference, InferenceSite, InferredType, Span, SymbolOutcome,
+    SymbolResolution,
+};
 use backend_semantic::ir::{
     Confidence, DecodedOccurrence, EntityKind, FragmentView, LanguageExtensionWireFact,
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
-};
-use backend_frontend_python::legacy::{
-    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
@@ -84,7 +87,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected"
+            }
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
@@ -275,6 +280,91 @@ fn supplied_local_resolution_upgrades_the_call_to_oracle() -> Result<(), TestErr
     })
 }
 
+/// A source-only checker result without an exact target must leave the
+/// syntax-derived target at index confidence, even when the spelling matches.
+#[test]
+fn supplied_unverified_resolution_never_upgrades_the_call() -> Result<(), TestError> {
+    with_deep_stack(|| {
+        let report = report_with_symbols(Box::from([SymbolResolution {
+            target: "target".to_owned(),
+            span: TARGET_CALL_SPAN,
+            outcome: SymbolOutcome::Unverified,
+        }]));
+        let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
+        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
+        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let matching: Vec<_> = occurrences
+            .iter()
+            .filter(|fact| {
+                matches!(fact.occurrence.target,
+                    OccurrenceTarget::Local(local) if local.raw as usize == target_row)
+            })
+            .collect();
+        if matching.len() == 1
+            && matching[0].occurrence.confidence == OccurrenceConfidence::Index
+            && matching
+                .iter()
+                .all(|fact| fact.occurrence.confidence != OccurrenceConfidence::Oracle)
+        {
+            Ok(())
+        } else {
+            Err(TestError::Falsified(
+                "Unverified evidence did not retain exactly one Index target without Oracle confidence",
+            ))
+        }
+    })
+}
+
+/// A project-native definition carries a validated declaration coordinate,
+/// so the exact same-module target still receives oracle confidence after
+/// source-only diagnostic matches become explicitly unverified.
+#[test]
+fn supplied_exact_definition_still_upgrades_only_its_target() -> Result<(), TestError> {
+    with_deep_stack(|| {
+        const TARGET_NAME_SPAN: Span = Span { start: 46, end: 52 };
+        let report = report_with_symbols(Box::from([SymbolResolution {
+            target: "target".to_owned(),
+            span: TARGET_CALL_SPAN,
+            outcome: SymbolOutcome::Definition {
+                target: DefinitionTarget {
+                    relative_path: "module.py".into(),
+                    package: "fixture".into(),
+                    name_span: TARGET_NAME_SPAN,
+                    qualified_name: "module.target".into(),
+                    source_coordinate: "fixture-coordinate".into(),
+                    name: "target".into(),
+                    kind: DeclarationKind::Function,
+                    same_module: true,
+                },
+                callee: None,
+            },
+        }]));
+        let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
+        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
+        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let oracle_rows: Vec<_> = occurrences
+            .iter()
+            .filter(|fact| fact.occurrence.confidence == OccurrenceConfidence::Oracle)
+            .collect();
+        let caller_row = entity_position(&fragment, b"caller", EntityKind::Function)?;
+        // The wire stores occurrence spans relative to the owning declaration,
+        // whose independently pinned start in SOURCE is byte77.
+        let exact = oracle_rows.len() == 1
+            && oracle_rows[0].owner.raw as usize == caller_row
+            && oracle_rows[0].occurrence.span.start == 32
+            && oracle_rows[0].occurrence.span.end == 38
+            && matches!(oracle_rows[0].occurrence.target,
+                OccurrenceTarget::Local(local) if local.raw as usize == target_row);
+        if exact {
+            Ok(())
+        } else {
+            Err(TestError::Falsified(
+                "the exact DefinitionTarget did not decode as the selected Oracle target",
+            ))
+        }
+    })
+}
+
 /// Falsifier 2: the supplied report binds the `osp` binding call at its
 /// exact span to a resolved import, and the decoded occurrence carries the
 /// import tier over a foreign target.
@@ -305,10 +395,10 @@ fn supplied_foreign_resolution_upgrades_the_call_to_import() -> Result<(), TestE
 }
 
 /// Falsifier 3: `Unresolved` outcomes at the same exact spans upgrade
-/// nothing — every occurrence keeps its index tier and every proven syntax
-/// target keeps its shape.
+/// nothing. Native unresolved evidence keeps both exact call sites at Index
+/// confidence and foreign targets; it cannot invent a same-spelled local binding.
 #[test]
-fn unresolved_outcomes_keep_every_proven_syntax_tier() -> Result<(), TestError> {
+fn unresolved_project_outcomes_keep_exact_sites_foreign_and_indexed() -> Result<(), TestError> {
     with_deep_stack(|| {
         let report = report_with_symbols(Box::from([
             SymbolResolution {
@@ -335,18 +425,33 @@ fn unresolved_outcomes_keep_every_proven_syntax_tier() -> Result<(), TestError> 
                 ));
             }
         }
-        let local_target_intact = occurrences.iter().any(|fact| {
+        let caller_row = entity_position(&fragment, b"caller", EntityKind::Function)?;
+        let foreign_row = entity_position(&fragment, b"foreign", EntityKind::Function)?;
+        let exact_foreign_site = |owner, start, end| {
+            let matches: Vec<_> = occurrences
+                .iter()
+                .filter(|fact| {
+                    fact.owner.raw as usize == owner
+                        && fact.occurrence.span.start == start
+                        && fact.occurrence.span.end == end
+                })
+                .collect();
+            matches.len() == 1
+                && matches[0].occurrence.confidence == OccurrenceConfidence::Index
+                && matches!(matches[0].occurrence.target, OccurrenceTarget::Foreign(_))
+        };
+        let invented_local = occurrences.iter().any(|fact| {
             matches!(fact.occurrence.target,
                 OccurrenceTarget::Local(local) if local.raw as usize == target_row)
         });
-        let foreign_target_intact = occurrences
-            .iter()
-            .any(|fact| matches!(fact.occurrence.target, OccurrenceTarget::Foreign(_)));
-        if local_target_intact && foreign_target_intact {
+        if exact_foreign_site(caller_row, 32, 38)
+            && exact_foreign_site(foreign_row, 33, 36)
+            && !invented_local
+        {
             Ok(())
         } else {
             Err(TestError::Falsified(
-                "unresolved outcomes changed the resolved syntax targets",
+                "native unresolved evidence lost an exact Index foreign call site or invented a local binding",
             ))
         }
     })

@@ -211,6 +211,44 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getCursorKind(cursor) }
     }
 
+    /// Compares native types only when this runtime loaded libclang's type
+    /// equality oracle; an unavailable function never becomes a guess.
+    pub(crate) fn types_equal(left: CXType, right: CXType) -> bool {
+        if !clang_sys::clang_equalTypes::is_loaded() {
+            return false;
+        }
+        // SAFETY: both CXTypes were returned by this live translation unit;
+        // the runtime symbol was checked immediately above.
+        unsafe { clang_sys::clang_equalTypes(left, right) != 0 }
+    }
+
+    /// Optional cv-insensitive native type equality. Older libclang releases
+    /// do not export `clang_getUnqualifiedType`; callers must retain Unknown.
+    pub(crate) fn types_equal_ignoring_qualifiers(left: CXType, right: CXType) -> Option<bool> {
+        if !clang_sys::clang_getUnqualifiedType::is_loaded()
+            || !clang_sys::clang_equalTypes::is_loaded()
+        {
+            return None;
+        }
+        // SAFETY: both CXTypes came from this live translation unit and the
+        // optional API's presence was checked immediately above.
+        let left = unsafe { clang_sys::clang_getUnqualifiedType(left) };
+        // SAFETY: same live-unit and loaded-symbol conditions as above.
+        let right = unsafe { clang_sys::clang_getUnqualifiedType(right) };
+        // SAFETY: both resulting CXTypes belong to the same live translation unit.
+        Some(unsafe { clang_sys::clang_equalTypes(left, right) != 0 })
+    }
+
+    /// Tests whether two cursors denote the exact same native declaration.
+    pub(crate) fn same_cursor(left: CXCursor, right: CXCursor) -> bool {
+        if !clang_sys::clang_equalCursors::is_loaded() {
+            return false;
+        }
+        // SAFETY: both cursors belong to this live translation unit; the
+        // runtime symbol was checked immediately above.
+        unsafe { clang_sys::clang_equalCursors(left, right) != 0 }
+    }
+
     /// Returns the canonical declaration cursor's USR identity for declaration deduplication.
     pub(crate) fn canonical_identity(cursor: CXCursor) -> Option<SymbolIdentity> {
         // SAFETY: cursor was supplied by this live translation unit.

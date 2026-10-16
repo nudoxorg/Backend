@@ -35,6 +35,7 @@ pub(crate) struct OwnerThread {
 
 impl Drop for OwnerThread {
     fn drop(&mut self) {
+        crate::runtime::trace::mark("close.owner_join", "closing gate before host join");
         self.gate.close();
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -140,6 +141,7 @@ fn run<H>(
         let fault = match std::panic::catch_unwind(AssertUnwindSafe(|| starter(gate))) {
             Ok(Ok(Started { host, key, mode })) => {
                 let Some(host_lifetime) = gate.publish_host(key, mode) else { return; };
+                crate::runtime::trace::mark("boot.owner_ready", "published");
                 let restart = loop {
                     let restart = match std::panic::catch_unwind(AssertUnwindSafe(|| observer(gate, &host, host_lifetime))) {
                         Ok(restart) => restart,
@@ -182,9 +184,26 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
     let started = Instant::now();
     let mut last = "the local service did not become ready".to_owned();
     for attempt in 0..ATTEMPTS {
+        let attempting = Instant::now();
+        crate::runtime::trace::mark(
+            "boot.owner_attempt.begin",
+            format_args!("attempt {}", attempt + 1),
+        );
         match attempt_once(paths, gate) {
-            Ok(opened) => return Ok(opened),
+            Ok(opened) => {
+                crate::runtime::trace::span(
+                    "boot.owner_attempt",
+                    attempting,
+                    format_args!("attempt {} succeeded", attempt + 1),
+                );
+                return Ok(opened);
+            }
             Err(message) => {
+                crate::runtime::trace::span(
+                    "boot.owner_attempt",
+                    attempting,
+                    format_args!("attempt {} failed", attempt + 1),
+                );
                 if attempt == 0 {
                     gate.publish(OwnerState::Failed(OwnerFault::from(message.as_str())));
                 }
@@ -206,6 +225,7 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
 
 fn attempt_once(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, VersionedRoot), String> {
     let starting = Instant::now();
+    crate::runtime::trace::mark("boot.owner_host_start.begin", "starting selected host");
     let mut host = DesktopHost::start_with_paths(paths.clone()).map_err(|error| describe(&error))?;
     crate::runtime::trace::span(
         "boot.owner_start",
@@ -218,6 +238,7 @@ fn attempt_once(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost
     // One round trip for the root, where a full hydration of the view used
     // to be (406-581 ms on the fixture index, LEDGER §2.1-2).
     let asking = Instant::now();
+    crate::runtime::trace::mark("boot.revision.begin", "requesting owner revision");
     let revision = Session::connect(host.endpoint())
         .and_then(|mut session| session.revision())
         .map_err(|error| format!("read the owner's revision: {error}"))?;
