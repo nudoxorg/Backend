@@ -11554,12 +11554,14 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        entered
-            .recv_timeout(Duration::from_secs(2))
-            .expect("actual publication starts preparation without a query or manual warm");
-        assert_ne!(owner_cursor(daemon), initial);
-        assert!(project_is_admitted(daemon, package));
-        assert!(adapter.search_preparation_eager);
+        let retained = match adapter
+            .index_operations
+            .entry(operation)
+            .expect("retained operation")
+        {
+            Some(JournalEntry::Retained(entry)) => entry,
+            _ => panic!("actual index operation must retain its terminal"),
+        };
         assert!(
             adapter.index_terminals.iter().any(|terminal| {
                 terminal.ticket == ticket
@@ -11568,8 +11570,21 @@ mod tests {
                         backend_library::IndexJobOutcome::Published
                     )
             }),
-            "publication does not wait for the held search worker"
+            "publication does not wait for the held search worker; retained operation: {retained:?}"
         );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "actual publication starts preparation without a query or manual warm: {error:?}; eager={}; active={}; preparation failure={:?}",
+                    adapter.search_preparation_eager,
+                    adapter.search_lane.active(),
+                    adapter.search_preparation_failure,
+                )
+            });
+        assert_ne!(owner_cursor(daemon), initial);
+        assert!(project_is_admitted(daemon, package));
+        assert!(adapter.search_preparation_eager);
         assert_eq!(adapter.search_snapshots.projection_builds(), 0);
         let health = serde_json::to_vec(&backend_engine::CommandDto::new(142, Command::Health))
             .expect("health");
