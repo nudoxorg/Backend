@@ -177,19 +177,38 @@ impl CommandTransport for Transport {
             library.execute_dto(request.clone())
         };
         let snapshot = match &reply.reply {
-            CommandReply::Search(page) | CommandReply::Names(page) => Some(page),
+            CommandReply::Search(page) | CommandReply::Names(page) | CommandReply::Graph(page) => {
+                Some(page)
+            }
             CommandReply::ProjectionPage(page) => Some(&page.snapshot),
             _ => None,
         };
         if let Some(page) = snapshot {
+            let source_root = library.revision_root();
             let recipe = match &request.command {
-                Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query),
-                Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query),
+                Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query)
+                    .canonical_preimage()
+                    .to_vec(),
+                Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query)
+                    .canonical_preimage()
+                    .to_vec(),
                 Command::GraphPage { symbol, page } => {
                     QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
+                        .canonical_preimage()
+                        .to_vec()
                 }
                 Command::OutlinePage { package, page } => {
                     QueryPageRecipe::outline(library.revision_root(), *package, page.limit())
+                        .canonical_preimage()
+                        .to_vec()
+                }
+                Command::Graph(_) | Command::Related(_) => {
+                    let mut bytes = Vec::new();
+                    for part in [b"query".as_slice(), b"graph", source_root.as_bytes(), &[0]] {
+                        bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
+                        bytes.extend_from_slice(part);
+                    }
+                    bytes
                 }
                 _ => unreachable!("query reply"),
             };
@@ -200,7 +219,15 @@ impl CommandTransport for Transport {
                 .clone();
             if let Some(request_proof) = request.certificate() {
                 for claim in &request_proof.claims {
-                    if graph_address_claim(&request.command, claim) {
+                    if graph_address_claim(&request.command, claim)
+                        || matches!(
+                            claim,
+                            WireClaim::Key {
+                                schema: WireSchema::Symbol,
+                                ..
+                            }
+                        )
+                    {
                         proof = proof.with_claim_once(claim.clone());
                     }
                 }
@@ -210,7 +237,7 @@ impl CommandTransport for Transport {
                 WireClaim::KeyBytes {
                     schema: WireSchema::ViewRecipe,
                     id: encode_id(root.recipe().as_bytes()),
-                    value: recipe.canonical_preimage().into(),
+                    value: recipe.into_boxed_slice(),
                 },
                 WireClaim::Version {
                     schema: WireSchema::ViewVersion,
@@ -273,6 +300,50 @@ impl CommandTransport for Transport {
             }
             reply = reply.with_certificate(proof);
         }
+        if let CommandReply::Document(document) = &reply.reply {
+            let row = library
+                .view()
+                .row_ref(RowId::Symbol(document.symbol))
+                .expect("selected row");
+            let source = Basis {
+                root: library.revision_root(),
+                ..library.view().basis()
+            };
+            let selection = backend_library::DocumentSelection::from_row(row, source)
+                .expect("actual row selection");
+            let mut proof = library
+                .execute_dto(CommandDto::new(1, Command::Revision))
+                .certificate()
+                .expect("revision proof")
+                .clone();
+            for claim in request
+                .certificate()
+                .into_iter()
+                .flat_map(|proof| &proof.claims)
+            {
+                proof = proof.with_claim_once(claim.clone());
+            }
+            proof = proof
+                .with_claim_once(WireClaim::KeyCommitment {
+                    schema: WireSchema::Symbol,
+                    id: encode_id(document.symbol.as_bytes()),
+                })
+                .with_claim_once(WireClaim::Version {
+                    schema: WireSchema::Document,
+                    id: encode_id(selection.version().as_bytes()),
+                    value: selection.canonical_bytes().into_boxed_slice(),
+                });
+            reply = ReplyDto::new(
+                request.request_id,
+                CommandReply::Document(
+                    document
+                        .clone()
+                        .with_selection(selection)
+                        .expect("actual document selection"),
+                ),
+            )
+            .with_certificate(proof);
+        }
         // Exercise the real strict producer/certificate and reply admission,
         // rather than returning caller-owned snapshots unchecked.
         if !matches!(
@@ -303,6 +374,314 @@ fn fixture() -> (Arc<Mutex<Library>>, Arc<Mutex<Vec<Command>>>) {
         Arc::new(Mutex::new(vec![])),
     )
 }
+
+fn selected_at(symbol: SymbolKey, coordinate: &str) -> DeclarationSelector {
+    DeclarationSelector::SelectedAt {
+        symbol: backend_library::SelectedSymbolId::new(symbol.to_bytes()).expect("selected row"),
+        coordinate: coordinate.to_owned(),
+    }
+}
+
+#[test]
+fn selected_coordinate_reads_refuse_older_daemon_echoes_with_a_different_payload_label() {
+    let owner = Arc::new(Mutex::new(owner_with_labels(
+        1,
+        2,
+        0,
+        &["actual label", "asserted label"],
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let symbol = symbol_key("pkg::Thing000");
+    for read in [
+        DeclarationRead::Document,
+        DeclarationRead::Source,
+        DeclarationRead::Graph,
+        DeclarationRead::Related,
+    ] {
+        let mut client = session(&owner, &requests);
+        let correct = selected_at(symbol, "actual label");
+        client
+            .declaration(&correct, read)
+            .expect("matching admitted payload");
+        let wrong = selected_at(symbol, "asserted label");
+        assert!(
+            matches!(client.declaration(&wrong, read), Err(ClientError::Protocol(message))
+            if message.contains("asserted coordinate")),
+            "{read:?}"
+        );
+    }
+    assert!(
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .any(|command| matches!(command, Command::Graph(_)))
+    );
+}
+
+struct MissingDocumentSelection(Transport);
+impl CommandTransport for MissingDocumentSelection {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        let mut reply = self.0.request(request.clone())?;
+        if let CommandReply::Document(document) = &mut reply.reply {
+            document.selection = None;
+            let library = self.0.owner.lock().expect("owner");
+            reply = ReplyDto::decode_with_certificate(
+                &serde_json::to_vec(&reply).expect("legacy document without selection"),
+                library.view().capability(),
+            )
+            .map_err(ClientError::Protocol)?;
+            return admit_reply(&request, reply);
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn selected_coordinate_documents_refuse_a_legacy_payload_without_authenticated_selection() {
+    let owner = Arc::new(Mutex::new(owner_with_label(1, 1, 0, "actual label")));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        MissingDocumentSelection(Transport {
+            owner,
+            requests,
+            graph_ids: None,
+        }),
+    );
+    let selected = selected_at(symbol_key("pkg::Thing000"), "actual label");
+    for read in [DeclarationRead::Document, DeclarationRead::Source] {
+        assert!(
+            matches!(client.declaration(&selected, read), Err(ClientError::Protocol(message))
+            if message.contains("asserted coordinate"))
+        );
+    }
+}
+
+fn selected_page_fixture() -> (
+    Arc<Mutex<Library>>,
+    Arc<Mutex<Vec<Command>>>,
+    SymbolKey,
+    Vec<RowId>,
+) {
+    let owner = Arc::new(Mutex::new(owner_with_label(1, 3, 0, "actual label")));
+    let mut ids = owner
+        .lock()
+        .expect("owner")
+        .view()
+        .row_refs()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    let RowId::Symbol(symbol) = *ids.last().expect("last center") else {
+        panic!("symbol")
+    };
+    (owner, Arc::new(Mutex::new(Vec::new())), symbol, ids)
+}
+
+#[test]
+fn selected_graph_pages_authenticate_an_omitted_center_and_keep_the_assertion_on_resume() {
+    let (owner, requests, symbol, ids) = selected_page_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        Transport {
+            owner: owner.clone(),
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids.clone())),
+        },
+    );
+    let selected = selected_at(symbol, "actual label");
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(1).expect("one row"));
+    let first = client
+        .graph_page_declaration(&selected, window, None)
+        .expect("small first page");
+    let CommandReply::ProjectionPage(page) = first.reply else {
+        panic!("graph page")
+    };
+    assert!(
+        page.snapshot.root.row_ref(RowId::Symbol(symbol)).is_none(),
+        "first page legitimately omits its center"
+    );
+    let PageTerminal::More(next) = page.terminal else {
+        panic!("continued graph")
+    };
+    let token = client
+        .encode_query_continuation(next)
+        .expect("verified page has portable proof");
+    let mut fresh = Session::from_transport(
+        "/private/test-owner.sock",
+        Transport {
+            owner,
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids)),
+        },
+    );
+    let continuation = fresh
+        .decode_page_continuation(&token)
+        .expect("same owner portable proof");
+    fresh
+        .graph_page_declaration(&selected, window, Some(continuation))
+        .expect("continued assertion rechecked at exact source");
+    let commands = requests.lock().expect("requests");
+    let documents = commands
+        .iter()
+        .filter_map(|command| {
+            if let Command::Document(query) = command {
+                Some(query)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(documents.len(), 2);
+    assert!(
+        documents
+            .iter()
+            .all(|query| query.symbol() == selected.address() && query.source_basis().is_some())
+    );
+    assert_eq!(documents[0].source_basis(), documents[1].source_basis());
+}
+
+#[test]
+fn selected_graph_pages_refuse_a_rehashed_coordinate_claim_before_sending_or_exporting_a_page() {
+    let (owner, requests, symbol, ids) = selected_page_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        Transport {
+            owner: owner.clone(),
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids.clone())),
+        },
+    );
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(1).expect("one row"));
+    let wrong = selected_at(symbol, "another label");
+    assert!(client.graph_page_declaration(&wrong, window, None).is_err());
+    assert!(
+        client.continuations.is_empty(),
+        "no cursor is retained before center authentication"
+    );
+    assert!(
+        !requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .any(|command| matches!(command, Command::GraphPage { .. }))
+    );
+    let first = client
+        .graph_page_declaration(&selected_at(symbol, "actual label"), window, None)
+        .expect("matching first page");
+    let CommandReply::ProjectionPage(page) = first.reply else {
+        panic!("graph page")
+    };
+    let PageTerminal::More(next) = page.terminal else {
+        panic!("continued graph")
+    };
+    let token = client
+        .encode_query_continuation(next)
+        .expect("issued token");
+    let imported =
+        backend_library::decode_command_body(&decode_portable_body(&token).expect("body"))
+            .expect("canonical token");
+    let mut certificate = imported.certificate().expect("certificate").clone();
+    for claim in &mut certificate.claims {
+        if let WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id,
+            value,
+        } = claim
+        {
+            *id = encode_id(symbol_key("another label").as_bytes());
+            *value = "another label".to_owned();
+        }
+    }
+    let changed = CommandDto::new(1, imported.command).with_certificate(certificate);
+    let changed = encode_portable_proof(
+        &backend_library::encode_binary_certificate_command(&changed).expect("rehashable claim"),
+        "pc4-",
+    )
+    .expect("bounded token");
+    let mut fresh = Session::from_transport(
+        "/private/test-owner.sock",
+        Transport {
+            owner,
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids)),
+        },
+    );
+    let next = fresh
+        .decode_page_continuation(&changed)
+        .expect("cursor itself still has its genuine recipe");
+    let before = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .filter(|command| matches!(command, Command::GraphPage { .. }))
+        .count();
+    assert!(
+        fresh
+            .graph_page_declaration(&wrong, window, Some(next))
+            .is_err()
+    );
+    let after = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .filter(|command| matches!(command, Command::GraphPage { .. }))
+        .count();
+    assert_eq!(
+        before, after,
+        "changed assertion cannot reuse a page that omits its center"
+    );
+    assert_eq!(fresh.continuations.len(), 1);
+    assert!(
+        fresh.continuations.contains_key(&next.cursor()),
+        "only the imported predecessor remains; no successor was issued"
+    );
+}
+
+struct RebindBeforeSelectedDocument(Transport);
+impl CommandTransport for RebindBeforeSelectedDocument {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        if matches!(&request.command, Command::Document(_)) {
+            *self.0.owner.lock().expect("owner") = owner_with_label(1, 4, 0, "changed view");
+        }
+        self.0.request(request)
+    }
+}
+
+#[test]
+fn selected_graph_center_authentication_refuses_a_rebound_source_without_refreshing_revision() {
+    let (owner, requests, symbol, ids) = selected_page_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        RebindBeforeSelectedDocument(Transport {
+            owner,
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids)),
+        }),
+    );
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(1).expect("one row"));
+    assert!(
+        client
+            .graph_page_declaration(&selected_at(symbol, "actual label"), window, None)
+            .is_err()
+    );
+    let commands = requests.lock().expect("requests");
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, Command::Revision))
+            .count(),
+        1
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::GraphPage { .. }))
+    );
+    assert!(client.continuations.is_empty());
+}
+
 fn page(reply: &ReplyDto) -> &backend_library::ViewSnapshot {
     match &reply.reply {
         CommandReply::Search(page) | CommandReply::Names(page) => page,

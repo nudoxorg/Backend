@@ -201,10 +201,15 @@ fn document_certificate(
             BuiltinModelError("document symbol is absent from the admitted owner view".to_owned())
         })?;
     if let Some(selection) = &document.selection {
-        let selected =
+        let selected = if selection.coordinate() == row.label {
+            // A selected native row may share its label with another role.
+            // Its already resolved identity, label and source bind the tuple.
+            Some(row.id)
+        } else {
             backend_library::resolve_selected_document_row(owner_root, selection.coordinate())
                 .map_err(|failure| BuiltinModelError(failure.to_string()))?
-                .map(|row| row.id);
+                .map(|row| row.id)
+        };
         if selected != Some(row.id)
             || selection.symbol() != document.symbol
             || selection.source()

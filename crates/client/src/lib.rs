@@ -919,6 +919,7 @@ pub struct Session {
     search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
     admitted_owner: Option<backend_library::Cursor>,
+    admitted_source: Option<backend_library::SemanticObject>,
     prepared_query: Option<CommandDto>,
     continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
     preparation_progress: Option<Box<dyn FnMut(QueryPreparationProgress) -> bool + Send>>,
@@ -1005,6 +1006,7 @@ impl Session {
             search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
+            admitted_source: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
@@ -1042,6 +1044,7 @@ impl Session {
             search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
+            admitted_source: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
@@ -1235,6 +1238,7 @@ impl Session {
             id: encode_id(receipt.root().as_bytes()),
         });
         self.admitted_owner = Some(receipt.cursor());
+        self.admitted_source = Some(receipt.source());
         Ok(Revision {
             root: receipt.root(),
             source: receipt.source(),
@@ -2499,6 +2503,36 @@ impl Session {
         remaining: Option<Duration>,
     ) -> Result<ReplyDto, ClientError> {
         let started = std::time::Instant::now();
+        let selected_assertion = selected_coordinate_assertion(&command, certificate.as_ref())?;
+        // A small graph page may legitimately omit its center. Authenticate
+        // that selected row through a document at this already admitted source,
+        // never through a refreshed revision or an echoed coordinate claim.
+        let pinned_center = if let (Some(assertion), Command::GraphPage { page, .. }) =
+            (&selected_assertion, &command)
+        {
+            let owner = self.admitted_owner.ok_or(ClientError::StaleCursor)?;
+            let source = backend_library::Basis {
+                root: owner.root(),
+                object: self.admitted_source.ok_or(ClientError::StaleCursor)?,
+                branch: owner.branch(),
+                log: owner.log(),
+                schema: owner.schema(),
+            };
+            if !page.basis().matches(source.root) {
+                return Err(ClientError::StaleCursor);
+            }
+            let document = self.send_success_with_budget(
+                Command::Document(
+                    DocumentQuery::addressed(assertion.symbol, source.root)
+                        .with_source_basis(source),
+                ),
+                certificate.clone(),
+                remaining.map(|budget| budget.saturating_sub(started.elapsed())),
+            )?;
+            Some(assertion.admit_document(&document, source)?)
+        } else {
+            None
+        };
         let portable = matches!(
             &command,
             Command::Search(_)
@@ -2515,6 +2549,9 @@ impl Session {
             }
             None => self.send_query_ready(command, certificate)?,
         })?;
+        if let Some(assertion) = selected_assertion {
+            assertion.admit_payload(&reply, pinned_center.as_ref())?;
+        }
         self.remember_continuation(&reply);
         if let Some((command, Some(certificate))) = portable {
             self.retain_portable_query(command, &certificate, &reply)?;
@@ -2681,6 +2718,129 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
         id: encode_id(id),
         value: value.to_owned(),
     })
+}
+
+// A peer on the same DTO version may decode the label claim without enforcing
+// it. Only the admitted selected payload can discharge that assertion.
+#[cfg(any(unix, windows))]
+struct SelectedCoordinateAssertion {
+    symbol: SymbolAddress,
+    coordinate: String,
+}
+
+#[cfg(any(unix, windows))]
+struct PinnedSelectedCoordinate {
+    symbol: SymbolKey,
+    source: backend_library::Basis,
+    coordinate: String,
+}
+
+#[cfg(any(unix, windows))]
+impl SelectedCoordinateAssertion {
+    fn admit_document(
+        &self,
+        reply: &ReplyDto,
+        source: backend_library::Basis,
+    ) -> Result<PinnedSelectedCoordinate, ClientError> {
+        self.admit_payload(reply, None)?;
+        let (CommandReply::Document(document) | CommandReply::Page(document)) = &reply.reply else {
+            return Err(ClientError::Protocol(
+                "selected document changed shape".to_owned(),
+            ));
+        };
+        if document.source_basis() != Some(source) || document.basis != source.root {
+            return Err(ClientError::StaleCursor);
+        }
+        Ok(PinnedSelectedCoordinate {
+            symbol: document.symbol,
+            source,
+            coordinate: self.coordinate.clone(),
+        })
+    }
+
+    fn admit_payload(
+        &self,
+        reply: &ReplyDto,
+        pinned_center: Option<&PinnedSelectedCoordinate>,
+    ) -> Result<(), ClientError> {
+        let coordinate = match &reply.reply {
+            CommandReply::Document(document) | CommandReply::Page(document) => document
+                .selection
+                .as_ref()
+                .filter(|selection| {
+                    self.symbol.matches(document.symbol)
+                        && selection.symbol() == document.symbol
+                        && Some(selection.source()) == document.source_basis()
+                })
+                .map(backend_library::DocumentSelection::coordinate),
+            CommandReply::Graph(snapshot) => self.center_coordinate(&snapshot.root),
+            CommandReply::ProjectionPage(page) => {
+                self.center_coordinate(&page.snapshot.root).or_else(|| {
+                    pinned_center
+                        .filter(|center| {
+                            self.symbol.matches(center.symbol)
+                                && center.source == page.snapshot.root.basis()
+                        })
+                        .map(|center| center.coordinate.as_str())
+                })
+            }
+            _ => None,
+        };
+        if coordinate != Some(self.coordinate.as_str()) {
+            return Err(ClientError::Protocol(
+                "selected reply omitted or mismatched its asserted coordinate".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn center_coordinate<'a>(&self, root: &'a backend_library::ViewRoot) -> Option<&'a str> {
+        root.row_refs().find_map(|row| match row.id {
+            backend_library::RowId::Symbol(symbol) if self.symbol.matches(symbol) => {
+                Some(row.label.as_str())
+            }
+            _ => None,
+        })
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn selected_coordinate_assertion(
+    command: &Command,
+    certificate: Option<&WireCertificate>,
+) -> Result<Option<SelectedCoordinateAssertion>, ClientError> {
+    let symbol = match command {
+        Command::Document(query) | Command::Source(query) => query.symbol(),
+        Command::Graph(query) | Command::Related(query) => query.symbol(),
+        Command::GraphPage { symbol, .. } => *symbol,
+        _ => return Ok(None),
+    };
+    if !symbol.is_selected() {
+        return Ok(None);
+    }
+    let mut coordinates = certificate
+        .into_iter()
+        .flat_map(|certificate| &certificate.claims)
+        .filter_map(|claim| match claim {
+            WireClaim::Key {
+                schema: WireSchema::Symbol,
+                value,
+                ..
+            } => Some(value),
+            _ => None,
+        });
+    let Some(coordinate) = coordinates.next() else {
+        return Ok(None);
+    };
+    if coordinates.next().is_some() {
+        return Err(ClientError::Protocol(
+            "selected declaration has multiple coordinate assertions".to_owned(),
+        ));
+    }
+    Ok(Some(SelectedCoordinateAssertion {
+        symbol,
+        coordinate: coordinate.clone(),
+    }))
 }
 
 #[cfg(any(unix, windows))]

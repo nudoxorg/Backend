@@ -32,7 +32,10 @@ assertions. An ID is neither a compiler identity constructor nor a publication
 proof. A removed row's old ID cannot read retained historical data through
 these current-view commands. Graph cursors retain the selected ID, optional
 coordinate assertion and original query credit; preserve the arguments when
-continuing a page.
+continuing a page. The client also verifies an asserted label against the admitted
+selected payload. An older owner that cannot supply the authenticated selection
+is refused; echoing the request claim is insufficient. Small graph pages retain
+their ordinary credit by verifying the selected document at the same pinned source.
 
 `references` still uses its existing coordinate-only protocol. The generic
 `backend.surface` batch `Read` and `nudox read` retain their legacy coordinate
