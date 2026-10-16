@@ -32,6 +32,14 @@ let
   nativeCompilerFlags = pkgs.lib.filterAttrs (
     name: _: pkgs.lib.hasPrefix "NIX_" name
   ) nativeCompilerEnv;
+  surfaceCorpus = import ./surface-corpus.nix { inherit pkgs; };
+  surfaceCargoLockContract = pkgs.runCommand "nudox-surface-cargo-lock-contract" { } ''
+    set -e
+    cmp ${surfaceCorpus.rust-itoa}/Cargo.lock ${../../tests/surface/cargo-locks/rust-itoa.lock}
+    cmp ${surfaceCorpus.rust-ryu}/Cargo.lock ${../../tests/surface/cargo-locks/rust-ryu.lock}
+    mkdir -p "$out/share"
+    printf '%s\n' validated > "$out/share/surface-cargo-lock-contract"
+  '';
   localHostRuntimeContract =
     if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
       pkgs.runCommand "nudox-local-host-runtime-contract"
@@ -168,6 +176,9 @@ in
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
         cp ${../ci/smoke.py} .config/ci/smoke.py
+        cp ${../ci/gui_contract.py} .config/ci/gui_contract.py
+        cp ${../ci/test_gui_contract.py} .config/ci/test_gui_contract.py
+        python3 .config/ci/test_gui_contract.py
         cp ${../ci/cli_contract.py} .config/ci/cli_contract.py
         cp ${../ci/test_cli_contract.py} .config/ci/test_cli_contract.py
         python3 .config/ci/test_cli_contract.py
@@ -201,6 +212,7 @@ in
   nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
+  surface-cargo-lock-contract = surfaceCargoLockContract;
 
   # These files are compile-time byte authorities in local-service. Check the
   # actual filtered product source without compiling the product first.

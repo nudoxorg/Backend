@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -146,7 +147,7 @@ def stable(value):
 class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
-    def __init__(self, bin_dir: Path, case_root: Path):
+    def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
         self.bin_dir = bin_dir
         # Keep public project/endpoint coordinates stable, but place durable
         # owner writes on the task volume, not its rootfs /tmp overlay. The
@@ -159,6 +160,17 @@ class Owner:
         self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
+        if cargo_vendor is not None:
+            # Pinned lockfile sources are outside the upstream project. Keep
+            # the owner offline and give this case its own writable Cargo home.
+            cargo_home = case_root / "cargo-home"
+            cargo_home.mkdir(mode=0o700)
+            (cargo_home / "config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "nudox-surface-vendor"\n'
+                '[source.nudox-surface-vendor]\ndirectory = '
+                + json.dumps(str(cargo_vendor)) + '\n[net]\noffline = true\n')
+            self.env["NUDOX_CARGO_HOME"] = str(cargo_home)
+
         self.workspace.mkdir(parents=True, mode=0o700)
         authority = self.workspace / "authority.secret"
         self.env["BACKEND_LOCALD_WORKSPACE"] = str(self.workspace)
@@ -423,7 +435,7 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
         or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
         for p in profiles
     ):
-        raise RuntimeError("index setup: every fixture profile must publish complete native coverage")
+        raise RuntimeError("index setup: every fixture profile must publish complete native coverage; profiles=" + json.dumps(profiles, sort_keys=True)[:4096])
     root = terminal.get("detail", {}).get("view_root")
     if not isinstance(root, str) or not re.fullmatch(r"[0-9a-f]{64}", root):
         raise RuntimeError("index setup: missing exact published view root")
@@ -847,7 +859,16 @@ def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
 
 
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
-    for name, filename in expected.items():
+    for query, declaration in expected.items():
+        # Search text need not be the compiler's canonical identity. Java,
+        # for example, finds a type by its short name but reports its FQN.
+        if isinstance(declaration, str):
+            name, filename = query, declaration
+        elif (isinstance(declaration, dict) and set(declaration) == {"name", "path"}
+              and all(isinstance(value, str) and value for value in declaration.values())):
+            name, filename = declaration["name"], declaration["path"]
+        else:
+            raise RuntimeError(f"real corpus: invalid authored declaration for {query}")
         if not any(row.get("identity", {}).get("name") == name
                    and row.get("identity", {}).get("path") == filename and row.get("language") == language
                    and row.get("state") == "ready"
@@ -857,9 +878,24 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
             raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
 
 
+def make_case_directories_writable(root: Path) -> None:
+    """Only our copied directories need write permission for a repeat run.
+
+    Nix source directories are read-only. copytree preserves those modes;
+    do not change the pinned source or follow a link out of the case tree.
+    """
+    for directory, _, _ in os.walk(root, followlinks=False):
+        path = Path(directory)
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError("surface case cleanup requires owned directories")
+        path.chmod(stat.S_IMODE(metadata.st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
+        make_case_directories_writable(case_root)
         shutil.rmtree(case_root)
     case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
@@ -870,8 +906,16 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(source, project)
     else:
         shutil.copytree(ROOT / case["project"], project)
+    make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
-    owner = Owner(bin_dir, case_root)
+    cargo_vendor = None
+    if "cargo_vendor_env" in case:
+        vendor = os.environ.get(case["cargo_vendor_env"], "")
+        cargo_vendor = Path(vendor)
+        if not cargo_vendor.is_absolute() or not cargo_vendor.is_dir() or not str(cargo_vendor.resolve()).startswith("/nix/store/"):
+            raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
+    owner = Owner(bin_dir, case_root, cargo_vendor)
+
     record = {"answers": {}, "performance": {"seconds": {}}}
     proven_tokens = set()
     try:
@@ -951,6 +995,14 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"]["seconds"].update(
                 run_live_contracts(owner, project, case["live_contracts"], published_root)
             )
+        if case.get("gui"):
+            from gui_contract import run_gui
+            answer, usage, evidence = run_gui(owner, project, case["gui"])
+            record["answers"]["gui"] = answer
+            record["performance"]["seconds"].update(usage.pop("seconds"))
+            record["performance"].update(usage)
+            with OUTPUT_LOCK:
+                print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
         record["performance"].update(owner.usage())
     finally:
         try:
@@ -972,9 +1024,10 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
     for name, old in baseline.get("seconds", {}).items():
         if name in measured["seconds"]:
             check("seconds", f"seconds[{name}]", old, measured["seconds"][name])
-    for metric in ("peak_rss_kib", "cpu_seconds"):
+    for metric in ("peak_rss_kib", "cpu_seconds", "gui_peak_rss_kib", "gui_cpu_seconds"):
         if metric in baseline and metric in measured:
-            check(metric, metric, baseline[metric], measured[metric])
+            policy = metric.removeprefix("gui_")
+            check(policy, metric, baseline[metric], measured[metric])
     return found
 
 

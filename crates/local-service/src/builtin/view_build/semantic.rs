@@ -5,8 +5,8 @@ use super::super::{
 };
 use super::call_join::foreign_display_name;
 use super::identity::{
-    declaration_kind, external_semantic_coordinate, external_semantic_symbol, semantic_coordinate,
-    semantic_identity, semantic_symbol,
+    declaration_family, declaration_kind, external_semantic_coordinate, external_semantic_symbol,
+    semantic_coordinate, semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::kinds;
@@ -1274,7 +1274,7 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
         };
         pairing.push(kinds::PairingEntity {
             identity,
-            name: name.to_vec(),
+            name: semantic_source_name(profile, declaration_family(kind), name),
             holder,
             item: entity.entity.kind,
             kind,
@@ -1806,6 +1806,46 @@ mod tests {
     use super::publication_seek_bounds;
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[test]
+    fn java_qualified_semantic_type_pairs_to_its_authored_simple_name() -> Result<(), String> {
+        use super::semantic_source_name;
+        use backend_compile::{DeclarationKind, SourceDeclaration};
+        use backend_semantic::ir::{
+            DeclarationFamilyId, DeclarationIdentity, ItemKind, VariantFingerprint,
+        };
+        use backend_semantic::vocabulary::{JavaRelease, Language, LanguageProfile};
+
+        let profile = LanguageProfile::Java(JavaRelease::Java25);
+        let name = semantic_source_name(profile, 1, b"javax.annotation.Nonnull");
+        let entity = super::kinds::PairingEntity {
+            identity: DeclarationIdentity {
+                family: DeclarationFamilyId::from_raw([1; 16]),
+                variant: VariantFingerprint::from_raw([1; 16]),
+            },
+            name,
+            holder: Vec::new(),
+            item: ItemKind::Record,
+            kind: DeclarationKind::Interface,
+            start: Some(10),
+        };
+        let declaration = SourceDeclaration::at_path(
+            "javax/annotation/Nonnull.java",
+            "Nonnull",
+            DeclarationKind::Interface,
+            10,
+            "public @interface Nonnull",
+            "",
+        )?;
+        let sites = super::kinds::pair_sites(Language::Java, &[entity], &[&declaration]);
+
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            sites.values().next().map(|site| site.location().path()),
+            Some("javax/annotation/Nonnull.java")
+        );
+        Ok(())
+    }
 
     #[test]
     fn partial_artifacts_retain_structural_inventory_and_distinct_identities() -> Result<(), String>

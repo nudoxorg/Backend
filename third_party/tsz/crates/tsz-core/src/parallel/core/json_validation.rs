@@ -8,7 +8,7 @@
 /// (TS1328). Violations include single-quoted strings, computed property
 /// names (`[expr]`), and unquoted identifiers used as a property name or
 /// value.
-fn validate_json_syntax(source: &str) -> Vec<ParseDiagnostic> {
+fn legacy_json_syntax_diagnostics(source: &str) -> Vec<ParseDiagnostic> {
     let mut diagnostics = Vec::new();
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -256,4 +256,321 @@ fn matches_json_keyword(
 ) -> bool {
     let end = i + word.len();
     end <= len && &bytes[i..end] == word && (end == len || !is_ident_part(bytes[end]))
+}
+
+// The linked value checker uses strict serde JSON. Validate the same complete
+// grammar here, retaining native recovery diagnostics where they are available.
+// This deliberately diagnoses JSONC module text; tsconfig JSONC is separate.
+fn validate_json_syntax_with_checkpoint(
+    source: &str,
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> Result<Vec<ParseDiagnostic>, tsz_common::ProjectExecutionStop> {
+    use serde::Deserialize;
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
+    let mut reader = CheckpointJsonReader {
+        bytes: source.as_bytes(),
+        position: 0,
+        pending: 0,
+        checkpoint,
+        stopped: None,
+    };
+    let parsed = {
+        let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
+        DiscardJsonValue::deserialize(&mut deserializer).and_then(|_| deserializer.end())
+    };
+    reader.finish()?;
+    let Err(error) = parsed else {
+        return Ok(Vec::new());
+    };
+
+    // Preserve TS1327/1328 and identifier-root recovery without permitting an
+    // unbounded second scan of malformed input. All successful source admission
+    // comes from the strict native deserializer above, never this recovery pass.
+    // The two legacy traversals scan at most 8 KiB between stop polls.
+    const MAX_RECOVERY_BYTES: usize = 4096;
+    if source.len() <= MAX_RECOVERY_BYTES {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(2 * source.len() as u64)?;
+        }
+        let diagnostics = legacy_json_syntax_diagnostics(source);
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(0)?;
+        }
+        if !diagnostics.is_empty() {
+            return Ok(diagnostics);
+        }
+    }
+    let eof = error.classify() == serde_json::error::Category::Eof;
+    let mut start = if eof {
+        source.len()
+    } else {
+        json_error_byte_offset(source, error.line(), error.column(), checkpoint)?
+    };
+    while !source.is_char_boundary(start) {
+        start -= 1;
+    }
+    let length = if eof {
+        0
+    } else {
+        source[start..].chars().next().map_or(0, |ch| ch.len_utf8())
+    };
+    Ok(vec![ParseDiagnostic {
+        start: start as u32,
+        length: length as u32,
+        message: format!("Invalid native JSON module: {error}"),
+        code: if eof {
+            tsz_common::diagnostics::diagnostic_codes::EXPECTED
+        } else {
+            tsz_common::diagnostics::diagnostic_codes::UNEXPECTED_TOKEN
+        },
+        related: None,
+    }])
+}
+
+// `IgnoredAny` skips numeric representation and serde's normal recursive
+// container descent. Use the same deserialize_any path as the native Value
+// checker, dropping entries immediately instead of allocating another tree.
+struct DiscardJsonValue;
+impl<'de> serde::Deserialize<'de> for DiscardJsonValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(Self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for DiscardJsonValue {
+    type Value = Self;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a native JSON value")
+    }
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(Self)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut sequence: A) -> Result<Self, A::Error> {
+        while sequence.next_element::<Self>()?.is_some() {}
+        Ok(Self)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        while map.next_entry::<String, Self>()?.is_some() {}
+        Ok(Self)
+    }
+}
+
+struct CheckpointJsonReader<'source, 'budget> {
+    bytes: &'source [u8],
+    position: usize,
+    pending: u64,
+    checkpoint: Option<&'budget dyn tsz_common::ExecutionCheckpoint>,
+    stopped: Option<tsz_common::ProjectExecutionStop>,
+}
+impl CheckpointJsonReader<'_, '_> {
+    fn finish(&mut self) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if let Some(stopped) = self.stopped {
+            return Err(stopped);
+        }
+        if let Some(checkpoint) = self.checkpoint {
+            checkpoint.checkpoint(std::mem::take(&mut self.pending))?;
+        }
+        Ok(())
+    }
+}
+impl std::io::Read for CheckpointJsonReader<'_, '_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.stopped.is_some() {
+            return Err(std::io::Error::other("native JSON scan stopped"));
+        }
+        let count = buffer.len().min(4096).min(self.bytes.len() - self.position);
+        if count == 0 {
+            return Ok(0);
+        }
+        self.pending += count as u64;
+        if self.pending >= 4096 {
+            if let Some(checkpoint) = self.checkpoint {
+                if let Err(stopped) = checkpoint.checkpoint(std::mem::take(&mut self.pending)) {
+                    self.stopped = Some(stopped);
+                    return Err(std::io::Error::other("native JSON scan stopped"));
+                }
+            } else {
+                self.pending = 0;
+            }
+        }
+        buffer[..count].copy_from_slice(&self.bytes[self.position..self.position + count]);
+        self.position += count;
+        Ok(count)
+    }
+}
+
+fn json_error_byte_offset(
+    source: &str,
+    target_line: usize,
+    column: usize,
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> Result<usize, tsz_common::ProjectExecutionStop> {
+    let mut offset = 0;
+    let mut line = 1;
+    let mut pending = 0;
+    while line < target_line && offset < source.len() {
+        if source.as_bytes()[offset] == b'\n' {
+            line += 1;
+        }
+        offset += 1;
+        pending += 1;
+        if pending == 4096 {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(pending)?;
+            }
+            pending = 0;
+        }
+    }
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(pending)?;
+    }
+    Ok(offset
+        .saturating_add(column.saturating_sub(1))
+        .min(source.len()))
+}
+
+#[cfg(test)]
+fn validate_json_syntax(source: &str) -> Vec<ParseDiagnostic> {
+    validate_json_syntax_with_checkpoint(source, None).unwrap()
+}
+
+#[cfg(test)]
+#[test]
+fn strict_json_modules_retain_errors_in_values_structure_strings_and_trailing_input() {
+    for source in [
+        r#"{"enabled": }"#,
+        r#"{"enabled":true"#,
+        r#"{"nested":[1"#,
+        "{} trailing",
+        "{} }",
+        "[] ]",
+        "true false",
+        r#"{"a":1 "b":2}"#,
+        r#"{"text":"\q"}"#,
+        "{\"text\":\"raw\nnewline\"}",
+    ] {
+        assert!(
+            !validate_json_syntax(source).is_empty(),
+            "invalid JSON module: {source}"
+        );
+    }
+    for source in [
+        "{}",
+        "[]",
+        "true",
+        "null",
+        "42",
+        "-1.5e+2",
+        r#""é🦀""#,
+        r#"{"nested":[],"items":[{},[true,false,null]],"url":"http://docs"}"#,
+    ] {
+        assert!(
+            validate_json_syntax(source).is_empty(),
+            "valid JSON module: {source}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn jsonc_modules_are_diagnosed_consistently_with_the_strict_native_value_checker() {
+    for source in [
+        "// header\n{}",
+        "/* header */ {}",
+        "{} // tail",
+        r#"{"enabled": /* value */ true}"#,
+        r#"{"enabled":true,}"#,
+    ] {
+        assert!(
+            !validate_json_syntax(source).is_empty(),
+            "strict JSON module: {source}"
+        );
+    }
+    // Compiler configuration remains on its separate native JSONC parser.
+    assert!(
+        crate::config::parse_tsconfig("// config\n{\"compilerOptions\":{\"strict\":true,},}")
+            .is_ok()
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn json_validation_matches_native_value_numeric_and_depth_limits() {
+    for source in [
+        r#"{"overflow":1e999}"#.to_owned(),
+        format!("{}0{}", "[".repeat(256), "]".repeat(256)),
+    ] {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&source).is_err(),
+            "the linked value checker cannot represent this module"
+        );
+        assert!(
+            !validate_json_syntax(&source).is_empty(),
+            "syntax admission must retain the native refusal"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn checkpointed_json_bind_stops_during_long_values_trivia_and_nested_input() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+    struct StopAtChunk {
+        reason: ProjectExecutionStop,
+        charged: AtomicU64,
+    }
+    impl ExecutionCheckpoint for StopAtChunk {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            let charged = self.charged.fetch_add(work, Ordering::Relaxed) + work;
+            if charged >= 8192 {
+                Err(self.reason)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for source in [
+        format!(r#"{{"text":"{}"}}"#, "é🦀".repeat(16_384)),
+        format!("{}{{}}", " ".repeat(16_384)),
+        format!("[{}0]", "0,".repeat(16_384)),
+    ] {
+        for reason in [
+            ProjectExecutionStop::Cancelled,
+            ProjectExecutionStop::Deadline,
+            ProjectExecutionStop::WorkBudgetExhausted,
+        ] {
+            let stop = StopAtChunk {
+                reason,
+                charged: AtomicU64::new(0),
+            };
+            let result = synthesize_json_bind_result_with_checkpoint(
+                "data.json".into(),
+                source.clone(),
+                Some(&stop),
+            );
+            assert!(matches!(result, Err(observed) if observed == reason));
+            assert_eq!(
+                stop.charged.load(Ordering::Relaxed),
+                8192,
+                "the real JSON bind stops during its second native scan chunk"
+            );
+        }
+    }
 }

@@ -307,6 +307,9 @@ struct Decl<'source> {
     name: &'source [u8],
     span: ByteSpan,
     expanded: bool,
+    /// Authority-proven distinction for macro-expanded declarations that
+    /// share a caller span/name but live in distinct semantic scopes.
+    identity_discriminator: Option<[u8; 16]>,
 }
 
 enum RustDocLine<'source> {
@@ -756,20 +759,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let admitted = self
                 .scoped_names
                 .insert((scope, declaration.kind as u8, key));
-            if !admitted {
-                // A written implementation the HIR module-scope walk below
-                // can independently rediscover (unlike an ordinary named
-                // item, which that walk never re-enumerates once the
-                // written-syntax pass has cast it) must still be marked
-                // covered here, or the twin this gate just dropped comes
-                // back as a second, byte-identical admission and the image
-                // build honestly — but wrongly — rejects it as a
-                // `DuplicateDeclarationIdentity` collision with itself.
-                if let RustDefinition::Implementation(implementation) = &declaration.definition {
-                    self.covered_impls.push(*implementation);
-                }
-                continue;
-            }
+            // Cover the HIR definition behind a written declaration before
+            // considering whether to emit its row. This also applies to a
+            // later cfg twin rejected by `scoped_names`: if its definition
+            // is left uncovered, the module-scope pass re-emits the twin and
+            // the canonical image sees the duplicate identity we filtered.
             match &declaration.definition {
                 RustDefinition::Field(field) => self.covered_fields.push(*field),
                 RustDefinition::Implementation(implementation) => {
@@ -781,6 +775,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     }
                 }
             }
+            if !admitted {
+                continue;
+            }
             declarations.push(Decl {
                 kind: declaration.kind,
                 definition: declaration.definition,
@@ -788,6 +785,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span,
                 expanded: false,
+                identity_discriminator: None,
             });
         }
         for declaration in authority.module_declarations() {
@@ -833,9 +831,101 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span,
                 expanded,
+                identity_discriminator: None,
             });
         }
+        // A macro can stamp identical functions into sibling modules. HIR
+        // projects each generated item to the invocation span, so source
+        // coordinates and the function's structural signature alone cannot
+        // distinguish those legal declarations. Preserve the distinction
+        // only for same-name expansion groups that HIR proves occupy distinct
+        // module/impl scopes; byte-identical declarations in one scope still
+        // reach the canonical identity guard unchanged.
+        let mut expanded_functions = Vec::new();
+        let mut scopes_by_callsite = std::collections::HashMap::<
+            (u32, u32, Vec<u8>),
+            std::collections::HashSet<Vec<u8>>,
+        >::new();
+        for (index, declaration) in declarations.iter().enumerate() {
+            if !declaration.expanded {
+                continue;
+            }
+            let RustDefinition::Function(function) = &declaration.definition else {
+                continue;
+            };
+            let scope = self.expanded_function_scope(*function, &declaration.syntax);
+            let group = scopes_by_callsite
+                .entry((
+                    declaration.span.start,
+                    declaration.span.end,
+                    declaration.name.to_vec(),
+                ))
+                .or_default();
+            group.insert(scope.clone());
+            expanded_functions.push((index, scope));
+        }
+        for (index, scope) in expanded_functions {
+            let declaration = declarations.get_mut(index).ok_or_else(admission)?;
+            let group = scopes_by_callsite
+                .get(&(
+                    declaration.span.start,
+                    declaration.span.end,
+                    declaration.name.to_vec(),
+                ))
+                .ok_or_else(admission)?;
+            if group.len() > 1 {
+                let mut hash = Sha256::new();
+                hash.update(b"compiler.rust.expanded-function-scope.v1\0");
+                hash.update(&scope);
+                let mut discriminator = [0_u8; 16];
+                discriminator.copy_from_slice(&hash.finalize()[..16]);
+                declaration.identity_discriminator = Some(discriminator);
+            }
+        }
         Ok(declarations)
+    }
+
+    /// Stable semantic scope of one expanded function. HIR supplies the
+    /// module ancestry; an expanded impl header separates same-named methods
+    /// stamped into different impls in that module.
+    fn expanded_function_scope(
+        &self,
+        function: ra_ap_hir::Function,
+        syntax: &SyntaxNode,
+    ) -> Vec<u8> {
+        let mut scope = Vec::new();
+        for module in function
+            .module(self.database)
+            .path_to_root(self.database)
+            .iter()
+            .rev()
+        {
+            match module.name(self.database) {
+                Some(name) => {
+                    let bytes = name.as_str().as_bytes();
+                    scope.push(1);
+                    scope.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                    scope.extend_from_slice(bytes);
+                }
+                None => scope.push(0),
+            }
+        }
+        if let Some(implementation) = syntax.ancestors().skip(1).find_map(ast::Impl::cast) {
+            scope.push(2);
+            let trait_spelling = implementation
+                .trait_()
+                .map(|trait_ty| trait_ty.syntax().to_string())
+                .unwrap_or_else(|| "inherent".to_owned());
+            let self_spelling = implementation
+                .self_ty()
+                .map(|self_ty| self_ty.syntax().to_string())
+                .unwrap_or_default();
+            for spelling in [trait_spelling, self_spelling] {
+                scope.extend_from_slice(&(spelling.len() as u64).to_le_bytes());
+                scope.extend_from_slice(spelling.as_bytes());
+            }
+        }
+        scope
     }
 
     /// The exact span of the innermost enclosing item, so single-name-law
@@ -1445,6 +1535,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         .with_visibility(self.declaration_visibility(declaration))
         .typed(record)
         .with_extension(EmissionExtension::Rust(extension));
+        if let Some(discriminator) = declaration.identity_discriminator {
+            fact = fact.with_identity_discriminator(discriminator);
+        }
         for ordinal in &parameter_ordinals {
             fact = fact.child(ProductChildRole::FunctionParameter, *ordinal);
         }

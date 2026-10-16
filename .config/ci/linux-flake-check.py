@@ -54,7 +54,12 @@ def current_system() -> str:
     return system
 
 
-def current_check_installables(system: str) -> list[str]:
+def direct_store_options(store: str) -> list[str]:
+    """Use the direct task store for builds and auto for evaluation."""
+    return ["--eval-store", "auto", "--store", store]
+
+
+def current_check_installables(system: str, store: str) -> list[str]:
     result = run(
         [
             "nix",
@@ -62,6 +67,8 @@ def current_check_installables(system: str) -> list[str]:
             "--json",
             "--apply",
             "builtins.attrNames",
+            *direct_store_options(store),
+            "--option", "eval-cache", "false",
             f"path:.#checks.{system}",
         ],
         capture=True,
@@ -89,13 +96,19 @@ def main() -> int:
         # Developer shells and other local callers keep the existing behavior.
         return run(["nix", "flake", "check", "-L", "--keep-going", "path:."]).returncode
 
-    # Evaluate and validate the whole flake without realizing outputs first.
-    checked = run(["nix", "flake", "check", "-L", "--keep-going", "--no-build", "path:."])
+    # Evaluate and validate the whole flake without realizing its checks.
+    # Use the same evaluation/build store settings for validation, inventory,
+    # and the final build, including IFD inputs such as Cargo lock imports.
+    checked = run([
+        "nix", "flake", "check", "-L", "--keep-going", "--no-build",
+        *direct_store_options(store),
+        "--option", "eval-cache", "false", "path:.",
+    ])
     if checked.returncode:
         return checked.returncode
 
     try:
-        installables = current_check_installables(current_system())
+        installables = current_check_installables(current_system(), store)
     except (RuntimeError, json.JSONDecodeError) as error:
         print(f"CI problem: {error}", file=sys.stderr)
         return 1
@@ -112,12 +125,10 @@ def main() -> int:
             "--no-link",
             "-L",
             "--keep-going",
-            "--eval-store",
-            "auto",
-            "--store",
-            store,
+            *direct_store_options(store),
             "--max-jobs",
             "1",
+            "--option", "eval-cache", "false",
             *installables,
         ]
     ).returncode

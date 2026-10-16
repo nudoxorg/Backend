@@ -465,6 +465,116 @@ Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
 snapshots retain every prior performance baseline and tolerance. Rust measured
 20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.
 
+## Real-project expansion candidate (W2.3/W2.4)
+
+The catalog now proposes ten whole pinned upstream projects: existing xxhash,
+Blinker and percent-encoding, plus the seven below. Native execution, reviewed
+snapshots and performance calibration are required before this expansion merges.
+New cases must fail when their snapshot is absent; CI cannot accept its own output.
+TypeScript expansion is deferred while #259's product bug is open.
+
+| Project | Existing archive pin | Independent source checks / selection reason |
+|---|---|---|
+| cachetools | PyPI7.2.0 | TTLCache and cached in src/cachetools/__init__.py: inheritance, cache policies and decorators. |
+| tomli | PyPI2.2.1 | loads and TOMLDecodeError in src/tomli/_parser.py: parser functions, exceptions and typed inputs. |
+| itsdangerous | PyPI2.2.0 | URLSafeSerializer and Signer in separate source modules: class hierarchies and module boundaries. |
+| itoa | Cargo1.0.14 | Buffer and format in src/lib.rs: public types, methods and integer formatting. |
+| ryu | Cargo1.0.18 | Buffer and format_finite in src/buffer/mod.rs: module layout and floating-point formatting. |
+| uuid | Go1.6.0 | NewString in version4.go and ParseBytes in uuid.go: exported declarations across files. |
+| x/sync | Go0.11.0 | Weighted in semaphore/semaphore.go and DoChan in singleflight/singleflight.go: packages and concurrent APIs. |
+
+Archives and byte hashes come from .config/nix/corpus-pins.json; fetchers preserve
+the complete original project. Required manifests/source files are checked while
+unpacking. Archive LICENSE files remain with each project, including itoa/ryu's
+multiple license files. No generated module is inserted to make an old upstream
+archive appear compatible. The initial Go errors candidate was rejected because
+its archive lacks go.mod; x/sync replaces it.
+
+The tomli case also proposes one GUI content proof on Linux. The same indexed
+owner and published desktop binary open the real project; actual X11 keyboard
+input searches TOMLDecodeError and opens its code page. Native window pixels are captured
+and read by pinned English OCR. The observer requires the project name and
+original-source text `class TOMLDecodeError` and `ValueError`, then a clean Quit.
+A typed search query alone cannot pass. The current window PNG/text remain under
+/tmp/nudox-surface/python-tomli/gui; CI emits its source/artifact-bound image digest.
+No in-memory fixture renderer or extra product build is used.
+
+GUI wall time, process CPU and peak RSS are recorded separately from the owner;
+existing tolerance ratios/floors also apply to the GUI measurements. OCR/Xvfb
+observer cost is outside those product process metrics. Linux native execution
+and screenshot review are pending; parsing/unit admission controls alone do not
+prove the GUI works.
+
+
+The first expansion run489752/814 produced source-reviewed CLI/MCP answers for
+cachetools, tomli, itsdangerous and GoSync. Their first measured samples seed
+candidate baselines without changing any existing band; repeat calibration is
+required before merge. See reviews/2026-10-15-new-projects.json. Rust itoa/ryu
+project admission and GoUUID connection failures remain selected and unresolved.
+The GUI probe now uses the independently working tomli index; its new GUI answer
+and performance snapshot still need native execution and screenshot review.
+
+
+Rust cases retain offline owner policy. Their original Cargo.lock checksums feed
+Nix importCargoLock; per-case writable Cargo homes point to immutable vendored
+sources outside the unchanged upstream project. This supplies pinned dependencies
+without permitting network fallback or editing project source/lockfiles.
+
+
+Four further whole published-source candidates cover C (rxi/map), C++ (pugixml),
+Java (JSR305 sources jar) and C# (TinyIoC source NuGet). All reuse fixed corpus
+pins and preserve complete published archives; original declarations/files were
+inspected and native Nix unpack checks pass. These bring the candidate catalog
+to14 real projects across7 languages; TypeScript remains last. Native answer
+review, snapshots and performance calibration are still required for these four.
+A fetched source archive alone is not passing integration coverage.
+
+
+Native GUI observation490171 showed the admitted fixture as `project` (the
+actual copied folder name), with281 declarations from4/4 source files. The
+observer now expects that real UI label, then still requires the distinct
+TOMLDecodeError result filename and original class/ValueError source text. The
+initial wrong-label timeout is retained as a harness failure, not a product pass.
+
+
+Native replay490240 proved itoa CLI/MCP after pinned offline dependency setup,
+but its snapshot is still a candidate. Ryu now passes Cargo resolution and fails
+source-scope admission for its bench; C map publishes but lacks authored source
+locations; pugixml partially publishes; JSR305 fails native authority startup;
+TinyIoC lacks complete-profile proof. These failures stay selected for diagnosis.
+GUI490240 showed an empty Ask field after window-only keyboard focus. The
+observer now clicks the actual Ask field and checks that text input arrived
+before checking results/source, preserving the original source-content proof.
+
+
+### Java JSR305 initial Linux snapshot (W2.3/W2.4, 2026-10-15)
+
+Focused Linux build495175/30 at94cfc4d9674dec41af0f1f04f0ffab8a2f6abe0c
+completed all31-source native indexing and CLI/MCP functional checks. The task
+failed only for its missing reviewed snapshot. An independent source/result
+review confirms the qualified annotation names, exact source paths/lines,
+Java/Ready rows,126-declaration complete outline and31non-module roots. Both
+offered MCP continuations were consumed by fresh sessions. The snapshot
+honestly retains unavailable/unconfigured semantic-search coverage and lexical
+pathless name-lane records; those are not fabricated native source hits.
+
+See reviews/2026-10-15-java-jsr305.json. Initial owner measurements are
+67.25s indexing,5.87CPU seconds and276252KiB peak RSS. These are a first Linux
+sample, not calibrated bands or official T2 acceptance. A repeat exact-head
+comparison and calibration are required before merge. No existing snapshot,
+tolerance or floor was changed. Prior Linux28 had a compiler-owner refusal,
+so a single successful run does not establish stability.
+
+The Linux34 exact-head comparison (build495627, source `a453e3ff`) returned the
+same reviewed Java answers on both repeats. Indexing measured68.28s and71.69s;
+owner CPU was5.69s on each, with peak RSS278052KiB and280980KiB. MCP measured
+2.23s on repeat1, failing the unchanged1.29s baseline ×1.5 (1.935s limit), then
+1.32s on repeat2, which passes. This is one failure and one pass on the same
+head and binaries, so Java performance remains unstable. Build34 failed overall;
+official T2 distinct-head passing streak remains0. No snapshot, band, tolerance,
+or floor changed. Raw measurements and task status are in
+`docs/testing/runtime/2026-10-15-java-blinker-linux34.json`
+and summarized in `reviews/2026-10-15-java-jsr305.json`.
 
 ### Blinker external identity review (W2.4, 2026-10-15)
 
@@ -481,3 +591,15 @@ Its existing performance suffix is preserved byte for byte; the new14.86s index
 and5.37s NamedSignal search remain rejected against unchanged4.56s/.74s
 baselines. See reviews/2026-10-15-blinker-external-identities.json. This is a
 reviewed functional answer update, not performance acceptance or T2 green.
+
+### W2 Python image-identity refresh (2026-10-15, Linux40)
+
+On exact c36f478da, two fresh-owner rounds return identical Cachetools and
+ItsDangerous answers. Recursive comparison with the source-reviewed goldens
+changes only image revision/source-root; Cachetools also changes one external
+TTLCache image identity and its derived byte/token counts. Authored source
+locations, names, kinds, readiness, coverage and ordering remain identical.
+The answers-only refresh retains each existing performance suffix verbatim;
+current timing failures still fail. See
+`reviews/2026-10-15-coverage40-python-identities.json`. This is functional review,
+not accepted performance calibration or full T2 green.

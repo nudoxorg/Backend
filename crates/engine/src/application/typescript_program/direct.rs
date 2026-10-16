@@ -424,6 +424,7 @@ pub(super) fn build_direct_inputs_for_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod mixed_sources;
     use crate::application::typescript_host::{
         AdmittedTypeScriptProject, TypeScriptProjectHost, TypeScriptProjectInputAuthority,
     };
@@ -587,6 +588,8 @@ mod tests {
         fixture.write("src/value.ts/missing", "present");
         assert!(witness.validate_current(admitted.witness()).is_err());
     }
+
+    mod dotted_modules;
 }
 
 #[cfg(test)]

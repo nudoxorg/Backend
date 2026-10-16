@@ -344,7 +344,11 @@ fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
             .expect("the isolated missing-authority child runs");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "missing-authority fixture failed:\n{stdout}\n{stderr}");
+        assert!(
+            output.status.success(),
+            "missing-authority fixture child exited with {:?}:\n{stdout}\n{stderr}",
+            output.status
+        );
         assert!(stdout.contains("1 passed"), "the child ran its test: {stdout}");
         return;
     }
