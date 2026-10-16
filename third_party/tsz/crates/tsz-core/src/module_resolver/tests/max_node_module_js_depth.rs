@@ -13,7 +13,7 @@ use super::fixtures::TempFixture;
 /// A `node`-resolution resolver with `allowJs` on (so a `.js` resolution takes
 /// the primary `Ok(resolved_module)` branch) and the given
 /// `maxNodeModuleJsDepth`.
-fn resolver_with_depth(max_node_module_js_depth: u32) -> ModuleResolver {
+fn resolver_with_depth(max_node_module_js_depth: u32) -> ModuleResolver<'static> {
     let options = ResolvedCompilerOptions {
         module_resolution: Some(ModuleResolutionKind::Node16),
         module_suffixes: vec![String::new()],

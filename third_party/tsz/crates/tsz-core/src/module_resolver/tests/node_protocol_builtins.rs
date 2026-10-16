@@ -10,7 +10,7 @@
 
 use super::super::*;
 
-fn node_resolver() -> ModuleResolver {
+fn node_resolver() -> ModuleResolver<'static> {
     let options = ResolvedCompilerOptions {
         module_resolution: Some(ModuleResolutionKind::Node),
         module_suffixes: vec![String::new()],
