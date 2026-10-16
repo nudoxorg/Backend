@@ -358,7 +358,7 @@ def _verified_package_path(root: Path, relative: str, *, directory: bool = False
             last = index == len(parts) - 1
             if path.is_symlink() or (not last or directory) and not path.is_dir() or last and not directory and not path.is_file():
                 raise InstallError("package path contains a link or invalid file/directory boundary: " + relative)
-        if path.resolve(strict=True) != path or not path.is_relative_to(root):
+        if path.resolve(strict=True) != path or (path != root and root not in path.parents):
             raise InstallError("package path leaves its canonical root: " + relative)
         return path
     except OSError as error:
