@@ -205,10 +205,15 @@ def _proc_text(path: Path, limit: int = 1024) -> str:
     return text + ("…" if truncated else "")
 
 
-def _gui_process_diagnostics(pid: int) -> str:
-    """Read a small, secret-free /proc snapshot before failure cleanup."""
+def _gui_process_diagnostics(pid: int, proc_root: Path = Path("/proc")) -> str:
+    """Read a small, secret-free /proc snapshot before failure cleanup.
+
+    File reads are byte-capped; the 0.5s budget stops further sampling when
+    possible, but is best-effort because an individual procfs read has no
+    portable timeout.
+    """
     deadline = time.monotonic() + 0.5
-    proc = Path("/proc") / str(pid)
+    proc = proc_root / str(pid)
     try:
         child_text = _proc_text(proc / "task" / str(pid) / "children", 256)
         child_pids = [int(value) for value in child_text.split() if value.isdecimal()]
@@ -216,21 +221,48 @@ def _gui_process_diagnostics(pid: int) -> str:
         child_pids = []
     pids = [pid, *child_pids[:3]]
     details = []
+    threads = []
+    cwd_details = []
     for child_pid in pids:
         if time.monotonic() >= deadline:
-            details.append("process snapshot stopped at 0.5s bound")
+            details.append("process snapshot budget elapsed (0.5s best effort)")
             break
-        child = Path("/proc") / str(child_pid)
-        comm = _proc_text(child / "comm", 128)
-        wchan = _proc_text(child / "wchan", 256)
         try:
-            cwd = os.readlink(child / "cwd")[:512]
+            cwd = os.readlink(proc_root / str(child_pid) / "cwd")[:512]
         except OSError as error:
             cwd = f"unavailable ({error.__class__.__name__})"
-        stack = _proc_text(child / "stack", 768)
+        cwd_details.append(f"pid={child_pid} cwd={cwd!r}")
+        task_dir = proc_root / str(child_pid) / "task"
+        try:
+            task_entries = []
+            with os.scandir(task_dir) as entries:
+                for entry in entries:
+                    if entry.name.isdecimal():
+                        task_entries.append(int(entry.name))
+                    if len(task_entries) >= 128:
+                        break
+        except OSError:
+            task_entries = [child_pid]
+        for tid in task_entries:
+            if time.monotonic() >= deadline:
+                break
+            thread = task_dir / str(tid)
+            comm = _proc_text(thread / "comm", 128)
+            priority = int(any(name in comm.casefold() for name in ("owner", "compiler", "locald")))
+            threads.append((priority, child_pid, tid, comm, thread))
+    threads.sort(key=lambda item: item[0], reverse=True)
+    for _, child_pid, tid, comm, thread in threads[:32]:
+        if time.monotonic() >= deadline:
+            details.append("thread snapshot budget elapsed (0.5s best effort)")
+            break
+        wchan = _proc_text(thread / "wchan", 128)
+        stack = _proc_text(thread / "stack", 512)
         details.append(
-            f"pid={child_pid} comm={comm!r} wchan={wchan!r} cwd={cwd!r}\nstack:\n{stack}"
+            f"pid={child_pid} tid={tid} comm={comm!r} wchan={wchan!r}\nstack:\n{stack}"
         )
+    if len(threads) > 32:
+        details.append(f"thread sample capped at 32 of {len(threads)} discovered threads")
+    details[:0] = cwd_details
     return "\n".join(details)
 
 
