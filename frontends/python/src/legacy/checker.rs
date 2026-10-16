@@ -50,9 +50,9 @@ pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProducerImage,
     NativePythonProjectAuthority, PythonCompiledImportUnavailable, PythonProjectBytesSource,
     PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
-    PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport, PythonProjectSource,
-    PythonProjectSourceStatus, PythonProjectWitness, PythonTypeProjectionFault,
-    is_ignored_python_source_directory, is_ignored_python_source_path,
+    PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectPhase, PythonProjectReport,
+    PythonProjectSource, PythonProjectSourceStatus, PythonProjectWitness,
+    PythonTypeProjectionFault, is_ignored_python_source_directory, is_ignored_python_source_path,
 };
 pub use project_configuration::PythonProjectConfigurationFault;
 pub use project_environment::{
@@ -168,6 +168,12 @@ pub enum CheckerError {
     Deadline {
         /// Exact interrupted phase.
         phase: &'static str,
+    },
+    /// The complete project deadline expired inside one typed operation boundary.
+    #[error("pyrefly project deadline expired during {phase}")]
+    ProjectDeadline {
+        /// Observed operation, never inferred from the request's source path.
+        phase: PythonProjectPhase,
     },
     /// One captured module was rejected by the syntax authority.
     #[error("pyrefly project source {path:?} was rejected by Ruff: {source}")]

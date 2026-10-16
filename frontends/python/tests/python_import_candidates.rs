@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
     CheckerError, InferenceSite, InferredType, NativePythonProjectAuthority, PythonProjectControl,
-    PythonProjectCoverageGapKind, PythonProjectSource, PythonProjectSourceStatus,
+    PythonProjectCoverageGapKind, PythonProjectPhase, PythonProjectSource,
+    PythonProjectSourceStatus,
 };
 use backend_semantic::vocabulary::PythonVersion;
 
@@ -764,7 +765,9 @@ fn excluded_uninitialized_venv_is_membership_not_missing_python_source() {
     };
     assert!(matches!(
         checker.analyze_project(&root, "pkg", &sources, PythonVersion::Python314, expired),
-        Err(CheckerError::Deadline { phase: "project" })
+        Err(CheckerError::ProjectDeadline {
+            phase: PythonProjectPhase::SourceCapture
+        })
     ));
     std::fs::remove_dir_all(root).unwrap();
 }
