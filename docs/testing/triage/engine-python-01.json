@@ -1,0 +1,1529 @@
+{
+  "schema": 1,
+  "batch": "ENGINE-PY-01",
+  "tasks": [
+    "W1.3",
+    "W1.4"
+  ],
+  "reviewed_source": "a64ec84288d5f06d7e5b40cebd81c7a8c2b163a6",
+  "path": "crates/engine/tests/python_occurrence_receivers.rs",
+  "source_file_sha256": "25e92c2fabc928b96b3ccbfb6165cf8f14826c659e0774fa5dd2ffd2c70ad74f",
+  "scope": "First150 test declarations in source order; compiler-boundary deletion/retention review, not representative product coverage.",
+  "runtime_status": "Fresh cab7cdf38-based candidate is pending exact required fast/T1, Python T2 `python-blinker`, and Linux Python T3 target `python_occurrence_receivers` (634 tests). The Python T2 authority repair is in prerequisite PR #300 and is not included here. No passing or flake-rate claim.",
+  "summary": {
+    "considered": 150,
+    "retained": 147,
+    "proposed_removal": 3,
+    "rewritten": 0
+  },
+  "review_limits": [
+    "Canonical Python AST equivalence ignores only top-level fixture caller/argument spellings. It is a candidate detector; removal additionally checks actual compile helpers and assertions.",
+    "Retained compiler fixtures do not replace real-project CLI/MCP/GUI T2 cases. Internal ordinal coupling remains explicit test debt.",
+    "The remaining487 tests in this file have only a mechanical duplicate scan, not a completed semantic review."
+  ],
+  "tests": [
+    {
+      "id": "ENGINE-PY-01.001",
+      "name": "python_receiver_occurrences_resolve_honestly",
+      "line_at_review": 94,
+      "contract": "python receiver occurrences resolve honestly",
+      "fixture_source_sha256": null,
+      "canonical_fixture_ast_sha256": null,
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.002",
+      "name": "annotated_receiver_call_uses_the_imported_or_local_class",
+      "line_at_review": 321,
+      "contract": "annotated receiver call uses the imported or local class",
+      "fixture_source_sha256": null,
+      "canonical_fixture_ast_sha256": null,
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.003",
+      "name": "annotated_inherited_call_resolves_unique_base_method",
+      "line_at_review": 759,
+      "contract": "annotated inherited call resolves unique base method",
+      "fixture_source_sha256": "d696dcd3a3446967feea44bff9a11880154caee87a22365dc259eed250c99b20",
+      "canonical_fixture_ast_sha256": "8bb057be9c997d55bba91315fc5fb71c0d3281c197c232a321be104a4de42e88",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.004",
+      "name": "annotated_inherited_call_resolves_two_level_base_method",
+      "line_at_review": 782,
+      "contract": "annotated inherited call resolves two level base method",
+      "fixture_source_sha256": "5b3b08c3dd0d4515098cfd3bfa8cdb2d401593fc50b3d11207eea131ffc84267",
+      "canonical_fixture_ast_sha256": "754cb1e509239b02becca8eab08caa46f7b164abd7a792f35f7d8caa10185ec3",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.005",
+      "name": "annotated_inherited_call_prefers_child_shadowing_method",
+      "line_at_review": 808,
+      "contract": "annotated inherited call prefers child shadowing method",
+      "fixture_source_sha256": "8ec497540e319432b350f718e6636e987ebcb2d2b42e689fb414febdc584efe7",
+      "canonical_fixture_ast_sha256": "3ba98941a568f5e0ad1dc438488856733fdf20a13dc71db3c2a26a29e815cb82",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.006",
+      "name": "annotated_inherited_call_stays_universe_for_ambiguous_bases",
+      "line_at_review": 838,
+      "contract": "annotated inherited call stays universe for ambiguous bases",
+      "fixture_source_sha256": "be8713216556c73d4c220fb78eb8aaa8dc8901c4f654f36de19602b231d19c63",
+      "canonical_fixture_ast_sha256": "14ecabe635eb243d483874e943594ea91572063334331d392604fe9e9a91eb22",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.007",
+      "name": "annotated_inherited_call_resolves_diamond_base_method",
+      "line_at_review": 871,
+      "contract": "annotated inherited call resolves diamond base method",
+      "fixture_source_sha256": "5975fb510e5bb90c323850fb8319a4dd33f681f74f15db78bed13340e194d354",
+      "canonical_fixture_ast_sha256": "69db13c3da9aef146dfcaad76da36587e1cb64946267dfab36b600d093fda5a8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.008",
+      "name": "annotated_inherited_call_skips_unresolved_base",
+      "line_at_review": 900,
+      "contract": "annotated inherited call skips unresolved base",
+      "fixture_source_sha256": "1062850013aa919a76e3bafefa2507f38ed4a4176281a8573346bcb3e828c1e1",
+      "canonical_fixture_ast_sha256": "9216f21911ba08b18488ff83b7929da0d668345e5bfe6615ccaa8898dc17f5f8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.009",
+      "name": "annotated_inherited_call_resolves_generic_base_method",
+      "line_at_review": 923,
+      "contract": "annotated inherited call resolves generic base method",
+      "fixture_source_sha256": "626cd13894db18853d33dff8dd349d921afb1066bdf354b8fc12760eebafdc16",
+      "canonical_fixture_ast_sha256": "db423fbab7ee85e0adb06553b7c8a0421921f7a2f7f9ae06dbb2d7eac28dbc7b",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.010",
+      "name": "annotated_inherited_call_stays_universe_for_ambiguous_local_methods",
+      "line_at_review": 946,
+      "contract": "annotated inherited call stays universe for ambiguous local methods",
+      "fixture_source_sha256": "ac9e0a315efd64b26ae63a11eb700600dd107147477db6c9af36e43fa79f6072",
+      "canonical_fixture_ast_sha256": "ee5a65ad2e284dc09d085eb7858ee405c538fcfead79fc68351dc86ca9968e0f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.011",
+      "name": "annotated_inherited_call_field_does_not_hide_inherited_method",
+      "line_at_review": 986,
+      "contract": "annotated inherited call field does not hide inherited method",
+      "fixture_source_sha256": "327e5fa7a485dafeb378579f7094720bfa191e89b44ca5a5cb363f51e6f39395",
+      "canonical_fixture_ast_sha256": "808769a962e8fa0e75485a92093cf94d37b142772fb1d9019bccf30b1109882f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.012",
+      "name": "annotated_inherited_call_stays_universe_for_imported_only_base",
+      "line_at_review": 1009,
+      "contract": "annotated inherited call stays universe for imported only base",
+      "fixture_source_sha256": "963bbb3b03f6406c5af39c7422990808bba2dac546fe90c717d5088343cca564",
+      "canonical_fixture_ast_sha256": "1e9fd13828d2b7a80f0531383cd45e12825df1e4936b7d89baeb1ea88137e280",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.013",
+      "name": "annotated_receiver_attribute_read_uses_the_imported_or_local_class",
+      "line_at_review": 1123,
+      "contract": "annotated receiver attribute read uses the imported or local class",
+      "fixture_source_sha256": null,
+      "canonical_fixture_ast_sha256": null,
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.014",
+      "name": "annotated_inherited_attribute_read_resolves_unique_base_field",
+      "line_at_review": 1410,
+      "contract": "annotated inherited attribute read resolves unique base field",
+      "fixture_source_sha256": "9800d64f77c2d9b07b33fae929c09a3da34c5f5883823e4e7c933355f809e04d",
+      "canonical_fixture_ast_sha256": "f4066678f8819c5ef50aacd33078c4a87b7987eb00a91c5fc8310b3b0a873602",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.015",
+      "name": "annotated_inherited_attribute_read_resolves_unique_base_method",
+      "line_at_review": 1435,
+      "contract": "annotated inherited attribute read resolves unique base method",
+      "fixture_source_sha256": "c3585a6a26154c3a98e58a01d1323a2e71ad549f9461004d69626b83680b354c",
+      "canonical_fixture_ast_sha256": "ac689484b560b7398c60447b33b39ca1b6f60dff2572c9c1020f020b608e89fc",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.016",
+      "name": "annotated_inherited_attribute_read_resolves_two_level_base_method",
+      "line_at_review": 1467,
+      "contract": "annotated inherited attribute read resolves two level base method",
+      "fixture_source_sha256": "054d0fba804ae36983f6d848349c7f2febe3f650dfaffb6e0bd1ac8e75e2f10a",
+      "canonical_fixture_ast_sha256": "bf25df06d941501075dd44ec1e753045bf2befec152a41783b69d6af56fe3761",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.017",
+      "name": "annotated_inherited_attribute_read_prefers_child_field_over_base_method",
+      "line_at_review": 1492,
+      "contract": "annotated inherited attribute read prefers child field over base method",
+      "fixture_source_sha256": "123d3bf30204d28bef430aec394730772b96db4ab1adf7395fd99696fd6da041",
+      "canonical_fixture_ast_sha256": "7350b66bb962dbe4f496a3e172c0af37802bb9042d4ec4461d325a8fecd877cf",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.018",
+      "name": "annotated_inherited_attribute_read_prefers_child_field_over_local_method",
+      "line_at_review": 1521,
+      "contract": "annotated inherited attribute read prefers child field over local method",
+      "fixture_source_sha256": "b795d80a4a745a277d51cf2dbb0e7852394184a8d319dae259c4ed499b462f7f",
+      "canonical_fixture_ast_sha256": "a4f1b54044bab82d8ed0443bafbddbff783e5e7bef32736a9fe5c1bcef580981",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.019",
+      "name": "annotated_inherited_attribute_read_stays_universe_for_ambiguous_bases",
+      "line_at_review": 1552,
+      "contract": "annotated inherited attribute read stays universe for ambiguous bases",
+      "fixture_source_sha256": "70b213ad44e861483f3f6d56f892859f6f4a8e165be5ae31b44aff6dc0dcdd43",
+      "canonical_fixture_ast_sha256": "172d031b71fd42ce5f495156d3763d2bdf2a8be8eba9aa486a8215ffe53fba6c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.020",
+      "name": "annotated_inherited_attribute_read_prefers_inherited_field_over_base_method",
+      "line_at_review": 1580,
+      "contract": "annotated inherited attribute read prefers inherited field over base method",
+      "fixture_source_sha256": "007afd398f971457e75c6fa647f5b82f57cc07d2cd186b7512e1142890d68375",
+      "canonical_fixture_ast_sha256": "7c3fe149b264e54df8358d03c0ae9ed42a812f58780d2f97d138ef203a4d1131",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.021",
+      "name": "annotated_inherited_attribute_read_prefers_base_field_over_base_method",
+      "line_at_review": 1611,
+      "contract": "annotated inherited attribute read prefers base field over base method",
+      "fixture_source_sha256": "6343582fc5fb99f6c1e5879b2c91d71f0c86de02acdfec45dbe339bc3ccf0c6e",
+      "canonical_fixture_ast_sha256": "e8b25ea92a09ce79d3f1215490122fcf16aaba76cbe41751bc916820e7def3c6",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.022",
+      "name": "annotated_inherited_attribute_read_keeps_unique_module_field_when_bases_declare_none",
+      "line_at_review": 1639,
+      "contract": "annotated inherited attribute read keeps unique module field when bases declare none",
+      "fixture_source_sha256": "e60500d410338704741b72dee4f7c7453924d0337126f59b7220c84cbb1ea802",
+      "canonical_fixture_ast_sha256": "b140f2ce760463de1785cd0d81958b99c672322a9b1f0ddd0039a7f02c052460",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.023",
+      "name": "annotated_inherited_attribute_read_resolves_diamond_base_field",
+      "line_at_review": 1659,
+      "contract": "annotated inherited attribute read resolves diamond base field",
+      "fixture_source_sha256": "717fa6b15dac979505503ee778692f5daf22a613bf7aca89a80bcd83892dda79",
+      "canonical_fixture_ast_sha256": "433b50c3b08be6679c662fdcb77f96527c9653e5b59506591c6b1d021975084b",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.024",
+      "name": "annotated_inherited_attribute_read_skips_unresolved_base",
+      "line_at_review": 1684,
+      "contract": "annotated inherited attribute read skips unresolved base",
+      "fixture_source_sha256": "db9902766d03ef5cc736332c81ff97a7de2b9541b2c8d8db46eec179977166d1",
+      "canonical_fixture_ast_sha256": "4d79b3c2aa23eaf3fdfe1abee50dce2dc0d7dbf2ba2fce3ad7fd1e8879589463",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.025",
+      "name": "annotated_inherited_attribute_read_resolves_generic_base_field",
+      "line_at_review": 1707,
+      "contract": "annotated inherited attribute read resolves generic base field",
+      "fixture_source_sha256": "4ad06e4cc5f95614b8d4def8b7bb7ced0d3d1d42d94537cbed39c4d106603b27",
+      "canonical_fixture_ast_sha256": "95b0f1260892c35d7a5403ee9a298743b3272d46c4b707959713989ad721b25c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.026",
+      "name": "annotated_inherited_attribute_read_stays_universe_for_imported_only_base",
+      "line_at_review": 1728,
+      "contract": "annotated inherited attribute read stays universe for imported only base",
+      "fixture_source_sha256": "148a04f5a26cc91496bb59c12621b29544e4346f0b8b89c7f0979b6e0c83204f",
+      "canonical_fixture_ast_sha256": "e7d822de2a7f3fed1e15f0d45ec4bd6583ba3499cb971df5f51c94fadc2a601c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.027",
+      "name": "py_inherited_call_targets_base_note_not_decoy",
+      "line_at_review": 2043,
+      "contract": "inherited call targets base note not decoy",
+      "fixture_source_sha256": "3912e433702333aaaf3ba09a0161b5ca66cc5275ed7b5cfc36bb648de4db5ee2",
+      "canonical_fixture_ast_sha256": "d21755c2a476c85bab34206b2d5cc56e4984fd830d79e47909d1bb0123ead8cd",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.028",
+      "name": "py_inherited_own_method_stays_on_child",
+      "line_at_review": 2083,
+      "contract": "inherited own method stays on child",
+      "fixture_source_sha256": "c93b9839e60a48db4b386d31c23874c5d887bdaea7028b16f7a0909e9c8b450b",
+      "canonical_fixture_ast_sha256": "f5a8f35d6b365df7875556ab7440417f875d8d7bf35af1b5c80c2110850f7105",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.029",
+      "name": "py_inherited_annotated_call_targets_base_note",
+      "line_at_review": 2113,
+      "contract": "inherited annotated call targets base note",
+      "fixture_source_sha256": "159c80237df1a5fd2559d30068d31fb060d9bd668e62bb69190d94dd91e27c71",
+      "canonical_fixture_ast_sha256": "8bb057be9c997d55bba91315fc5fb71c0d3281c197c232a321be104a4de42e88",
+      "disposition": "remove",
+      "reason": "Same inherited-call fixture after renaming only the caller function/argument; keep the class-scoped target and Index confidence assertion.",
+      "retained_test": "annotated_inherited_call_resolves_unique_base_method"
+    },
+    {
+      "id": "ENGINE-PY-01.030",
+      "name": "py_inherited_field_targets_base_score_not_decoy",
+      "line_at_review": 2142,
+      "contract": "inherited field targets base score not decoy",
+      "fixture_source_sha256": "500c84c38a3b082e92bd0afe552b538602717c1c06d3a84bccd389c71dcf42c6",
+      "canonical_fixture_ast_sha256": "f8ba538fb4ae8e5cf036323efe7a20282c7475d480c29aa84d22f29c74d7181e",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.031",
+      "name": "py_inherited_two_bases_stay_universe",
+      "line_at_review": 2175,
+      "contract": "inherited two bases stay universe",
+      "fixture_source_sha256": "f33d4977647e955eca606ce9037117ef17b7d6441561f0f213bfdebfe540fe2d",
+      "canonical_fixture_ast_sha256": "aae01d7143287eba78e01c8c355da1ac8f7a61676d7c635bd3448b8b6eabbad5",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.032",
+      "name": "py_inherited_diamond_targets_root_note",
+      "line_at_review": 2217,
+      "contract": "inherited diamond targets root note",
+      "fixture_source_sha256": "60463d678acf875775c8edbcffdca82bc63508b7e7ddd420b132b904319e385a",
+      "canonical_fixture_ast_sha256": "42883d114c30e9de7f0c0ae92c5dd9904171faa067550dafa327c8f80b51ed5a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.033",
+      "name": "py_inherited_one_of_two_bases_targets_that_note",
+      "line_at_review": 2250,
+      "contract": "inherited one of two bases targets that note",
+      "fixture_source_sha256": "96dd71e8f1c6d540c5d6cead6a66d8a828733342ab5108b1fdfbcaf850bdaf32",
+      "canonical_fixture_ast_sha256": "fdb69d23523ae18a8f805b672bc3db5629e8dab49e53ee4bdcaf5a4e1d67bbe1",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.034",
+      "name": "py_inherited_nearest_base_wins",
+      "line_at_review": 2280,
+      "contract": "inherited nearest base wins",
+      "fixture_source_sha256": "048596c72fbb611ded7bb5aa37d4c49766c641bd17abe3b113b449e3ff06f001",
+      "canonical_fixture_ast_sha256": "06f79884607e19aec4f02843c7961b791334bf68d37fc7da1465a89e5a32010c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.035",
+      "name": "py_inherited_grandchild_targets_base_note",
+      "line_at_review": 2311,
+      "contract": "inherited grandchild targets base note",
+      "fixture_source_sha256": "20ca2fe6c0a9b5eb445ea68b20437cb5778d15fc04b7ecf7c371c9c2444a2d05",
+      "canonical_fixture_ast_sha256": "5ef0f5482522263e3e306db679682628cd766c3ce0e5d293f60250c7a79a1e9c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.036",
+      "name": "py_inherited_qualified_base_stays_universe",
+      "line_at_review": 2341,
+      "contract": "inherited qualified base stays universe",
+      "fixture_source_sha256": "dcbea7473a4c3078c36f7644db3b875afd3b57f8b3a2217aa8f9062cd8d69926",
+      "canonical_fixture_ast_sha256": "6098026dc15a8ee21ecbe507b61f7d0491b28872026f6a2613473063bae36beb",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.037",
+      "name": "py_inherited_quoted_base_stays_universe",
+      "line_at_review": 2376,
+      "contract": "inherited quoted base stays universe",
+      "fixture_source_sha256": "d6d01ffd2f94f43eee59af8db7bb501e9fbdfa560a5c2b5f08fdacef87a56cd7",
+      "canonical_fixture_ast_sha256": "30edb15aac5cee04089178acf223ffdfe4521e465b730528f203710c132db6de",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.038",
+      "name": "py_inherited_generic_base_targets_base_note",
+      "line_at_review": 2411,
+      "contract": "inherited generic base targets base note",
+      "fixture_source_sha256": "74ed3939a290e435dd5a0a4ff25f350d55c925830cea81d17a3b7da06aedcca8",
+      "canonical_fixture_ast_sha256": "838463348f61aa8268eeeac422c31e3448c4dca3de60decf5b6d377fc78fc0e2",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.039",
+      "name": "py_inherited_cls_call_targets_base_note",
+      "line_at_review": 2438,
+      "contract": "inherited cls call targets base note",
+      "fixture_source_sha256": "a62987a1c1a4cbbc1536613e7ef194852e701652ee47ba699f0091f2d46a5d26",
+      "canonical_fixture_ast_sha256": "5a7dbe33a6ae2afe9c876ca255e6744979904ceb23527bdcb79b34be5e07aced",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.040",
+      "name": "py_inherited_eighth_base_targets_note",
+      "line_at_review": 2466,
+      "contract": "inherited eighth base targets note",
+      "fixture_source_sha256": "1eb5655a2ee3e617295f6810c43b57fd590f37ffaf0130cdb4d1fb9a86d1a669",
+      "canonical_fixture_ast_sha256": "16b7eb5ea1a877dad3d6a2f35215f972d2822b2361994c57376efd66734e39d8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.041",
+      "name": "py_inherited_ninth_base_stays_universe",
+      "line_at_review": 2518,
+      "contract": "inherited ninth base stays universe",
+      "fixture_source_sha256": "0d4a7fc774f10327b11973e48df2766ff6b496fcf4c8886b0a965c4d05d85162",
+      "canonical_fixture_ast_sha256": "83f3dc3083edb3a74d95593404d48972689c967c9a7140540fff67fce255db45",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.042",
+      "name": "py_inherited_deep_sibling_does_not_starve_unique_base",
+      "line_at_review": 2577,
+      "contract": "inherited deep sibling does not starve unique base",
+      "fixture_source_sha256": "ef0d331868ab0494e62dedc4ab29654ba857701bd516dccb438d44f90f4afb01",
+      "canonical_fixture_ast_sha256": "9fb0fcda1fedcd3c9d833e44681b9e721e72140fca3bb4433689143cd7b11cef",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.043",
+      "name": "py_inherited_plain_receiver_stays_universe",
+      "line_at_review": 2634,
+      "contract": "inherited plain receiver stays universe",
+      "fixture_source_sha256": "afc313a4558f25db2ae54e39d6cef80a5ee4593c1cf9c7670c8574047a56050b",
+      "canonical_fixture_ast_sha256": "31a46d767c4ed82725b0c48c8c735722cb61b5b3561518646a13a7f119343389",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.044",
+      "name": "py_method_value_targets_child_note_not_decoy",
+      "line_at_review": 2668,
+      "contract": "method value targets child note not decoy",
+      "fixture_source_sha256": "7a8c3f4b578e5a19ab36fc29356075b5f582e55683e1b8a79605dac8c692edaa",
+      "canonical_fixture_ast_sha256": "f05bb3562de114ade2e6a477118f75e1b19df55f6b755b6ec78dc640a29797a5",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.045",
+      "name": "py_method_value_inherited_targets_base_note_not_decoy",
+      "line_at_review": 2711,
+      "contract": "method value inherited targets base note not decoy",
+      "fixture_source_sha256": "13149d8e071f53aecd688f8eba5f2a045459cf7f211a2a0d49e4c794d67c530a",
+      "canonical_fixture_ast_sha256": "97e857e9e96774e1b18dc057b7ad5b1b8c57278ed6403fea875ff677842d3401",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.046",
+      "name": "py_method_value_own_method_wins_over_base",
+      "line_at_review": 2755,
+      "contract": "method value own method wins over base",
+      "fixture_source_sha256": "5fdeb89a61d8dd180a15ccfb1fc03da66e26d421cca340019f75ef8a9e7ecbb8",
+      "canonical_fixture_ast_sha256": "1fea6e59bdb1ae660ac18b372896a37af358affdbf8b696f4f12e4ee25a36817",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.047",
+      "name": "py_method_value_field_wins_over_method",
+      "line_at_review": 2798,
+      "contract": "method value field wins over method",
+      "fixture_source_sha256": "1722c0c0ce65c3a822b95eb815dce5785be50a24b434aae44b33385a2374c1a8",
+      "canonical_fixture_ast_sha256": "e19462f9cd61601dbe284450d13858bcc42bd88a9362253b761b8213f6142180",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.048",
+      "name": "py_method_value_two_bases_stay_universe",
+      "line_at_review": 2843,
+      "contract": "method value two bases stay universe",
+      "fixture_source_sha256": "7c141e21514de917db92badf07d2f20ce653c46108b412152787436ca408d497",
+      "canonical_fixture_ast_sha256": "1454f308d532887060d1d57f15f3865b7c9f1eecb55f8afb09851cedf8da7378",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.049",
+      "name": "py_method_value_call_stays_method_call",
+      "line_at_review": 2891,
+      "contract": "method value call stays method call",
+      "fixture_source_sha256": "4d29e9d48f22c3857aad8522c23586fd2a7c8056eacc70f6fc3733069e27ccd1",
+      "canonical_fixture_ast_sha256": "5a684e9edb2c5a55ad888b8ca4bd70101622f4f26629517ad859af02a2f93065",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.050",
+      "name": "py_method_value_cls_targets_child_note",
+      "line_at_review": 2921,
+      "contract": "method value cls targets child note",
+      "fixture_source_sha256": "0ad010e8543862f817a8fecbe74fff1fb8bb8c1853f92c3af7deeacdcf793284",
+      "canonical_fixture_ast_sha256": "8b1c05faaf6887f0d29393800f09392423f02759799dca85acc66d0a40b799fc",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.051",
+      "name": "py_method_value_plain_stays_universe",
+      "line_at_review": 2952,
+      "contract": "method value plain stays universe",
+      "fixture_source_sha256": "07b44090792bb7d27dbbc618810c6f0d01f73fb581a6619102755d31da91ce4b",
+      "canonical_fixture_ast_sha256": "6209142d4c4262e7edcbbfac7d6746e132ab660bc0b2b86e93ddded549b27dd9",
+      "disposition": "remove",
+      "reason": "Identical source and oracle; retained test additionally requires Index confidence for the unresolved field.",
+      "retained_test": "py_annotated_read_plain_stays_universe"
+    },
+    {
+      "id": "ENGINE-PY-01.052",
+      "name": "py_method_value_nearest_base_wins",
+      "line_at_review": 2990,
+      "contract": "method value nearest base wins",
+      "fixture_source_sha256": "05f1888727528aec7192ca3607b1461e6982a950247527d016aa171e12978d31",
+      "canonical_fixture_ast_sha256": "d3234aa755012d1529059b8141cb4914ec2c2cb902c25b5a4f83de4815ee5221",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.053",
+      "name": "py_annotated_read_method_targets_child_note_not_decoy",
+      "line_at_review": 3034,
+      "contract": "annotated read method targets child note not decoy",
+      "fixture_source_sha256": "cb98df4fb5c8ad34bd49df0d20d91a97f9005285468a41aae66819c02e05b4f3",
+      "canonical_fixture_ast_sha256": "7eeb66c839766c5a0b26d7a0fdc1ef513307cc9064f0ceac6748a3f778133a4a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.054",
+      "name": "py_annotated_read_inherited_method_targets_base_note",
+      "line_at_review": 3077,
+      "contract": "annotated read inherited method targets base note",
+      "fixture_source_sha256": "8d6e5643157dd79043027a0b70a2842ec5efccda40e2098fa3ef354f19b0e175",
+      "canonical_fixture_ast_sha256": "1ce87703773ea2dc71b9d86be580a07ba46e7f2475de2db4487119eeb8fec51a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.055",
+      "name": "py_annotated_read_field_targets_child_score_not_decoy",
+      "line_at_review": 3110,
+      "contract": "annotated read field targets child score not decoy",
+      "fixture_source_sha256": "112ec6dd06d3eadfffab9b7e4fdab7eee3768dab833d2bac55dc2762fdb34f87",
+      "canonical_fixture_ast_sha256": "05b64977f31c184f07ad19d4709011dd3e12d02dac88ad3507bc75dc0dc4672e",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.056",
+      "name": "py_annotated_read_own_method_wins_over_base",
+      "line_at_review": 3155,
+      "contract": "annotated read own method wins over base",
+      "fixture_source_sha256": "648dea9df86b2a81d38153826459e05a4b5de7bd7ce714314edc3d445f1a3964",
+      "canonical_fixture_ast_sha256": "94feefce5da79718a7e1e2dda9b16245520b0ea5020bc13872a964ab945ed9a3",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.057",
+      "name": "py_annotated_read_field_wins_over_method",
+      "line_at_review": 3198,
+      "contract": "annotated read field wins over method",
+      "fixture_source_sha256": "8135156b0e39664e9b2e62d8ec956673a033051aa4c10e0875112a7b28bd75bf",
+      "canonical_fixture_ast_sha256": "8acb11f8724c9deb0deef701eabe42a2bc6f7c24a463547600c69cb3f9ecaf30",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.058",
+      "name": "py_annotated_read_two_bases_stay_universe",
+      "line_at_review": 3243,
+      "contract": "annotated read two bases stay universe",
+      "fixture_source_sha256": "7293c383c744fe53bfa5c49794d52a5f62ac29ffd48e07e9f951ea12c18befc6",
+      "canonical_fixture_ast_sha256": "8b7f688046923db8f48f2c760fb49a0fe60c8a194830839e0b245bec63155ac7",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.059",
+      "name": "py_annotated_read_plain_stays_universe",
+      "line_at_review": 3300,
+      "contract": "annotated read plain stays universe",
+      "fixture_source_sha256": "07b44090792bb7d27dbbc618810c6f0d01f73fb581a6619102755d31da91ce4b",
+      "canonical_fixture_ast_sha256": "6209142d4c4262e7edcbbfac7d6746e132ab660bc0b2b86e93ddded549b27dd9",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.060",
+      "name": "py_annotated_read_call_stays_method_call",
+      "line_at_review": 3343,
+      "contract": "annotated read call stays method call",
+      "fixture_source_sha256": "793b1e238f8c7cd24a9305bee521ffc4df1d4573d2ee25cdcbeb7667e2389bd4",
+      "canonical_fixture_ast_sha256": "bbdabf2e2b05cf2075df6703a35727631585a815cf46636954faa123fcfbf8b1",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.061",
+      "name": "py_annotated_read_alias_field_uses_package_key",
+      "line_at_review": 3377,
+      "contract": "annotated read alias field uses package key",
+      "fixture_source_sha256": "e0316815eca33ec58245d3b5535d172ce22b50d468738f390b2b3d7d87210de5",
+      "canonical_fixture_ast_sha256": "4e311fa62488e99df74f215e3ce37f88074eb0814d821dc208a58509d37e30ae",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.062",
+      "name": "py_super_call_targets_base_note_not_child_or_other",
+      "line_at_review": 3428,
+      "contract": "super call targets base note not child or other",
+      "fixture_source_sha256": "09533ac486094a53b835e45862b25c45b9cce54f1f808c7e6038557cb038c5e1",
+      "canonical_fixture_ast_sha256": "2afa0ea10619bfbd35beca0ac8710b5103b3be95f4b767b55abbc138a9782180",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.063",
+      "name": "py_super_call_targets_only_base_note",
+      "line_at_review": 3476,
+      "contract": "super call targets only base note",
+      "fixture_source_sha256": "c789983140d7534fdd897d637003be12ae9f0bafdddaa81e0fdceb6d9cdef935",
+      "canonical_fixture_ast_sha256": "5a2e2dc0e181c138802fb8320c3c486e64d89687425559df2612368a73d3b592",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.064",
+      "name": "py_super_field_targets_base_score_not_child",
+      "line_at_review": 3503,
+      "contract": "super field targets base score not child",
+      "fixture_source_sha256": "f8e143f75d02cbf4fed19204332c9ac9674e6e2870cf469370b7391cda10b002",
+      "canonical_fixture_ast_sha256": "20d11fa7bf753630c5c3cbf91fd96fa034fa4880a7cfe9bd6b7693c7e153cd6f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.065",
+      "name": "py_super_method_value_targets_base_note_not_child",
+      "line_at_review": 3542,
+      "contract": "super method value targets base note not child",
+      "fixture_source_sha256": "8d731ab6911eb9a9cbe318341c2151978275e9c49a9833f7b59c1d4943e1ef1b",
+      "canonical_fixture_ast_sha256": "bdcd61af2783264f05c72ecd8043d232196339687eab0176b9c18fe92dc24a2a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.066",
+      "name": "py_super_two_arg_stays_universe",
+      "line_at_review": 3583,
+      "contract": "super two arg stays universe",
+      "fixture_source_sha256": "abced64c63bb9d23c2279a09dd31a75f8eddabde40f9c7ae77145e6cf8fc715b",
+      "canonical_fixture_ast_sha256": "4f7a5dbc8e704b11fd6c6393fe1d40008f3f5b84212818b6087f6571c8521bca",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.067",
+      "name": "py_super_two_bases_targets_left_note_not_right",
+      "line_at_review": 3629,
+      "contract": "super two bases targets left note not right",
+      "fixture_source_sha256": "5b01f935e17529a77701351afbcb8b9d520801cfbd8c27162ebbf51cf196f081",
+      "canonical_fixture_ast_sha256": "0519a8ff6fbb72dbb9fe654e07bd5dd3cc2c21256f89cfe774769e8ac826253c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.068",
+      "name": "py_super_c3_targets_next_note_not_root",
+      "line_at_review": 3667,
+      "contract": "super c3 targets next note not root",
+      "fixture_source_sha256": "380a31537be5da4e6a06799aa519c610bfeff0d5d00539840089b0b61fb9c171",
+      "canonical_fixture_ast_sha256": "fe0710becc5ba959cf8064917a89f3cc1fe4fd1089ccb52ca4414db0165a0353",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.069",
+      "name": "py_super_module_call_stays_universe",
+      "line_at_review": 3708,
+      "contract": "super module call stays universe",
+      "fixture_source_sha256": "b49922ad72829bfea57ad418734d448c3d8ac67b5413969260badd16d583fac9",
+      "canonical_fixture_ast_sha256": "fefea8eda0eec03bfa3baa11ebbf1106b137c694303df4d1a98508ebb12739c4",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.070",
+      "name": "py_super_nested_function_stays_universe",
+      "line_at_review": 3743,
+      "contract": "super nested function stays universe",
+      "fixture_source_sha256": "b7ccd48d08779e1e7cf0d0d431e1200eb9538a768d1592dddb3b23d8df418fca",
+      "canonical_fixture_ast_sha256": "8f975bc354eda4a8c1dd92e3c8280f9d85029a51cdc157db541f069c0ba28483",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.071",
+      "name": "py_super_name_stays_universe",
+      "line_at_review": 3793,
+      "contract": "super name stays universe",
+      "fixture_source_sha256": "b7ebce715c28bbcab7b1759f7af4f03578eafe2af36fa9692814dd57b20e3225",
+      "canonical_fixture_ast_sha256": "2bf82fa3bbfc82f465529d7a6d6ecf6b5d94cbfb3a46a8abdaf7c3a4136d2194",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.072",
+      "name": "py_super_quoted_base_stays_universe",
+      "line_at_review": 3829,
+      "contract": "super quoted base stays universe",
+      "fixture_source_sha256": "82f109f720b7d215f52f6ceaca80b6dd45bf10314362fbeb1f2892820e2f4fba",
+      "canonical_fixture_ast_sha256": "2c166ddec5cebda1922de9e18a2e1ba894097207567724662e9124bdc8d96927",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.073",
+      "name": "py_super_qualified_base_stays_universe",
+      "line_at_review": 3865,
+      "contract": "super qualified base stays universe",
+      "fixture_source_sha256": "937d8164d7aef01cc04af780b2d9e7ca46f4484ac9f88893859a08f4b7631c9e",
+      "canonical_fixture_ast_sha256": "0a3417961d798dbd0d8fce4b70c8e15b8a7021020cdf0d500c00f469726924e4",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.074",
+      "name": "py_super_generic_base_targets_base_note",
+      "line_at_review": 3901,
+      "contract": "super generic base targets base note",
+      "fixture_source_sha256": "fd8cfcf7cb86b7cfa816b229776404b859d8d6974f6a2a4460ab8d34de7d2f30",
+      "canonical_fixture_ast_sha256": "bae8f077b83de1dc6cd2b418581a127040a6782df42ec0da257aca6a465a38d0",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.075",
+      "name": "py_super_object_base_targets_base_note",
+      "line_at_review": 3928,
+      "contract": "super object base targets base note",
+      "fixture_source_sha256": "005e8dee90c87579cdc7531632d39523ae7ee350bfbca0da10ab773b1b09758d",
+      "canonical_fixture_ast_sha256": "d36e4293935651ee40a11281359d4a5fe56b31e1e507f84d30c05cdb0bb8e0e3",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.076",
+      "name": "py_super_eighth_base_targets_note",
+      "line_at_review": 3955,
+      "contract": "super eighth base targets note",
+      "fixture_source_sha256": "151ec19f0172dce09cd06fa8326fd5fab028b0571b3a53f22ab29a99c389fc2d",
+      "canonical_fixture_ast_sha256": "6097e44126e9250cded1c96da721b8096cd44d603f8e7a9101c63f300c1d3a75",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.077",
+      "name": "py_super_ninth_base_stays_universe",
+      "line_at_review": 4003,
+      "contract": "super ninth base stays universe",
+      "fixture_source_sha256": "06faee94f63d2d6b6b916351ff46695324355243ced0e9b2b6aa1526a1d57110",
+      "canonical_fixture_ast_sha256": "9210cc9d26d0e2dfbeea4fc79851c70a6cf18e843d06cf2f7cb4c4655ca777fb",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.078",
+      "name": "py_super_ambiguous_base_methods_stay_universe",
+      "line_at_review": 4063,
+      "contract": "super ambiguous base methods stay universe",
+      "fixture_source_sha256": "9cae3c30ee5da803d258208654a8e19e3302b06c2388dad7b5da509085c8d800",
+      "canonical_fixture_ast_sha256": "78a9f502c9be218da0dcfb96940ab0fed17258a8847aff9a4bc6b6c044d37878",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.079",
+      "name": "py_super_field_wins_over_method",
+      "line_at_review": 4109,
+      "contract": "super field wins over method",
+      "fixture_source_sha256": "a178d27139275946e37c76b825904ab43c5a9784999767dfc9b3c40cff0c61ec",
+      "canonical_fixture_ast_sha256": "32aeeb21f3dc181ed4977bf0d5a5aab594b6291f57ad904579e1d7ac66bc55aa",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.080",
+      "name": "py_super_call_binds_method_not_field",
+      "line_at_review": 4149,
+      "contract": "super call binds method not field",
+      "fixture_source_sha256": "8392dcded03fd2705b037c521d223165782dcb54adc013abdd0148e476db0240",
+      "canonical_fixture_ast_sha256": "e7e40c774ed8874d3d2dbb178005431908e8a649e54a5ca61d7124e3e47aa300",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.081",
+      "name": "py_super_cycle_stays_universe",
+      "line_at_review": 4185,
+      "contract": "super cycle stays universe",
+      "fixture_source_sha256": "8c7f3a7499737b33e1c52e8c10ef145db5a3bae37e8f97ce474c3bfe8fab9ffa",
+      "canonical_fixture_ast_sha256": "bb39ec61707f4a765dc839d8c4f4796fbc7343f8bc455ee6f7e23f2572f43d42",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.082",
+      "name": "py_super_explicit_after_child_targets_base_note_not_child",
+      "line_at_review": 4260,
+      "contract": "super explicit after child targets base note not child",
+      "fixture_source_sha256": "7ed2be2c6b7395bd41a7dc6373260a5d1b27cf32a17c59c7ff64741b97440b2e",
+      "canonical_fixture_ast_sha256": "3bb01fc8ddf27d94dbe75be08231972b77967d18e09a5ba67169aa0b75d4510f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.083",
+      "name": "py_super_explicit_after_base_stays_universe",
+      "line_at_review": 4316,
+      "contract": "super explicit after base stays universe",
+      "fixture_source_sha256": "16f002537c438ea593d3d732725a3377624fbec9bbb7ffdf442a61c64cd2731f",
+      "canonical_fixture_ast_sha256": "cbdc8d34b49ea50c83b781aaae3309cc439f14eab31f2690e59a65f6bd656430",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.084",
+      "name": "py_super_explicit_after_mid_targets_base_note",
+      "line_at_review": 4366,
+      "contract": "super explicit after mid targets base note",
+      "fixture_source_sha256": "c8960ef5bf75edc5c61e6e7a044e472c06275049d6188d6a0e9e3787bbe91007",
+      "canonical_fixture_ast_sha256": "2c67e05f34fbce2fc0399a384efcbe0d80e0b42e34acf3a5fd8969acaae0538a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.085",
+      "name": "py_super_explicit_field_after_child_targets_base_score",
+      "line_at_review": 4400,
+      "contract": "super explicit field after child targets base score",
+      "fixture_source_sha256": "e82c89fc0d06dc0942d9dd60ffe97b745bd2e649af831353ed9dde43a3f546f8",
+      "canonical_fixture_ast_sha256": "53b30e53dbb71dcf3705bacd7e6b3eb695433d38d5ca3e0947d5cb56b7f74670",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.086",
+      "name": "py_super_explicit_field_after_base_stays_universe",
+      "line_at_review": 4445,
+      "contract": "super explicit field after base stays universe",
+      "fixture_source_sha256": "bdcc0079c7034bcf68fbca80dd1d6926e2db524bc9d16f2878cd490ca382fef0",
+      "canonical_fixture_ast_sha256": "e9057fcab83fd01ec38ca6ad11d9e5c893b987494aeca5751a6ce2ecb806ba72",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.087",
+      "name": "py_super_explicit_method_value_targets_base_note",
+      "line_at_review": 4500,
+      "contract": "super explicit method value targets base note",
+      "fixture_source_sha256": "c409ee52ff363393f886d195d731577b141a05f42250b6f03a2fbbebdc306c80",
+      "canonical_fixture_ast_sha256": "130e086cd148093f95278781af05c3051cd6456673f9388347cd6bc77c2895b1",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.088",
+      "name": "py_super_explicit_unknown_start_stays_universe",
+      "line_at_review": 4547,
+      "contract": "super explicit unknown start stays universe",
+      "fixture_source_sha256": "b50d8fba90ef43bbccb82d09e70a208081a2af5718797d1c90b2fcb8d05763dc",
+      "canonical_fixture_ast_sha256": "3c0ac4802b36b776e8113c0d60dcc881c8e04f612cc3b18079996a676d97179c",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.089",
+      "name": "py_super_explicit_other_instance_stays_universe",
+      "line_at_review": 4598,
+      "contract": "super explicit other instance stays universe",
+      "fixture_source_sha256": "b87cf18680bf0dce1634bc743ab11cd8b1f0ca30b6ceeaa6fe390ae885c06046",
+      "canonical_fixture_ast_sha256": "6b7939f4005f1590997148e31d483509247dc96626286dfa806864e3fdd2e027",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.090",
+      "name": "py_super_explicit_one_arg_stays_universe",
+      "line_at_review": 4636,
+      "contract": "super explicit one arg stays universe",
+      "fixture_source_sha256": "92d72524403568d9ec0c757dfa969966e19913fde2341a994529e5f5eb0bfb7c",
+      "canonical_fixture_ast_sha256": "6887d6e7c593a40646086470c2a4436fdf131555cd159a265aef4576541376aa",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.091",
+      "name": "py_super_explicit_dotted_stays_universe",
+      "line_at_review": 4672,
+      "contract": "super explicit dotted stays universe",
+      "fixture_source_sha256": "7fbbe45d8c9689cd34c8a2712a849811d246e90b640877b2d445469ab0865489",
+      "canonical_fixture_ast_sha256": "fa1ce91acb56125e67ee2a00e7c3f065f8e4a437c38a74eeb01a7470f966092f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.092",
+      "name": "py_super_explicit_nested_stays_universe",
+      "line_at_review": 4714,
+      "contract": "super explicit nested stays universe",
+      "fixture_source_sha256": "281933303787eb3c11ea72bf4c245171c9d19965bf9ea570781032144ccf76a9",
+      "canonical_fixture_ast_sha256": "745ec060aa8cee12d8b4e7c0f53176c4e6171a3bbb38df10cdc33f54abbfe039",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.093",
+      "name": "py_super_explicit_classmethod_targets_base_note",
+      "line_at_review": 4764,
+      "contract": "super explicit classmethod targets base note",
+      "fixture_source_sha256": "1b900d7f1ca59dcd90d27a0448d56798855ee66362dbb55beebe0606764b115f",
+      "canonical_fixture_ast_sha256": "add74f40f56f2c4c0bd8276fc2a70a847d443c01d966f701c7960d7eb544b504",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.094",
+      "name": "py_super_explicit_after_last_link_stays_universe",
+      "line_at_review": 4796,
+      "contract": "super explicit after last link stays universe",
+      "fixture_source_sha256": "2e5913fff961d9e86c579bb7d8b8807791a3db9694805b900e62922653cd3553",
+      "canonical_fixture_ast_sha256": "be39463675f55c3b30b34f9ce18c7368ee53d6bfca5db191f4775f0be2053499",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.095",
+      "name": "py_generic_annotation_call_targets_child_note_not_decoy",
+      "line_at_review": 4857,
+      "contract": "generic annotation call targets child note not decoy",
+      "fixture_source_sha256": "c6faf6cdc6dc7e6677843ad4773481edbad0b90562bb3ea501f2d0544270c268",
+      "canonical_fixture_ast_sha256": "0fb27a30e3dafe0bab4d6bf53f811199d1cd9a9e8b7d67729b7fcf4833e739d5",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.096",
+      "name": "py_generic_annotation_value_targets_child_note_not_decoy",
+      "line_at_review": 4898,
+      "contract": "generic annotation value targets child note not decoy",
+      "fixture_source_sha256": "71f8a15ec52f9047512cc0c837cce5beba034ec41360f1fdb104843ea326c541",
+      "canonical_fixture_ast_sha256": "4e2108833e4600a2a54a28557d855b6c79a6392bea5aeea64025a2c6e8dedd78",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.097",
+      "name": "py_generic_annotation_field_targets_child_score_not_decoy",
+      "line_at_review": 4939,
+      "contract": "generic annotation field targets child score not decoy",
+      "fixture_source_sha256": "642c6eadc0611fbf927587e5158856cd5754147aa8e62157f3c2f8edd8528ae5",
+      "canonical_fixture_ast_sha256": "6e6034d6be7ecaaebc522c064030d196562dd3c3d68e1cf57992e996f5d45ec3",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.098",
+      "name": "py_generic_annotation_inherited_call_targets_base_note",
+      "line_at_review": 4978,
+      "contract": "generic annotation inherited call targets base note",
+      "fixture_source_sha256": "b20387ede2e15dd14c0035cc0c7161f7da738d334fe4afe39119ca0b5cbe9726",
+      "canonical_fixture_ast_sha256": "8c445ca2ff6c469a5576797fe2c7ba3214f5db8197cf8ab6a6519193a7ddb577",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.099",
+      "name": "py_generic_annotation_list_stays_universe",
+      "line_at_review": 5011,
+      "contract": "generic annotation list stays universe",
+      "fixture_source_sha256": "fa54f3a7b4dc52fddcef34f8fcca7886d6c037167d5f475fcaa13b25d57fc5eb",
+      "canonical_fixture_ast_sha256": "b9f26709c0a8e26912b97ae69e46eb33c76b8ccee0425c2db536d3ac72d25dca",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.100",
+      "name": "py_generic_annotation_dotted_stays_universe",
+      "line_at_review": 5046,
+      "contract": "generic annotation dotted stays universe",
+      "fixture_source_sha256": "05cf3b8d3ba88695642aebddb354320eeb0d806afa451eb191bf553cddd325a0",
+      "canonical_fixture_ast_sha256": "1d0ab8098dc0fd427f8942e71f290887ffd7d1a38025de6b36fc6c7ab5bc29b1",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.101",
+      "name": "py_generic_annotation_quoted_call_still_targets_child",
+      "line_at_review": 5081,
+      "contract": "generic annotation quoted call still targets child",
+      "fixture_source_sha256": "b0ede05f43715d9d9dfd688210e10c37dcfdcf0cd00e25e6e005425e3e5b84b5",
+      "canonical_fixture_ast_sha256": "5e1f69cfae5bfe9414a4300d8b56d494b235c4d3e4ca4d0f018bc3a3f48bc5a2",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.102",
+      "name": "py_generic_annotation_field_wins_over_method",
+      "line_at_review": 5111,
+      "contract": "generic annotation field wins over method",
+      "fixture_source_sha256": "8bdb8b881039f3f17f059a7785facf139b8cd58ac7bdfafab485cddfcb0c5df3",
+      "canonical_fixture_ast_sha256": "645ddf2b1a729c514b9bf5ad1d96b19b38fe95b84060b44610adec0f4faa17c7",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.103",
+      "name": "py_generic_annotation_call_binds_method_not_field",
+      "line_at_review": 5150,
+      "contract": "generic annotation call binds method not field",
+      "fixture_source_sha256": "e83f23bcf201540816d0fbfe4a3a91c30776cb2b26c3054a44eb825cfc9742cc",
+      "canonical_fixture_ast_sha256": "dfb51211a1424d27102a5c7e1e35a65c127d79cf413471e16985f71130507da8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.104",
+      "name": "py_generic_annotation_alias_read_uses_package_key",
+      "line_at_review": 5189,
+      "contract": "generic annotation alias read uses package key",
+      "fixture_source_sha256": "a80bb8ad68952a5a7ba1d85c54aca2d03c6e541078b5202c3ac16e348f16eee0",
+      "canonical_fixture_ast_sha256": "f93598905c932e6b748e485ef3d649a12be29af6eeac43e8a15bd9c22bc5199d",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.105",
+      "name": "py_generic_annotation_alias_call_uses_package_key",
+      "line_at_review": 5236,
+      "contract": "generic annotation alias call uses package key",
+      "fixture_source_sha256": "3305a5d3e2c4ae24a70f7b71b05a5e6d83259c433e83c0d839a9ab215cdce5e5",
+      "canonical_fixture_ast_sha256": "b5307d57a7534f921cb3800467af8af45ab5a023f782226cf5709966fb7cf5a4",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.106",
+      "name": "py_union_annotation_call_targets_child_note_not_decoy",
+      "line_at_review": 5283,
+      "contract": "union annotation call targets child note not decoy",
+      "fixture_source_sha256": "ba2728c6f3480985b619da0a80537d5b9bbe65bd7c3f046c25dc960c67b45d69",
+      "canonical_fixture_ast_sha256": "7fb00600d0bfad6356627200509e57a4efc2221d8f22b376eb8b6fd8da6435e4",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.107",
+      "name": "py_union_annotation_value_targets_child_note_not_decoy",
+      "line_at_review": 5324,
+      "contract": "union annotation value targets child note not decoy",
+      "fixture_source_sha256": "c637d6eca2b83634e8d5e4a09165878915075cc5520e1e1819dc571d0c17bdfb",
+      "canonical_fixture_ast_sha256": "7e2f3ef29405afe7ba1b953eb58478ce6c613a819fc4c5d1074f704cab0c3883",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.108",
+      "name": "py_union_annotation_field_targets_child_score_not_decoy",
+      "line_at_review": 5365,
+      "contract": "union annotation field targets child score not decoy",
+      "fixture_source_sha256": "6160180687d57a960522f3a1a75bcab12b85d9ae1acb406615477f7454f6d0c3",
+      "canonical_fixture_ast_sha256": "d12aa4ac92d79e21d861aeac06008cc444cbe086c15b0299438622ef65d5d97d",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.109",
+      "name": "py_union_annotation_none_first_targets_child_note",
+      "line_at_review": 5404,
+      "contract": "union annotation none first targets child note",
+      "fixture_source_sha256": "e8fa7e058b04fae9e028f3c84b212a22864f4e7f4175db133f8f06426e70616f",
+      "canonical_fixture_ast_sha256": "7f0aa3d1f7d32853e0e3ec313dd972a2dc4a078bfba4ba14177075dbb7a9d591",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.110",
+      "name": "py_union_annotation_inherited_call_targets_base_note",
+      "line_at_review": 5434,
+      "contract": "union annotation inherited call targets base note",
+      "fixture_source_sha256": "e710419fced4f6a715f181f0a507ac4f0bfde09bfc18f754164504e066076dbe",
+      "canonical_fixture_ast_sha256": "8a31a82a256a59f1a71156fbf4256a2091de048894aed1bfcdffe840de20e944",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.111",
+      "name": "py_union_annotation_two_classes_stay_universe",
+      "line_at_review": 5467,
+      "contract": "union annotation two classes stay universe",
+      "fixture_source_sha256": "6fe572205dd237e3b2e937936a90f495386320c511a23c073fa7699b6e9e8d6f",
+      "canonical_fixture_ast_sha256": "8472f4573e20aa821c86c25bb41166e8e4c319da30b92a6294442e60b9d26157",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.112",
+      "name": "py_union_annotation_two_classes_do_not_steal_unique_field",
+      "line_at_review": 5513,
+      "contract": "union annotation two classes do not steal unique field",
+      "fixture_source_sha256": "990b238de4dd9eb8d7cac94e3aeab5b8bac75a080c354a30b510895f130e7875",
+      "canonical_fixture_ast_sha256": "341dc50bdcde2276d05e1476003cdf12f779e6a1f3b09c7bc6fa1f04b3b4ea72",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.113",
+      "name": "py_union_annotation_optional_call_targets_child_note",
+      "line_at_review": 5565,
+      "contract": "union annotation optional call targets child note",
+      "fixture_source_sha256": "46c3ff7c32b0356b7979f7ef2f049f7e81da6b25af273b9b48682de66130d1f7",
+      "canonical_fixture_ast_sha256": "e2e992c2ae6c38d2c4512fdcd6343f623518423cbc63686a352158a900e62640",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.114",
+      "name": "py_union_annotation_typing_optional_call_targets_child_note",
+      "line_at_review": 5595,
+      "contract": "union annotation typing optional call targets child note",
+      "fixture_source_sha256": "c5d20fca3e4cb088a4b6eea48b49e55a910e78a1096b34f52148c39f15c1c07e",
+      "canonical_fixture_ast_sha256": "bfec6cc02d10a5c0e418cb57cfb24d025c5ce624fb50debefbb31859d05696a7",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.115",
+      "name": "py_union_annotation_typing_union_call_targets_child_note",
+      "line_at_review": 5650,
+      "contract": "union annotation typing union call targets child note",
+      "fixture_source_sha256": "c72c7ca95b57083eab888f33d3564376747d0a5f66c6665eeb65f941d27b3d4c",
+      "canonical_fixture_ast_sha256": "e2a6a6922849415e67bae7d086ccfc04592277754b4fae8392757533ac2de5fe",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.116",
+      "name": "py_union_annotation_generic_arm_targets_child_note",
+      "line_at_review": 5680,
+      "contract": "union annotation generic arm targets child note",
+      "fixture_source_sha256": "da2ea8cbf7d77f2bd55f2c03d96b7b0b52b79a919641cbeb1423a846de14ec79",
+      "canonical_fixture_ast_sha256": "431256d48340673faf73cff08be1c0a922d277ad85c6b7d082537219e9b403dc",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.117",
+      "name": "py_union_annotation_other_type_stays_universe",
+      "line_at_review": 5710,
+      "contract": "union annotation other type stays universe",
+      "fixture_source_sha256": "1c7ea6231c7a19a5e35a86e4cf97e5cf8d5fa94a31810779ac7376e8593d8e66",
+      "canonical_fixture_ast_sha256": "b2790df9c028a83ca2778604b79ea100bf3fb34d5a413f2c8c49ca79ca4b1753",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.118",
+      "name": "py_union_annotation_list_stays_universe",
+      "line_at_review": 5745,
+      "contract": "union annotation list stays universe",
+      "fixture_source_sha256": "fa54f3a7b4dc52fddcef34f8fcca7886d6c037167d5f475fcaa13b25d57fc5eb",
+      "canonical_fixture_ast_sha256": "b9f26709c0a8e26912b97ae69e46eb33c76b8ccee0425c2db536d3ac72d25dca",
+      "disposition": "remove",
+      "reason": "Identical source, native compile path and complete target/confidence/refusal assertions. The duplicate name does not add a union fixture.",
+      "retained_test": "py_generic_annotation_list_stays_universe"
+    },
+    {
+      "id": "ENGINE-PY-01.119",
+      "name": "py_union_annotation_field_wins_over_method",
+      "line_at_review": 5780,
+      "contract": "union annotation field wins over method",
+      "fixture_source_sha256": "11fff771c3f9ac169f68c8df8ea46caea624699c97e55fc1afa1a706ba695649",
+      "canonical_fixture_ast_sha256": "9f9b9c9b3b5d3bcdf7039590ebacd76116106984209fbdca3b5b8455bfb2c317",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.120",
+      "name": "py_union_annotation_alias_read_uses_package_key",
+      "line_at_review": 5819,
+      "contract": "union annotation alias read uses package key",
+      "fixture_source_sha256": "a5ca4ad85b171457967e656a1df066a46661aadb640a6504a74b96f77842b375",
+      "canonical_fixture_ast_sha256": "476e90db2b0e8ac54d562ee76b19f1cd42b59233440d0cdc8a76b46eab626470",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.121",
+      "name": "py_class_qualified_call_targets_child_note_not_decoy",
+      "line_at_review": 5866,
+      "contract": "class qualified call targets child note not decoy",
+      "fixture_source_sha256": "7381d29789c48b366a72f44e039d9ce06b7a73da73b9c66feadbec1c74dffa7e",
+      "canonical_fixture_ast_sha256": "600f822c80ee464baec69995c8b2b85b32c3ee35101d10e03089a96ac370d457",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.122",
+      "name": "py_class_qualified_forward_call_targets_child_note_not_decoy",
+      "line_at_review": 5907,
+      "contract": "class qualified forward call targets child note not decoy",
+      "fixture_source_sha256": "270a0cc4d6605d35de043cb4569a94cf12f41352861f055277f47819de269763",
+      "canonical_fixture_ast_sha256": "6bd62423073afda2d310e7aa1a8e911a4ee269fa49f59ab1284101c00152df9b",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.123",
+      "name": "py_class_qualified_value_targets_child_note_not_decoy",
+      "line_at_review": 5948,
+      "contract": "class qualified value targets child note not decoy",
+      "fixture_source_sha256": "64644b8012a02f84af44856886b51299ec717b98cc8617d48533aca4156cbcba",
+      "canonical_fixture_ast_sha256": "117a36d252af68ec2cac39419f79bd24d5ac6f7d718b60cdcc88d7e7ef8c2b52",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.124",
+      "name": "py_class_qualified_field_targets_child_score_not_decoy",
+      "line_at_review": 5989,
+      "contract": "class qualified field targets child score not decoy",
+      "fixture_source_sha256": "4fbda6dc1d2be9125563996fab0fdf2f220e13e2515a4715299bd7036f3aeb65",
+      "canonical_fixture_ast_sha256": "d8116bf15b6be272a792c5b0a900276fb444f13ca366b542ad53f52bab2f23b1",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.125",
+      "name": "py_class_qualified_forward_field_targets_child_score_not_decoy",
+      "line_at_review": 6028,
+      "contract": "class qualified forward field targets child score not decoy",
+      "fixture_source_sha256": "9060f9b920714bbbf09c4c1c957fb46a7f856d4eeba08489c114f1de501b9572",
+      "canonical_fixture_ast_sha256": "4fb47690365e4895281a9160b2fbfa52d79865b33d6e47774420c2579fd11423",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.126",
+      "name": "py_class_qualified_inherited_call_targets_base_note_not_decoy",
+      "line_at_review": 6067,
+      "contract": "class qualified inherited call targets base note not decoy",
+      "fixture_source_sha256": "de361fd92d97ee93d333245ddabd5a4836303dcc0b2f7d232c873489ceb7db60",
+      "canonical_fixture_ast_sha256": "774150960b45dd6c7c88b1b0b5a4f8987282af2d11eb6ca8c4fa068daaf1f09d",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.127",
+      "name": "py_class_qualified_inherited_field_targets_base_score_not_decoy",
+      "line_at_review": 6111,
+      "contract": "class qualified inherited field targets base score not decoy",
+      "fixture_source_sha256": "64104175d5f21acfd099b369881ff69e2a9d4f5f8ee660372521cf2bc49e9c3e",
+      "canonical_fixture_ast_sha256": "6fc315a3bf781fc6cd29d7f5a975ed990c74926f1555b5ae5f87d859e9ab0bbd",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.128",
+      "name": "py_class_qualified_field_wins_over_method",
+      "line_at_review": 6153,
+      "contract": "class qualified field wins over method",
+      "fixture_source_sha256": "62aa6cbbadb2b99716d813d1b6cd62472d2853fae29273614ae7311ea2d39ce2",
+      "canonical_fixture_ast_sha256": "a76c7da56f5688dbffd448f30ffaada7f58d43dce2ed7a027f62acf37b926bf2",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.129",
+      "name": "py_class_qualified_call_binds_method_not_field",
+      "line_at_review": 6192,
+      "contract": "class qualified call binds method not field",
+      "fixture_source_sha256": "3fe86245e1e81f9b72912c256bacbe1923e89ebae58e789cd6c827fa090d3196",
+      "canonical_fixture_ast_sha256": "40604987899a639a08fe40b10f7a4d643cd1e45fcd2f43711b1e5703c2a95aa6",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.130",
+      "name": "py_constructed_call_targets_child_note_not_decoy",
+      "line_at_review": 6231,
+      "contract": "constructed call targets child note not decoy",
+      "fixture_source_sha256": "d9284aefe728b50f41d0d4b62bc0ac7986a374310dc96ab9e2afe57563c7e161",
+      "canonical_fixture_ast_sha256": "3cd3cd32ef379ff31686a83fa494a48cb7e67057d7c8ab17fc1daff83d6eee7a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.131",
+      "name": "py_constructed_forward_call_targets_child_note_not_decoy",
+      "line_at_review": 6272,
+      "contract": "constructed forward call targets child note not decoy",
+      "fixture_source_sha256": "1b4e2bb924f993e7c856777b701f197bdbcdcee5fc77e689a5767544203648db",
+      "canonical_fixture_ast_sha256": "0fd0f110f9d35f653ce926bdc5cd36237daeafdfc27542ec6a7cc89c03c41474",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.132",
+      "name": "py_constructed_value_targets_child_note_not_decoy",
+      "line_at_review": 6313,
+      "contract": "constructed value targets child note not decoy",
+      "fixture_source_sha256": "8ce4a515d49bcd94a9d341106f6f5e5a642183fd1584859a049de3d2542b1011",
+      "canonical_fixture_ast_sha256": "68b5c4c60c97e9b973d2431d8a843a4c302aa08d4f7d275320107773d46bde38",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.133",
+      "name": "py_constructed_field_targets_child_score_not_decoy",
+      "line_at_review": 6354,
+      "contract": "constructed field targets child score not decoy",
+      "fixture_source_sha256": "db2a66dae475a9c53a8e1b21da9d12dcead45ca2515ccdb26d6e703253fe68b3",
+      "canonical_fixture_ast_sha256": "2899a301eac9298aa5770d56a6e8c79537d295a668f4cad4bae78a74bb967497",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.134",
+      "name": "py_constructed_inherited_call_targets_base_note_not_decoy",
+      "line_at_review": 6393,
+      "contract": "constructed inherited call targets base note not decoy",
+      "fixture_source_sha256": "636dc8411e5939ec1e63a9ccb02efbf15c640587b68d93c4d6cf9c5160201205",
+      "canonical_fixture_ast_sha256": "36fe8a816488ff5a8a38ef411475592fa67320888441169b43844f289c266e61",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.135",
+      "name": "py_constructed_field_wins_over_method",
+      "line_at_review": 6437,
+      "contract": "constructed field wins over method",
+      "fixture_source_sha256": "1d1277fddd9c32c39d8a83bce578ee5e12ceeaa95a0cfddb9602c8de2112cfcc",
+      "canonical_fixture_ast_sha256": "e20dbe748008e7a20aac5ed9085fd7ff00731de93cbf5ae100147bda6a852733",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.136",
+      "name": "py_constructed_call_binds_method_not_field",
+      "line_at_review": 6476,
+      "contract": "constructed call binds method not field",
+      "fixture_source_sha256": "31ef043ec4b0c9813ae51f1260b97f1486cbde2c02231b67725352b4249a2ee2",
+      "canonical_fixture_ast_sha256": "904fe2b1b5334999b0b478b3e2c0c21d495e7600857c09817e78d52542a9f212",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.137",
+      "name": "py_constructed_factory_stays_universe",
+      "line_at_review": 6515,
+      "contract": "constructed factory stays universe",
+      "fixture_source_sha256": "4722144a44593da7aa91fd3eb9b01601e9834d1b620e4c3a1b6e3517fe07a809",
+      "canonical_fixture_ast_sha256": "db189d1882be0a68392743efc7fbd068cdff952ff29cb175b0896521385afc74",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.138",
+      "name": "py_constructed_missing_member_stays_attribute_key",
+      "line_at_review": 6553,
+      "contract": "constructed missing member stays attribute key",
+      "fixture_source_sha256": "f4e2ea52ef823f85e4cf49e41172aa053c222d2081ae1dfaa0af7897db52fcb3",
+      "canonical_fixture_ast_sha256": "16a2e26d0287945f566b0926ae3641639d3a280e0ec5c5c645d52e74e90c219a",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.139",
+      "name": "py_constructed_dotted_stays_universe",
+      "line_at_review": 6591,
+      "contract": "constructed dotted stays universe",
+      "fixture_source_sha256": "c69fddcfad56bcba24bb756e3ac00927b27c5058cb5358d4b3bf5b2d2f9fcb8c",
+      "canonical_fixture_ast_sha256": "cb6fb386590dc1144b5bfb8ad7def4ceba64163fb2fe20ca30977f90a8a99c73",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.140",
+      "name": "py_class_qualified_missing_member_stays_attribute_key",
+      "line_at_review": 6628,
+      "contract": "class qualified missing member stays attribute key",
+      "fixture_source_sha256": "842dfe529c94bceca3da943086b67f2535fba2a3f67975e3a4dbebb2b2d1a66e",
+      "canonical_fixture_ast_sha256": "aed84736070dc6ba9a91cbeeab9fbdd9a26f020fb3563c548ef86240eaf8490f",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.141",
+      "name": "py_subscript_constructed_call_targets_child_note_not_decoy",
+      "line_at_review": 6666,
+      "contract": "subscript constructed call targets child note not decoy",
+      "fixture_source_sha256": "5a3ae4a815590af05d672271a8a49daab4fd7c7555332b4e582276c801f4cc9c",
+      "canonical_fixture_ast_sha256": "f83922838463f9973de15cf821e7b26b237b327994304b6989544bb0f3096ec8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.142",
+      "name": "py_subscript_constructed_forward_call_targets_child_note_not_decoy",
+      "line_at_review": 6707,
+      "contract": "subscript constructed forward call targets child note not decoy",
+      "fixture_source_sha256": "7672a0c96821fee86304ca4f9336ac5dec5454cb6cb825a3fe07e987f801eca9",
+      "canonical_fixture_ast_sha256": "6abd5c58313469a8ec99171d87bc97713eb2090d2e1f98378f57ff5331e9ce69",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.143",
+      "name": "py_subscript_constructed_value_targets_child_note_not_decoy",
+      "line_at_review": 6748,
+      "contract": "subscript constructed value targets child note not decoy",
+      "fixture_source_sha256": "524cce26861354623086364c2a6deaf05698bbcc5f78c0eb498d112767f29588",
+      "canonical_fixture_ast_sha256": "04e45f9d6cdef4d32f63e52f3da7fe302ea271d78eea5999346a9f305e2a2f39",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.144",
+      "name": "py_subscript_constructed_field_targets_child_score_not_decoy",
+      "line_at_review": 6789,
+      "contract": "subscript constructed field targets child score not decoy",
+      "fixture_source_sha256": "c1294041499ae40c3295d584eb02005fb6f412f1cdbe0d88a028003b9175dd61",
+      "canonical_fixture_ast_sha256": "6b9c7e1eb1cc84c9eec4349f09d6fc97f35b4491274d3e728933f8717255dbb2",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.145",
+      "name": "py_subscript_constructed_inherited_call_targets_base_note_not_decoy",
+      "line_at_review": 6828,
+      "contract": "subscript constructed inherited call targets base note not decoy",
+      "fixture_source_sha256": "05040793611ac662956f784207d96cf098ad6ea99a23ac8570d4c191938fee7d",
+      "canonical_fixture_ast_sha256": "cf9ac8ea66851dc2b8e7fea76c29aebf452319621a3f7dcf6fac659c3d549472",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.146",
+      "name": "py_subscript_constructed_field_wins_over_method",
+      "line_at_review": 6872,
+      "contract": "subscript constructed field wins over method",
+      "fixture_source_sha256": "a5689a38a8b40276e38b76a1ec6a3f2f0cd60931db021f7a4234b3785a8b4405",
+      "canonical_fixture_ast_sha256": "6e4e58697e5338a13102fdb6ef9ed992e5dccaf691e9a59d8a7a11b69fcb0352",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.147",
+      "name": "py_subscript_constructed_call_binds_method_not_field",
+      "line_at_review": 6911,
+      "contract": "subscript constructed call binds method not field",
+      "fixture_source_sha256": "ee0727c3630f0b5be0e4f5edc080e6eb4efaf171701ae0b202772846f0a27d9e",
+      "canonical_fixture_ast_sha256": "4e9160ba8f448a2d5e79e61f8d263098c7ad97022ca0bc80ddd19389a0274be8",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.148",
+      "name": "py_subscript_nested_call_targets_child_note_not_decoy",
+      "line_at_review": 6950,
+      "contract": "subscript nested call targets child note not decoy",
+      "fixture_source_sha256": "fb8753963e6c05eb71f2a864ee75ecb34243eda50b124b3de47032994de7773d",
+      "canonical_fixture_ast_sha256": "b1f95fd9d315929539526075ec2b73bdd129d909dba5ff78d8e79ddd5571d951",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.149",
+      "name": "py_subscript_tuple_slice_call_targets_child_note_not_decoy",
+      "line_at_review": 6991,
+      "contract": "subscript tuple slice call targets child note not decoy",
+      "fixture_source_sha256": "b96f10b509cc1edd5a59ef14b8e84e71c2fb248ffe815fcec87145c1ebd36973",
+      "canonical_fixture_ast_sha256": "a8984d85aca6c6607ad31a8e91aadaa8b3edb3b3662fbe0614d8d4b402643f48",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    },
+    {
+      "id": "ENGINE-PY-01.150",
+      "name": "py_subscript_pep695_call_targets_child_note",
+      "line_at_review": 7032,
+      "contract": "subscript pep695 call targets child note",
+      "fixture_source_sha256": "afd06402ca68b10070d5faf21c3f97009deaed0191d391ecdd3a17ac1bc442da",
+      "canonical_fixture_ast_sha256": "0ad34dd3ba651a65375bd3a5b62060990382c0d20f71f05cb939bb73af22222d",
+      "disposition": "keep",
+      "reason": "Retain this native compiler target/kind/confidence or refusal contract; no equivalent stronger fixture was established for removal in this batch."
+    }
+  ]
+}

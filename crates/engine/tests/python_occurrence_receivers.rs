@@ -2111,35 +2111,6 @@ class Child(Base):
 }
 
 #[test]
-fn py_inherited_annotated_call_targets_base_note() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Base:
-    def note(self):
-        return 1
-
-class Child(Base):
-    pass
-
-def read(service: Child):
-    return service.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
-    let base_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let calls = read_method_calls(&view, read_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("read owns one MethodCall"));
-    }
-    assert_local_index(calls[0], base_note, "service.note resolves to Base.note")?;
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
 fn py_inherited_field_targets_base_score_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
@@ -2945,44 +2916,6 @@ class Child:
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
     assert_local_index(reads[0], child_note, "cls.note resolves to Child.note")?;
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
-fn py_method_value_plain_stays_universe() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Child:
-    def note(self):
-        return 1
-
-def read(obj):
-    return obj.note
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let calls = read_method_calls(&view, read_owner)?;
-    if !calls.is_empty() {
-        return Err(TestError::Falsified("read owns zero MethodCalls"));
-    }
-    let reads = read_field_accesses(&view, read_owner)?;
-    if reads.len() != 1 {
-        return Err(TestError::Falsified("read owns one FieldAccess"));
-    }
-    assert_inherited_universe_field(reads[0], "plain receiver stays a universe field key")?;
-    if matches!(
-        &reads[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == child_note
-    ) {
-        return Err(TestError::Falsified(
-            "plain receiver must not bind Child.note",
-        ));
-    }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -5737,41 +5670,6 @@ def read(service: Child | int):
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
         return Err(TestError::Falsified("Child | int must not bind Child.note"));
-    }
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
-fn py_union_annotation_list_stays_universe() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Child:
-    def note(self):
-        return 1
-
-def read(service: list[Child]):
-    return service.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let calls = read_method_calls(&view, read_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("read owns one MethodCall"));
-    }
-    assert_universe_method(calls[0], "list[Child] receiver stays a pypi universe key")?;
-    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
-    }
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == child_note
-    ) {
-        return Err(TestError::Falsified("list[Child] must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
