@@ -2204,7 +2204,17 @@ fn read_window(
     delivery: u16,
     continuation: Option<PageContinuation>,
 ) -> Result<ReplyDto, ClientError> {
-    let window = delivery_window(4, delivery);
+    read_window_with_credit(session, family, 4, delivery, continuation)
+}
+
+fn read_window_with_credit(
+    session: &mut Session,
+    family: u8,
+    issued: u16,
+    delivery: u16,
+    continuation: Option<PageContinuation>,
+) -> Result<ReplyDto, ClientError> {
+    let window = delivery_window(issued, delivery);
     match family {
         0 => session.names_page_window("Thing", window, continuation),
         1 => session.search_page_window("Thing", window, continuation),
@@ -2276,6 +2286,20 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
             .expect("original immutable proof");
         assert_eq!(imported, next);
         assert!(resumed.prepared_query.is_some());
+        // MCP may retire a near-spent connection between importing the copied
+        // pc4 call and reading its page. Only continuation state crosses that
+        // boundary; prepared authority must be rebuilt on the new connection.
+        let retained = resumed.take_continuation_state();
+        resumed = Session::from_transport(
+            "/private/replacement-window-owner.sock",
+            RefuseWideResume(Transport {
+                owner: owner.clone(),
+                requests: requests.clone(),
+                graph_ids: None,
+            }),
+        );
+        resumed.restore_continuation_state(retained);
+        assert!(resumed.prepared_query.is_none());
         assert!(matches!(
             read_window(&mut resumed, family, 4, Some(imported)),
             Err(ClientError::ResponseTooLarge { basis: Some(_) })
@@ -2284,11 +2308,8 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
             resumed.prepared_query.is_none(),
             "the failed read consumed preparation"
         );
-        let same = resumed
-            .decode_page_continuation(&signed_input)
-            .expect("re-import exact same signed input");
-        assert_eq!(same, imported);
-        let actual = read_window(&mut resumed, family, 1, Some(same)).expect("smaller delivery");
+        let actual = read_window(&mut resumed, family, 1, Some(imported))
+            .expect("same retained input at smaller delivery without another token import");
         let mut replay = session(&owner, &requests);
         let same = replay
             .decode_page_continuation(&signed_input)
@@ -2337,16 +2358,30 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
         }
         assert_eq!(seen.len(), if family < 2 { 37 } else { 7 });
         assert_eq!(emitted as usize, seen.len());
-        // An exact selected-source change is still rejected before a retry page.
+        // A cold imported proof transferred before an exact source/authority
+        // change must be re-admitted, not restored as ready-to-send authority.
+        let mut stale = session(&owner, &requests);
+        let imported = stale
+            .decode_page_continuation(&signed_input)
+            .expect("old authority");
+        let retained = stale.take_continuation_state();
+        let mut stale = session(&owner, &requests);
+        stale.restore_continuation_state(retained);
         *owner.lock().expect("owner") = if family < 2 {
             self::owner(2, 37, 0)
         } else {
             graph_fixture(false, 2, 7)
         };
+        let before = requests.lock().expect("requests").len();
+        assert!(matches!(
+            read_window(&mut stale, family, 1, Some(imported)),
+            Err(ClientError::StaleCursor)
+        ));
         assert!(
-            session(&owner, &requests)
-                .decode_page_continuation(&signed_input)
-                .is_err()
+            requests.lock().expect("requests")[before..]
+                .iter()
+                .all(|command| matches!(command, Command::Revision)),
+            "source change cannot send a page"
         );
     }
 }
@@ -2393,7 +2428,7 @@ fn portable_window_versions_zero_spans_and_credit_mismatches_refuse() {
 }
 
 #[test]
-fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_legacy_handover() {
+fn adaptive_session_promotes_issued_active_query_and_keeps_legacy_peer_credit_fixed() {
     let (owner, requests) = fixture();
     let mut issuing = session(&owner, &requests);
     let first = issuing
@@ -2410,22 +2445,17 @@ fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_
             .expect("legacy active still decodes"),
         next
     );
-    let before = requests.lock().expect("requests").len();
-    assert!(matches!(
-        issuing.names_page_window("Thing", delivery_window(4, 1), Some(next)),
-        Err(ClientError::Protocol(_))
-    ));
-    assert_eq!(
-        requests.lock().expect("requests").len(),
-        before,
-        "explicit refusal before a new page can consume the only retained authority"
-    );
-    let imported = issuing
+    let active_reply = issuing
+        .names_page_window("Thing", delivery_window(4, 1), Some(next))
+        .expect("same-session producer proof supports adaptive delivery");
+    let mut fresh = session(&owner, &requests);
+    let imported = fresh
         .decode_page_continuation(&portable)
         .expect("portable legacy proof");
-    let second = issuing
+    let second = fresh
         .names_page_window("Thing", delivery_window(4, 1), Some(imported))
         .expect("authenticate old recipe before new window recipe");
+    assert_eq!(page(&active_reply), page(&second));
     assert_eq!(
         page(&second)
             .next
@@ -2434,6 +2464,138 @@ fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_
             .predecessor(),
         Some(delivery_window(4, 1))
     );
+    // An old peer may issue a fixed-width page without a portable next
+    // command. Its retained cursor remains usable at the original width,
+    // but cannot establish an adaptive query recipe by itself.
+    let mut legacy = session(&owner, &requests);
+    let first = legacy.names_page("Thing", 4, None).expect("old fixed page");
+    let next = PageContinuation::from_cursor(page(&first).next.expect("old next"));
+    legacy
+        .continuations
+        .get_mut(&next.cursor())
+        .expect("retained")
+        .next_request = None;
+    let before = requests.lock().expect("requests").len();
+    assert!(matches!(
+        legacy.names_page_window("Thing", delivery_window(4, 1), Some(next)),
+        Err(ClientError::Protocol(_))
+    ));
+    assert_eq!(requests.lock().expect("requests").len(), before);
+    assert!(legacy.names_page("Thing", 4, Some(next)).is_ok());
+}
+
+#[test]
+fn retained_window_proofs_refuse_changed_arguments_credit_unknown_cursor_and_stopped_reads() {
+    for family in 0..3 {
+        let (owner, requests) = if family < 2 {
+            fixture()
+        } else {
+            (
+                Arc::new(Mutex::new(graph_fixture(false, 1, 7))),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+        };
+        let mut session = session(&owner, &requests);
+        let first = read_window(&mut session, family, 4, None).expect("issued page");
+        let next =
+            PageContinuation::from_cursor(window_snapshot(&first).next.expect("issued next"));
+        let before = requests.lock().expect("requests").len();
+        let changed = match family {
+            0 => session.names_page_window("Other", delivery_window(4, 1), Some(next)),
+            1 => session.search_page_window("Other", delivery_window(4, 1), Some(next)),
+            _ => {
+                session.graph_page_window("graph::other-source", delivery_window(4, 1), Some(next))
+            }
+        };
+        assert!(matches!(changed, Err(ClientError::Protocol(_))));
+        assert!(matches!(
+            read_window_with_credit(&mut session, family, 5, 1, Some(next)),
+            Err(ClientError::Protocol(_))
+        ));
+        assert!(
+            requests.lock().expect("requests")[before..]
+                .iter()
+                .all(|command| matches!(command, Command::Revision)),
+            "changed selection/credit cannot send a page"
+        );
+        let before = requests.lock().expect("requests").len();
+        assert!(matches!(
+            read_window(
+                &mut session,
+                family,
+                1,
+                Some(PageContinuation::from_cursor(Cursor::new()))
+            ),
+            Err(ClientError::Protocol(_))
+        ));
+        assert_eq!(requests.lock().expect("requests").len(), before);
+        for expired in [false, true] {
+            let context = RequestContext::new();
+            session
+                .set_request_context(Some(context.clone()))
+                .expect("live request context");
+            let expected = if expired {
+                context
+                    .read_deadline(Duration::ZERO)
+                    .expect_err("deterministic exhausted budget");
+                ClientError::RemoteDeadlineExceeded
+            } else {
+                context.cancel(RequestCancellationReason::Explicit);
+                ClientError::RequestCancelled(RequestCancellationReason::Explicit)
+            };
+            assert_eq!(
+                read_window(&mut session, family, 1, Some(next)),
+                Err(expected)
+            );
+            assert_eq!(
+                requests.lock().expect("requests").len(),
+                before,
+                "stopped read cannot re-admit or send a page"
+            );
+            session
+                .set_request_context(None)
+                .expect("clear stopped request");
+        }
+    }
+}
+
+#[test]
+fn zero_window_read_budget_refuses_before_any_transport_even_without_request_context() {
+    let (owner, requests) = fixture();
+    let token = first_token(&owner, &requests, true, 4);
+    for prepared in [false, true] {
+        let mut resumed = session(&owner, &requests);
+        let next = resumed
+            .decode_page_continuation(&token)
+            .expect("validated input");
+        if !prepared {
+            resumed.prepared_query = None;
+        }
+        assert!(resumed.request_context.is_none());
+        let before = requests.lock().expect("requests").len();
+        assert_eq!(
+            resumed.prepare_query_window(delivery_window(4, 1), Some(next), Some(Duration::ZERO)),
+            Err(ClientError::RemoteDeadlineExceeded)
+        );
+        assert_eq!(
+            resumed.prepared_query.is_some(),
+            prepared,
+            "zero budget does not consume the proof"
+        );
+        let imported = backend_library::decode_command_body(
+            &decode_portable_body(&token).expect("canonical input"),
+        )
+        .expect("strict input command");
+        assert_eq!(
+            resumed.admit_query_continuation(imported, Some(Duration::ZERO)),
+            Err(ClientError::RemoteDeadlineExceeded)
+        );
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "default in-process transport ignores budgets, so admission must refuse before calling it"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
