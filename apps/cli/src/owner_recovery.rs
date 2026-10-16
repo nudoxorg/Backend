@@ -401,49 +401,13 @@ fn connect_replacement(
     )
 }
 
-/// Reaches an authenticated owner, starting one only when none is present.
-///
-/// A killed owner leaves its socket file, and the kernel keeps a dying owner's
-/// listener open for a moment while it tears down: a dial can be accepted by
-/// it (even the raw readiness probe is) and then end in a reset or end of
-/// file, and only a later dial is refused. So every connection-lost outcome,
-/// at any of the three dials below, is a state to wait out and observe again,
-/// never a verdict. Only a dial that is *refused* (`is_owner_absent`) proves
-/// no owner is listening and so authorizes `bootstrap`. Slow or busy
-/// listeners (`TimedOut`/`WouldBlock`) are not lost connections: they remain
-/// the owner and never authorize another candidate. The loop ends at the
-/// request scope, which bounds every wait.
 fn connect_replacement_with(
     context: &RequestContext,
     endpoint: &Path,
-    mut dial: impl FnMut(&Path) -> Result<Session, ClientError>,
-    mut bootstrap: impl FnMut() -> Result<PathBuf, ClientError>,
+    dial: impl FnMut(&Path) -> Result<Session, ClientError>,
+    bootstrap: impl FnMut() -> Result<PathBuf, ClientError>,
 ) -> Result<Session, ClientError> {
-    // The loop below is bounded only by this scope, so it must have one.
-    context.remaining_read_budget()?.ok_or_else(|| {
-        ClientError::Protocol(
-            "owner replacement requires the original bounded request scope".to_owned(),
-        )
-    })?;
-    let mut backoff = pacing(REPLACEMENT_BACKOFF_CEILING);
-    loop {
-        context.check()?;
-        // Authenticate the existing listener first. A healthy owner can retire
-        // a bounded connection while continuing its compile.
-        let outcome = match dial(endpoint) {
-            Ok(session) => return Ok(session),
-            Err(error) if error.is_owner_absent() => {
-                context.check()?;
-                bootstrap().and_then(|ready| dial(&ready))
-            }
-            Err(error) => Err(error),
-        };
-        match outcome {
-            Ok(session) => return Ok(session),
-            Err(error) if error.is_connection_lost() => pause(&mut backoff, context)?,
-            Err(error) => return Err(error),
-        }
-    }
+    backend_client::connect_local_owner_with(context, endpoint, dial, bootstrap)
 }
 
 /// Starts (or, when `passive`, only finds) the owner for an absent endpoint.

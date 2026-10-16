@@ -11,6 +11,10 @@ mod deferred_command;
 pub mod lease_contract;
 pub mod monotonic;
 #[cfg(any(unix, windows))]
+mod owner_connection;
+#[cfg(any(unix, windows))]
+pub use owner_connection::connect_local_owner_with;
+#[cfg(any(unix, windows))]
 mod query_continuation;
 #[cfg(any(unix, windows))]
 mod query_preparation;
