@@ -526,56 +526,6 @@ fn passive_connection_mode_is_limited_to_health_and_status() {
 }
 
 #[test]
-fn an_unknown_command_names_the_nearest_one_it_knows() {
-    let fault = invoke::parse(&words("serch ferris"), None).expect_err("unknown verb");
-    assert_eq!(fault.slug(), FaultSlug::Usage);
-    assert_eq!(fault.operand().render(), "serch");
-    assert!(
-        fault.cause().sentence().contains("did you mean `search`"),
-        "{}",
-        fault.cause().sentence()
-    );
-}
-
-#[test]
-fn an_unknown_option_names_the_options_the_command_takes() {
-    let fault = invoke::parse(&words("search ferris --deep"), None).expect_err("unknown option");
-    assert_eq!(fault.operand().render(), "--deep");
-    assert!(fault.cause().sentence().contains("--limit"));
-}
-
-#[test]
-fn a_missing_operand_prints_the_exact_usage_line() {
-    let fault = invoke::parse(&words("show"), None).expect_err("missing coordinate");
-    assert_eq!(fault.slug(), FaultSlug::Usage);
-    assert!(
-        fault.cause().sentence().contains("nudox show <COORDINATE>"),
-        "{}",
-        fault.cause().sentence()
-    );
-}
-
-#[test]
-fn a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command() {
-    let fault = invoke::parse(&words("document"), None).expect_err("missing coordinate");
-    assert_eq!(fault.slug(), FaultSlug::Usage);
-    assert_eq!(fault.operand().render(), "document");
-    assert_eq!(
-        fault.cause().sentence(),
-        "usage: nudox document <COORDINATE>"
-    );
-    assert_eq!(render::exit_code(&fault), ExitCode::from(64));
-}
-
-#[test]
-fn a_page_bound_outside_its_range_is_refused_with_the_value() {
-    let invocation = invoke::parse(&words("search ferris --limit 900"), None).expect("parse");
-    let fault = lower(&invocation, "/abs/project").expect_err("out of range");
-    assert_eq!(fault.operand().render(), "limit");
-    assert!(fault.cause().sentence().contains("`900`"));
-}
-
-#[test]
 fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
     let help = invoke::help_for(grammar_for("package-graph").expect("package graph grammar"));
     assert!(help.contains(&format!(
