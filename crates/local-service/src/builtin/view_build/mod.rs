@@ -8,6 +8,7 @@
 //! declaration witnessed by both lanes has one compiler-owned identity.
 
 mod call_join;
+mod csharp_native_sites;
 mod exact_sites;
 #[cfg(test)]
 mod foreign_target_display_tests;
