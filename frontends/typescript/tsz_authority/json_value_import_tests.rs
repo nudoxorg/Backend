@@ -162,4 +162,42 @@ mod json_value_import_tests {
             "unresolved-import recovery stays separate from JSON authority"
         );
     }
+    #[test]
+    fn configured_json_default_alias_keeps_captured_modes_without_losing_type_only_refusal() {
+        let mut recipe = selected_recipe();
+        // Match the captured engine program's semantic policy, explicit
+        // resolver mode and per-file format observations, not only the
+        // frontend fixture's legacy mode-inapplicable key.
+        recipe.semantic_options = TszProjectSemanticOptions::declaration_scoped();
+        recipe.module_resolutions[0].resolution_mode = Some(TszResolutionModeOverride::Import);
+        recipe.file_formats = [MAIN, SELECTED, DECOY]
+            .into_iter()
+            .map(|path| TszProjectFileFormatInput {
+                path: path.into(),
+                format: TszProjectFileFormat::EsModule,
+            })
+            .collect();
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources(VALUES), recipe.clone(), &[])
+            .unwrap();
+        assert_eq!(assignments(authority.project().unwrap()).len(), 3);
+
+        let mut type_only = sources(VALUES);
+        type_only[0].source = "import type settings from './settings.json';\n\
+            export const wrong: string = settings.enabled;\n"
+            .into();
+        let report = authority.update(type_only, recipe, &[]).unwrap();
+        assert!(!report.reused_project_result);
+        let project = authority.project().unwrap();
+        assert!(
+            project.diagnostics().any(|diagnostic| {
+                diagnostic.file == MAIN
+                    && diagnostic.code == 1361
+                    && project.diagnostic_utf8_span(diagnostic).is_some()
+            }),
+            "preserving a JSON value shape never authorizes an import-type value read: {:?}",
+            project.diagnostics().collect::<Vec<_>>()
+        );
+    }
 }
