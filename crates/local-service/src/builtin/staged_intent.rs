@@ -1030,19 +1030,32 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD_DIRECTORY, directory.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()?;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(status) = child.try_wait()? {
-                assert_eq!(status.code(), Some(77));
+                let output = child.wait_with_output()?;
+                assert_eq!(
+                    status.code(),
+                    Some(77),
+                    "quota lock child exited unexpectedly; stdout: {}; stderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
                 break;
             }
             if Instant::now() >= deadline {
                 child.kill()?;
-                let _ = child.wait()?;
+                let output = child.wait_with_output()?;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
-                    "quota lock hardlink regression child blocked",
+                    format!(
+                        "quota lock hardlink regression child blocked; stdout: {}; stderr: {}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr),
+                    ),
                 )
                 .into());
             }
@@ -1618,16 +1631,22 @@ mod tests {
             std::process::exit(77);
         }
         let directory = Directory::new();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "builtin::staged_intent::tests::crash_after_unselected_page_is_invisible",
                 "--nocapture",
             ])
             .env(CHILD_DIRECTORY, directory.path())
-            .status()
+            .output()
             .unwrap();
-        assert_eq!(status.code(), Some(77));
+        assert_eq!(
+            output.status.code(),
+            Some(77),
+            "staged-intent crash child exited unexpectedly; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
         assert!(store.head().unwrap().is_none());
         let mut writer = StagePool::new(
