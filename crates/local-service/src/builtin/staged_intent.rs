@@ -18,6 +18,7 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 const PAGE_BYTES: usize = 64 * 1024;
+const PAGE_BATCH: usize = backend_store::MAX_OBJECT_BATCH_OBJECTS;
 const PAGE_HEADER: usize = 4 + 8 + 32;
 const MANIFEST_BYTES: usize = 4 + 8 * 2 + 32 * 4 + 3 * (32 + 8 + 8);
 
@@ -137,15 +138,15 @@ pub(super) struct StagePool {
 
 impl StagePool {
     #[cfg(unix)]
-    fn write_object(
-        &self,
-        store: &FileStore,
-        object: &TypedObject,
-    ) -> Result<ObjectId, StoreError> {
-        use std::{
-            fs::{self, OpenOptions},
-            os::unix::fs::MetadataExt,
-        };
+    fn write_objects(&self, store: &FileStore, objects: &[TypedObject]) -> Result<(), StoreError> {
+        use std::{fs, os::unix::fs::MetadataExt};
+        if objects.is_empty() {
+            return Ok(());
+        }
+        if objects.len() > PAGE_BATCH {
+            return Err(StoreError::Bounds);
+        }
+        let _pin = store.pin_garbage_collection()?;
         let quota = store.root().join("staged-ingest-quota");
         let markers = quota.join("members");
         for directory in [&quota, &markers] {
@@ -168,17 +169,15 @@ impl StagePool {
             return Err(StoreError::Corrupt);
         }
         let lock_path = quota.join("allocation.lock");
-        if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
+        // The quota lock must be a private inode. A hardlink to the store's
+        // process LOCK would make the later batch writer block on the same
+        // flock while this file still holds it.
+        let lock = backend_platform::durability::open_or_create_regular_file_nofollow(&lock_path)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let lock_metadata = lock.metadata().map_err(|e| StoreError::Io(e.to_string()))?;
+        if !lock_metadata.is_file() || lock_metadata.nlink() != 1 {
             return Err(StoreError::Corrupt);
         }
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)
-            .map_err(|e| StoreError::Io(e.to_string()))?;
         lock.lock().map_err(|e| StoreError::Io(e.to_string()))?;
         let selected = store
             .head()?
@@ -254,79 +253,140 @@ impl StagePool {
                 Err(error) => return Err(StoreError::Io(error.to_string())),
             }
         }
-        let id = object.id();
-        let name = id
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let marker = markers.join(&name);
-        let already_counted = marker.is_file();
-        let target = store.root().join("objects").join(format!("{name}.object"));
-        let addition = if marker.is_file() {
-            0
-        } else if let Ok(metadata) = fs::symlink_metadata(&target) {
+        stage_checkpoint(StagePhase::QuotaScanned)?;
+        // Preflight every distinct object while holding allocation.lock.
+        // A failed preflight installs no CAS bytes and creates no new marker.
+        let mut identities = BTreeSet::new();
+        let mut additions = 0_u64;
+        let mut targets = Vec::with_capacity(objects.len());
+        let mut marker_paths = Vec::with_capacity(objects.len());
+        for object in objects {
+            let id = object.id();
+            if !identities.insert(id) {
+                return Err(StoreError::Corrupt);
+            }
+            let name = id
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let marker = markers.join(&name);
+            let already_counted = marker.is_file();
+            let target = store.root().join("objects").join(format!("{name}.object"));
+            let addition = if already_counted {
+                0
+            } else {
+                match fs::symlink_metadata(&target) {
+                    Ok(metadata) => {
+                        if !metadata.is_file()
+                            || metadata.file_type().is_symlink()
+                            || metadata.nlink() != 1
+                        {
+                            return Err(StoreError::Corrupt);
+                        }
+                        metadata
+                            .blocks()
+                            .checked_mul(512)
+                            .ok_or(StoreError::Bounds)?
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        let bytes = u64::try_from(object.bytes().len())
+                            .map_err(|_| StoreError::Bounds)?
+                            .checked_add(4096 + 128)
+                            .ok_or(StoreError::Bounds)?;
+                        bytes
+                            .div_ceil(4096)
+                            .checked_mul(4096)
+                            .ok_or(StoreError::Bounds)?
+                    }
+                    Err(error) => return Err(StoreError::Io(error.to_string())),
+                }
+            };
+            additions = additions.checked_add(addition).ok_or(StoreError::Bounds)?;
+            if allocated.checked_add(additions).ok_or(StoreError::Bounds)? > self.max_reserved_bytes
+            {
+                return Err(StoreError::Bounds);
+            }
+            marker_paths.push(marker);
+            if !already_counted {
+                targets.push(target);
+            }
+        }
+        let mut marker_files = Vec::with_capacity(marker_paths.len());
+        for marker in &marker_paths {
+            let file = backend_platform::durability::open_or_create_regular_file_nofollow(marker)
+                .map_err(|error| StoreError::Io(error.to_string()))?;
+            let metadata = file
+                .metadata()
+                .map_err(|error| StoreError::Io(error.to_string()))?;
+            if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != 0 {
+                return Err(StoreError::Corrupt);
+            }
+            marker_files.push(file);
+        }
+        // Empty marker inodes still require their own barrier. Flush those
+        // independent files together, then durably establish the complete
+        // directory hierarchy BEFORE any object can acquire its CAS name.
+        backend_platform::durability::flush_concurrently(&marker_files, |file| file.sync_all())
+            .map_err(|error| StoreError::Io(error.to_string()))?;
+        stage_checkpoint(StagePhase::MarkerFilesFlushed(marker_files.len()))?;
+        for directory in [markers.as_path(), quota.as_path(), store.root()] {
+            backend_platform::durability::open_directory_nofollow(directory)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| StoreError::Io(error.to_string()))?;
+            stage_checkpoint(StagePhase::MarkerDirectoryFlushed)?;
+        }
+        stage_checkpoint(StagePhase::MarkersDurable)?;
+        drop(marker_files);
+        let durable = store.write_object_batch(objects)?;
+        if durable.writes().len() != objects.len()
+            || durable
+                .writes()
+                .iter()
+                .zip(objects)
+                .any(|(write, object)| write.id() != object.id())
+        {
+            return Err(StoreError::Corrupt);
+        }
+        stage_checkpoint(StagePhase::ObjectsDurable)?;
+        let mut actual = 0_u64;
+        for target in targets {
+            let metadata =
+                fs::symlink_metadata(&target).map_err(|error| StoreError::Io(error.to_string()))?;
             if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
                 return Err(StoreError::Corrupt);
             }
-            metadata
-                .blocks()
-                .checked_mul(512)
-                .ok_or(StoreError::Bounds)?
-        } else {
-            let bytes = u64::try_from(object.bytes().len())
-                .map_err(|_| StoreError::Bounds)?
-                .checked_add(4096 + 128)
+            actual = actual
+                .checked_add(
+                    metadata
+                        .blocks()
+                        .checked_mul(512)
+                        .ok_or(StoreError::Bounds)?,
+                )
                 .ok_or(StoreError::Bounds)?;
-            bytes
-                .div_ceil(4096)
-                .checked_mul(4096)
-                .ok_or(StoreError::Bounds)?
-        };
-        if allocated.checked_add(addition).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
+        }
+        // A failed post-write check retains every marker. No failed or
+        // cancelled batch can release physical quota by dropping its writer.
+        if allocated.checked_add(actual).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
             return Err(StoreError::Bounds);
         }
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(file) => file.sync_all().map_err(|e| StoreError::Io(e.to_string()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(StoreError::Io(error.to_string())),
-        }
-        let written = store.write_object(object)?;
-        let actual = fs::symlink_metadata(&target)
-            .map_err(|e| StoreError::Io(e.to_string()))?
-            .blocks()
-            .checked_mul(512)
-            .ok_or(StoreError::Bounds)?;
-        if !already_counted
-            && allocated.checked_add(actual).ok_or(StoreError::Bounds)? > self.max_reserved_bytes
-        {
-            return Err(StoreError::Bounds);
-        }
-        std::fs::File::open(&markers)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| StoreError::Io(e.to_string()))?;
-        Ok(written)
+        Ok(())
     }
 
     #[cfg(not(unix))]
-    fn write_object(
+    fn write_objects(
         &self,
         _store: &FileStore,
-        _object: &TypedObject,
-    ) -> Result<ObjectId, StoreError> {
-        // This policy requires real physical-allocation accounting. A platform
-        // without that adapter cannot silently replace it with logical bytes.
+        _objects: &[TypedObject],
+    ) -> Result<(), StoreError> {
+        // Physical-allocation accounting remains unavailable on this target.
         Err(StoreError::Bounds)
     }
-    fn metadata_required(pages: usize) -> Result<usize, StoreError> {
+    pub(super) fn metadata_required(pages: usize) -> Result<usize, StoreError> {
         ClosureCompositionBudget::metadata_bytes_for(
             pages.checked_add(1).ok_or(StoreError::Bounds)?,
         )?
-        .checked_add(PAGE_BYTES * 8)
+        .checked_add(PAGE_BYTES * 8 + PAGE_BATCH * (PAGE_BYTES + PAGE_HEADER))
         .and_then(|charge| charge.checked_add(pages.checked_mul(size_of::<ObjectId>() * 4)?))
         .ok_or(StoreError::Bounds)
     }
@@ -398,6 +458,7 @@ impl StagePool {
             chains: [Chain::default(); 3],
             pending: std::array::from_fn(|_| Vec::new()),
             ids: Vec::new(),
+            queued: Vec::with_capacity(PAGE_BATCH),
             payload_bytes: 0,
             poisoned: false,
             _pin: pin,
@@ -434,6 +495,7 @@ pub(super) struct StageWriter {
     chains: [Chain; 3],
     pending: [Vec<u8>; 3],
     ids: Vec<ObjectId>,
+    queued: Vec<TypedObject>,
     payload_bytes: u64,
     poisoned: bool,
     _pin: GcPinGuard,
@@ -509,11 +571,21 @@ impl StageWriter {
         bytes.extend_from_slice(&chain.pages.to_be_bytes());
         bytes.extend_from_slice(&chain.tail);
         bytes.extend_from_slice(payload);
-        let id = self.pool.write_object(&self.store, &kind.object(&bytes))?;
+        let object = kind.object(&bytes);
+        let id = object.id();
         self.ids.push(id);
         chain.tail = *id.as_bytes();
         chain.pages += 1;
         chain.bytes += payload.len() as u64;
+        self.queued.push(object);
+        if self.queued.len() == PAGE_BATCH {
+            self.flush_queued()?;
+        }
+        Ok(())
+    }
+    fn flush_queued(&mut self) -> Result<(), StoreError> {
+        self.pool.write_objects(&self.store, &self.queued)?;
+        self.queued.clear();
         Ok(())
     }
     pub(super) fn finish(mut self) -> Result<StagedEvidence, StoreError> {
@@ -531,9 +603,13 @@ impl StageWriter {
             }
         }
         let manifest = encode_manifest(self.basis, self.chains);
-        let manifest_id = self
-            .pool
-            .write_object(&self.store, &typed::<StagedManifest>(&manifest))?;
+        let manifest = typed::<StagedManifest>(&manifest);
+        let manifest_id = manifest.id();
+        self.queued.push(manifest);
+        // No closure membership receipt can escape until the final partial
+        // batch, including the manifest, has completed every storage barrier.
+        self.flush_queued()?;
+        stage_checkpoint(StagePhase::BeforeClosure)?;
         let mut edits = self
             .ids
             .iter()
@@ -812,6 +888,39 @@ pub(super) fn visit_staged_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    enum TestFailure {
+        Store(StoreError),
+        Io(std::io::Error),
+    }
+    impl std::fmt::Display for TestFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Store(error) => write!(formatter, "store test failure: {error:?}"),
+                Self::Io(error) => write!(formatter, "I/O test failure: {error}"),
+            }
+        }
+    }
+    impl std::error::Error for TestFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Store(_) => None,
+                Self::Io(error) => Some(error),
+            }
+        }
+    }
+    impl From<StoreError> for TestFailure {
+        fn from(error: StoreError) -> Self {
+            Self::Store(error)
+        }
+    }
+    impl From<std::io::Error> for TestFailure {
+        fn from(error: std::io::Error) -> Self {
+            Self::Io(error)
+        }
+    }
+
     struct Directory(std::path::PathBuf);
     impl Directory {
         fn new() -> Self {
@@ -859,6 +968,423 @@ mod tests {
     }
     fn budget() -> ArtifactBudget {
         ArtifactBudget::new(32, 33, 1024 * 1024, PAGE_BYTES, 1024)
+    }
+
+    #[test]
+    fn stage_admission_charges_the_entire_bounded_queue_before_reading() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pages = 64;
+        let former = ClosureCompositionBudget::metadata_bytes_for(pages + 1).unwrap()
+            + PAGE_BYTES * 8
+            + pages * size_of::<ObjectId>() * 4;
+        let required = StagePool::metadata_required(pages).unwrap();
+        assert_eq!(required - former, PAGE_BATCH * (PAGE_BYTES + PAGE_HEADER));
+        let pool = StagePool::new(1, 8 * 1024 * 1024, pages, former);
+        assert!(matches!(
+            pool.begin(&store, basis(), 4 * 1024 * 1024),
+            Err(StoreError::Bounds)
+        ));
+        let admitted = pool.with_limits(1, 8 * 1024 * 1024, pages, required);
+        assert!(admitted.begin(&store, basis(), 4 * 1024 * 1024).is_ok());
+        assert!(store.head().unwrap().is_none());
+    }
+
+    fn batch_pool() -> StagePool {
+        StagePool::new(
+            2,
+            64 * 1024 * 1024,
+            128,
+            StagePool::metadata_required(128).unwrap(),
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn allocation_lock_hardlink_to_store_lock_is_refused_without_blocking()
+    -> Result<(), TestFailure> {
+        use std::time::{Duration, Instant};
+
+        const CHILD_DIRECTORY: &str = "NUDOX_STAGED_QUOTA_LOCK_HARDLINK_DIRECTORY";
+        if let Some(path) = std::env::var_os(CHILD_DIRECTORY) {
+            let store = FileStore::open(path, 1024 * 1024)?;
+            let objects = storage_pages(1);
+            match batch_pool().write_objects(&store, &objects) {
+                Err(StoreError::Corrupt) => std::process::exit(77),
+                Err(_) => std::process::exit(78),
+                Ok(()) => std::process::exit(79),
+            }
+        }
+
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024)?;
+        let quota = store.root().join("staged-ingest-quota");
+        std::fs::create_dir_all(quota.join("members"))?;
+        std::fs::hard_link(store.root().join("LOCK"), quota.join("allocation.lock"))?;
+        drop(store);
+
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "builtin::staged_intent::tests::allocation_lock_hardlink_to_store_lock_is_refused_without_blocking",
+                "--nocapture",
+            ])
+            .env(CHILD_DIRECTORY, directory.path())
+            .spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                assert_eq!(status.code(), Some(77));
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                let _ = child.wait()?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "quota lock hardlink regression child blocked",
+                )
+                .into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    fn storage_pages(count: usize) -> Vec<TypedObject> {
+        (0..count)
+            .map(|index| {
+                let mut bytes = Vec::with_capacity(PAGE_HEADER + PAGE_BYTES);
+                bytes.extend_from_slice(b"BSP1");
+                bytes.extend_from_slice(&0_u64.to_be_bytes());
+                bytes.extend_from_slice(&[0; 32]);
+                bytes.extend_from_slice(&vec![index as u8; PAGE_BYTES]);
+                EvidenceKind::RawSource.object(&bytes)
+            })
+            .collect()
+    }
+    fn reset_stage(fault: Option<StagePhase>) {
+        STAGE_FAULT.with(|value| value.set(fault));
+        STAGE_EVENTS.with_borrow_mut(|events| *events = Some(Vec::new()));
+    }
+    struct ResetStage;
+    impl Drop for ResetStage {
+        fn drop(&mut self) {
+            reset_stage(None);
+            STAGE_EVENTS.with_borrow_mut(|events| *events = None);
+        }
+    }
+    fn markers(store: &FileStore) -> usize {
+        let path = store.root().join("staged-ingest-quota/members");
+        if !path.exists() {
+            return 0;
+        }
+        std::fs::read_dir(path).unwrap().count()
+    }
+    fn present(store: &FileStore, objects: &[TypedObject]) -> usize {
+        objects
+            .iter()
+            .filter(|object| store.contains_object(object.id()).unwrap())
+            .count()
+    }
+
+    #[test]
+    fn batch_quota_scans_and_barriers_are_amortized_without_skipping_markers() {
+        let individual_directory = Directory::new();
+        let individual = FileStore::open(individual_directory.path(), 1024 * 1024).unwrap();
+        let batched_directory = Directory::new();
+        let batched = FileStore::open(batched_directory.path(), 1024 * 1024).unwrap();
+        let pool = batch_pool();
+        let objects = storage_pages(PAGE_BATCH);
+        reset_stage(None);
+        let _reset = ResetStage;
+        for object in &objects {
+            pool.write_objects(&individual, std::slice::from_ref(object))
+                .unwrap();
+        }
+        let prior = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
+        reset_stage(None);
+        pool.write_objects(&batched, &objects).unwrap();
+        let now = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
+        let count =
+            |events: &[StagePhase], phase| events.iter().filter(|value| **value == phase).count();
+        assert_eq!(count(&prior, StagePhase::QuotaScanned), PAGE_BATCH);
+        assert_eq!(count(&now, StagePhase::QuotaScanned), 1);
+        assert_eq!(
+            count(&prior, StagePhase::MarkerDirectoryFlushed),
+            PAGE_BATCH * 3
+        );
+        assert_eq!(count(&now, StagePhase::MarkerDirectoryFlushed), 3);
+        assert_eq!(
+            now,
+            vec![
+                StagePhase::QuotaScanned,
+                StagePhase::MarkerFilesFlushed(PAGE_BATCH),
+                StagePhase::MarkerDirectoryFlushed,
+                StagePhase::MarkerDirectoryFlushed,
+                StagePhase::MarkerDirectoryFlushed,
+                StagePhase::MarkersDurable,
+                StagePhase::ObjectsDurable
+            ]
+        );
+        assert_eq!(markers(&individual), PAGE_BATCH);
+        assert_eq!(markers(&batched), PAGE_BATCH);
+        assert_eq!(present(&batched, &objects), PAGE_BATCH);
+        assert!(batched.head().unwrap().is_none());
+        eprintln!(
+            "staged_batch_actual_work objects={PAGE_BATCH} individual_quota_scans={PAGE_BATCH} batch_quota_scans=1 individual_marker_directory_flushes={} batch_marker_directory_flushes=3",
+            PAGE_BATCH * 3
+        );
+    }
+
+    #[test]
+    fn failed_marker_barriers_never_name_a_cas_member() {
+        for fault in [
+            StagePhase::QuotaScanned,
+            StagePhase::MarkerFilesFlushed(PAGE_BATCH),
+            StagePhase::MarkerDirectoryFlushed,
+            StagePhase::MarkersDurable,
+        ] {
+            let directory = Directory::new();
+            let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+            let pool = batch_pool();
+            let objects = storage_pages(PAGE_BATCH);
+            reset_stage(Some(fault));
+            let _reset = ResetStage;
+            assert!(pool.write_objects(&store, &objects).is_err());
+            assert_eq!(present(&store, &objects), 0);
+            assert_eq!(
+                markers(&store),
+                if fault == StagePhase::QuotaScanned {
+                    0
+                } else {
+                    PAGE_BATCH
+                }
+            );
+            assert!(store.head().unwrap().is_none());
+            reset_stage(None);
+            pool.write_objects(&store, &objects).unwrap();
+            assert_eq!(present(&store, &objects), PAGE_BATCH);
+            assert_eq!(markers(&store), PAGE_BATCH);
+        }
+    }
+
+    #[test]
+    fn full_and_partial_batches_preserve_exact_stream_and_manifest_identity() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pool = batch_pool();
+        let source = (0..PAGE_BYTES * (PAGE_BATCH * 2 + 5) + 17)
+            .map(|n| (n % 251) as u8)
+            .collect::<Vec<_>>();
+        let facts = vec![37; PAGE_BYTES + 3];
+        let stage = || {
+            let mut writer = pool.begin(&store, basis(), 16 * 1024 * 1024).unwrap();
+            writer
+                .append(EvidenceKind::RawSource, &mut source.as_slice())
+                .unwrap();
+            writer
+                .append(EvidenceKind::CompleteFacts, &mut facts.as_slice())
+                .unwrap();
+            writer.finish().unwrap()
+        };
+        reset_stage(None);
+        let _reset = ResetStage;
+        let staged = stage();
+        let events = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == StagePhase::QuotaScanned)
+                .count(),
+            3
+        );
+        assert_eq!(events.last(), Some(&StagePhase::BeforeClosure));
+        let mut retained = [Vec::new(), Vec::new(), Vec::new()];
+        let budget =
+            ArtifactBudget::new(256, 256, 128 * 1024 * 1024, PAGE_BYTES + PAGE_HEADER, 4096);
+        visit_staged(
+            &store,
+            staged.manifest_id,
+            &staged.receipt,
+            basis(),
+            budget,
+            |kind, bytes| {
+                retained[kind.slot()].extend_from_slice(bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(retained[0], source);
+        assert_eq!(retained[2], facts);
+        assert!(retained[1].is_empty());
+        assert_eq!(markers(&store), PAGE_BATCH * 2 + 9);
+        let manifest = staged.manifest_id;
+        let closure = staged.receipt.receipt().closure();
+        drop(staged);
+        let replay = stage();
+        assert_eq!(replay.manifest_id, manifest);
+        assert_eq!(replay.receipt.receipt().closure(), closure);
+        let mut stale = basis();
+        stale.source_capture[0] ^= 1;
+        assert!(matches!(
+            visit_staged(
+                &store,
+                replay.manifest_id,
+                &replay.receipt,
+                stale,
+                budget,
+                |_, _| Ok(())
+            ),
+            Err(StoreError::WrongBase)
+        ));
+        assert!(store.head().unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn partial_cas_failure_retains_physical_quota_and_retry_does_not_double_charge() {
+        use std::os::unix::fs::MetadataExt as _;
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pool = batch_pool();
+        let objects = storage_pages(PAGE_BATCH);
+        reset_stage(Some(StagePhase::MarkersDurable));
+        let _reset = ResetStage;
+        assert!(pool.write_objects(&store, &objects).is_err());
+        assert_eq!(markers(&store), PAGE_BATCH);
+        assert_eq!(present(&store, &objects), 0);
+        // Model the exact interrupted state produced by the store batch's
+        // first-link crash test: all markers durable, only one CAS member.
+        store.write_object(&objects[0]).unwrap();
+        reset_stage(None);
+        let cold = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let id = objects[0]
+            .id()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let allocation =
+            std::fs::metadata(cold.root().join("objects").join(format!("{id}.object")))
+                .unwrap()
+                .blocks()
+                * 512;
+        let tight = StagePool::new(1, allocation, 64, StagePool::metadata_required(64).unwrap());
+        tight.write_objects(&cold, &objects[..1]).unwrap();
+        assert_eq!(
+            markers(&cold),
+            1,
+            "only absent objects lose accounting markers"
+        );
+        assert!(matches!(
+            tight.write_objects(&cold, &objects[1..2]),
+            Err(StoreError::Bounds)
+        ));
+        assert_eq!(present(&cold, &objects), 1);
+        assert_eq!(markers(&cold), 1);
+        assert!(cold.head().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_durable_batch_poison_is_affine_and_never_issues_a_closure() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pool = batch_pool();
+        reset_stage(Some(StagePhase::ObjectsDurable));
+        let _reset = ResetStage;
+        let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+        assert!(
+            writer
+                .append(
+                    EvidenceKind::RawSource,
+                    &mut &vec![19; PAGE_BYTES * PAGE_BATCH][..]
+                )
+                .is_err()
+        );
+        assert_eq!(markers(&store), PAGE_BATCH);
+        assert!(matches!(writer.finish(), Err(StoreError::Corrupt)));
+        reset_stage(None);
+        let retry = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+        drop(retry);
+        assert_eq!(
+            markers(&store),
+            PAGE_BATCH,
+            "dropping the affine writer does not release physical quota"
+        );
+        assert!(store.head().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancelled_stream_before_or_after_a_full_batch_cannot_publish_partial_evidence() {
+        struct CancelAfter {
+            remaining: usize,
+        }
+        impl Read for CancelAfter {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(std::io::Error::other("cancelled source stream"));
+                }
+                let length = self.remaining.min(buffer.len());
+                buffer[..length].fill(31);
+                self.remaining -= length;
+                Ok(length)
+            }
+        }
+        for pages in [PAGE_BATCH - 1, PAGE_BATCH + 1] {
+            let directory = Directory::new();
+            let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+            let pool = batch_pool();
+            let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+            assert!(
+                writer
+                    .append(
+                        EvidenceKind::RawSource,
+                        &mut CancelAfter {
+                            remaining: pages * PAGE_BYTES
+                        }
+                    )
+                    .is_err()
+            );
+            let durable = if pages < PAGE_BATCH { 0 } else { PAGE_BATCH };
+            assert_eq!(markers(&store), durable);
+            assert!(matches!(writer.finish(), Err(StoreError::Corrupt)));
+            assert!(pool.begin(&store, basis(), 4 * 1024 * 1024).is_ok());
+            assert!(store.head().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn interruption_before_closure_keeps_manifest_retry_exact() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let pool = batch_pool();
+        reset_stage(Some(StagePhase::BeforeClosure));
+        let _reset = ResetStage;
+        let mut writer = pool.begin(&store, basis(), 64).unwrap();
+        writer
+            .append(EvidenceKind::RawSource, &mut &[7, 8, 9][..])
+            .unwrap();
+        assert!(writer.finish().is_err());
+        assert_eq!(markers(&store), 2);
+        assert!(store.head().unwrap().is_none());
+        reset_stage(None);
+        let mut writer = pool.begin(&store, basis(), 64).unwrap();
+        writer
+            .append(EvidenceKind::RawSource, &mut &[7, 8, 9][..])
+            .unwrap();
+        let staged = writer.finish().unwrap();
+        assert_eq!(markers(&store), 2);
+        visit_staged(
+            &store,
+            staged.manifest_id,
+            &staged.receipt,
+            basis(),
+            budget(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(store.head().unwrap().is_none());
     }
     #[test]
     fn exact_stream_domains_replay_and_cold_reopen() {
@@ -1073,9 +1599,19 @@ mod tests {
         const CHILD_DIRECTORY: &str = "NUDOX_STAGED_TEST_CRASH_DIRECTORY";
         if let Some(directory) = std::env::var_os(CHILD_DIRECTORY) {
             let store = FileStore::open(directory, 1024 * 1024).unwrap();
-            let mut writer = pool().begin(&store, basis(), 512 * 1024).unwrap();
+            let mut writer = StagePool::new(
+                1,
+                8 * 1024 * 1024,
+                64,
+                StagePool::metadata_required(64).unwrap(),
+            )
+            .begin(&store, basis(), 4 * 1024 * 1024)
+            .unwrap();
             writer
-                .append(EvidenceKind::RawSource, &mut &vec![17; PAGE_BYTES][..])
+                .append(
+                    EvidenceKind::RawSource,
+                    &mut &vec![17; PAGE_BYTES * PAGE_BATCH][..],
+                )
                 .unwrap();
             // Deliberately skip Rust destructors: OS lease release and cold
             // store recovery must suffice, with no selected partial state.
@@ -1094,7 +1630,14 @@ mod tests {
         assert_eq!(status.code(), Some(77));
         let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
         assert!(store.head().unwrap().is_none());
-        let mut writer = pool().begin(&store, basis(), 512 * 1024).unwrap();
+        let mut writer = StagePool::new(
+            1,
+            8 * 1024 * 1024,
+            64,
+            StagePool::metadata_required(64).unwrap(),
+        )
+        .begin(&store, basis(), 512 * 1024)
+        .unwrap();
         writer
             .append(EvidenceKind::RawSource, &mut &vec![17; PAGE_BYTES][..])
             .unwrap();
@@ -1109,5 +1652,38 @@ mod tests {
         )
         .unwrap();
         assert!(store.head().unwrap().is_none());
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StagePhase {
+    QuotaScanned,
+    MarkerFilesFlushed(usize),
+    MarkerDirectoryFlushed,
+    MarkersDurable,
+    ObjectsDurable,
+    BeforeClosure,
+}
+#[cfg(not(test))]
+fn stage_checkpoint(_phase: StagePhase) -> Result<(), StoreError> {
+    Ok(())
+}
+#[cfg(test)]
+std::thread_local! { static STAGE_FAULT:std::cell::Cell<Option<StagePhase>>=const { std::cell::Cell::new(None) }; }
+#[cfg(test)]
+std::thread_local! { static STAGE_EVENTS:std::cell::RefCell<Option<Vec<StagePhase>>>=const { std::cell::RefCell::new(None) }; }
+#[cfg(test)]
+fn stage_checkpoint(phase: StagePhase) -> Result<(), StoreError> {
+    STAGE_EVENTS.with_borrow_mut(|events| {
+        if let Some(events) = events {
+            events.push(phase);
+        }
+    });
+    if STAGE_FAULT.with(|fault| fault.get() == Some(phase)) {
+        Err(StoreError::Io(format!(
+            "injected stage batch failure at {phase:?}"
+        )))
+    } else {
+        Ok(())
     }
 }

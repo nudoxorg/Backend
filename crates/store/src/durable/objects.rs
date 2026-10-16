@@ -287,7 +287,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], directory: &Path) -> Resul
     sync_directory(directory)
 }
 
-fn create_temp(path: &Path) -> Result<(PathBuf, File), StoreError> {
+pub(super) fn create_temp(path: &Path) -> Result<(PathBuf, File), StoreError> {
     loop {
         let temporary = unique_temp(path);
         match OpenOptions::new()
