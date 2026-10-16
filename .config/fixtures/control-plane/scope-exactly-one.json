@@ -53,6 +53,7 @@
       "flake.nix",
       "tests/cargo-shared-cache.sh",
       "tests/test_build_census.py",
+      "tests/test_ci_disk_reserve.py",
       "tests/test_fleet_capacity_census.py",
       "tests/test_linux_proc_race.py",
       "tests/test_nix_runtime_overlay_guard.py",
