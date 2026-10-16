@@ -931,6 +931,7 @@ struct RetainedContinuation {
     certificate: WireCertificate,
     owner: backend_library::Cursor,
     next_request: Option<CommandDto>,
+    selected_coordinate: Option<PinnedSelectedCoordinate>,
 }
 
 /// The producer certificate state needed to resume one bounded page after a
@@ -2521,15 +2522,25 @@ impl Session {
             if !page.basis().matches(source.root) {
                 return Err(ClientError::StaleCursor);
             }
-            let document = self.send_success_with_budget(
-                Command::Document(
-                    DocumentQuery::addressed(assertion.symbol, source.root)
-                        .with_source_basis(source),
-                ),
-                certificate.clone(),
-                remaining.map(|budget| budget.saturating_sub(started.elapsed())),
-            )?;
-            Some(assertion.admit_document(&document, source)?)
+            let retained = page
+                .continuation()
+                .and_then(|cursor| self.continuations.get(&cursor.cursor()))
+                .and_then(|retained| retained.selected_coordinate.as_ref())
+                .filter(|center| center.matches(assertion, source))
+                .cloned();
+            Some(if let Some(center) = retained {
+                center
+            } else {
+                let document = self.send_success_with_budget(
+                    Command::Document(
+                        DocumentQuery::addressed(assertion.symbol, source.root)
+                            .with_source_basis(source),
+                    ),
+                    certificate.clone(),
+                    remaining.map(|budget| budget.saturating_sub(started.elapsed())),
+                )?;
+                assertion.admit_document(&document, source)?
+            })
         } else {
             None
         };
@@ -2552,7 +2563,7 @@ impl Session {
         if let Some(assertion) = selected_assertion {
             assertion.admit_payload(&reply, pinned_center.as_ref())?;
         }
-        self.remember_continuation(&reply);
+        self.remember_continuation(&reply, pinned_center);
         if let Some((command, Some(certificate))) = portable {
             self.retain_portable_query(command, &certificate, &reply)?;
         }
@@ -2580,7 +2591,11 @@ impl Session {
         with_page_continuation_claim(certificate, Some(continuation))
     }
 
-    fn remember_continuation(&mut self, reply: &ReplyDto) {
+    fn remember_continuation(
+        &mut self,
+        reply: &ReplyDto,
+        selected_coordinate: Option<PinnedSelectedCoordinate>,
+    ) {
         let terminal = match &reply.reply {
             CommandReply::ProjectionPage(page) => page.terminal,
             CommandReply::GraphQueryPage(page) => page.terminal,
@@ -2607,6 +2622,7 @@ impl Session {
                 certificate,
                 owner,
                 next_request: None,
+                selected_coordinate,
             },
         );
     }
@@ -2729,10 +2745,24 @@ struct SelectedCoordinateAssertion {
 }
 
 #[cfg(any(unix, windows))]
+#[derive(Clone)]
 struct PinnedSelectedCoordinate {
     symbol: SymbolKey,
     source: backend_library::Basis,
     coordinate: String,
+}
+
+#[cfg(any(unix, windows))]
+impl PinnedSelectedCoordinate {
+    fn matches(
+        &self,
+        assertion: &SelectedCoordinateAssertion,
+        source: backend_library::Basis,
+    ) -> bool {
+        assertion.symbol.matches(self.symbol)
+            && assertion.coordinate == self.coordinate
+            && self.source == source
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -2842,7 +2872,6 @@ fn selected_coordinate_assertion(
         coordinate: coordinate.clone(),
     }))
 }
-
 #[cfg(any(unix, windows))]
 fn declaration_coordinate_claims_match(
     certificate: Option<&WireCertificate>,

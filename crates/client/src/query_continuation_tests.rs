@@ -543,6 +543,63 @@ fn selected_graph_pages_authenticate_an_omitted_center_and_keep_the_assertion_on
 }
 
 #[test]
+fn selected_graph_same_session_pages_reuse_only_the_exact_bounded_center_proof() {
+    let (owner, requests, symbol, ids) = selected_page_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        Transport {
+            owner,
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids.clone())),
+        },
+    );
+    let selected = selected_at(symbol, "actual label");
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(1).expect("one row"));
+    let mut continuation = None;
+    let mut seen = Vec::new();
+    loop {
+        let reply = client
+            .graph_page_declaration(&selected, window, continuation)
+            .expect("same-session page");
+        let CommandReply::ProjectionPage(page) = reply.reply else {
+            panic!("graph page")
+        };
+        seen.extend(page.snapshot.root.row_refs().map(|row| row.id));
+        assert!(
+            client.continuations.len() <= 1,
+            "proof uses only the existing bounded continuation slot"
+        );
+        match page.terminal {
+            PageTerminal::More(next) => continuation = Some(next),
+            PageTerminal::Complete => break,
+            PageTerminal::Cancelled => panic!("not cancelled"),
+        }
+    }
+    assert_eq!(seen, ids);
+    let count_documents = || {
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|command| matches!(command, Command::Document(_)))
+            .count()
+    };
+    assert_eq!(
+        count_documents(),
+        1,
+        "three credit1 pages authenticate the center once"
+    );
+    client
+        .graph_page_declaration(&selected, window, None)
+        .expect("new independent first page");
+    assert_eq!(
+        count_documents(),
+        2,
+        "a new query cannot borrow the predecessor's proof"
+    );
+}
+
+#[test]
 fn selected_graph_pages_refuse_a_rehashed_coordinate_claim_before_sending_or_exporting_a_page() {
     let (owner, requests, symbol, ids) = selected_page_fixture();
     let mut client = Session::from_transport(
@@ -681,7 +738,6 @@ fn selected_graph_center_authentication_refuses_a_rebound_source_without_refresh
     );
     assert!(client.continuations.is_empty());
 }
-
 fn page(reply: &ReplyDto) -> &backend_library::ViewSnapshot {
     match &reply.reply {
         CommandReply::Search(page) | CommandReply::Names(page) => page,

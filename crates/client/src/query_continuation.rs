@@ -432,10 +432,26 @@ impl Session {
         // A prepared command belongs to one connection. Keep the validated
         // input proof in the existing bounded owner state too, so replacing
         // that connection does not discard a cold imported continuation.
+        let selected_coordinate = selected_coordinate_assertion(&imported.command, Some(certificate))?
+            .and_then(|assertion| {
+                let source = backend_library::Basis {
+                    root: revision.root,
+                    object: revision.source,
+                    branch: owner.branch(),
+                    log: owner.log(),
+                    schema: owner.schema(),
+                };
+                self.continuations
+                    .get(&cursor)
+                    .and_then(|retained| retained.selected_coordinate.as_ref())
+                    .filter(|center| center.matches(&assertion, source))
+                    .cloned()
+            });
         let retained = RetainedContinuation {
             certificate: certificate.clone(),
             owner,
             next_request: Some(imported.clone()),
+            selected_coordinate,
         };
         self.prepared_query = Some(CommandDto::new(1, imported.command).with_certificate(fresh));
         self.continuations.clear();
