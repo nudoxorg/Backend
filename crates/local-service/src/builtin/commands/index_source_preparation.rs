@@ -384,6 +384,13 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         PreparedScanProfiles::Reused => {
             let intent = if changes.is_empty() && source_facts_changes.is_empty() {
                 None
+            } else if source_facts_changes.is_empty() {
+                Some(BuiltinIntent::index_with_semantics(
+                    package,
+                    &label,
+                    changes,
+                    Vec::new(),
+                )?)
             } else {
                 Some(BuiltinIntent::index_with_source_facts(
                     package,

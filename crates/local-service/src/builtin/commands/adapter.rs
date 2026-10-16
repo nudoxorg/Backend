@@ -2973,12 +2973,13 @@ impl CommandAdapter {
         }
         self.semantic_authority
             .install_image_loader(&mut self.generations);
-        if self.search_preparation_eager
-            && matches!(
-                completion.disposition,
-                Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
-            )
-        {
+        // An explicit index publication activates preparation for the installed
+        // selection. Waiting for the eager flag here would require a prior
+        // warm_queries call, leaving normal cold owners permanently lazy.
+        if matches!(
+            completion.disposition,
+            Disposition::Ready | Disposition::Refreshed | Disposition::SourceCaptured
+        ) {
             self.warm_queries(daemon);
         }
         Ok(retired)
@@ -7250,6 +7251,9 @@ mod tests {
     #[path = "index_source_worker.rs"]
     mod index_source_worker_tests;
 
+    #[path = "index_source_empty.rs"]
+    mod index_source_empty_tests;
+
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
         use crate::builtin::{BuiltinCaptureChange, BuiltinSourceFactsChange, WorkspaceModel};
@@ -11511,6 +11515,215 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn preparation_explicit_index_publication_warms_before_a_read_and_retires_stale_selection() {
+        let mut fixture = AdapterFixture::open(TempTree::new(), false);
+        let (package, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let initial = owner_cursor(daemon);
+        for _ in 0..3 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert!(!adapter.search_preparation_eager);
+        assert!(!adapter.search_lane.active());
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+
+        let (entered, release) = adapter.search_lane.hold_next();
+        let operation = backend_library::IndexOperationKey::from_bytes([141; 32]).expect("key");
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                operation,
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
+                CompileExecutionIntent::Interactive,
+                141,
+            ),
+            Ok(Executed::Reply(_))
+        ));
+        let ticket = adapter
+            .indexing
+            .as_ref()
+            .expect("accepted index")
+            .owner_ticket
+            .clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while adapter.indexing.is_some() {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "index publication terminal"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let retained = match adapter
+            .index_operations
+            .entry(operation)
+            .expect("retained operation")
+        {
+            Some(JournalEntry::Retained(entry)) => entry,
+            _ => panic!("actual index operation must retain its terminal"),
+        };
+        assert!(
+            adapter.index_terminals.iter().any(|terminal| {
+                terminal.ticket == ticket
+                    && matches!(
+                        terminal.outcome,
+                        backend_library::IndexJobOutcome::Published
+                    )
+            }),
+            "publication does not wait for the held search worker; retained operation: {retained:?}"
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "actual publication starts preparation without a query or manual warm: {error:?}; eager={}; active={}; preparation failure={:?}",
+                    adapter.search_preparation_eager,
+                    adapter.search_lane.active(),
+                    adapter.search_preparation_failure,
+                )
+            });
+        assert_ne!(owner_cursor(daemon), initial);
+        assert!(project_is_admitted(daemon, package));
+        assert!(adapter.search_preparation_eager);
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        let health = serde_json::to_vec(&backend_engine::CommandDto::new(142, Command::Health))
+            .expect("health");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &health, 1142),
+            Ok(Executed::Reply(_))
+        ));
+        release.send(()).expect("finish publication preparation");
+        finish_search_lane(adapter, daemon);
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().clone();
+        let lifetime = adapter
+            .search_lane
+            .selected_cancellation(workspace, view.root())
+            .expect("actual published selection lifetime");
+        assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+        assert_eq!(
+            immediate_search(adapter, daemon, 143, "project")["reply"]["kind"],
+            "search"
+        );
+
+        let (entered, release) = adapter.search_lane.hold_next();
+        let remove = BuiltinIntent::remove(package, label).expect("remove indexed project");
+        super::commit_builtin_intent(daemon, 144, &remove).expect("superseding source commit");
+        adapter
+            .publish_view(daemon, Some(&remove))
+            .expect("superseding view");
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replacement preparation");
+        assert!(lifetime.load(Ordering::Acquire));
+        assert!(
+            adapter
+                .search_snapshots
+                .selected_for(workspace, &view)
+                .is_none()
+        );
+        assert!(matches!(
+            adapter
+                .prepare_query(daemon, view.root().into())
+                .expect("stale basis answer"),
+            Some(backend_engine::CommandFailure::WrongBasis { .. })
+        ));
+        release.send(()).expect("finish replacement preparation");
+        finish_search_lane(adapter, daemon);
+        let replacement_workspace = daemon.engine().daemon().owner().snapshot().root();
+        let replacement_view = daemon.engine().daemon().library().view();
+        let replacement = adapter
+            .search_lane
+            .selected_cancellation(replacement_workspace, replacement_view.root())
+            .expect("replacement selection lifetime");
+        assert!(!replacement.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&lifetime, &replacement));
+        assert!(
+            adapter
+                .search_snapshots
+                .selected_for(workspace, &view)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn preparation_cancelled_index_without_publication_keeps_cold_owner_lazy() {
+        use index_publication_worker::{TestHook, TestStage};
+        let mut fixture = AdapterFixture::open(TempTree::new(), false);
+        let (package, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let initial = owner_cursor(daemon);
+        let (entered, receipt) = std::sync::mpsc::sync_channel(1);
+        let (release, gate) = std::sync::mpsc::sync_channel(1);
+        adapter.source_test_hook = Some(TestHook {
+            stage: TestStage::BeforeSourcePreparation,
+            run: Box::new(move || {
+                entered.send(()).expect("source preparation entered");
+                gate.recv_timeout(Duration::from_secs(10))
+                    .expect("source preparation release");
+            }),
+        });
+        let operation = backend_library::IndexOperationKey::from_bytes([145; 32]).expect("key");
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                operation,
+                backend_library::PackageReference::parse(label).expect("package"),
+                CompileExecutionIntent::Interactive,
+                145,
+            ),
+            Ok(Executed::Reply(_))
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match receipt.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("source preparation gate: {error}"),
+            }
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "source preparation start"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let ticket = adapter
+            .indexing
+            .as_ref()
+            .expect("held index")
+            .owner_ticket
+            .clone();
+        assert!(matches!(
+            adapter.cancel_index_job(daemon, ticket.clone(), 146),
+            Ok(Executed::Reply(_))
+        ));
+        release
+            .send(())
+            .expect("observe cancellation before publication");
+        while adapter.indexing.is_some() {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled index terminal"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(owner_cursor(daemon), initial);
+        assert!(!project_is_admitted(daemon, package));
+        assert!(adapter.index_terminals.iter().any(|terminal| {
+            terminal.ticket == ticket
+                && matches!(
+                    terminal.outcome,
+                    backend_library::IndexJobOutcome::Cancelled
+                )
+        }));
+        assert!(!adapter.search_preparation_eager);
+        assert!(!adapter.search_lane.active());
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
     }
 
     #[test]
