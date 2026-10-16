@@ -457,6 +457,13 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
         Operand::Path("/abs/mixed-docs".to_owned()),
     );
     assert_eq!(fault.slug().as_str(), "partially-published");
+    assert_eq!(
+        fault.affordance().tool_call(),
+        Some(
+            serde_json::json!({"name":"backend.package_profile","arguments":{"package":"/abs/mixed-docs","compiler_outcome":{"kind":"current"}}})
+        ),
+        "retained outcome discovery is a read, not another index attempt"
+    );
     let sentence = fault.cause().sentence();
     assert!(sentence.contains("python: published 236 source files with complete coverage"));
     assert!(sentence.contains("typescript: unavailable"));

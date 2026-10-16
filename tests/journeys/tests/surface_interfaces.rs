@@ -396,6 +396,7 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
         SurfaceCase {
             command: SurfaceCommand::PackageProfile {
                 package: package.clone(),
+                compiler_outcome: None,
             },
             expectation: SurfaceExpectation::Result("package-profile"),
         },

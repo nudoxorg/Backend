@@ -38,6 +38,7 @@ pub mod interface;
 #[doc(hidden)]
 #[allow(clippy::expect_used)]
 pub mod native_test_paths;
+mod package_compiler_outcomes;
 mod package_graph;
 mod package_graph_page;
 mod progress;
@@ -173,6 +174,10 @@ pub use graph_query::{
     AdmittedGraphQueryInput, GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest,
     GraphQueryRow, GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS,
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
+};
+pub use package_compiler_outcomes::{
+    PackageCompilerDiagnostic, PackageCompilerOutcomeBasis, PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector,
+    PackageCompilerOutcomes, PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,
 };
 pub use package_graph::{
     BorrowedPackageGraphSourceState, CheckedPackageGraphFacts, CheckedPackageGraphSourceWitness,
