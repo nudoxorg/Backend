@@ -119,15 +119,16 @@ impl<'fs> ModuleResolver<'fs> {
 
             // When rewriteRelativeImportExtensions is true, .ts/.tsx/.mts/.cts imports
             // should resolve to their declaration file equivalents (.d.ts/.d.mts/.d.cts).
+            // `base` can itself contain dots (for example, `app.component`), so append
+            // the declaration extension through the suffix-aware path builder below.
             if self.rewrite_relative_import_extensions
                 && let Some(decl_ext) = ts_extension_to_declaration(extension)
+                && let Some(resolved) =
+                    try_file_with_suffixes_and_extension_with(&base, decl_ext, suffixes, |p| {
+                        self.is_file(p)
+                    })
             {
-                let candidate = base.with_extension(decl_ext);
-                if let Some(resolved) = try_file_with_suffixes_with(&candidate, suffixes, |p| {
-                    self.is_file(p)
-                }) {
-                    return Some(resolved);
-                }
+                return Some(resolved);
             }
 
             // Fall back to the original extension (e.g., literal .js file)
