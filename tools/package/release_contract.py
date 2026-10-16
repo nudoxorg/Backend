@@ -602,6 +602,14 @@ class GitHub:
             for kind in kinds:
                 (staging / f"{kind}-{selected}.json").write_bytes(metadata_path(directory, kind, selected).read_bytes())
             paths = [directory / name for name in names[:2]] + [staging / name for name in names[2:]]
+            if selected == "linux-x64":
+                bootstrap_name = "install-linux-x64-channel.py" if stable else "install-linux-x64.py"
+                bootstrap = directory / bootstrap_name
+                if bootstrap.is_symlink() or not bootstrap.is_file() or bootstrap.stat().st_size > 1024 * 1024:
+                    raise ValueError("Linux release is missing its bounded regular installer bootstrap")
+                published_bootstrap = staging / "install-linux-x64.py"
+                published_bootstrap.write_bytes(bootstrap.read_bytes())
+                paths.append(published_bootstrap)
             self.publish_assets(release, paths, assets, stable)
         if release["draft"] and not draft_only:
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})
