@@ -1370,7 +1370,7 @@ impl Session {
     }
 
     /// Reads a complete native catalog window under unchanged issued credit.
-    /// Continued adaptive reads require an imported portable query command.
+    /// Continued adaptive reads require an admitted exact next query command.
     ///
     /// # Errors
     /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
@@ -1380,10 +1380,6 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
-            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
-        }
-
         self.with_default_search_wait(|this| {
             let deadline = query_preparation::QueryReadDeadline::new(
                 CLIENT_REQUEST_TIMEOUT,
@@ -1391,6 +1387,7 @@ impl Session {
                     .as_ref()
                     .or(this.request_context.as_ref()),
             )?;
+            this.prepare_query_window(window, continuation, Some(deadline.remaining()?))?;
             if this.prepared_query.is_some() {
                 return this.resume_prepared_query_window(
                     "Search",
@@ -1506,7 +1503,7 @@ impl Session {
     }
 
     /// Reads a complete name window, independently bounding this delivery.
-    /// Continued adaptive reads require an imported portable query command.
+    /// Continued adaptive reads require an admitted exact next query command.
     ///
     /// # Errors
     /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
@@ -1516,10 +1513,7 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
-            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
-        }
-
+        self.prepare_query_window(window, continuation, None)?;
         if self.prepared_query.is_some() {
             return self.resume_prepared_query_window(
                 "Name",
@@ -1741,7 +1735,7 @@ impl Session {
     }
 
     /// Reads a plain graph window from the exact admitted input frontier.
-    /// Continued adaptive reads require an imported portable query command.
+    /// Continued adaptive reads require an admitted exact next query command.
     ///
     /// # Errors
     /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
@@ -1751,10 +1745,7 @@ impl Session {
         window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
-            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
-        }
-
+        self.prepare_query_window(window, continuation, None)?;
         if self.prepared_query.is_some() {
             return self.resume_prepared_graph_window(
                 SymbolAddress::canonical(symbol_key(coordinate)),

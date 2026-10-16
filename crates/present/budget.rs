@@ -342,6 +342,7 @@ pub fn encode_answer_with_call(
                         index_poll: product.index_poll,
                         selected_source_frontier: product.selected_source_frontier,
                         package_source_membership_page: product.package_source_membership_page,
+                        compiler_outcomes: product.compiler_outcomes,
                         package_graph_page: product.package_graph_page,
                         semantic_data: product.semantic_data,
                         package_discovery: product.package_discovery,
@@ -805,6 +806,8 @@ struct SummaryProductDto {
     selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiler_outcomes: Option<backend_library::PackageCompilerOutcomes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_data: Option<crate::product::ProductSemanticData>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -126,6 +126,22 @@ impl<'a> CheckerState<'a> {
                     }
                     if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
                         let request = self.ctx.select_module_request(request)?;
+                        // JSON's default export is a value shape, not a binder
+                        // declaration. Keep this admitted source alias so the
+                        // value-type path can derive it from the exact target
+                        // bytes after the pre-cache alias guard succeeds.
+                        if export_name == "default"
+                            && self.ctx.compiler_options.resolve_json_module
+                            && request.file_target().is_some_and(|target| {
+                                self.ctx
+                                    .get_arena_for_file(target as u32)
+                                    .source_files
+                                    .first()
+                                    .is_some_and(|file| file.file_name.ends_with(".json"))
+                            })
+                        {
+                            return Some(sym_id);
+                        }
                         let selected =
                             self.resolve_member_for_selected_request(request, export_name)?;
                         return self.resolve_alias_symbol(selected, visited_aliases);

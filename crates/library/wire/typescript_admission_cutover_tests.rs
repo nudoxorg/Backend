@@ -166,7 +166,7 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
 
 #[test]
 fn typescript_stop_site_current_cohort_refuses_dto30_before_the_strict_field() {
-    assert_eq!(super::DTO_VERSION, 32);
+    assert_eq!(super::DTO_VERSION, 33);
     let mut facts = plain_facts();
     facts.typescript_failure = Some(crate::interface::TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted);
     facts.typescript_stop_site = Some(crate::interface::TypeScriptStopSite::new(
@@ -191,7 +191,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds() {
         AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
         SourceAuthority, TypeScriptAuthorityFailureKind as F,
     };
-    assert_eq!(super::DTO_VERSION, 32);
+    assert_eq!(super::DTO_VERSION, 33);
     for kind in [
         F::NativeSessionModuleResolution,
         F::NativeModuleInvalidReference,
@@ -230,7 +230,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds() {
         // rejects this current payload before its closed enum is decoded.
         let old_peer = super::super::codec::check_version_header_against(&bytes, "reply", 31)
             .expect_err("DTO31 peer must reject the new enum cohort first");
-        assert!(old_peer.contains("reply DTO version 32"));
+        assert!(old_peer.contains("reply DTO version 33"));
         assert!(old_peer.contains("this build supports 31"));
         assert!(old_peer.contains("same build"));
         assert!(!old_peer.contains("unknown variant"));
@@ -239,7 +239,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds() {
         old["version"] = serde_json::json!(31);
         let error = crate::decode_reply_body(&serde_json::to_vec(&old).unwrap()).unwrap_err();
         assert!(error.contains("reply DTO version 31"));
-        assert!(error.contains("this build supports 32"));
+        assert!(error.contains("this build supports 33"));
         assert!(!error.contains("unknown variant"));
     }
 }

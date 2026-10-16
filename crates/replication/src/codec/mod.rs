@@ -6,4 +6,4 @@
 mod messages;
 mod primitives;
 
-pub use messages::{decode_message, encode_message};
+pub use messages::{CHUNK_FRAME_OVERHEAD, decode_message, encode_message};

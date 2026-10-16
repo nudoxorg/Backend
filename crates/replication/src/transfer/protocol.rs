@@ -215,7 +215,7 @@ impl<T: Schema> Frame<T> {
     /// malformed or exceeds negotiated limits.
     pub fn validate(&self, limits: TransportLimits) -> Result<(), ReplicationError> {
         limits.validate()?;
-        if 192usize.saturating_add(self.payload.len()) > limits.max_frame {
+        if crate::CHUNK_FRAME_OVERHEAD.saturating_add(self.payload.len()) > limits.max_frame {
             return Err(ReplicationError::MessageTooLarge);
         }
         if self.transfer.get() == 0

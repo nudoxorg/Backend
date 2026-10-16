@@ -8391,3 +8391,40 @@ fn receiver_peel_plain_bang_stays_syntactic() -> TestResult<()> {
 
     Ok(())
 }
+
+#[test]
+fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<()> {
+    use backend_compile::SourceBindingIdentity;
+    let source = b"// UTF-8 is covered by the projection fixture\nexport interface Workout { name: string; }\nexport namespace First { export function workout() {} }\nnamespace Nested { export function workout() {} }\nfunction workout(value: number): void;\nfunction workout(value: string): void;\nfunction workout(value: unknown) {}\n";
+    let authority = report(source);
+    let compiled = try_lower(source, Some(&authority))?;
+    let syntax =
+        backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("workout.ts"), source)?;
+    let mut checked = 0;
+    for item in compiled
+        .ir
+        .items()
+        .filter(|item| [b"Workout".as_slice(), b"workout".as_slice()].contains(&item.name()))
+    {
+        let span = item
+            .source()
+            .ok_or_else(|| io::Error::other("written declaration lost its compiler extent"))?;
+        assert!(
+            syntax.declarations().iter().any(|site| {
+                site.name().as_bytes() == item.name()
+                    && matches!(site.binding_identity(), SourceBindingIdentity::Exact(capture)
+                    if capture.owner() == (span.start(), span.end()))
+            }),
+            "compiler primary extent of {:?} at {}..{} has no exact syntax twin",
+            item.name(),
+            span.start(),
+            span.end()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 5,
+        "fixture must include interface, shadowed functions and overload declarations"
+    );
+    Ok(())
+}

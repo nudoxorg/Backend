@@ -159,17 +159,10 @@ impl LocalEngineClient {
         if let Some(publication) = publication {
             // Explicit user refreshes also reach this path. A cheap admitted
             // revision prevents returning an observer cache behind the owner.
-            let session = self.session()?;
-            let _wake = cancel_wake(&cancel, session.interrupt_handle())?;
-            if cancel.is_cancelled() {
-                return Err(EngineFault::Cancelled);
-            }
-            let revision = session
-                .revision()
-                .map_err(|error| self.client_fault(error))?;
-            if cancel.is_cancelled() {
-                return Err(EngineFault::Cancelled);
-            }
+            // Its command socket may have retired independently of the
+            // healthy publication stream. Use ordinary read reconnection
+            // before treating this Root as a terminal bootstrap failure.
+            let revision = self.with_session_read(Session::revision)?;
             if revision.cursor() == publication.1 {
                 return Ok(publication);
             }
@@ -741,6 +734,10 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
         ))
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "client/publication_revision_tests.rs"]
+mod publication_revision_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1427,7 +1427,7 @@ fn index_operation_prior_semantic(
     }
 }
 
-fn index_operation_capture_outcome(
+pub(super) fn index_operation_capture_outcome(
     outcome: ProductSemanticCaptureOutcome,
 ) -> backend_library::IndexOperationSemanticProfileState {
     use backend_library::IndexOperationSemanticProfileState as State;

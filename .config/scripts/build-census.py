@@ -24,6 +24,7 @@ import re
 import select
 import selectors
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -1871,6 +1872,27 @@ def _entry_json(entry: CargoEntry, records: Mapping[int, ProcessRecord], owner: 
     return value
 
 
+def _disk_volume_snapshot(path: pathlib.Path) -> dict[str, int]:
+    """Bind the free-space observation to one canonical directory/device."""
+    before = path.lstat()
+    if not stat.S_ISDIR(before.st_mode) or path.resolve(strict=True) != path:
+        raise ValueError(f'disk path is not a canonical nonsymlink directory: {path}')
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError(f'disk path changed before open: {path}')
+        usage = os.fstatvfs(fd)
+        after = path.lstat()
+        if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino) or path.resolve(strict=True) != path:
+            raise ValueError(f'disk path changed during observation: {path}')
+        unit = usage.f_frsize
+        return dict(device=opened.st_dev, available_bytes=usage.f_bavail * unit,
+                    total_bytes=usage.f_blocks * unit, used_bytes=(usage.f_blocks - usage.f_bfree) * unit)
+    finally:
+        os.close(fd)
+
+
 def _host_resource_snapshot() -> dict[str, Any]:
     sampled_at = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
     if sys.platform.startswith("linux"):
@@ -1911,12 +1933,18 @@ def _host_resource_snapshot() -> dict[str, Any]:
     else:
         raise CensusError("unsupported-resource-api")
     try:
-        disk = shutil.disk_usage(os.path.abspath(os.sep))
-    except OSError as error:
+        disk = _disk_volume_snapshot(pathlib.Path('/'))
+    except (OSError, ValueError, RuntimeError) as error:
         raise CensusError(f"root-disk-usage-unavailable:{type(error).__name__}") from error
     reserve_file = pathlib.Path('/etc/nudox-ci-disk-reserve-gib')
     reserve_bytes = 0
-    if reserve_file.exists():
+    try:
+        reserve_file.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise CensusError(f'root-disk-reserve-invalid:{type(error).__name__}') from error
+    else:
         try:
             reserve_gib = int(reserve_file.read_text().strip())
             if reserve_gib < 1:
@@ -1924,14 +1952,43 @@ def _host_resource_snapshot() -> dict[str, Any]:
             reserve_bytes = reserve_gib * 1024 ** 3
         except (OSError, ValueError) as error:
             raise CensusError(f'root-disk-reserve-invalid:{type(error).__name__}') from error
+    ci_path = pathlib.Path('/srv/ci')
+    try:
+        # resolve(strict=False) also rejects a missing leaf under a symlinked
+        # parent; only a genuinely absent literal path has the legacy fallback.
+        if ci_path.resolve(strict=False) != ci_path:
+            raise ValueError('CI disk path has a symlink component')
+        try:
+            ci_path.lstat()
+        except FileNotFoundError:
+            if ci_path.resolve(strict=False) != ci_path:
+                raise ValueError('absent CI disk path changed to a symlink component')
+            try:
+                ci_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError('CI disk path appeared during observation')
+            ci_path = pathlib.Path('/')
+            ci_disk = disk
+        else:
+            ci_disk = _disk_volume_snapshot(ci_path)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise CensusError(f'ci-disk-usage-invalid:{type(error).__name__}') from error
     return {
         "sampled_at_utc": sampled_at,
         "available_memory_bytes": available_bytes,
         "available_memory_source": memory_source,
-        "root_disk_available_bytes": disk.free,
-        "root_disk_reserved_bytes": reserve_bytes,
-        "root_disk_total_bytes": disk.total,
-        "root_disk_used_bytes": disk.used,
+        "root_disk_available_bytes": disk['available_bytes'],
+        "root_disk_reserved_bytes": reserve_bytes if ci_disk['device'] == disk['device'] else 0,
+        "root_disk_total_bytes": disk['total_bytes'],
+        "root_disk_used_bytes": disk['used_bytes'],
+        "root_disk_device": disk['device'],
+        "ci_disk_path": str(ci_path),
+        "ci_disk_device": ci_disk['device'],
+        "ci_disk_available_bytes": ci_disk['available_bytes'],
+        "ci_disk_reserved_bytes": reserve_bytes,
+        "ci_disk_reserve_file": str(reserve_file),
     }
 
 

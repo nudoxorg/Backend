@@ -295,7 +295,7 @@ pub const COMMANDS: [CommandSpec; 54] = [
         id: CommandId::PackageProfile,
         name: "package-profile",
         title: "Package Profile",
-        description: "Show one package's latest version and full version history from the index.",
+        description: "Show registry/packaging facts and every current local compiler outcome; read full retained profile diagnostics with their exact returned selectors.",
         mutation: CommandMutation::Read,
         domain: CommandDomain::Registry,
     },

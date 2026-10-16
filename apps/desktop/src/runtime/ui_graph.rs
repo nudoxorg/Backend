@@ -250,13 +250,16 @@ impl UiRootEntity {
     #[must_use]
     pub fn new(mut runtime: DesktopRuntime, persistence: Option<PersistentState>) -> Self {
         let basis = runtime.snapshot().key();
-        let request = runtime.allocate_request();
+        // The owner watcher issues the authoritative Root in `admit_owner`.
+        // Queuing another here races that handover and can start a bootstrap
+        // only to cancel it once the same owner becomes ready.
+        let startup = (!runtime.has_owner_gate()).then(|| {
+            let request = runtime.allocate_request();
+            QueuedIntent::Plain(Intent::RefreshRoot { basis, request })
+        });
         Self {
             runtime,
-            // Startup is itself a typed intent.  The root is admitted before
-            // the first useful frame so a cold window never renders a fake
-            // catalog or a second, view-owned bootstrap path.
-            pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
+            pending: startup.into_iter().collect(),
             persistence,
             persistence_writer: None,
             persistence_wake: None,
@@ -457,6 +460,7 @@ impl UiRootEntity {
             Err(error) => { self.reject_index_preflight(&intent, error.message, cx); return; }
         };
         self.index_preflights.insert(project.clone(), IndexPreflight { intent, attachment, save: IndexPreflightSave::Writing, revision, _task: None });
+        cx.notify(); // Pending request controls follow the actual preflight, not a guessed row phase.
         let completed_project = project.clone();
         let task = cx.spawn(async move |root, cx| {
             let saved = acknowledgment.recv().await.unwrap_or_else(|_| Err(WriteFailure { message: "The local state writer closed before confirming this index request. Nothing was sent.".into() }));
@@ -742,6 +746,20 @@ impl UiRootEntity {
         }
     }
 
+    /// Positive first-send proof for a mounted pending-request control.
+    /// The preflight is removed before dispatch_saved_index can reach the actor;
+    /// an absent operation/receipt alone never proves that nothing was sent.
+    pub(crate) fn unsent_index_revision(&self, expected: &crate::model::WorkspaceProject) -> Option<WriteRevision> {
+        if self.quitting { return None; }
+        let snapshot = self.snapshot();
+        if !snapshot.workspace().projects.iter().any(|row| row.same_index_attempt(expected)) { return None; }
+        let pending = self.index_preflights.get(&expected.id)?;
+        let Intent::IndexProject { project, operation, basis, .. } = &pending.intent else { return None; };
+        if project != &expected.id { return None; }
+        index_preflight_basis(&snapshot, project, operation, *basis).ok()?;
+        Some(pending.revision)
+    }
+
     /// Returns the one immutable read model used by every visual surface.
     #[must_use]
     pub fn snapshot(&self) -> Arc<AppSnapshot> {
@@ -973,8 +991,7 @@ impl UiRootEntity {
     }
 
     /// The owner answered (W-Open I1): its root replaces the unserved one,
-    /// and the root read (project, catalog) is asked again at it — the one
-    /// asked at startup waited behind the owner at the unserved basis.
+    /// and the first root read (project, catalog) is asked at that basis.
     pub(crate) fn admit_owner(
         &mut self,
         key: crate::core::VersionedRoot,
@@ -1384,6 +1401,8 @@ mod durable_writer_tests;
 mod index_preflight_basis_tests;
 #[cfg(test)]
 mod operation_observation_tests;
+#[cfg(test)]
+mod startup_root_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();

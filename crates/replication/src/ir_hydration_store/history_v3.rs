@@ -2420,7 +2420,7 @@ mod tests {
             store,
             crate::TransportLimits {
                 max_chunk: 16 * 1024,
-                max_frame: 16 * 1024 + 192,
+                max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )
@@ -2863,7 +2863,7 @@ mod tests {
 
         let limits = crate::TransportLimits {
             max_chunk: 16 * 1024,
-            max_frame: 16 * 1024 + 192,
+            max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
             ..crate::TransportLimits::default()
         };
         let cold_store = FileSemanticRangeStore::open(
@@ -3616,7 +3616,7 @@ mod tests {
             cold_file_store,
             crate::TransportLimits {
                 max_chunk: 16 * 1024,
-                max_frame: 16 * 1024 + 192,
+                max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )
@@ -3800,7 +3800,7 @@ mod tests {
             FileStore::open(&cas_root, 64 * 1024 * 1024).expect("cold reopen V3 FileStore"),
             crate::TransportLimits {
                 max_chunk: 16 * 1024,
-                max_frame: 16 * 1024 + 192,
+                max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )
@@ -3840,7 +3840,7 @@ mod tests {
             file_store,
             crate::TransportLimits {
                 max_chunk: 16 * 1024,
-                max_frame: 16 * 1024 + 192,
+                max_frame: 16 * 1024 + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )
@@ -4129,7 +4129,7 @@ mod tests {
             first,
             crate::TransportLimits {
                 max_chunk: super::super::MAX_RANGE_BYTES,
-                max_frame: super::super::MAX_RANGE_BYTES + 192,
+                max_frame: super::super::MAX_RANGE_BYTES + crate::CHUNK_FRAME_OVERHEAD,
                 ..crate::TransportLimits::default()
             },
         )

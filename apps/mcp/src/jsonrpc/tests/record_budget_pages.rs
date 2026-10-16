@@ -64,19 +64,33 @@ fn captured_record_answer(captured: &Value) -> Answer {
         encode_answer_with_call(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES, None)
             .expect("captured rows without continuation fit the typed payload");
     let replay: Value = serde_json::from_slice(&replay.bytes).expect("production projection");
-    for field in [
-        "query",
-        "coverage",
-        "readiness",
-        "records",
-        "more",
-        "semantic_search",
-    ] {
+    for field in ["query", "coverage", "records", "more", "semantic_search"] {
         assert_eq!(
             replay[field], captured[field],
             "captured {field} must remain exact"
         );
     }
+    // The e315 process captures predate strict compiler-lane readiness: they
+    // report `ready` despite recording the compiler Semantic lane as
+    // unavailable. Preserve that historical output, while requiring this
+    // projection to derive readiness from CoverageLine. The separate optional
+    // vector-search status cannot certify compiler completeness.
+    assert_eq!(
+        captured["readiness"], "ready",
+        "retain the actual e315 capture"
+    );
+    let Answer::Records(records) = &answer else {
+        unreachable!("captured record answer remains a record list");
+    };
+    let current_readiness = records.coverage().readiness();
+    assert_eq!(
+        current_readiness, "unavailable",
+        "an unavailable compiler lane cannot be rendered ready"
+    );
+    assert_eq!(
+        replay["readiness"], current_readiness,
+        "current readiness must follow typed compiler coverage"
+    );
     answer
 }
 

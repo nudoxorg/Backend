@@ -1568,6 +1568,8 @@ mod tests {
     use std::time::{Duration, Instant};
     use tsz::parser::node::NodeAccess;
 
+    include!("tsz_authority/json_value_import_tests.rs");
+
     fn options() -> TszProjectOptions {
         let mut checker = TszCheckerOptions::default();
         checker.no_lib = true;

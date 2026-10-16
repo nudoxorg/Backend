@@ -148,6 +148,57 @@ class FleetAdmissionTests(unittest.TestCase):
         self.resources("ilo")["root_disk_available_bytes"] = 180 * fleet.GIB
         self.assertTrue(self.report(destination_memory_only_for_remote=True)["advisory_allowed"])
 
+    def ci_volume(self, *, root=74, ci=284, same_device=False, path="/srv/ci"):
+        resources = self.resources("ilo")
+        resources.update(root_disk_available_bytes=root * fleet.GIB,
+                         root_disk_device=11, ci_disk_path=path,
+                         ci_disk_device=11 if same_device else 22,
+                         ci_disk_available_bytes=ci * fleet.GIB,
+                         ci_disk_reserved_bytes=80 * fleet.GIB,
+                         root_disk_reserved_bytes=80 * fleet.GIB if same_device else 0,
+                         ci_disk_reserve_file="/etc/nudox-ci-disk-reserve-gib")
+        return resources
+
+    def test_distinct_ci_volume_preserves_both_fences_and_receipt(self):
+        resources = self.ci_volume()
+        report = self.report()
+        self.assertTrue(report["advisory_allowed"], report["reasons"])
+        for field in fleet.CI_DISK_FIELDS:
+            self.assertEqual(report["hosts"]["ilo"][field], resources[field])
+        resources["ci_disk_available_bytes"] = 80 * fleet.GIB - 1
+        self.assertIn("destination-ci-disk-below-reserve", self.report()["reasons"])
+        resources["ci_disk_available_bytes"] = 284 * fleet.GIB
+        resources["root_disk_available_bytes"] = 16 * fleet.GIB - 1
+        self.assertIn("destination-root-disk-below-16-gib-or-missing", self.report()["reasons"])
+
+    def test_same_device_and_absent_ci_path_keep_root_reserve(self):
+        for path in ("/srv/ci", "/"):
+            with self.subTest(path=path):
+                resources = self.ci_volume(root=74, ci=74, same_device=True, path=path)
+                self.assertIn("destination-ci-disk-below-reserve", self.report()["reasons"])
+                resources.update(root_disk_available_bytes=80 * fleet.GIB, ci_disk_available_bytes=80 * fleet.GIB)
+                self.assertTrue(self.report()["advisory_allowed"])
+
+    def test_same_device_root_reserve_remains_a_fence_if_ci_reading_differs(self):
+        self.ci_volume(root=74, ci=284, same_device=True)
+        report = self.report()
+        self.assertFalse(report["advisory_allowed"])
+        self.assertIn("destination-root-disk-below-ci-reserve", report["reasons"])
+
+    def test_partial_or_malformed_ci_volume_never_discards_the_reserve(self):
+        original = copy.deepcopy(self.samples)
+        mutations = [lambda r, field=field: r.pop(field) for field in fleet.CI_DISK_FIELDS]
+        mutations += [lambda r, field=field, value=value: r.update({field: value})
+                      for field in ("root_disk_device", "ci_disk_device", "ci_disk_available_bytes", "ci_disk_reserved_bytes")
+                      for value in (True, -1, None, "80")]
+        mutations += [lambda r: r.update(ci_disk_path="/tmp/ci"),
+                      lambda r: r.update(ci_disk_path="/"),
+                      lambda r: r.update(ci_disk_reserve_file="/tmp/reserve"),
+                      lambda r: r.update(root_disk_reserved_bytes=80 * fleet.GIB)]
+        for mutate in mutations:
+            self.samples = copy.deepcopy(original);resources = self.ci_volume();mutate(resources)
+            self.assertIn("ilo:ci-disk-resources-invalid", self.report()["reasons"])
+
     def test_fleet_capacity_includes_the_proposed_workload(self):
         self.groups("local", 5)
         self.groups("ilo", 7)

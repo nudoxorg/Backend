@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Package receipted Linux CLI/MCP/locald ELFs with their non-glibc closure."""
+"""Package receipted Linux CLI/MCP/locald ELFs with their non-glibc closure.
+
+TypeScript uses linked TSZ and embedded declarations by default; no Node/SDK payload
+is required. An optional legacy Compiler API payload requires both SDK flags.
+"""
 from __future__ import annotations
 
 import argparse
@@ -387,12 +391,14 @@ def main() -> int:
     parser.add_argument("--patchelf", required=True, type=Path)
     parser.add_argument("--readelf", required=True, type=Path)
     parser.add_argument("--ldd", required=True, type=Path)
-    parser.add_argument("--typescript-sdk-directory", required=True, type=Path, help="complete Node and TypeScript payload with notices")
-    parser.add_argument("--typescript-sdk-receipt", required=True, type=Path, help="exact source-bound SDK payload receipt")
+    parser.add_argument("--typescript-sdk-directory", type=Path, help="optional legacy Compiler API payload: complete Node and TypeScript SDK with notices; requires --typescript-sdk-receipt")
+    parser.add_argument("--typescript-sdk-receipt", type=Path, help="exact source-bound optional SDK receipt; requires --typescript-sdk-directory")
     parser.add_argument("--embedding-helper", type=Path, help="optional receipted CPU Candle helper")
     parser.add_argument("--embedding-helper-receipt", type=Path, help="exact successful helper build receipt")
     parser.add_argument("--release-tag", help="immutable checkpoint tag; defaults to today's UTC date and source revision")
     args = parser.parse_args()
+    if (args.typescript_sdk_directory is None) != (args.typescript_sdk_receipt is None):
+        fail("TypeScript SDK directory and its receipt must be provided together")
 
     manifest_path = args.manifest.resolve(strict=True)
     build_bytes = read_regular_bytes(manifest_path, 16 * 1024 * 1024, "build manifest")
@@ -402,7 +408,9 @@ def main() -> int:
     release_tag = args.release_tag or f"checkpoint-{dt.datetime.now(dt.timezone.utc):%Y%m%d}-{revision[:10]}-linux-x64"
     if not TAG_RE.fullmatch(release_tag) or not release_tag.endswith("-" + revision[:10] + "-linux-x64"):
         fail("release tag must be checkpoint-YYYYMMDD-<source-10>-linux-x64 for the receipted source")
-    sdk_receipt, sdk_sources, sdk_receipt_digest, sdk_sizes = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
+    sdk_admission = None
+    if args.typescript_sdk_directory is not None:
+        sdk_admission = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
     patchelf = require_tool(args.patchelf, "patchelf")
     readelf = require_tool(args.readelf, "readelf")
     ldd = require_tool(args.ldd, "ldd")
@@ -436,16 +444,18 @@ def main() -> int:
         admitted_lengths[name] = record["bytes"]
 
     sdk_root = root / "share/nudox/typescript"
-    for relative, sdk_source in sdk_sources.items():
-        target = sdk_root / relative
-        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if relative == "node/bin/node":
-            continue  # Copied once by the shared ELF relocation pass below.
-        copy_admitted_file(sdk_source, target, sdk_receipt["files"][relative], sdk_sizes[relative], 512 * 1024 * 1024)
-        target.chmod(0o755 if relative == "node/bin/node" else 0o644)
-    sources["typescript-node"] = sdk_sources["node/bin/node"]
-    admitted_digests["typescript-node"] = sdk_receipt["files"]["node/bin/node"]
-    admitted_lengths["typescript-node"] = sdk_sizes["node/bin/node"]
+    if sdk_admission is not None:
+        sdk_receipt, sdk_sources, sdk_receipt_digest, sdk_sizes = sdk_admission
+        for relative, sdk_source in sdk_sources.items():
+            target = sdk_root / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if relative == "node/bin/node":
+                continue  # Copied once by the shared ELF relocation pass below.
+            copy_admitted_file(sdk_source, target, sdk_receipt["files"][relative], sdk_sizes[relative], 512 * 1024 * 1024)
+            target.chmod(0o755 if relative == "node/bin/node" else 0o644)
+        sources["typescript-node"] = sdk_sources["node/bin/node"]
+        admitted_digests["typescript-node"] = sdk_receipt["files"]["node/bin/node"]
+        admitted_lengths["typescript-node"] = sdk_sizes["node/bin/node"]
 
     glibc_family = set(GLIBC_SONAMES)
     libraries: dict[str, dict] = {}
@@ -524,33 +534,35 @@ def main() -> int:
         fail("ELF dependency scan found no glibc symbol floor")
     minimum_glibc = max(glibc_versions, key=version_tuple)
 
-    clean_environment = {key: value for key, value in os.environ.items()
-                         if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH", "NODE_PATH", "NODE_OPTIONS"}}
-    packaged_node = sdk_root / "node/bin/node"
-    for arguments, expected, label in [
-        (["--version"], sdk_receipt["tools"]["node"]["version"], "Node"),
-        (["-e", "process.stdout.write(require(process.argv[1]).version)", str(sdk_root / "node_modules/typescript/lib/typescript.js")],
-         sdk_receipt["tools"]["typescript"]["version"], "TypeScript Compiler API"),
-    ]:
-        result = subprocess.run([str(packaged_node), *arguments], env=clean_environment,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
-        if result.returncode != 0 or result.stdout.strip() != expected:
-            fail(f"relocated SDK {label} did not reproduce its admitted version identity")
+    sdk = {"bundled": False}
+    if sdk_admission is not None:
+        clean_environment = {key: value for key, value in os.environ.items()
+                             if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH", "NODE_PATH", "NODE_OPTIONS"}}
+        packaged_node = sdk_root / "node/bin/node"
+        for arguments, expected, label in [
+            (["--version"], sdk_receipt["tools"]["node"]["version"], "Node"),
+            (["-e", "process.stdout.write(require(process.argv[1]).version)", str(sdk_root / "node_modules/typescript/lib/typescript.js")],
+             sdk_receipt["tools"]["typescript"]["version"], "TypeScript Compiler API"),
+        ]:
+            result = subprocess.run([str(packaged_node), *arguments], env=clean_environment,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+            if result.returncode != 0 or result.stdout.strip() != expected:
+                fail(f"relocated SDK {label} did not reproduce its admitted version identity")
 
-    node_record = next(record for record in executables if record["name"] == "typescript-node")
+        node_record = next(record for record in executables if record["name"] == "typescript-node")
+        sdk_files = {
+            path.relative_to(root).as_posix(): {"kind": "file", "sha256": sha256(path), "size_bytes": path.stat().st_size}
+            for path in sorted(sdk_root.rglob("*")) if path.is_file()
+        }
+        sdk = {
+            "schema": "nudox.typescript-sdk.v1", "bundled": True,
+            "root": "share/nudox/typescript", "node": node_record,
+            "typescript_version": sdk_receipt["tools"]["typescript"]["version"],
+            "node_version": sdk_receipt["tools"]["node"]["version"],
+            "source_receipt_sha256": sdk_receipt_digest,
+            "files": sdk_files,
+        }
     executables = [record for record in executables if record["name"] not in {"typescript-node", "backend-embedding-candle"}]
-    sdk_files = {
-        path.relative_to(root).as_posix(): {"kind": "file", "sha256": sha256(path), "size_bytes": path.stat().st_size}
-        for path in sorted(sdk_root.rglob("*")) if path.is_file()
-    }
-    sdk = {
-        "schema": "nudox.typescript-sdk.v1", "bundled": True,
-        "root": "share/nudox/typescript", "node": node_record,
-        "typescript_version": sdk_receipt["tools"]["typescript"]["version"],
-        "node_version": sdk_receipt["tools"]["node"]["version"],
-        "source_receipt_sha256": sdk_receipt_digest,
-        "files": sdk_files,
-    }
 
     embedding_setup = None
     if embedding_receipt_digest is not None:
@@ -628,10 +640,10 @@ def main() -> int:
         "runtime_acceptance": "external_native_qa_record_required",
     }
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
-    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nLanguage compiler integrations are discovered separately from this CLI package.\nThis archive includes a receipt-bound Node runtime and complete TypeScript SDK. Project-local
-TypeScript installations retain precedence; the packaged SDK is the default fallback. Keep the
-share/nudox/typescript directory and lib/ dependency closure with the sibling executables.
-Default project discovery does not require hidden NUDOX_* environment variables.\n"""
+    sdk_note = ("This archive also includes a receipt-bound Node/TypeScript SDK for explicitly\n"
+                "configured legacy Compiler API integration. Keep share/nudox/typescript\n"
+                "and lib/ with the sibling executables.\n") if sdk_admission is not None else ""
+    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nTypeScript analysis uses linked TSZ with embedded declarations by default; Node and\nan npm TypeScript installation are not required for this compiler path.\nPython analysis uses linked Pyrefly by default. Selected project interpreter,\nstandard-library and virtual-environment inputs are captured separately.\n{sdk_note}Default project discovery does not require hidden NUDOX_* environment variables.\n"""
     (root / "README.txt").write_text(readme)
 
     archive_name = f"nudox-linux-x86_64-{revision[:10]}.tar.gz"

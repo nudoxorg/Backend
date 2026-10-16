@@ -3211,7 +3211,7 @@ fn next_capture_record(
     }
 }
 
-fn validate_compiler_failure_source(
+pub(in crate::builtin) fn validate_compiler_failure_source(
     key: &ProductSemanticPublicationKey,
     failure: &backend_library::PackageCompilerFailure,
     row: &BuiltinPackageRecord,

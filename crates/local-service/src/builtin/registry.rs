@@ -5020,6 +5020,7 @@ mod tests {
             .execute(
                 backend_engine::SurfaceCommand::PackageProfile {
                     package: backend_engine::PackageReference::Purl(coordinate),
+                    compiler_outcome: None,
                 },
                 &view,
                 &catalog,

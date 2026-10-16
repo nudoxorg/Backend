@@ -1,4 +1,4 @@
-"""Packaging-evidence regressions; these tests never invoke or fake a product ELF."""
+"""Packaging regressions; synthetic ELF/tool fixtures never execute product images."""
 import json
 from pathlib import Path
 import tempfile
@@ -6,6 +6,10 @@ import unittest
 import os
 import hashlib
 import subprocess
+import io
+import tarfile
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import linux_release_package as package
 
@@ -296,6 +300,202 @@ class CopiedAdmissionTests(unittest.TestCase):
             with unittest.mock.patch.object(package, "LINUX_SYSTEM_SONAMES_BYTES", policy.read_bytes()):
                 with self.assertRaisesRegex(ValueError, "exact compiled build source"):
                     package.check_loader_policy(root, compiled)
+
+
+class NativeDefaultPackageTests(unittest.TestCase):
+    """Exercise main/receipts/copies/archive with synthetic ELF tool responses only."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name).resolve()
+        self.source = self.base / "source"
+        self.source.mkdir()
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(self.source), *args], stderr=subprocess.PIPE, text=True).strip()
+        git("init", "-q")
+        (self.source / "Cargo.toml").write_text('[workspace.package]\nversion = "0.2.0"\n')
+        (self.source / "Cargo.lock").write_bytes(b"fixture lock\n")
+        policy = self.source / "tools/package/linux_system_sonames.txt"
+        policy.parent.mkdir(parents=True)
+        policy.write_bytes(package.LINUX_SYSTEM_SONAMES_BYTES)
+        git("add", ".")
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "synthetic build source")
+        source = {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"), "clean": True}
+        receipt_path, receipt, self.build = RootArtifactReceiptTests().fixture(self.base)
+        self.build["source"] = source
+        receipt["source"] = {**source, "clean_before": True, "clean_after": True,
+                             "cargo_lock_sha256": package.sha256(self.source / "Cargo.lock")}
+        for name in package.BINARIES:
+            image = self.base / name
+            image.write_bytes(b"\x7fELF synthetic, never executed: " + name.encode())
+            record = {"sha256": package.sha256(image), "bytes": image.stat().st_size}
+            self.build["executables"][name].update(record)
+            receipt["artifacts"][name] = record
+        RootArtifactReceiptTests().seal(receipt_path, receipt, self.build)
+        self.manifest = self.base / "build.json"
+        self.manifest.write_text(json.dumps(self.build))
+        self.output = self.base / "candidate"
+        self.library = self.base / "libfixture.so"
+        self.library.write_bytes(b"\x7fELF synthetic dependency, never executed")
+        self.tools = {}
+        for name in ("patchelf", "readelf", "ldd"):
+            tool = self.base / name
+            tool.write_bytes(b"synthetic tool, never executed")
+            tool.chmod(0o700)
+            self.tools[name] = str(tool)
+        self.arguments = ["packager", "--manifest", str(self.manifest), "--source", str(self.source),
+                          "--output", str(self.output)]
+        for name, path in self.tools.items():
+            self.arguments.extend(["--" + name, path])
+        self.rpaths = {}
+        self.node_probes = []
+        self.node_versions = ("v24.18.0", "5.9.3")
+
+    def sdk(self):
+        root = self.base / "sdk-input/payload"
+        root.mkdir(parents=True)
+        receipt_path, receipt, _ = SDKReceiptAdmissionTests().fixture(root)
+        receipt["source"] = self.build["source"]
+        node = root / "node/bin/node"
+        node.write_bytes(b"\x7fELF synthetic Node, never executed")
+        receipt["files"]["node/bin/node"] = package.sha256(node)
+        receipt["tools"]["node"]["sha256"] = package.sha256(node)
+        receipt_path.write_text(json.dumps(receipt))
+        return root, receipt_path
+
+    def invoke(self, extra=()):
+        # Only git is really executed. All ELF/tool and optional Node responses are
+        # synthetic; admission, bounded copies, inventory and archive are production.
+        real_run = package.run
+        real_subprocess_run = subprocess.run
+        def tool_run(command):
+            tool, *args = command
+            if tool == "git":
+                return real_run(command)
+            if tool == self.tools["ldd"]:
+                return f"libfixture.so => {self.library} (0x1)\nlibc.so.6 => /synthetic/libc.so.6 (0x2)"
+            if tool == self.tools["patchelf"]:
+                if args == ["--version"]:
+                    return "patchelf synthetic"
+                if args[0] == "--print-rpath":
+                    return self.rpaths[args[-1]]
+                self.rpaths[args[-1]] = args[args.index("--set-rpath") + 1]
+                return ""
+            if tool == self.tools["readelf"]:
+                if args == ["--version"]:
+                    return "readelf synthetic"
+                self.assertTrue(Path(args[-1]).read_bytes().startswith(b"\x7fELF"))
+                if args[0] == "-h":
+                    return "Class: ELF64\nMachine: Advanced Micro Devices X86-64"
+                if args[0] == "-d":
+                    return '(NEEDED) [libc.so.6]' + ('' if Path(args[-1]).name == 'libfixture.so' else '\n(NEEDED) [libfixture.so]')
+                if args[0] == "-l":
+                    return f"Requesting program interpreter: {package.INTERPRETER}]"
+                self.assertEqual(args[0], "--version-info")
+                return "GLIBC_2.31"
+            self.fail(f"unexpected tool execution: {command}")
+        def process_run(command, **kwargs):
+            if command[0] == "git":
+                return real_subprocess_run(command, **kwargs)
+            expected_node = str(self.output / "nudox-linux-x86_64/share/nudox/typescript/node/bin/node")
+            self.assertEqual(command[0], expected_node)
+            self.assertEqual(kwargs["timeout"], 15)
+            self.assertTrue({"LD_PRELOAD", "NODE_OPTIONS"}.isdisjoint(kwargs["env"]))
+            self.node_probes.append(command[1:])
+            version = self.node_versions[0 if command[1:] == ["--version"] else 1]
+            return subprocess.CompletedProcess(command, 0, version, "")
+        with patch.object(package.sys, "argv", [*self.arguments, *extra]), \
+             patch.object(package, "run", side_effect=tool_run), \
+             patch.object(package.subprocess, "run", side_effect=process_run), \
+             redirect_stdout(io.StringIO()):
+            return package.main()
+
+    def test_default_native_package_preserves_source_and_closure_without_sdk_or_probes(self):
+        self.assertEqual(self.invoke(), 0)
+        root = self.output / "nudox-linux-x86_64"
+        manifest = json.loads((root / "packaging-manifest.json").read_text())
+        self.assertEqual(manifest["typescript_sdk"], {"bundled": False})
+        self.assertEqual(manifest["source"], self.build["source"])
+        self.assertEqual({record["name"] for record in manifest["executables"]}, set(package.BINARIES))
+        self.assertEqual(set(manifest["libraries"]), {"libfixture.so"})
+        self.assertEqual(self.node_probes, [])
+        self.assertFalse((root / "share/nudox/typescript").exists())
+        readme = (root / "README.txt").read_text()
+        self.assertIn("linked TSZ with embedded declarations", readme)
+        self.assertIn("linked Pyrefly", readme)
+        self.assertNotIn("archive also includes", readme)
+        release = json.loads((self.output / "release-manifest.json").read_text())
+        self.assertEqual(release["source_sha"], self.build["source"]["commit"])
+        self.assertEqual(release["packaging_manifest_sha256"], package.sha256(root / "packaging-manifest.json"))
+        with tarfile.open(self.output / release["asset"]) as archive:
+            self.assertFalse(any("/typescript/" in name for name in archive.getnames()))
+        import install_linux as installer
+        with patch.object(installer.subprocess, "run") as probe:
+            installer.verify_typescript_sdk(root, manifest)
+            probe.assert_not_called()
+
+    def test_explicit_sdk_retains_inventory_relocation_and_both_version_probes(self):
+        sdk, receipt = self.sdk()
+        self.assertEqual(self.invoke(["--typescript-sdk-directory", str(sdk), "--typescript-sdk-receipt", str(receipt)]), 0)
+        root = self.output / "nudox-linux-x86_64"
+        manifest = json.loads((root / "packaging-manifest.json").read_text())
+        bundled = manifest["typescript_sdk"]
+        self.assertTrue(bundled["bundled"])
+        self.assertEqual(bundled["source_receipt_sha256"], package.sha256(receipt))
+        self.assertEqual(len(bundled["files"]), 7)
+        self.assertEqual(len(self.node_probes), 2)
+        self.assertEqual(self.node_probes[0], ["--version"])
+        self.assertEqual(self.node_probes[1], ["-e", "process.stdout.write(require(process.argv[1]).version)", str(root / "share/nudox/typescript/node_modules/typescript/lib/typescript.js")])
+        self.assertEqual(self.rpaths[str(root / bundled["node"]["packaged_path"])], "$ORIGIN/../../../../../lib")
+        self.assertEqual({record["name"] for record in manifest["executables"]}, set(package.BINARIES))
+        self.assertIn("explicitly\nconfigured legacy Compiler API", (root / "README.txt").read_text())
+
+    def test_sdk_half_pair_refuses_before_manifest_read_or_stage(self):
+        self.manifest.unlink()
+        for flag in ("--typescript-sdk-directory", "--typescript-sdk-receipt"):
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, "must be provided together"):
+                self.invoke([flag, str(self.base / "missing")])
+        self.assertFalse(self.output.exists())
+
+    def test_optional_sdk_does_not_weaken_source_or_payload_hash_admission(self):
+        sdk, receipt = self.sdk()
+        api = sdk / "node_modules/typescript/lib/typescript.js"
+        api.write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "differs from its receipt"):
+            self.invoke(["--typescript-sdk-directory", str(sdk), "--typescript-sdk-receipt", str(receipt)])
+        self.assertFalse(self.output.exists())
+
+    def test_explicit_sdk_wrong_source_and_relocated_api_mismatch_refuse(self):
+        sdk, receipt_path = self.sdk()
+        receipt = json.loads(receipt_path.read_text())
+        receipt["source"]["commit"] = "0" * 40
+        receipt_path.write_text(json.dumps(receipt))
+        arguments = ["--typescript-sdk-directory", str(sdk), "--typescript-sdk-receipt", str(receipt_path)]
+        with self.assertRaisesRegex(ValueError, "exact application source"):
+            self.invoke(arguments)
+        self.assertFalse(self.output.exists())
+        receipt["source"] = self.build["source"]
+        receipt_path.write_text(json.dumps(receipt))
+        self.node_versions = ("v24.18.0", "wrong API")
+        with self.assertRaisesRegex(ValueError, "relocated SDK TypeScript Compiler API"):
+            self.invoke(arguments)
+        self.assertFalse((self.output / "release-manifest.json").exists())
+
+    def test_no_sdk_still_rejects_tampered_product_bytes(self):
+        Path(self.build["executables"]["backend-mcp"]["path"]).write_bytes(b"changed product")
+        with self.assertRaisesRegex(ValueError, "differs from the successful build receipt"):
+            self.invoke()
+        self.assertFalse((self.output / "release-manifest.json").exists())
+
+    def test_help_describes_default_and_paired_optional_sdk(self):
+        output = io.StringIO()
+        with patch.object(package.sys, "argv", ["packager", "--help"]), redirect_stdout(output):
+            with self.assertRaises(SystemExit) as stopped:
+                package.main()
+        self.assertEqual(stopped.exception.code, 0)
+        self.assertIn("linked TSZ", output.getvalue())
+        self.assertIn("[--typescript-sdk-directory", output.getvalue())
+        self.assertIn("requires --typescript-sdk-receipt", " ".join(output.getvalue().split()))
 
 
 class LinkageTests(unittest.TestCase):
