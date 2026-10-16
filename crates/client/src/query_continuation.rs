@@ -827,7 +827,7 @@ mod selected_operand_tests {
             .filter(|claim| graph_address_claim(&command, claim))
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(retained, certificate.claims);
+        assert_eq!(retained.as_slice(), certificate.claims.as_ref());
         assert!(!graph_address_claim(
             &command,
             &WireClaim::KeyCommitment {
