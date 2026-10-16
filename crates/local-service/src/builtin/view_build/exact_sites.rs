@@ -305,6 +305,8 @@ mod tests {
             false,
             path,
             &current,
+            None,
+            None,
         )
         .map_err(|e| e.to_string())?;
         let mut exact = ExactDeclarationSites::default();
@@ -323,6 +325,7 @@ mod tests {
                 stale: false,
                 path,
                 site_declarations: &current,
+                native_source: None,
                 exact_sites: &mut exact,
             },
         )
