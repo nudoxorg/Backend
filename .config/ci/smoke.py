@@ -458,10 +458,22 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                 window = windows.stdout.splitlines()[0]
                 # Exercise the app's public Quit shortcut. Signals below are
                 # failure cleanup of this task's children, never the proof.
-                subprocess.run(
-                    [xdotool, "windowfocus", "--sync", window, "key", "--clearmodifiers", "super+q"],
-                    env=env, check=True, capture_output=True, timeout=5,
-                )
+                # Separate invocations keep key delivery on the focused XTest
+                # path, rather than xdotool's implicit window stack. Quit may
+                # destroy the target before a directed key-release event.
+                for action, arguments in (
+                    ("focus", ["windowfocus", "--sync", window]),
+                    ("Quit key", ["key", "--clearmodifiers", "super+q"]),
+                ):
+                    delivered = subprocess.run(
+                        [xdotool, *arguments], env=env, capture_output=True,
+                        text=True, timeout=5,
+                    )
+                    if delivered.returncode != 0:
+                        return fail(
+                            f"desktop {action} delivery failed with exit {delivered.returncode}:\n"
+                            f"{delivered.stderr[-3000:]}"
+                        )
                 try:
                     code = app.wait(timeout=10)
                 except subprocess.TimeoutExpired:

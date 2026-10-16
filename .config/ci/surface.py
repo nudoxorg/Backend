@@ -1131,62 +1131,68 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                    "artifact_manifest_sha256": args.artifact_digest}
                   if args.ci_report else None)
     with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        results = list(executor.map(
-            lambda case: _invoke_case(case, args.bin_dir.resolve(), provenance), cases))
-    for case, (record, elapsed, error) in zip(cases, results):
-        entry = {"state": "failed", "seconds": {}}
-        evidence[case["name"]] = entry
-        if error is not None:
-            entry["detail"] = bounded_text(error, 4096)
-            log(f"case {case['name']} could not run: {error}")
-            failed.append(case["name"])
-            continue
-        entry.update(record["performance"])
-        if case.get("kind") == "cli-contract":
-            entry["state"] = "passed"
-            report[case["name"]] = record["performance"]
-            emit_performance(case["name"], record["performance"])
-            log(f"case {case['name']} passed ({elapsed:.1f}s)")
-            continue
-        report[case["name"]] = record["performance"]
-        emit_performance(case["name"], record["performance"])
-        snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
-        if args.update:
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-            log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
-            continue
-        if not snapshot_path.exists():
-            entry["detail"] = "No reviewed snapshot; explicit review/update required."
-            log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
-            if args.print_missing:
-                print_candidate(case["name"], record)
-            failed.append(case["name"])
-            continue
-        reviewed = json.loads(snapshot_path.read_text())
-        baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
-        indexed = record["performance"].get("seconds", {}).get("cli add")
-        if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
-            entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
-        problems = []
-        if reviewed["answers"] != record["answers"]:
-            old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
-            entry["snapshot_diff"] = bounded_text(diff, 8192)
-            problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
-        problems += regressions(reviewed.get("performance", {}), record["performance"])
-        if problems:
-            entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
-            failed.append(case["name"])
-            for problem in problems:
-                log(f"case {case['name']}: {problem}")
-            if args.print_missing and reviewed["answers"] != record["answers"]:
-                print_candidate(case["name"], record)
-        else:
-            entry["state"] = "passed"
-            log(f"case {case['name']} matches ({elapsed:.1f}s, "
-                f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+        results = executor.map(
+            lambda case: _invoke_case(case, args.bin_dir.resolve(), provenance), cases)
+        for case, (record, elapsed, error) in zip(cases, results):
+            try:
+                entry = {"state": "failed", "seconds": {}}
+                evidence[case["name"]] = entry
+                if error is not None:
+                    entry["detail"] = bounded_text(error, 4096)
+                    log(f"case {case['name']} could not run: {error}")
+                    failed.append(case["name"])
+                    continue
+                entry.update(record["performance"])
+                if case.get("kind") == "cli-contract":
+                    entry["state"] = "passed"
+                    report[case["name"]] = record["performance"]
+                    emit_performance(case["name"], record["performance"])
+                    log(f"case {case['name']} passed ({elapsed:.1f}s)")
+                    continue
+                report[case["name"]] = record["performance"]
+                emit_performance(case["name"], record["performance"])
+                snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
+                if args.update:
+                    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                    snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+                    log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
+                    continue
+                if not snapshot_path.exists():
+                    entry["detail"] = "No reviewed snapshot; explicit review/update required."
+                    log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
+                    if args.print_missing:
+                        print_candidate(case["name"], record)
+                    failed.append(case["name"])
+                    continue
+                reviewed = json.loads(snapshot_path.read_text())
+                baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
+                indexed = record["performance"].get("seconds", {}).get("cli add")
+                if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
+                    entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
+                problems = []
+                if reviewed["answers"] != record["answers"]:
+                    old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                    new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                    diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
+                    entry["snapshot_diff"] = bounded_text(diff, 8192)
+                    problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
+                problems += regressions(reviewed.get("performance", {}), record["performance"])
+                if problems:
+                    entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
+                    failed.append(case["name"])
+                    for problem in problems:
+                        log(f"case {case['name']}: {problem}")
+                    if args.print_missing and reviewed["answers"] != record["answers"]:
+                        print_candidate(case["name"], record)
+                else:
+                    entry["state"] = "passed"
+                    log(f"case {case['name']} matches ({elapsed:.1f}s, "
+                        f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+            finally:
+                if args.ci_report:
+                    print("SURFACE-CASE-EVIDENCE " + json.dumps({
+                        **provenance, "case": case["name"], "verdict": entry,
+                    }, sort_keys=True, separators=(",", ":")), flush=True)
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if args.ci_report:

@@ -889,5 +889,47 @@ class CIEvidenceTests(unittest.TestCase):
         self.assertIn("full detail retained", value)
 
 
+class IncrementalCaseVerdictTests(unittest.TestCase):
+    def test_completed_case_is_visible_before_later_case_aborts_without_final_packet(self):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        stdout = io.StringIO()
+        class InterruptedExecutor:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def map(self, function, cases):
+                yield ({"performance": {"seconds": {}}}, 0.1, None)
+                records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
+                           for line in stdout.getvalue().splitlines()
+                           if line.startswith("SURFACE-CASE-EVIDENCE ")]
+                self_test.assertEqual(records[0]["case"], "first")
+                self_test.assertEqual(records[0]["verdict"]["state"], "passed")
+                raise RuntimeError("later case interrupted")
+
+        self_test = self
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [
+                {"name": "first", "kind": "cli-contract"},
+                {"name": "later", "kind": "cli-contract"},
+            ]}))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", InterruptedExecutor), \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(RuntimeError, "later case interrupted"):
+                    surface.compare_cases(args, argparse.ArgumentParser())
+            self.assertFalse(packet.exists(), "partial verdicts cannot stand in for full acceptance")
+
+
 if __name__ == "__main__":
     unittest.main()
