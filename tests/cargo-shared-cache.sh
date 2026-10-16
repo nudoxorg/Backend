@@ -582,7 +582,7 @@ copy_fetch_graph="$copy_fetch_build/.nudox-cargo/slot-0"
 assert_eq "$copy_fetch_graph" "$(cut -d '|' -f 2 "$copy_fetch_log")"
 assert_eq "fetch --manifest-path $copy_fetch_manifest" "$(cut -d '|' -f 4 "$copy_fetch_log")"
 assert_eq "$copy_fetch_root" "$(cat "$copy_fetch_graph/.nudox-worktree-root")"
-assert_eq "$copy_fetch_root" "$(cat "$copy_fetch_cache/locks/slot-0.lock/workspace")"
+assert_eq "$copy_fetch_root" "$(cat "$copy_fetch_build/.nudox-cargo/leases/slot-0.lock/workspace")"
 assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/build/slot-0/.nudox-worktree-root")"
 assert_eq 'checkout warm compiler graph' "$(cat "$copy_fetch_cache/build/slot-0/checkout-warm.rmeta")"
 assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/affinity/slot-0.owner")"
@@ -601,7 +601,13 @@ copy_fetch_owner=""
 assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/build/slot-0/.nudox-worktree-root")"
 assert_eq 'checkout warm compiler graph' "$(cat "$copy_fetch_cache/build/slot-0/checkout-warm.rmeta")"
 assert_eq "$manifest_invoking_root" "$(cat "$copy_fetch_cache/affinity/slot-0.owner")"
-[ ! -d "$copy_fetch_cache/locks/slot-0.lock" ] || fail "copy-local fetch leaked its host capacity lease"
+# Persistent permit files remain; the kernel lock must be released.
+python3 - "$copy_fetch_cache/locks/slot-0.lock" <<'PYLOCK'
+import fcntl
+import sys
+with open(sys.argv[1], 'r+') as permit:
+    fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
+PYLOCK
 [ ! -d "$copy_fetch_build/.nudox-cargo/leases/slot-0.lock" ] \
   || fail "copy-local fetch leaked its role graph lease"
 
