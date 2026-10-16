@@ -5,11 +5,11 @@ green is the next phase. These cases remain enabled. No snapshot, guard, deadlin
 baseline or tolerance is waived by this ledger. Owner below means the agent and
 product area responsible for follow-up, not an invented human assignment.
 
-## Current artifact smoke
+## Current artifact smoke and observed flake
 
 | Case | Observed symptom | Owner | Source |
 | --- | --- | --- | --- |
-| T1 published-artifact GUI smoke | Producer smoke passes, but artifact-consumer GUI fails after29s; retained owner stack waits in `jbd2_log_wait_commit`. | Codex / desktop owner durability | Focused build3/global511094, head `a2d3ecb1c5d6b597ff9f4039432cc8bccd557ed2`; required T1 status is failure. |
+| T1 published-artifact GUI smoke | Producer smoke passes, but artifact-consumer GUI fails after29s; retained owner stack waits in `jbd2_log_wait_commit`. | Codex / desktop owner durability | Focused build3/global511094, head `a2d3ecb1c5d6b597ff9f4039432cc8bccd557ed2`; focused T1 status failed; normal build511058/pr-t1/1039 later passed the required T1 context on this same exact head (status8269). This remains a recorded flake, not a claim that the latest T1 context is red. |
 
 ## Last complete Linux catalog packet — historical, not current-head acceptance
 
