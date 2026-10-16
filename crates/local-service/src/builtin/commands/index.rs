@@ -627,7 +627,7 @@ pub(super) fn finish_index_scan(
             file_keys = captured_file_keys.clone();
             let before_capture = Some(captured_project.clone());
 
-            let (sources, native_candidate_profiles) =
+            let admission =
                 ingest::admit_compiler_sources_with_native_candidates_for_scan(
                     requested_root,
                     revision_fence,
@@ -638,8 +638,8 @@ pub(super) fn finish_index_scan(
                     Some(cancellation.as_ref()),
                 )
                 .map_err(BuiltinModelError);
-            let sources = match sources {
-                Ok(sources) => sources,
+            let (sources, native_candidate_profiles) = match admission {
+                Ok(admitted) => admitted,
                 Err(error) => {
                     let terminal = terminal_capture_changes(
                         daemon,

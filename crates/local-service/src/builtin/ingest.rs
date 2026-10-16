@@ -2746,6 +2746,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                PythonVersion::Python314,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -2778,6 +2779,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                PythonVersion::Python314,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )

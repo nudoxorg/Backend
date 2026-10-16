@@ -262,7 +262,7 @@ mod tests {
         let current = current.iter().collect::<Vec<_>>();
         let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
         let project = sources.projects.get(package.as_bytes()).ok_or("project")?;
-        let projected = semantic::project_image_rows(&image, *blake3::hash(&bytes).as_bytes(), project, profile, initial.basis(), false, path, &current).map_err(|error| error.to_string())?;
+        let projected = semantic::project_image_rows(&image, *blake3::hash(&bytes).as_bytes(), project, profile, initial.basis(), false, path, &current, None).map_err(|error| error.to_string())?;
         let mut exact = ExactDeclarationSites::default();
         let mut rows = Vec::new();
         let mut symbols = BTreeSet::new();
@@ -270,7 +270,7 @@ mod tests {
         image_rows::apply_projected_image(&projected, &mut semantic::SemanticRowSink {
             ownership_complete: &mut true,
             initial: &initial, symbols: &mut symbols, rows: &mut rows, capacity: 64,
-            remaining_bytes: &mut budget, stale: false, path, site_declarations: &current, exact_sites: &mut exact,
+            remaining_bytes: &mut budget, stale: false, path, site_declarations: &current, exact_sites: &mut exact, native_source: None,
         }).map_err(|error| error.to_string())?;
         let mut plan = structural::StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|error| error.to_string())?;
         plan.unify_exact_sites(&sources, &exact).map_err(|error| error.to_string())?;
@@ -365,6 +365,7 @@ mod tests {
                 false,
                 path,
                 &current,
+                None,
             )
             .map_err(|error| error.to_string())?;
             assert!(!old_projected.ownership_complete);

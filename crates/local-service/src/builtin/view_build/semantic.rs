@@ -2244,6 +2244,7 @@ mod tests {
                     size_bits: None,
                     align_bits: None,
                 },
+                declared_name: None,
                 templates,
                 includes,
             })),

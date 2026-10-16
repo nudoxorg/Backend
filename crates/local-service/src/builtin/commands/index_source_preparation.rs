@@ -62,7 +62,7 @@ pub(super) struct PreparedScanSource {
     pub(super) file_keys: Vec<[u8; 32]>,
     pub(super) changes: Vec<BuiltinSourceChange>,
     pub(super) source_facts_changes: Vec<BuiltinSourceFactsChange>,
-    pub(super) native_frontier_changes: Vec<super::super::profile::BuiltinNativeFrontierChange>,
+    pub(super) native_frontier_changes: Vec<crate::builtin::profile::BuiltinNativeFrontierChange>,
     pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
     pub(super) revision_fence: ingest::CompilerRevisionFence,
     pub(super) python_environment: Option<PythonEnvironmentInput>,
@@ -124,7 +124,7 @@ fn prepare_native_frontier_changes_for_snapshot(
     current: &[ProductNativeFrontierRecord],
     old_file_keys: &[[u8; 32]],
     source_relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
-) -> Result<Vec<super::super::profile::BuiltinNativeFrontierChange>, BuiltinModelError> {
+) -> Result<Vec<crate::builtin::profile::BuiltinNativeFrontierChange>, BuiltinModelError> {
     let prior = product_native_frontier_relation(snapshot).map_err(|error| {
         BuiltinModelError(format!("open prior native source frontier: {error}"))
     })?;
@@ -226,7 +226,7 @@ fn prepare_native_frontier_changes_for_snapshot(
             .flatten();
         let next = after.remove(&key);
         if expected != next {
-            changes.push(super::super::profile::BuiltinNativeFrontierChange {
+            changes.push(crate::builtin::profile::BuiltinNativeFrontierChange {
                 key,
                 expected,
                 after: next,
@@ -707,7 +707,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     if !native_frontier_changes.is_empty() {
         if intent.has_capture_changes() && intent.capture_basis().is_none() {
             intent = intent
-                .with_capture_basis(super::super::capture_basis_for_snapshot(base_snapshot)?)?;
+                .with_capture_basis(crate::builtin::capture_basis_for_snapshot(base_snapshot)?)?;
         }
         intent = intent.with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
     }
