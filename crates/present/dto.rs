@@ -226,12 +226,15 @@ impl SignatureTokenDto {
 pub struct CoverageDto {
     /// Lane name.
     pub lane: String,
-    /// Lane state: `complete`, `partial`, `unavailable`, or `unobserved`.
+    /// Lane state, in the readiness vocabulary every surface shares:
+    /// `complete`; `indexing` while work runs and the counts still move;
+    /// `partial` once work finished with settled source gaps and readable
+    /// rows; `unavailable`; or `unobserved`.
     pub state: String,
-    /// Completed shards, when the lane is partial.
+    /// Completed shards, when the lane is indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<u16>,
-    /// Declared shards, when the lane is partial.
+    /// Declared shards, when the lane is indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u16>,
     /// Why the lane answered nothing, when it is unavailable.
@@ -250,11 +253,12 @@ impl CoverageDto {
                 LaneState::Unobserved => Self::simple(lane.name(), "unobserved"),
                 LaneState::Partial { completed, total } => Self {
                     lane: lane.name().to_owned(),
-                    state: "partial".to_owned(),
+                    state: "indexing".to_owned(),
                     completed: Some(completed.get()),
                     total: Some(total.get()),
                     reason: None,
                 },
+                LaneState::Gapped => Self::simple(lane.name(), "partial"),
                 LaneState::Unavailable { reason } => Self {
                     lane: lane.name().to_owned(),
                     state: "unavailable".to_owned(),
@@ -650,11 +654,16 @@ pub struct ShelfEntryDto {
     pub identity: IdentityDto,
     /// How ready the project is.
     pub readiness: String,
-    /// Rows published so far, when the project is still indexing.
+    /// Rows published so far, when the project is still indexing and the reply
+    /// carried the published count. Absent means "not read", never zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
     /// The declaration count, or null when this reply supplied no count evidence.
     pub declarations: Option<u64>,
+    /// Lanes which finished with settled source gaps. The project is ready and
+    /// usable; these lanes say where it is partial.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partial_lanes: Vec<String>,
     /// Per-language declaration counts.
     pub languages: Vec<LanguageCountDto>,
     /// Why the project is not readable, when it failed.
@@ -679,10 +688,15 @@ impl ShelfEntryDto {
             identity: IdentityDto::new(entry.identity()),
             readiness: entry.readiness().name().to_owned(),
             rows: match entry.readiness() {
-                Readiness::Indexing { rows } => Some(rows.get()),
+                Readiness::Indexing { rows } => rows.map(crate::shelf::RowCount::get),
                 _ => None,
             },
             declarations: entry.declarations().map(crate::shelf::RowCount::get),
+            partial_lanes: entry
+                .partial_lanes()
+                .iter()
+                .map(|lane| crate::coverage::lane_name(*lane).to_owned())
+                .collect(),
             languages: entry
                 .languages()
                 .iter()
@@ -703,6 +717,15 @@ pub struct ShelfDto {
     pub revision: String,
     /// Every project in display order.
     pub projects: Vec<ShelfEntryDto>,
+    /// The workspace readiness word `status` prints for the same revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<String>,
+    /// Rows the owner published at this revision, when the reply carried them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    /// Lane coverage of the revision, identical to `status`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<CoverageDto>,
 }
 
 impl ShelfDto {
@@ -712,6 +735,12 @@ impl ShelfDto {
         Self {
             revision: shelf.revision().to_string(),
             projects: shelf.entries().iter().map(ShelfEntryDto::new).collect(),
+            readiness: shelf.facts().lanes().map(|line| line.readiness().to_owned()),
+            rows: shelf.facts().rows().map(crate::shelf::RowCount::get),
+            coverage: shelf
+                .facts()
+                .lanes()
+                .map_or_else(Vec::new, |line| CoverageDto::all(*line)),
         }
     }
 }
@@ -987,6 +1016,9 @@ pub struct ProductDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_source_membership_page:
         Option<backend_library::PackageSourceMembershipPageResultV1>,
+    /// Exact guarded native graph page, retaining every edge and authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_graph_page: Option<backend_library::PackageGraphPage>,
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_data: Option<crate::product::ProductSemanticData>,
@@ -999,8 +1031,9 @@ pub struct ProductDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexPollDto {
-    /// Installed command with the exact durable key or issued ticket.
-    pub shell: String,
+    /// Optional command in an observed installed CLI/default-authority context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     /// Exact next MCP tool call; no new index mutation is inferred.
     pub call: serde_json::Value,
 }
@@ -1009,13 +1042,17 @@ impl IndexPollDto {
     /// Derives one observation from the shared typed operation/job policy.
     #[must_use]
     pub fn new(view: &ProductView) -> Option<Self> {
-        Self::from_affordance(view.index_poll_affordance()?, None)
+        Self::from_affordance(view.index_poll_affordance()?, None, view.cli_context())
     }
 
     /// Keeps the requested receipt detail when the next MCP action is copied.
     #[must_use]
     pub fn for_detail(view: &ProductView, detail: Detail) -> Option<Self> {
-        Self::from_affordance(view.index_poll_affordance()?, Some(detail))
+        Self::from_affordance(
+            view.index_poll_affordance()?,
+            Some(detail),
+            view.cli_context(),
+        )
     }
 
     /// Projects an admitted unchanged reference with the same detail policy.
@@ -1029,10 +1066,31 @@ impl IndexPollDto {
                 reference: reference.clone(),
             },
             Some(detail),
+            None,
         )
     }
 
-    fn from_affordance(affordance: Affordance, detail: Option<Detail>) -> Option<Self> {
+    /// Supplies the same optional observed CLI context for a conditional poll.
+    #[must_use]
+    pub fn for_reference_in_context(
+        reference: &backend_client::IndexProgressReference,
+        detail: Detail,
+        context: Option<&crate::StartupRecoveryContext>,
+    ) -> Option<Self> {
+        Self::from_affordance(
+            Affordance::ObserveIndexChanges {
+                reference: reference.clone(),
+            },
+            Some(detail),
+            context,
+        )
+    }
+
+    fn from_affordance(
+        affordance: Affordance,
+        detail: Option<Detail>,
+        context: Option<&crate::StartupRecoveryContext>,
+    ) -> Option<Self> {
         let mut call = affordance.tool_call()?;
         if let Some(detail) = detail {
             call.get_mut("arguments")?.as_object_mut()?.insert(
@@ -1041,7 +1099,7 @@ impl IndexPollDto {
             );
         }
         Some(Self {
-            shell: affordance.shell()?,
+            shell: context.and_then(|context| affordance.poll_shell_in_context(context, detail)),
             call,
         })
     }
@@ -1157,6 +1215,7 @@ impl ProductDto {
             },
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
+            package_graph_page: view.package_graph_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
             package_discovery: view.package_discovery().cloned(),
         }

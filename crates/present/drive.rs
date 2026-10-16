@@ -25,7 +25,7 @@
 
 use crate::assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, record_list,
-    shelf_from_snapshot,
+    shelf_from_snapshot, shelf_from_snapshot_with_health,
 };
 use crate::call::Request;
 use crate::fault::{Affordance, Fault, Operand};
@@ -53,6 +53,8 @@ pub enum ContinuationCursor {
     Page(PageContinuation),
     /// An opaque durable index-search continuation.
     IndexSearch(IndexSearchCursor),
+    /// Root-bound native compiler-generation discovery cursor.
+    SemanticVersions(backend_library::SemanticVersionsCursor),
 }
 
 /// Rows fetched for one page's members and relations.
@@ -176,6 +178,22 @@ pub trait Engine {
         self.probe(probe)
     }
 
+    /// Reads a native catalog window without changing its issued query credit.
+    /// Unsupported engines reject the new contract rather than resizing a cursor.
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() {
+            return Err(ClientError::Protocol(
+                "engine does not expose native catalog delivery windows".to_owned(),
+            ));
+        }
+        self.probe_page(probe, continuation)
+    }
+
     /// Re-admits an imported query proof against the current authenticated owner.
     fn prepare_query_continuation(
         &mut self,
@@ -226,6 +244,20 @@ pub enum Answer {
 }
 
 impl Answer {
+    /// Changes only executable reader advice, retaining producer rows/receipts.
+    #[must_use]
+    pub fn with_mcp_exposure(mut self, exposure: crate::McpExposure) -> Self {
+        if exposure == crate::McpExposure::Direct {
+            return self;
+        }
+        match &mut self {
+            Self::Page(page) => page.expose_mcp_advice(exposure),
+            Self::Shelf(shelf) => shelf.expose_mcp_advice(exposure),
+            Self::Product(product) => product.expose_mcp_advice(exposure),
+            Self::Records(_) | Self::Outline(_) | Self::Status(_) => {}
+        }
+        self
+    }
     /// Returns the shared failure carried by an otherwise admitted answer.
     /// The full answer remains available, including exact owner receipts.
     #[must_use]
@@ -282,11 +314,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::ResumeQuery { query, cursor } => {
             if !matches!(
                 query.as_ref(),
-                Request::Search { .. } | Request::Resolve { .. }
+                Request::Search { .. } | Request::Resolve { .. } | Request::OutlinePage { .. }
             ) {
                 return Err(Fault::usage(
                     "cursor",
-                    "only search and names have portable query continuations",
+                    "only search, names and bounded outlines have portable query continuations",
                 ));
             }
             let continuation = engine.prepare_query_continuation(cursor).map_err(|error| {
@@ -346,6 +378,38 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::Outline(path) => outline(engine, path),
         Request::OutlinePage { .. } => answer_paged(engine, request, None),
         Request::Surface(command) => surface(engine, command),
+    }
+}
+
+/// Projects an already admitted native search/name reply without another read.
+/// Surfaces can retain typed response-ceiling errors before this projection.
+///
+/// # Errors
+/// Returns the existing search/name projection fault for a changed reply shape or failed command.
+pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
+    match request {
+        Request::Search { text, .. } => {
+            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
+            let list = record_list(text, &snapshot);
+            let list = if let Some(status) = semantic_search {
+                list.with_semantic_search_status(status)
+            } else {
+                list
+            };
+            let list = if list.is_empty() {
+                list.with_empty_reason("no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword")
+            } else {
+                list
+            };
+            Ok(Answer::Records(Box::new(list)))
+        }
+        Request::Resolve { text, .. } => {
+            let CommandReply::Names(snapshot) = reply.reply else {
+                return Err(shape("resolve"));
+            };
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        _ => Err(shape("catalog window request")),
     }
 }
 
@@ -437,10 +501,16 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let CommandReply::Packages(snapshot) = reply.reply else {
         return Err(shape("packages"));
     };
-    Ok(Answer::Shelf(Box::new(shelf_from_snapshot(
-        &snapshot,
-        KeyTag::from_key(revision.as_bytes()),
-    ))))
+    let tag = KeyTag::from_key(revision.as_bytes());
+    // The packages reply carries the lane coverage of its revision but only
+    // package rows, so it cannot say how many rows the owner published. The
+    // health report can. Read it so `packages` and `status` print the same
+    // count; if it is unavailable or describes another revision, the shelf
+    // reports the count as unread rather than inventing one.
+    Ok(Answer::Shelf(Box::new(match engine.health() {
+        Ok(health) => shelf_from_snapshot_with_health(&snapshot, tag, &health),
+        Err(_) => shelf_from_snapshot(&snapshot, tag),
+    })))
 }
 
 /// Reads the whole engine state, without naming the caller's project.
@@ -499,7 +569,136 @@ fn accepted_view(heading: &str, path: &str, intent: IntentId) -> ProductView {
     )
 }
 
-fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
+/// Resolves a coordinate command's operand through the same admitted names
+/// projection used by `resolve`. Exact coordinates keep their native identity.
+/// A bounded page never certifies uniqueness while it has a continuation.
+///
+/// # Errors
+/// Returns an absent or ambiguous fault, or the existing native read failure.
+pub fn resolve_declaration(
+    engine: &mut dyn Engine,
+    text: &str,
+    command: &'static str,
+) -> Result<String, Fault> {
+    if text.starts_with('/')
+        || text.starts_with("pkg:")
+        || matches!(text.as_bytes(), [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
+    {
+        return Ok(text.to_owned());
+    }
+    let (qualifier, name) = text.rsplit_once("::").unwrap_or(("", text));
+    let (file, line) = qualifier
+        .rsplit_once(':')
+        .map_or((qualifier, None), |(file, line)| {
+            line.parse::<u32>()
+                .ok()
+                .map_or((qualifier, None), |line| (file, Some(line)))
+        });
+    let file_qualified = !file.is_empty()
+        && crate::language::Language::from_path(&crate::identity::PackagePath::new(file))
+            != crate::language::Language::Unknown;
+    let query = if file_qualified { name } else { text };
+    let snapshot = snapshot(
+        engine,
+        Probe::Names {
+            text: query,
+            limit: 64,
+        },
+        "resolve",
+    )?;
+    let mut exact = Vec::new();
+    let mut folded = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in snapshot.root.rows() {
+        let record = crate::record::Record::from_row(row);
+        let identity = record.identity();
+        if !matches!(
+            identity.shape(),
+            crate::identity::IdentityShape::Declaration | crate::identity::IdentityShape::Semantic
+        ) || record.kind() == Some(backend_library::DeclarationKind::Import)
+            || !seen.insert(row.id)
+        {
+            continue;
+        }
+        if file_qualified
+            && (!identity.path().is_some_and(|path| {
+                path.as_str()
+                    .strip_suffix(file)
+                    .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('/'))
+            }) || line.is_some_and(|line| {
+                identity.line().map(crate::identity::LineNumber::get) != Some(line)
+            }))
+        {
+            continue;
+        }
+        let actual = if query.contains("::") {
+            row.label
+                .rsplit_once("::")
+                .map_or(row.label.as_str(), |(_, name)| name)
+        } else {
+            identity.name()
+        };
+        let exact_name =
+            actual == query || (query.contains("::") && row.label.ends_with(&format!("::{query}")));
+        if exact_name {
+            exact.push(row.label.clone());
+        } else if actual.eq_ignore_ascii_case(query) {
+            folded.push(row.label.clone());
+        }
+    }
+    let matches = if exact.is_empty() { folded } else { exact };
+    match matches.as_slice() {
+        [only] if snapshot.next.is_none() => Ok(only.clone()),
+        [] if snapshot.next.is_none() => Err(Fault::new(
+            crate::fault::FaultSlug::NotFound,
+            Operand::Argument(text.to_owned()),
+            crate::fault::Cause::new(
+                crate::fault::CauseSlug::Absent,
+                "no declaration matches this name in the selected revision",
+            ),
+            Affordance::UseCommand {
+                name: "resolve",
+                args: Box::new([text.to_owned()]),
+            },
+        )),
+        _ => {
+            let retries = matches
+                .iter()
+                .take(8)
+                .map(|coordinate| {
+                    Affordance::UseCommand {
+                        name: command,
+                        args: Box::new([coordinate.clone()]),
+                    }
+                    .shell()
+                    .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let extent = if snapshot.next.is_some() {
+                "the bounded name page does not prove a unique declaration"
+            } else {
+                "several distinct declarations match this name"
+            };
+            Err(Fault::new(
+                crate::fault::FaultSlug::Ambiguous,
+                Operand::Argument(text.to_owned()),
+                crate::fault::Cause::new(
+                    crate::fault::CauseSlug::Unproven,
+                    format!("{extent}; use an exact coordinate: {retries}"),
+                ),
+                Affordance::UseCommand {
+                    name: "resolve",
+                    args: Box::new([text.to_owned()]),
+                },
+            ))
+        }
+    }
+}
+
+fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
+    let coordinate = resolve_declaration(engine, text, "show")?;
+    let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Document(coordinate))?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("document"));
@@ -517,7 +716,9 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
     ))
 }
 
-fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
+fn source(engine: &mut dyn Engine, text: &str) -> Result<Answer, Fault> {
+    let coordinate = resolve_declaration(engine, text, "source")?;
+    let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Source(coordinate))?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("source"));
@@ -531,7 +732,9 @@ fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
     Ok(Answer::Page(Box::new(page)))
 }
 
-fn neighbourhood(engine: &mut dyn Engine, at: &str, incoming: bool) -> Result<Answer, Fault> {
+fn neighbourhood(engine: &mut dyn Engine, text: &str, incoming: bool) -> Result<Answer, Fault> {
+    let at = resolve_declaration(engine, text, if incoming { "related" } else { "graph" })?;
+    let at = at.as_str();
     let reply = read(
         engine,
         if incoming {
@@ -571,12 +774,35 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {
+    let admit = |text: String| {
+        backend_library::ProductText::new(text.clone())
+            .map_err(|error| Fault::admission(error, Operand::Argument(text)))
+    };
+    let command = match command {
+        SurfaceCommand::References { target } => SurfaceCommand::References {
+            target: admit(resolve_declaration(engine, target.as_str(), "references")?)?,
+        },
+        SurfaceCommand::Read { locators } => {
+            let mut resolved = Vec::with_capacity(locators.len());
+            for locator in locators {
+                resolved.push(admit(resolve_declaration(
+                    engine,
+                    locator.as_str(),
+                    "read",
+                )?)?);
+            }
+            SurfaceCommand::Read {
+                locators: resolved.into_boxed_slice(),
+            }
+        }
+        other => other.clone(),
+    };
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Product(Box::new(crate::product_view_for_command(
-        command, &reply,
-    ))))
+    Ok(Answer::Product(Box::new(
+        crate::product_view_for_owned_command(&command, reply),
+    )))
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {
@@ -1372,5 +1598,119 @@ mod document_member_paging_controls {
                 "exact original owner cursor was forwarded"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod declaration_resolution_controls {
+    use super::*;
+    use backend_library::{
+        Basis, Cursor, DeclarationKind, Freshness, Frontier, RowId, SourceLocation, ViewRoot,
+        object_version, package_key, symbol_key, view_key, view_state_root,
+    };
+
+    struct Reader {
+        snapshot: ViewSnapshot,
+        calls: usize,
+    }
+    impl Engine for Reader {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            Ok(self.snapshot.root.basis().root)
+        }
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            Err(ClientError::Protocol("not a readiness control".to_owned()))
+        }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol("not a surface control".to_owned()))
+        }
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            assert!(matches!(probe, Probe::Names { .. }));
+            self.calls += 1;
+            Ok(ReplyDto::new(1, CommandReply::Names(self.snapshot.clone())))
+        }
+    }
+    fn reader(paths: &[(&str, u32, &str)], more: bool) -> Reader {
+        let basis = Basis::new(
+            view_state_root(&[]),
+            object_version(b"name resolution source control"),
+        );
+        let package = package_key("/workspace/go");
+        let rows = paths
+            .iter()
+            .map(|(path, line, name)| {
+                let label = format!("/workspace/go::{path}:{line}::{name}");
+                Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
+                    .with_kind(DeclarationKind::Function)
+                    .with_source(SourceLocation::new(path, *line).expect("captured site"))
+            })
+            .collect();
+        let root = ViewRoot::new_incomplete(
+            view_key(b"name control"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("control source rows");
+        let next = more.then(|| Cursor::for_view_root(&root));
+        Reader {
+            snapshot: ViewSnapshot {
+                root,
+                freshness: Freshness::Current,
+                next,
+                graph_relations: None,
+                rich_graph: None,
+            },
+            calls: 0,
+        }
+    }
+    #[test]
+    fn every_coordinate_command_uses_the_same_unique_name_resolution() {
+        for command in ["show", "source", "graph", "related", "references", "read"] {
+            let mut reader = reader(&[("api.go", 3, "Parse")], false);
+            assert_eq!(
+                resolve_declaration(&mut reader, "Parse", command).expect("unique native row"),
+                "/workspace/go::api.go:3::Parse"
+            );
+            assert_eq!(reader.calls, 1);
+        }
+    }
+    #[test]
+    fn a_distinct_test_or_example_declaration_is_never_silently_discarded() {
+        let mut reader = reader(
+            &[("api.go", 3, "Parse"), ("examples/api.go", 6, "Parse")],
+            false,
+        );
+        assert_eq!(
+            resolve_declaration(&mut reader, "Parse", "show")
+                .expect_err("two real declarations")
+                .slug(),
+            crate::FaultSlug::Ambiguous
+        );
+        assert_eq!(
+            resolve_declaration(&mut reader, "api.go:3::Parse", "show")
+                .expect("exact source qualifier"),
+            "/workspace/go::api.go:3::Parse"
+        );
+    }
+    #[test]
+    fn a_continuation_prevents_a_false_unique_result() {
+        let mut reader = reader(&[("api.go", 3, "Parse")], true);
+        assert_eq!(
+            resolve_declaration(&mut reader, "Parse", "show")
+                .expect_err("unseen rows may be distinct")
+                .slug(),
+            crate::FaultSlug::Ambiguous
+        );
+    }
+    #[test]
+    fn exact_coordinates_never_trigger_name_probes_or_rebind() {
+        let mut reader = reader(&[("api.go", 3, "Parse")], false);
+        let coordinate = "/workspace/go::semantic::exact-producer-identity::Parse";
+        assert_eq!(
+            resolve_declaration(&mut reader, coordinate, "show").expect("exact native operand"),
+            coordinate
+        );
+        assert_eq!(reader.calls, 0);
     }
 }

@@ -14,9 +14,9 @@
 pub mod checker;
 
 pub use self::checker::{
-    CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType, Pyrefly,
-    PyreflyExecutableError, PyreflyInvocationOptionsV1,
-    PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, SymbolOutcome, SymbolResolution,
+    CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
+    PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, Pyrefly, PyreflyExecutableError,
+    PyreflyInvocationOptionsV1, SymbolOutcome, SymbolResolution,
 };
 
 use std::collections::HashSet;
@@ -276,6 +276,13 @@ pub enum OccurrenceKind {
     MethodCall,
     /// A read of an attribute without a call.
     AttributeRead,
+    /// A use of a module-declared name that is neither the callee of a call
+    /// nor an attribute: a function passed as a value, a class named as a
+    /// base or an annotation, a decorator, a constant read.
+    NameRead,
+    /// The imported name of a module-level `from module import name`, at the
+    /// place it is written: the import statement's own use of what it names.
+    ImportBinding,
 }
 /// How a call's receiver was written, which decides the target key the
 /// occurrence resolves through. Bare-name and module-gated rows keep the
@@ -854,15 +861,21 @@ fn project(
 ) -> Result<(), ExtractionError> {
     let mut names = FunctionNames::default();
     let mut class_names = ClassNames::default();
+    let mut module_imports = ModuleImportNames::default();
+    let mut variable_names = Vec::new();
     for statement in &syntax.body {
         names.visit_stmt(statement);
         class_names.visit_stmt(statement);
+        module_imports.visit_stmt(statement);
+        collect_module_variable_names(statement, &mut variable_names);
     }
     let error = {
         let mut projection = Projection {
             text,
             names: &names.0,
             class_names: &class_names.0,
+            variable_names: &variable_names,
+            module_import_names: &module_imports.0,
             facts,
             owner: MODULE_IDENTITY.to_owned(),
             class_depth: 0,
@@ -1225,6 +1238,37 @@ impl<'a> Visitor<'a> for ClassNames {
     }
 }
 
+/// The names `import module [as alias]` binds anywhere in the module.
+#[derive(Default)]
+struct ModuleImportNames(Vec<String>);
+impl<'a> Visitor<'a> for ModuleImportNames {
+    fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
+        if let ast::Stmt::Import(import) = statement {
+            for alias in &import.names {
+                self.0.push(alias_binding(alias, ImportBindingForm::Direct));
+            }
+        }
+        visitor::walk_stmt(self, statement);
+    }
+}
+
+/// The names one module-level statement binds by plain assignment.
+fn collect_module_variable_names(statement: &ast::Stmt, out: &mut Vec<String>) {
+    fn target(expr: &ast::Expr, out: &mut Vec<String>) {
+        match expr {
+            ast::Expr::Name(name) => out.push(name.id.as_str().to_owned()),
+            ast::Expr::Tuple(tuple) => tuple.elts.iter().for_each(|element| target(element, out)),
+            ast::Expr::List(list) => list.elts.iter().for_each(|element| target(element, out)),
+            _ => {}
+        }
+    }
+    match statement {
+        ast::Stmt::Assign(assign) => assign.targets.iter().for_each(|expr| target(expr, out)),
+        ast::Stmt::AnnAssign(assign) => target(&assign.target, out),
+        _ => {}
+    }
+}
+
 #[derive(Default)]
 struct FunctionNames(Vec<String>);
 impl<'a> Visitor<'a> for FunctionNames {
@@ -1301,6 +1345,11 @@ struct Projection<'a> {
     text: &'a str,
     names: &'a [String],
     class_names: &'a [String],
+    /// Names bound by module-level assignments. Only reads and bare calls
+    /// look at them: a receiver spelled like one is no module name.
+    variable_names: &'a [String],
+    /// Names bound by `import module [as alias]`, which stand for modules.
+    module_import_names: &'a [String],
     facts: &'a mut ModuleFacts,
     owner: String,
     class_depth: usize,
@@ -2172,6 +2221,40 @@ impl<'a> Projection<'a> {
         }
     }
 
+    /// Whether `name` is declared at module level: a function, a class, an
+    /// import or a module-level variable.
+    fn declares_name(&self, name: &str) -> bool {
+        self.names.iter().any(|declared| declared == name)
+            || self.variable_names.iter().any(|declared| declared == name)
+    }
+
+    /// Records one load of a module-declared name that is not a call's callee:
+    /// the call branch has already recorded the callee at the same span.
+    fn record_name_read(&mut self, expr: &ast::Expr, name: &ast::ExprName) {
+        let target = name.id.as_str();
+        if !self.declares_name(target) {
+            return;
+        }
+        let at = span(name.range);
+        if self
+            .facts
+            .occurrences
+            .last()
+            .is_some_and(|recorded| recorded.span == at)
+        {
+            return;
+        }
+        let owner = self.occurrence_owner(expr).to_owned();
+        self.facts.occurrences.push(OccurrenceFact {
+            owner,
+            target: target.to_owned(),
+            kind: OccurrenceKind::NameRead,
+            confidence: Confidence::Index,
+            span: at,
+            receiver: OccurrenceReceiver::None,
+        });
+    }
+
     fn record_attribute_occurrence(&mut self, owner: &str, attribute: &ast::ExprAttribute) {
         let target = attribute.attr.as_str();
         let attr_span = span(attribute.attr.range());
@@ -2517,6 +2600,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
         if let ast::Expr::Name(name) = expr {
             if name.ctx.is_store() {
                 self.note_assigned(name.id.as_str());
+            } else if name.ctx.is_load() {
+                self.record_name_read(expr, name);
             }
             return;
         }
@@ -2530,17 +2615,14 @@ impl<'a> Visitor<'a> for Projection<'a> {
             let recorded = match call.func.as_ref() {
                 ast::Expr::Name(name) => {
                     let target = name.id.as_str();
-                    self.names
-                        .iter()
-                        .any(|declared| declared == target)
-                        .then(|| {
-                            (
-                                target,
-                                OccurrenceKind::FunctionCall,
-                                OccurrenceReceiver::None,
-                                call.func.range(),
-                            )
-                        })
+                    self.declares_name(target).then(|| {
+                        (
+                            target,
+                            OccurrenceKind::FunctionCall,
+                            OccurrenceReceiver::None,
+                            call.func.range(),
+                        )
+                    })
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
@@ -2600,7 +2682,16 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
         }
         if let ast::Expr::Attribute(attribute) = expr {
-            self.visit_expr(attribute.value.as_ref());
+            // `module.name` reads the attribute; the module's own name is the
+            // qualifier there, not a use worth a row of its own.
+            let qualifies_a_module = matches!(
+                attribute.value.as_ref(),
+                ast::Expr::Name(name)
+                    if self.module_import_names.iter().any(|module| module == name.id.as_str())
+            );
+            if !qualifies_a_module {
+                self.visit_expr(attribute.value.as_ref());
+            }
             let owner = self.occurrence_owner(expr).to_owned();
             self.record_attribute_occurrence(&owner, attribute);
             return;
@@ -2700,6 +2791,18 @@ impl Projection<'_> {
             .as_ref()
             .map(|module| module.as_str().to_owned())
             .or_else(|| Some(alias.name.as_str().to_owned()));
+        let imports_a_name = alias.name.as_str() != "*"
+            && import.module.as_ref().map(|module| module.as_str()) != Some("__future__");
+        if imports_a_name {
+            self.facts.occurrences.push(OccurrenceFact {
+                owner: MODULE_IDENTITY.to_owned(),
+                target: alias.name.as_str().to_owned(),
+                kind: OccurrenceKind::ImportBinding,
+                confidence: Confidence::Index,
+                span: span(alias.name.range()),
+                receiver: OccurrenceReceiver::None,
+            });
+        }
         self.add_declaration(DeclarationFact {
             name: binding,
             name_span: binding_span,

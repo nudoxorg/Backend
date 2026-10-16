@@ -434,9 +434,9 @@ impl<'facts> PreparedFragment<'facts> {
             }
         }
         if let Some(lane) = occurrences {
-            lane.admit(u32::from(entity_count))
-                .map_err(|fault| PrepareError::OccurrenceLane {
-                    ordinal: 0,
+            lane.admit_indexed(u32::from(entity_count))
+                .map_err(|(ordinal, fault)| PrepareError::OccurrenceLane {
+                    ordinal,
                     fault: crate::ir::semantic_facts::occurrence_view_fault(fault),
                 })?;
         }

@@ -42,16 +42,30 @@ mod package_graph;
 mod package_graph_page;
 mod progress;
 mod python_project;
+mod query_window;
+pub use query_window::{QueryPosition, QueryWindow};
 pub use python_project::{
     PYTHON_PROJECT_EXTRACTION_POLICY, PythonDependencyDeclaration, PythonMetadataEvidence,
     PythonMetadataFact, PythonProjectMetadata,
 };
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
+mod owner_statement;
+pub use owner_statement::{NativeOwnerStatement, seal_native_owner_statement, verify_native_owner_statement};
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
 mod semantic_shape;
+mod semantic_source;
+pub use semantic_source::{
+    AdmittedSemanticSourceChunk, SemanticHistoryProofReference, SemanticSourceAssembly,
+    SemanticSourceChunk, SemanticSourceDocument, SemanticSourceError, SemanticSourceHistory,
+    SemanticSourceIdentity, SemanticSourceMetadata, SemanticSourceRange,
+    SemanticSourceRecordSchema, SemanticSourceReference, SemanticSourceRequest,
+    SemanticVersionDescriptor, SemanticVersionsCursor, SemanticVersionsCursorClaims, SemanticVersionsPage,
+    VerifiedSemanticVersionsCursor,
+    VerifiedSemanticSourceReference, canonical_semantic_source,
+};
 mod source_atom;
 mod source_discovery;
 mod source_membership;
@@ -146,7 +160,7 @@ pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,
 };
 pub use cursor::{
-    CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, Cursor, CursorError, CursorEvent,
+    CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, CURSOR_WINDOW_QUERY_BYTES, Cursor, CursorError, CursorEvent,
     CursorRead, CursorResetReason, CursorSub,
 };
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
@@ -174,6 +188,7 @@ pub use package_graph_page::{
     MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_PAGE_ROWS, PACKAGE_GRAPH_PAGE_SCHEMA,
     PackageGraphControl, PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge,
     PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
+    VerifiedPackageGraphPageRequest,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
@@ -216,9 +231,9 @@ pub use semantic_shape::{
     SemanticShapeAdmissionSummary, SemanticShapeBatch, SemanticShapeBudget, SemanticShapeEntry,
     SemanticShapeError, SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
     SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeMemberName,
-    SemanticShapeReadRequest, SemanticShapeRequest, SemanticShapeSelection,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
+    SemanticShapeReadRequest, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSource,
+    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticSourceEpoch, SemanticTypeElement,
+    SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
     semantic_shape_source_preimage,
 };
 pub use source_atom::SourceAtomText;
@@ -301,6 +316,7 @@ pub use view::{
     ViewSnapshotPage, resolve_selected_document_row, resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
+pub use wire::{BoundedJsonError, encode_reply_body_bounded};
 pub use wire::{
     CommandDto, DTO_VERSION, EventDto, JournalViewGrammarV3, MAX_COMMAND_BODY, MAX_COMMAND_TEXT,
     MAX_REPLY_BODY, ReplyAdmissionError, ReplyDto, RequestAdmissionError, SnapshotHydrator,

@@ -5,6 +5,7 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+mod backoff;
 #[cfg(any(unix, windows))]
 mod deferred_command;
 pub mod lease_contract;
@@ -13,6 +14,7 @@ pub mod monotonic;
 mod query_continuation;
 #[cfg(any(unix, windows))]
 mod query_preparation;
+pub use backoff::Backoff;
 #[cfg(any(unix, windows))]
 pub use query_preparation::QueryPreparationProgress;
 #[cfg(any(unix, windows))]
@@ -244,6 +246,17 @@ pub enum ClientError {
     Protocol(String),
     /// A bounded transport allocation was rejected.
     Transport(ReplicationError),
+    /// A native reply exceeded its byte/allocation ceiling after request admission.
+    /// Pure windowed reads may reduce delivery; request/proof overflow is distinct.
+    ResponseTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
+    /// Only the reply frame header was consumed. The transport is unusable.
+    ResponseFrameTooLarge {
+        /// Immutable catalog revision supplied to the refused native request.
+        basis: Option<backend_library::ViewRevision>,
+    },
     /// The application service rejected an admitted command.
     CommandFailed(CommandFailure),
     /// A successful view reply was not coherent.
@@ -319,6 +332,11 @@ impl fmt::Display for ClientError {
             Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
+            Self::ResponseTooLarge { .. } => {
+                formatter.write_str("native reply exceeds its bounded byte/allocation ceiling")
+            }
+            Self::ResponseFrameTooLarge { .. } => formatter
+                .write_str("native reply frame exceeds its ceiling; the connection was retired"),
             Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
             Self::IncoherentView => formatter.write_str("daemon returned an incoherent view"),
             Self::BasisMismatch { .. } => {
@@ -344,6 +362,81 @@ impl fmt::Display for ClientError {
             Self::RemoteCapabilityRevoked => {
                 formatter.write_str("remote grant was revoked by its owner")
             }
+        }
+    }
+}
+
+impl ClientError {
+    /// Returns whether no owner answered the dial: the endpoint refused the
+    /// connection or its socket file is gone.
+    ///
+    /// This is the one fact that justifies starting a replacement owner. A
+    /// dead daemon leaves its socket file behind, so an absent owner usually
+    /// shows up as a refused dial rather than a missing path. Slow or busy
+    /// listeners (`TimedOut`, `WouldBlock`) are deliberately not absent: a
+    /// live owner that is merely behind must never get a second candidate.
+    #[must_use]
+    pub fn is_owner_absent(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_owner_absent_kind(*kind))
+    }
+
+    /// Returns whether the peer tore the connection down or was never there:
+    /// reset, aborted, broken pipe, not connected, end of file, a closed peer
+    /// reported as invalid input, or an absent owner
+    /// ([`ClientError::is_owner_absent`]).
+    ///
+    /// Callers use it to decide that opening a fresh connection may help. It
+    /// is not proof that the owner is gone: a healthy owner retires a
+    /// connection that reached its frame budget, and a dying owner can still
+    /// complete a dial before its socket closes. It excludes slow-listener
+    /// timeouts and every protocol, authority or cancellation failure.
+    #[must_use]
+    pub fn is_connection_lost(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_connection_lost_kind(*kind))
+    }
+
+    /// Returns whether the owner is listening but did not answer inside the
+    /// read window: a request timed out (`TimedOut`, or `WouldBlock` where the
+    /// platform reports a socket read timeout that way).
+    ///
+    /// This is the opposite fact from [`ClientError::is_owner_absent`]. A slow
+    /// owner is a live owner, so it never authorizes starting another one; it
+    /// is not [`ClientError::is_connection_lost`] either, because nothing
+    /// proves the peer closed. A caller whose request is a read that can be
+    /// repeated may drop the connection, dial the *existing* listener again,
+    /// and ask again.
+    #[must_use]
+    pub fn is_owner_slow(&self) -> bool {
+        matches!(self, Self::Disconnected(kind) if is_owner_slow_kind(*kind))
+    }
+
+    /// Returns whether the owner is unavailable *for now* in a way an
+    /// idempotent read can simply outwait: the connection was lost, a live
+    /// owner did not answer in time, or an owner candidate is still starting.
+    ///
+    /// It says nothing about whether a command took effect, so only a read
+    /// that changes nothing (a poll, a pinned query, a keyed status read) may
+    /// act on it by asking again. It never authorizes starting an owner: that
+    /// takes [`ClientError::is_owner_absent`] alone.
+    #[must_use]
+    pub fn is_owner_gap(&self) -> bool {
+        self.is_connection_lost() || self.is_owner_slow() || self.is_owner_starting()
+    }
+
+    /// Returns whether an owner candidate is still starting, so no command was
+    /// submitted and the same bounded wait may be repeated.
+    #[must_use]
+    pub fn is_owner_starting(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(
+                self,
+                Self::Startup(failure) if failure.cause() == StartupFailureCause::OwnerPending
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            false
         }
     }
 }
@@ -405,6 +498,28 @@ pub trait CommandTransport {
     fn reconnect(&mut self) -> Result<(), ClientError> {
         Ok(())
     }
+
+    /// Request frames the owner will still accept on the current connection,
+    /// or `None` for a transport with no per-connection frame budget.
+    fn frames_remaining(&self) -> Option<usize> {
+        None
+    }
+
+    /// Opens a fresh authenticated connection to the *same* endpoint within
+    /// `budget`, observing the caller's cancellation. It never starts an owner.
+    ///
+    /// Returns `Ok(false)` for a transport that has no connection to reopen.
+    ///
+    /// # Errors
+    /// Returns the dial or authentication failure of the replacement.
+    #[cfg(any(unix, windows))]
+    fn reconnect_within(
+        &mut self,
+        _budget: Duration,
+        _context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        Ok(false)
+    }
 }
 
 /// Command transport with an explicit coverage-capability path.
@@ -465,6 +580,12 @@ pub struct UnixCommandTransport {
     endpoint: Option<std::path::PathBuf>,
     connect_timeout: Duration,
     io_timeout: Duration,
+    /// Request frames written on the current connection. The owner retires a
+    /// connection after `frame_budget` frames, so these two say when the next
+    /// frame would be refused.
+    frames_sent: usize,
+    /// Frames the owner serves per connection ([`connection_frame_budget`]).
+    frame_budget: usize,
 }
 
 #[cfg(any(unix, windows))]
@@ -583,6 +704,8 @@ impl UnixCommandTransport {
             endpoint: Some(path.to_path_buf()),
             connect_timeout,
             io_timeout,
+            frames_sent: 0,
+            frame_budget: connection_frame_budget(),
         })
     }
 
@@ -598,6 +721,8 @@ impl UnixCommandTransport {
             endpoint: None,
             connect_timeout: LOCAL_CONNECT_TIMEOUT,
             io_timeout: CLIENT_REQUEST_TIMEOUT,
+            frames_sent: 0,
+            frame_budget: connection_frame_budget(),
         }
     }
 
@@ -636,6 +761,34 @@ impl UnixCommandTransport {
 impl CommandTransport for UnixCommandTransport {
     fn interrupt_handle(&self) -> Option<TransportInterrupt> {
         self.interrupt.clone()
+    }
+
+    fn frames_remaining(&self) -> Option<usize> {
+        Some(self.frame_budget.saturating_sub(self.frames_sent))
+    }
+
+    fn reconnect_within(
+        &mut self,
+        budget: Duration,
+        context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        let Some(endpoint) = self.endpoint.clone() else {
+            return Ok(false);
+        };
+        let replacement = Self::connect_with_context(
+            endpoint,
+            self.connect_timeout.min(budget),
+            self.io_timeout,
+            context,
+        )?;
+        // The replacement already bound its own interrupt to `context`, so it
+        // is adopted whole rather than retargeting the retired one.
+        self.stream = replacement.stream;
+        self.interrupt = replacement.interrupt;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
+        Ok(true)
     }
 
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
@@ -719,6 +872,7 @@ impl CommandTransport for UnixCommandTransport {
         self.stream = replacement.stream;
         self.peer = replacement.peer;
         self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
         Ok(())
     }
 }
@@ -890,6 +1044,13 @@ impl Session {
         }
     }
 
+    /// Borrows the existing caller scope so bounded read retries preserve its
+    /// absolute deadline and cancellation rather than renewing a request.
+    #[must_use]
+    pub fn request_context(&self) -> Option<&RequestContext> {
+        self.request_context.as_ref()
+    }
+
     /// Installs or retires the context for one caller-owned request.
     /// # Errors
     /// Returns cancellation if this request stopped before transport admission.
@@ -920,6 +1081,19 @@ impl Session {
     #[must_use]
     pub fn endpoint(&self) -> &Path {
         &self.endpoint
+    }
+
+    /// Returns how many more request frames the owner will accept on this
+    /// connection, or `None` when the transport has no frame budget.
+    ///
+    /// The owner closes a connection once it has served its budget, whatever
+    /// the next frame is. A caller about to send a command that must not be
+    /// replayed should open a fresh connection first when this is small:
+    /// writing it to a connection the owner is about to retire leaves its
+    /// admission unknowable.
+    #[must_use]
+    pub fn connection_frames_remaining(&self) -> Option<usize> {
+        self.transport.frames_remaining()
     }
 
     /// Returns a connection interrupt for a caller's request lifetime.
@@ -960,7 +1134,9 @@ impl Session {
         let encoded = token
             .strip_prefix("pc1-")
             .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
-        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2) {
+        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+            && encoded.len() != backend_library::CURSOR_WINDOW_QUERY_BYTES.saturating_mul(2)
+        {
             return Err(ClientError::Protocol(
                 "malformed continuation token".to_owned(),
             ));
@@ -1189,6 +1365,55 @@ impl Session {
         })
     }
 
+    /// Reads a complete native catalog window under unchanged issued credit.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn search_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        self.with_default_search_wait(|this| {
+            let deadline = query_preparation::QueryReadDeadline::new(
+                CLIENT_REQUEST_TIMEOUT,
+                this.search_wait_scope
+                    .as_ref()
+                    .or(this.request_context.as_ref()),
+            )?;
+            if this.prepared_query.is_some() {
+                return this.resume_prepared_query_window(
+                    "Search",
+                    text,
+                    window.issued().get(),
+                    continuation,
+                    Some(deadline.remaining()?),
+                    Some(window),
+                );
+            }
+            let revision = this.revision_with_budget(deadline.remaining()?)?;
+            let query = Query::new(text, revision.root, window.issued())
+                .with_window(window)
+                .ok_or_else(|| ClientError::Protocol("search window changed credit".to_owned()))?;
+            let query = if let Some(cursor) = continuation {
+                query.with_cursor(cursor.cursor())
+            } else {
+                query
+            };
+            this.send_success_with_budget(
+                Command::Search(query),
+                Some(this.page_certificate(revision.certificate, continuation)),
+                Some(deadline.remaining()?),
+            )
+        })
+    }
+
     fn with_default_search_wait<T>(
         &mut self,
         call: impl FnOnce(&mut Self) -> Result<T, ClientError>,
@@ -1276,6 +1501,46 @@ impl Session {
         )
     }
 
+    /// Reads a complete name window, independently bounding this delivery.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn names_page_window(
+        &mut self,
+        text: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_query_window(
+                "Name",
+                text,
+                window.issued().get(),
+                continuation,
+                None,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let query = NameQuery::new(text, revision.root, window.issued())
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("name window changed credit".to_owned()))?;
+        let query = if let Some(cursor) = continuation {
+            query.with_cursor(cursor.cursor())
+        } else {
+            query
+        };
+        self.send_success(
+            Command::Name(query),
+            Some(self.page_certificate(revision.certificate, continuation)),
+        )
+    }
+
     /// Reads one declaration document by its canonical coordinate.
     ///
     /// # Errors
@@ -1356,6 +1621,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_outline(package_key(coordinate), limit, continuation);
+        }
         let revision = self.revision()?;
         let package = package_key(coordinate);
         let certificate = revision.certificate.with_claim_once(WireClaim::Key {
@@ -1459,6 +1727,48 @@ impl Session {
             value: coordinate.to_owned(),
         });
         let page = page_request(revision.root, limit, continuation)?;
+        self.send_success(
+            Command::GraphPage {
+                symbol: SymbolAddress::canonical(symbol),
+                page,
+            },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
+    /// Reads a plain graph window from the exact admitted input frontier.
+    /// Continued adaptive reads require an imported portable query command.
+    ///
+    /// # Errors
+    /// Refuses unprepared, stale or unrelated cursors, cancellation, and native reply failures.
+    pub fn graph_page_window(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if window.is_windowed() && continuation.is_some() && self.prepared_query.is_none() {
+            return Err(ClientError::Protocol("adaptive catalog continuation requires an imported portable query command; legacy active-session cursors retain their fixed-width API".to_owned()));
+        }
+
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_graph_window(
+                SymbolAddress::canonical(symbol_key(coordinate)),
+                window.issued().get(),
+                continuation,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let symbol = symbol_key(coordinate);
+        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+            value: coordinate.to_owned(),
+        });
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
         self.send_success(
             Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
@@ -1607,8 +1917,15 @@ impl Session {
             let budget = request
                 .budget()
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            let source = match request.source() {
+                backend_library::SemanticShapeSource::Inline(source) => source.clone(),
+                backend_library::SemanticShapeSource::Reference(reference) => {
+                    self.semantic_source(reference.clone())?
+                }
+            };
             let (_, admitted_request, reply) = self.read_semantic_shapes(
-                request.source().clone(),
+                source,
+                request.source_epoch(),
                 keys.into_boxed_slice(),
                 budget,
             )?;
@@ -1619,6 +1936,20 @@ impl Session {
             .map_err(ClientError::Protocol)?;
             return Ok(SurfaceReply::SemanticShapes(export));
         }
+        let source_read = match &command {
+            SurfaceCommand::SemanticSource { request } => {
+                Some((request.reference.source.clone(), request.range.clone()))
+            }
+            _ => None,
+        };
+        let version_read = match &command {
+            SurfaceCommand::SemanticVersions {
+                package,
+                limit,
+                cursor,
+            } => Some((package.clone(), *limit, cursor.clone())),
+            _ => None,
+        };
         let expected = command.id();
         let reply = self.send_success(Command::Surface(command), None)?;
         let CommandReply::Surface(reply) = reply.reply else {
@@ -1626,9 +1957,29 @@ impl Session {
                 "surface reply changed shape".to_owned(),
             ));
         };
-        reply
-            .admit(expected)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if let Some((source, range)) = source_read {
+            let SurfaceReply::SemanticSource(chunk) = &reply else {
+                return Err(ClientError::Protocol(
+                    "semantic source reply changed shape".to_owned(),
+                ));
+            };
+            chunk
+                .admit_range(&source, &range)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        } else {
+            reply
+                .admit(expected)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
+        if let Some((package, limit, cursor)) = version_read {
+            let SurfaceReply::SemanticVersionsPage(page) = &reply else {
+                return Err(ClientError::Protocol(
+                    "paged semantic-versions command requires a native descriptor page".to_owned(),
+                ));
+            };
+            page.admit_request(&package, limit, cursor.as_ref())
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
         Ok(reply)
     }
 
@@ -1792,12 +2143,117 @@ impl Session {
         &mut self,
         package: PackageReference,
     ) -> Result<Box<[SemanticVersionRecord]>, ClientError> {
-        match self.surface(SurfaceCommand::SemanticVersions { package })? {
-            SurfaceReply::SemanticVersions(records) => Ok(records),
+        let mut cursor = None;
+        let mut records = Vec::new();
+        loop {
+            let reply = self.surface(SurfaceCommand::SemanticVersions {
+                package: package.clone(),
+                limit: 1,
+                cursor,
+            })?;
+            let SurfaceReply::SemanticVersionsPage(page) = reply else {
+                return Err(ClientError::Protocol(
+                    "semantic versions reply changed shape".to_owned(),
+                ));
+            };
+            for entry in &page.entries {
+                let backend_library::SemanticVersionDescriptor::Available { reference } = entry
+                else {
+                    return Err(ClientError::Protocol(
+                        "exact semantic source retention is unavailable".to_owned(),
+                    ));
+                };
+                records.push(self.semantic_source(reference.clone())?);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(records.into_boxed_slice())
+    }
+
+    /// Reads a bounded native version descriptor page with exact root bindings.
+    ///
+    /// # Errors
+    /// Refuses stale/foreign continuations and malformed native page replies.
+    pub fn semantic_versions_page(
+        &mut self,
+        package: PackageReference,
+        limit: u16,
+        cursor: Option<backend_library::SemanticVersionsCursor>,
+    ) -> Result<backend_library::SemanticVersionsPage, ClientError> {
+        match self.surface(SurfaceCommand::SemanticVersions {
+            package,
+            limit,
+            cursor,
+        })? {
+            SurfaceReply::SemanticVersionsPage(page) => Ok(page),
             _ => Err(ClientError::Protocol(
-                "semantic versions reply changed shape".to_owned(),
+                "semantic versions page changed shape".to_owned(),
             )),
         }
+    }
+
+    /// Reconstructs one complete captured record through exact native ranges.
+    ///
+    /// # Errors
+    /// Refuses gaps, reordered or foreign chunks, changed extents and digest
+    /// mismatch; each source read retains the same portable owner reference.
+    pub fn semantic_source(
+        &mut self,
+        reference: backend_library::SemanticSourceReference,
+    ) -> Result<SemanticVersionRecord, ClientError> {
+        let mut assembly = backend_library::SemanticSourceAssembly::new(reference.source.clone())
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        loop {
+            let range = backend_library::SemanticSourceRange {
+                offset: assembly
+                    .offset()
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?,
+                ..Default::default()
+            };
+            let admitted = self.semantic_source_range(&reference, range)?;
+            let complete = admitted.complete();
+            assembly
+                .append_admitted(admitted)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            if complete {
+                break;
+            }
+        }
+        assembly
+            .finish()
+            .map_err(|error| ClientError::Protocol(error.to_string()))
+    }
+
+    fn semantic_source_range(
+        &mut self,
+        reference: &backend_library::SemanticSourceReference,
+        range: backend_library::SemanticSourceRange,
+    ) -> Result<backend_library::AdmittedSemanticSourceChunk, ClientError> {
+        let command = SurfaceCommand::SemanticSource {
+            request: backend_library::SemanticSourceRequest {
+                reference: reference.clone(),
+                range: range.clone(),
+            },
+        };
+        command
+            .admit()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let reply = self.send_success(Command::Surface(command), None)?;
+        let CommandReply::Surface(SurfaceReply::SemanticSource(chunk)) = reply.reply else {
+            return Err(ClientError::Protocol(
+                "semantic source range reply changed shape".to_owned(),
+            ));
+        };
+        let admitted = chunk
+            .admit_decoded()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        admitted
+            .correlate(&reference.source, &range)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(admitted)
     }
 
     /// Reads one bounded page of exact source File rows selected by a local Project.
@@ -1857,11 +2313,13 @@ impl Session {
     pub fn semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: &[SymbolKey],
         budget: SemanticShapeBudget,
     ) -> Result<SemanticShapeBatch, ClientError> {
         self.read_semantic_shapes(
             source,
+            source_epoch,
             symbols
                 .iter()
                 .copied()
@@ -1876,6 +2334,7 @@ impl Session {
     fn read_semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: Box<[SymbolAddress]>,
         budget: SemanticShapeBudget,
     ) -> Result<(SemanticShapeBatch, SemanticShapeRequest, ReplyDto), ClientError> {
@@ -1893,8 +2352,9 @@ impl Session {
                     id: encode_id(&symbol.claimed_bytes()),
                 })
             });
-        let request = SemanticShapeRequest::new(revision.root, source, symbols, budget)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let request =
+            SemanticShapeRequest::new(revision.root, source, source_epoch, symbols, budget)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let reply =
             self.send_success(Command::SemanticShapes(request.clone()), Some(certificate))?;
         let CommandReply::SemanticShapes(batch) = &reply.reply else {
@@ -1982,6 +2442,7 @@ impl Session {
                 | Command::Name(_)
                 | Command::GraphQuery(_)
                 | Command::GraphPage { .. }
+                | Command::OutlinePage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
         let remaining = remaining.map(|budget| budget.saturating_sub(started.elapsed()));
@@ -2139,6 +2600,11 @@ fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {
 
 fn require_command_success(reply: ReplyDto) -> Result<ReplyDto, ClientError> {
     match &reply.reply {
+        CommandReply::Failed(CommandFailure::ReplyTooLarge { basis }) => {
+            Err(ClientError::ResponseTooLarge {
+                basis: Some(*basis),
+            })
+        }
         CommandReply::Failed(failure) => Err(ClientError::CommandFailed(failure.clone())),
         // `Error` remains decodable for peers using the pre-typed reply schema.
         CommandReply::Error(message) => Err(ClientError::Protocol(message.clone())),
@@ -2225,9 +2691,11 @@ fn configure_timeout(
 /// reset on an already-open stream. This matters during a daemon restart:
 /// the endpoint can exist while no listener is bound for a short interval,
 /// and the reconnect policy must be allowed to retry that bounded race.
+/// A refused dial or a missing socket is `Disconnected` for exactly that
+/// reason; see [`ClientError::is_owner_absent`].
 #[cfg(any(unix, windows))]
 fn map_endpoint_connect_error(error: std::io::Error) -> ClientError {
-    if is_disconnect(error.kind()) || error.kind() == std::io::ErrorKind::NotFound {
+    if is_disconnect(error.kind()) || is_owner_absent_kind(error.kind()) {
         ClientError::Disconnected(error.kind())
     } else {
         ClientError::Io(error.to_string())
@@ -2250,13 +2718,13 @@ fn map_peer_authentication_error(
     let disconnected = |kind| ClientError::Disconnected(kind);
     match error {
         AuthenticationError::EndpointIo(kind)
-            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+            if is_disconnect(kind) || is_owner_absent_kind(kind) =>
         {
             disconnected(kind)
         }
         AuthenticationError::PeerAddress => disconnected(std::io::ErrorKind::ConnectionAborted),
         AuthenticationError::PeerCredentials(PeerCredentialError::Io(kind))
-            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+            if is_disconnect(kind) || is_owner_absent_kind(kind) =>
         {
             disconnected(kind)
         }
@@ -2271,6 +2739,40 @@ fn map_peer_authentication_error(
 /// handshake, send, and response read share this same absolute deadline.
 pub const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Request frames one local connection carries before the owner retires it.
+///
+/// The owner closes the connection after this many frames, whatever the next
+/// frame is, so a client that counts frames can open a fresh connection before
+/// writing a command whose admission it could not afterwards establish.
+pub const DEFAULT_CONNECTION_FRAME_BUDGET: usize = 256;
+
+/// Hidden test hook that lowers [`DEFAULT_CONNECTION_FRAME_BUDGET`] so
+/// connection retirement can be exercised deterministically on real binaries.
+/// The owner reads it when it builds its listener, and a client reads it to
+/// count against the same budget; both see it when they share an environment.
+pub const CONNECTION_FRAME_BUDGET_ENV: &str = "BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION";
+
+/// Parses the [`CONNECTION_FRAME_BUDGET_ENV`] value. Only a nonzero integer
+/// overrides the default; zero and malformed text leave it in force.
+#[must_use]
+pub fn parse_connection_frame_budget(value: Option<&str>) -> Option<usize> {
+    value?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|budget| *budget != 0)
+}
+
+/// Returns the per-connection frame budget this process counts against.
+#[must_use]
+pub fn connection_frame_budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        parse_connection_frame_budget(std::env::var(CONNECTION_FRAME_BUDGET_ENV).ok().as_deref())
+            .unwrap_or(DEFAULT_CONNECTION_FRAME_BUDGET)
+    })
+}
 
 /// Owner lease for durable writes that may synchronously compile or acquire a
 /// package before publishing their receipt.
@@ -2326,6 +2828,45 @@ const fn is_disconnect(kind: std::io::ErrorKind) -> bool {
     )
 }
 
+/// Dial outcomes that mean no listener is bound: a refused connection (the
+/// socket file outlives a killed daemon) or a missing socket file.
+///
+/// Kept apart from [`is_disconnect`] on purpose. `is_disconnect` classifies
+/// I/O on a stream that was open, where a refusal cannot occur and where a
+/// `Disconnected` command is reported as `MutationOutcomeUnknown`; a refused
+/// dial happens before any byte is sent.
+pub(crate) const fn is_owner_absent_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    )
+}
+
+/// Read-timeout outcomes: a socket read timeout surfaces as either kind
+/// depending on the platform. The owner is alive and did not answer in time.
+pub(crate) const fn is_owner_slow_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
+/// Every kind that is a peer teardown rather than a slow peer: stream loss
+/// plus an absent owner. `TimedOut` and `WouldBlock` are excluded because a
+/// listener that is merely slow or busy is still the owner.
+pub(crate) const fn is_connection_lost_kind(kind: std::io::ErrorKind) -> bool {
+    is_owner_absent_kind(kind)
+        || matches!(
+            kind,
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::InvalidInput
+        )
+}
+
 fn encode_request(request: &CommandDto) -> Result<Vec<u8>, ClientError> {
     admit_request(request)?;
     backend_library::encode_command_body(request).map_err(ClientError::Protocol)
@@ -2336,7 +2877,10 @@ fn write_body(writer: &mut impl Write, body: &[u8]) -> Result<(), ClientError> {
 }
 
 fn read_body(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
-    read_frame(reader, limits()).map_err(map_frame)
+    read_frame(reader, limits()).map_err(|error| match error {
+        LocalControlError::FrameTooLarge => ClientError::ResponseFrameTooLarge { basis: None },
+        other => map_frame(other),
+    })
 }
 
 /// Admits one bounded command.
@@ -2373,12 +2917,16 @@ pub fn admit_reply_with_capability(
 ) -> Result<ReplyDto, ClientError> {
     backend_library::admit_reply_with_capability(request, &reply, capability).map_err(map_reply)?;
     if backend_library::reply_memory_bound(&reply) > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     let encoded =
         serde_json::to_vec(&reply).map_err(|error| ClientError::Protocol(error.to_string()))?;
     if encoded.len() > MAX_FRAME {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        return Err(ClientError::ResponseTooLarge {
+            basis: query_continuation::basis(&request.command),
+        });
     }
     Ok(reply)
 }
@@ -2410,6 +2958,137 @@ fn map_reply(error: ReplyAdmissionError) -> ClientError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A killed daemon leaves its socket file behind, so "no owner" is a
+    /// refused dial, not a missing path. This reproduces that exact state with
+    /// a bound-then-dropped listener (std never unlinks on drop).
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_listeners_refused_dial_is_an_absent_owner_and_a_lost_connection() {
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-refused-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        drop(std::os::unix::net::UnixListener::bind(&path).expect("bind then drop"));
+        assert!(path.exists(), "the dead listener's socket file remains");
+
+        let refused = Session::connect(&path)
+            .err()
+            .expect("a socket file with no listener refuses the dial");
+        assert_eq!(
+            refused,
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionRefused),
+            "a refused dial is retryable owner absence, not a plain I/O fault"
+        );
+        assert!(refused.is_owner_absent());
+        assert!(refused.is_connection_lost());
+
+        let with_context = Session::connect_with_context(&path, RequestContext::new())
+            .err()
+            .expect("the scoped dial reports the same absence");
+        assert!(with_context.is_owner_absent());
+
+        std::fs::remove_file(&path).expect("remove dead socket file");
+        let missing = Session::connect(&path)
+            .err()
+            .expect("no socket file at all");
+        assert!(missing.is_owner_absent(), "{missing}");
+    }
+
+    #[test]
+    fn connection_loss_is_one_closed_classification() {
+        use std::io::ErrorKind;
+        for kind in [ErrorKind::ConnectionRefused, ErrorKind::NotFound] {
+            let error = ClientError::Disconnected(kind);
+            assert!(error.is_owner_absent(), "{kind:?}");
+            assert!(error.is_connection_lost(), "{kind:?} is also lost");
+        }
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+            ErrorKind::NotConnected,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::InvalidInput,
+        ] {
+            let error = ClientError::Disconnected(kind);
+            assert!(error.is_connection_lost(), "{kind:?}");
+            assert!(
+                !error.is_owner_absent(),
+                "{kind:?} is a live-peer teardown; it never proves the owner is gone"
+            );
+        }
+        // Slow or busy listeners are still the owner and never authorize a
+        // replacement; neither does any non-peer failure.
+        for kind in [ErrorKind::TimedOut, ErrorKind::WouldBlock] {
+            let error = ClientError::Disconnected(kind);
+            assert!(!error.is_connection_lost(), "{kind:?}");
+            assert!(!error.is_owner_absent(), "{kind:?}");
+            assert!(
+                error.is_owner_slow(),
+                "{kind:?} is a live owner that did not answer"
+            );
+        }
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            let error = ClientError::Disconnected(kind);
+            assert!(!error.is_connection_lost(), "{kind:?}");
+            assert!(!error.is_owner_absent(), "{kind:?}");
+            assert!(!error.is_owner_slow(), "{kind:?}");
+        }
+        for error in [
+            ClientError::Io("Connection refused (os error 111)".to_owned()),
+            ClientError::Protocol("proof".to_owned()),
+            ClientError::RemoteDeadlineExceeded,
+            ClientError::MutationOutcomeUnknown(ErrorKind::ConnectionReset),
+            ClientError::QueryPreparationDisconnected {
+                basis: backend_library::view_state_root(&[]).into(),
+                kind: ErrorKind::ConnectionReset,
+            },
+            ClientError::RequestCancelled(RequestCancellationReason::Explicit),
+        ] {
+            assert!(!error.is_connection_lost(), "{error}");
+            assert!(!error.is_owner_absent(), "{error}");
+            assert!(!error.is_owner_slow(), "{error}");
+            assert!(!error.is_owner_gap(), "{error}");
+        }
+        // An owner gap is what an idempotent read may outwait: lost, slow or
+        // starting; never a refusal of the request itself.
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+        ] {
+            assert!(ClientError::Disconnected(kind).is_owner_gap(), "{kind:?}");
+        }
+        assert!(!ClientError::Disconnected(ErrorKind::PermissionDenied).is_owner_gap());
+    }
+
+    /// A refusal only exists before a byte is sent. Frame-level I/O keeps its
+    /// own set, so a command in flight still reports an unknown outcome.
+    #[test]
+    fn a_refusal_is_not_a_frame_level_disconnect() {
+        assert!(!is_disconnect(std::io::ErrorKind::ConnectionRefused));
+        assert!(!is_disconnect(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            map_frame(LocalControlError::Io(std::io::ErrorKind::ConnectionRefused)),
+            ClientError::Io("local control I/O failed: ConnectionRefused".to_owned())
+        );
+        assert_eq!(
+            map_endpoint_connect_error(std::io::ErrorKind::ConnectionRefused.into()),
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionRefused)
+        );
+    }
 
     #[test]
     fn runtime_startup_conversion_preserves_typed_cause_and_original_diagnostic() {

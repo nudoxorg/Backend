@@ -1,7 +1,7 @@
 use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use super::identity::{declaration_coordinate, declaration_symbol};
 use super::semantic_profile_is_complete;
-use backend_compile::Container;
+use backend_compile::{Container, SourceBinding, SourceBindingIdentity};
 use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -237,6 +237,8 @@ impl ProjectTypeIndex {
 pub(super) struct StructuralDeclaration {
     pub(super) coordinate: String,
     pub(super) parent: Option<String>,
+    pub(super) parent_binding: Option<SourceBinding>,
+    binding_capture: Option<backend_compile::SourceBindingCapture>,
     pub(super) id: RowId,
     pub(super) identity_preimage: Option<RowIdentityPreimage>,
     pub(super) is_file_module: bool,
@@ -267,6 +269,7 @@ pub(super) struct StructuralFilePlan {
 #[derive(Default)]
 pub(super) struct StructuralProjectionPlan {
     files: BTreeMap<[u8; 32], StructuralFilePlan>,
+    by_binding: BTreeMap<([u8; 32], SourceBinding), (RowId, backend_compile::SourceBindingCapture)>,
     pub(super) by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
 }
 
@@ -324,7 +327,12 @@ impl StructuralProjectionPlan {
             let project = sources.projects.get(&file.project).ok_or_else(|| {
                 BuiltinModelError("structural source refers to a missing project".to_owned())
             })?;
-            if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
+            if semantic_profile_is_complete(
+                complete,
+                Some(project.package),
+                file.path,
+                file.python_version,
+            )? {
                 continue;
             }
             let containment = FileContainment::for_file(sources, record, &project.label)?;
@@ -333,14 +341,38 @@ impl StructuralProjectionPlan {
             let mut occurrences = BTreeMap::new();
             let mut declarations = Vec::new();
             visit_complete_declarations(sources, record, |declaration| {
+                declaration
+                    .admit_binding_parentage()
+                    .map_err(BuiltinModelError)?;
                 let coordinate = containment.coordinate(declaration);
-                let (id, identity_preimage) = declaration_symbol(
-                    &coordinate,
-                    declaration.kind(),
-                    declaration.signature(),
-                    duplicate_coordinates.contains(&coordinate),
-                    &mut occurrences,
-                );
+                let (id, identity_preimage) = if duplicate_coordinates.contains(&coordinate)
+                    && let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                {
+                    let (name_start, name_end) = binding.name();
+                    let preimage = format!("{coordinate}\0binding-v1\0{name_start}:{name_end}");
+                    (
+                        RowId::Symbol(backend_engine::symbol_key(&preimage)),
+                        Some(preimage),
+                    )
+                } else {
+                    declaration_symbol(
+                        &coordinate,
+                        declaration.kind(),
+                        declaration.signature(),
+                        duplicate_coordinates.contains(&coordinate),
+                        &mut occurrences,
+                    )
+                };
+                if let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                    && plan
+                        .by_binding
+                        .insert((*file_key, binding.binding()), (id, binding))
+                        .is_some()
+                {
+                    return Err(BuiltinModelError(
+                        "source repeats an exact binding identity".to_owned(),
+                    ));
+                }
                 let identity_preimage = identity_preimage
                     .map(RowIdentityPreimage::try_from)
                     .transpose()
@@ -358,6 +390,14 @@ impl StructuralProjectionPlan {
                 declarations.push(StructuralDeclaration {
                     coordinate,
                     parent,
+                    binding_capture: match declaration.binding_identity() {
+                        SourceBindingIdentity::Exact(capture) => Some(capture),
+                        _ => None,
+                    },
+                    parent_binding: match declaration.container() {
+                        Container::Binding { binding } => Some(*binding),
+                        _ => None,
+                    },
                     id,
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
@@ -380,6 +420,26 @@ impl StructuralProjectionPlan {
                     return Err(BuiltinModelError(
                         "structural file splice omitted a requested source".to_owned(),
                     ));
+                }
+            }
+        }
+        for (file_key, file) in &plan.files {
+            for declaration in &file.declarations {
+                if let Some(binding) = declaration.parent_binding {
+                    let (parent, parent_capture) =
+                        plan.by_binding.get(&(*file_key, binding)).ok_or_else(|| {
+                            BuiltinModelError(
+                                "exact structural parent binding is absent".to_owned(),
+                            )
+                        })?;
+                    let child = declaration.binding_capture.ok_or_else(|| {
+                        BuiltinModelError("exact parent lacks child evidence".to_owned())
+                    })?;
+                    if *parent == declaration.id || !parent_capture.strictly_contains(child) {
+                        return Err(BuiltinModelError(
+                            "exact parent does not strictly contain its child owner".to_owned(),
+                        ));
+                    }
                 }
             }
         }
@@ -406,6 +466,21 @@ impl StructuralProjectionPlan {
                 BuiltinModelError(
                     "structural declaration plan is out of sync with source".to_owned(),
                 )
+            })
+    }
+
+    /// Resolves an exact lexical target only within its owning file. Missing
+    /// targets are a capture/storage contract error, never a name fallback.
+    pub(super) fn binding_parent_id(
+        &self,
+        file_key: [u8; 32],
+        binding: SourceBinding,
+    ) -> Result<RowId, BuiltinModelError> {
+        self.by_binding
+            .get(&(file_key, binding))
+            .map(|(id, _)| *id)
+            .ok_or_else(|| {
+                BuiltinModelError("exact structural parent binding is absent".to_owned())
             })
     }
 
@@ -562,8 +637,14 @@ impl<'a> FileContainment<'a> {
         if is_file_module(declaration, self.path) {
             return None;
         }
+        if matches!(declaration.container(), Container::Binding { .. }) {
+            return None;
+        }
         Some(match declaration.container() {
             Container::Module => self.module_coordinate.clone(),
+            Container::Binding { .. } => {
+                unreachable!("exact targets resolve through binding identities")
+            }
             Container::Enclosing { name, line } => {
                 declaration_coordinate(self.label, self.path, line.get(), name)
             }
@@ -599,6 +680,7 @@ pub(super) fn projected_source_capacity(
                 .get(&fields.project)
                 .map(|project| project.package),
             fields.path,
+            fields.python_version,
         )? {
             continue;
         }
@@ -640,8 +722,8 @@ pub(super) fn profile_source_paths(
         let Some(file) = record.1.file_fields() else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };
@@ -666,8 +748,8 @@ pub(super) fn profile_source_identities(
         let Some(identity) = file.source_identity else {
             continue;
         };
-        let Some(profile) = super::super::ingest::source_profile(Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };
@@ -842,9 +924,35 @@ pub(super) fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
     false
 }
 
+/// How a call's receiver was written. The name-match heuristic has no types,
+/// so the written shape is all it can reason from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CallReceiver {
+    /// `name(...)`: no receiver at all.
+    Bare,
+    /// `a.name(...)`, `a.b.name(...)` or `A::name(...)`: a plain path of
+    /// identifiers written directly before the separator.
+    Path {
+        /// First identifier of the path.
+        root: String,
+        /// The identifier directly before the separator: the receiver itself,
+        /// the type of `a::Type::name()`.
+        last: String,
+        /// Number of identifiers in the path.
+        depth: usize,
+    },
+    /// The receiver is an expression, not a name: `f(x).name()`,
+    /// `xs[0].name()`, `"text".name()`, `1.name()`.
+    Expression {
+        /// A string, character or number literal: always a builtin type.
+        literal: bool,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CallSite {
     name: String,
-    qualifier: Option<String>,
+    receiver: CallReceiver,
 }
 
 enum ImportBindingKind {
@@ -883,31 +991,77 @@ fn parse_import_binding(declaration: &backend_compile::SourceDeclaration) -> Opt
     }
 }
 
-fn identifier_immediately_before_end(prefix: &str) -> Option<String> {
-    let mut end = prefix.len();
-    while end > 0 && !structural_ident_byte(prefix.as_bytes()[end - 1]) {
-        end -= 1;
-    }
-    if end == 0 {
-        return None;
-    }
+/// The identifier that ends exactly at `end` in `text`, as `(start, name)`.
+fn identifier_ending_at(text: &str, end: usize) -> Option<(usize, &str)> {
     let mut start = end;
-    while start > 0 && structural_ident_byte(prefix.as_bytes()[start - 1]) {
+    while start > 0 && structural_ident_byte(text.as_bytes()[start - 1]) {
         start -= 1;
     }
-    let qualifier = &prefix[start..end];
-    (!qualifier.is_empty()).then(|| qualifier.to_owned())
+    (start < end).then(|| (start, &text[start..end]))
 }
 
-fn structural_call_qualifier(excerpt: &str, name_at: usize) -> Option<String> {
+/// How the call whose name starts at `name_at` was written to its receiver:
+/// the whole receiver is read, never just the last word near it, so a call
+/// on the result of another call (`foo(x).bar()`) is an expression receiver
+/// and never takes `x` for a qualifier.
+fn structural_call_receiver(excerpt: &str, name_at: usize) -> CallReceiver {
     let before = excerpt[..name_at].trim_end();
-    if before.ends_with("::") {
-        return identifier_immediately_before_end(before[..before.len() - 2].trim_end());
+    let mut rest = if let Some(rest) = before.strip_suffix("::") {
+        rest
+    } else if let Some(rest) = before.strip_suffix('.') {
+        // `a?.b()` and `a!.b()` still read `a`.
+        rest.trim_end().trim_end_matches(['?', '!'])
+    } else {
+        return CallReceiver::Bare;
+    };
+    rest = rest.trim_end();
+    let Some(last) = rest.bytes().last() else {
+        return CallReceiver::Expression { literal: false };
+    };
+    if matches!(last, b'"' | b'\'' | b'`') {
+        return CallReceiver::Expression { literal: true };
     }
-    if before.ends_with('.') {
-        return identifier_immediately_before_end(before[..before.len() - 1].trim_end());
+    if !structural_ident_byte(last) {
+        return CallReceiver::Expression { literal: false };
     }
-    None
+    let mut depth = 0;
+    let mut root: &str;
+    let mut last = "";
+    let mut end = rest.len();
+    loop {
+        let Some((start, segment)) = identifier_ending_at(rest, end) else {
+            return CallReceiver::Expression { literal: false };
+        };
+        if depth == 0 {
+            last = segment;
+        }
+        depth += 1;
+        root = segment;
+        let head = rest[..start].trim_end();
+        if let Some(head) = head.strip_suffix("::").or_else(|| head.strip_suffix('.')) {
+            let head = head.trim_end();
+            if head.bytes().last().is_some_and(structural_ident_byte) {
+                end = head.len();
+                rest = head;
+                continue;
+            }
+            // `f(x).field.name()`: the path hangs off an expression.
+            return CallReceiver::Expression { literal: false };
+        }
+        break;
+    }
+    if root
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return CallReceiver::Expression { literal: true };
+    }
+    CallReceiver::Path {
+        root: root.to_owned(),
+        last: last.to_owned(),
+        depth,
+    }
 }
 
 fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
@@ -971,7 +1125,7 @@ fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
                         let absolute_at = scan_from + name_at;
                         sites.push(CallSite {
                             name: name.to_owned(),
-                            qualifier: structural_call_qualifier(excerpt, absolute_at),
+                            receiver: structural_call_receiver(excerpt, absolute_at),
                         });
                         index = after_name;
                         continue;
@@ -1105,6 +1259,36 @@ fn is_dotted_module_specifier(specifier: &str) -> bool {
         && specifier.split('.').all(|segment| !segment.is_empty())
 }
 
+/// A bare name that can be the name of a Python package: `inflect`, never
+/// `a.b`, `a/b`, `a::b` or a path.
+fn is_plain_identifier(specifier: &str) -> bool {
+    specifier
+        .bytes()
+        .next()
+        .is_some_and(|first| first == b'_' || first.is_ascii_alphabetic())
+        && specifier
+            .bytes()
+            .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+/// The `__init__.py` of the package a bare name imports: `import inflect`
+/// and `from inflect import x` name `inflect/__init__.py`.
+fn push_package_init_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_plain_identifier(specifier) {
+        return;
+    }
+    let init = format!("{specifier}/__init__.py");
+    for path in project_paths {
+        if path == &init || path.ends_with(&format!("/{init}")) {
+            resolved.insert(path.clone());
+        }
+    }
+}
+
 fn push_dotted_module_paths(
     specifier: &str,
     project_paths: &BTreeSet<String>,
@@ -1170,6 +1354,18 @@ fn push_go_import_paths(
     }
 }
 
+/// The directories a `@/` or `~/` import alias commonly names (a bundler or
+/// `tsconfig` `paths` entry such as `"@/*": ["./src/*"]`), tried in order.
+const PROJECT_ALIAS_ROOTS: &[&str] = &["src", ""];
+
+/// What follows the `@/` or `~/` of a project import alias.
+fn project_alias_rest(specifier: &str) -> Option<&str> {
+    specifier
+        .strip_prefix("@/")
+        .or_else(|| specifier.strip_prefix("~/"))
+        .filter(|rest| !rest.is_empty() && !rest.starts_with('/'))
+}
+
 pub(crate) fn resolve_specifier_paths(
     specifier: &str,
     caller_path: &str,
@@ -1185,6 +1381,18 @@ pub(crate) fn resolve_specifier_paths(
             .replace('\\', "/");
         let mut resolved = BTreeSet::new();
         push_resolved_candidate(&normalized, project_paths, &mut resolved);
+        return resolved;
+    }
+    if let Some(rest) = project_alias_rest(specifier) {
+        let mut resolved = BTreeSet::new();
+        for root in PROJECT_ALIAS_ROOTS {
+            let base = if root.is_empty() {
+                rest.to_owned()
+            } else {
+                format!("{root}/{rest}")
+            };
+            push_resolved_candidate(&base, project_paths, &mut resolved);
+        }
         return resolved;
     }
     if specifier.contains("::")
@@ -1214,6 +1422,7 @@ pub(crate) fn resolve_specifier_paths(
         }
     }
     push_dotted_module_paths(specifier, project_paths, &mut resolved);
+    push_package_init_paths(specifier, project_paths, &mut resolved);
     push_go_import_paths(specifier, project_paths, &mut resolved);
     push_rust_module_paths(specifier, project_paths, &mut resolved);
     push_c_family_paths(specifier, project_paths, &mut resolved);
@@ -1290,7 +1499,7 @@ fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
 
 #[path = "structural_calls.rs"]
 mod calls;
-pub(crate) use calls::StructuralCallResidence;
+pub(crate) use calls::{StructuralCallEndpoint, StructuralCallResidence};
 
 /// Same-file and import-resolved pairs from the exact selected source facts.
 /// Graph and references share the immutable typed projection behind this view.
@@ -1372,8 +1581,136 @@ pub(crate) fn view_row_for_structural_coordinate(
     }
 }
 
-/// Maps structural call coordinate pairs onto view rows, skipping pairs whose
-/// endpoints are absent or ambiguous in the published view.
+/// Borrowed row lookup shared by mapped graph and reference projection.
+/// Exact binding endpoints never resolve through a display-label map. Only a
+/// uniquely matching source site can retarget an absent structural row onto a
+/// semantic-shaped row; same-name/line ambiguity remains unresolved.
+pub(crate) struct StructuralCallRows<'a> {
+    view: &'a backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    first_label: BTreeMap<&'a str, RowId>,
+    by_source: BTreeMap<(&'a str, u32), Vec<&'a backend_engine::Row>>,
+}
+
+impl<'a> StructuralCallRows<'a> {
+    pub(crate) fn new(
+        view: &'a backend_engine::ViewRoot,
+        package: backend_engine::PackageKey,
+    ) -> Self {
+        let mut rows = Self {
+            view,
+            package,
+            first_label: BTreeMap::new(),
+            by_source: BTreeMap::new(),
+        };
+        for row in view.row_refs().filter(|row| row.package == Some(package)) {
+            rows.first_label.entry(&row.label).or_insert(row.id);
+            if let Some(location) = row.source.captured() {
+                rows.by_source
+                    .entry((location.path(), location.start_line()))
+                    .or_default()
+                    .push(row);
+            }
+        }
+        rows
+    }
+
+    pub(crate) fn mapped(&self, endpoint: &StructuralCallEndpoint) -> Option<RowId> {
+        match endpoint {
+            StructuralCallEndpoint::Binding {
+                source,
+                row,
+                location,
+                semantic_site_unique,
+                name,
+            } => {
+                if backend_engine::product_source_file_key(self.package.to_bytes(), location.path())
+                    != source.file
+                {
+                    return None;
+                }
+                if let Some(row) = self
+                    .view
+                    .row_ref(*row)
+                    .filter(|row| row.package == Some(self.package))
+                {
+                    return Some(row.id);
+                }
+                if !*semantic_site_unique {
+                    return None;
+                }
+                self.unique_source(location.path(), location.start_line(), name)
+            }
+            StructuralCallEndpoint::LegacyCoordinate(coordinate) => {
+                if let Some(&id) = self.first_label.get(coordinate.as_str()) {
+                    return Some(id);
+                }
+                let parsed = parsed_declaration_coordinate(coordinate)?;
+                self.unique_source(&parsed.path, parsed.line, &parsed.name)
+            }
+        }
+    }
+
+    fn unique_source(&self, path: &str, line: u32, name: &str) -> Option<RowId> {
+        let candidates = self.by_source.get(&(path, line))?;
+        let mut matches = candidates
+            .iter()
+            .filter(|row| label_names_declaration(&row.label, name));
+        let id = matches.next()?.id;
+        matches.next().is_none().then_some(id)
+    }
+}
+
+fn resident_call_endpoint(
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    endpoint: &StructuralCallEndpoint,
+) -> Option<RowId> {
+    match endpoint {
+        StructuralCallEndpoint::Binding { row, .. } => view
+            .row_ref(*row)
+            .filter(|row| row.package == Some(package))
+            .map(|row| row.id),
+        StructuralCallEndpoint::LegacyCoordinate(coordinate) => {
+            view.last_package_label(package, coordinate)
+        }
+    }
+}
+
+/// Projects borrowed exact/legacy endpoints from one admitted source version.
+pub(crate) fn structural_call_endpoint_relations_mapped(
+    view: &backend_engine::ViewRoot,
+    pairs: &[(&StructuralCallEndpoint, &StructuralCallEndpoint)],
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Vec<backend_engine::GraphRelation> {
+    let rows = StructuralCallRows::new(view, package);
+    let mut relations = BTreeSet::new();
+    for &(caller, callee) in pairs {
+        let (Some(caller), Some(callee)) = (rows.mapped(caller), rows.mapped(callee)) else {
+            continue;
+        };
+        relations.insert(
+            backend_engine::GraphRelation::new(
+                caller,
+                callee,
+                backend_library::SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+        );
+    }
+    relations
+        .into_iter()
+        .filter(|relation| {
+            relation.from == source_id || (include_incoming && relation.to == source_id)
+        })
+        .collect()
+}
+
+/// Explicit legacy adapter for synthetic coordinate-only controls. Production
+/// graph and reference paths borrow the typed binding endpoints above.
+#[cfg(test)]
 pub(crate) fn structural_call_graph_relations_mapped(
     view: &backend_engine::ViewRoot,
     pairs: &[(String, String)],
@@ -1381,59 +1718,20 @@ pub(crate) fn structural_call_graph_relations_mapped(
     source_id: RowId,
     include_incoming: bool,
 ) -> Vec<backend_engine::GraphRelation> {
-    // Exact labels retain the first-row preference. Semantic-shaped labels
-    // use a borrowed source-location index rather than rescanning every view
-    // row for every endpoint. Multiple matching rows remain ambiguous.
-    let mut first_label = BTreeMap::<&str, RowId>::new();
-    let mut by_source = BTreeMap::<(&str, u32), Vec<&backend_engine::Row>>::new();
-    for row in view.row_refs() {
-        if row.package != Some(package) {
-            continue;
-        }
-        first_label.entry(&row.label).or_insert(row.id);
-        if let Some(location) = row.source.captured() {
-            by_source
-                .entry((location.path(), location.start_line()))
-                .or_default()
-                .push(row);
-        }
-    }
-    let resolve = |coordinate: &str| {
-        if let Some(&id) = first_label.get(coordinate) {
-            return Some(id);
-        }
-        let parsed = parsed_declaration_coordinate(coordinate)?;
-        let candidates = by_source.get(&(parsed.path.as_str(), parsed.line))?;
-        let mut matches = candidates
-            .iter()
-            .filter(|row| label_names_declaration(&row.label, &parsed.name));
-        let id = matches.next()?.id;
-        matches.next().is_none().then_some(id)
-    };
-    let mut relations = BTreeSet::new();
-    for (caller_coordinate, callee_coordinate) in pairs {
-        let Some(caller_id) = resolve(caller_coordinate) else {
-            continue;
-        };
-        let Some(callee_id) = resolve(callee_coordinate) else {
-            continue;
-        };
-        relations.insert(backend_engine::GraphRelation::new(
-            caller_id,
-            callee_id,
-            backend_library::SemanticLinkKind::Calls,
-        ));
-    }
-    relations
-        .into_iter()
-        .filter(|relation| {
-            if include_incoming {
-                relation.from == source_id || relation.to == source_id
-            } else {
-                relation.from == source_id
-            }
+    let endpoints = pairs
+        .iter()
+        .map(|(caller, callee)| {
+            (
+                StructuralCallEndpoint::LegacyCoordinate(caller.clone()),
+                StructuralCallEndpoint::LegacyCoordinate(callee.clone()),
+            )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let borrowed = endpoints
+        .iter()
+        .map(|(caller, callee)| (caller, callee))
+        .collect::<Vec<_>>();
+    structural_call_endpoint_relations_mapped(view, &borrowed, package, source_id, include_incoming)
 }
 
 /// Same-file and import-resolved call edges inferred from bounded declaration
@@ -1475,31 +1773,30 @@ pub(crate) fn structural_call_graph_relations_resident(
     let mut relations = BTreeSet::new();
     // Only materialize the requested neighborhood. Incoming edges use the
     // reverse adjacency built with the same exact source projection.
-    for (caller_coordinate, callee_coordinate) in
-        calls.neighborhood(&source.label, include_incoming)
-    {
-        let caller_id = view
-            .last_package_label(package, caller_coordinate)
-            .ok_or_else(|| {
-                BuiltinModelError(
-                    "structural call graph caller is absent from the published view".to_owned(),
-                )
-            })?;
-        let callee_id = view
-            .last_package_label(package, callee_coordinate)
-            .ok_or_else(|| {
-                BuiltinModelError(
-                    "structural call graph callee is absent from the published view".to_owned(),
-                )
-            })?;
+    for (caller, callee) in calls.neighborhood_for_row(source_id, &source.label, include_incoming) {
+        let caller_id = resident_call_endpoint(view, package, caller).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph caller is absent or ambiguous in the published view"
+                    .to_owned(),
+            )
+        })?;
+        let callee_id = resident_call_endpoint(view, package, callee).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph callee is absent or ambiguous in the published view"
+                    .to_owned(),
+            )
+        })?;
         if caller_id != source_id && (!include_incoming || callee_id != source_id) {
             continue;
         }
-        relations.insert(backend_engine::GraphRelation::new(
-            caller_id,
-            callee_id,
-            backend_library::SemanticLinkKind::Calls,
-        ));
+        relations.insert(
+            backend_engine::GraphRelation::new(
+                caller_id,
+                callee_id,
+                backend_library::SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+        );
     }
     let relations = relations.into_iter().collect::<Vec<_>>();
     if relations.is_empty() {
@@ -1651,11 +1948,25 @@ pub(crate) fn structural_symbol_identity(
 /// comment, a doc comment, a string or a character literal never counts, and
 /// the name must stand on its own (`as_str(` is not found in `has_str(`).
 pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize, usize)> {
-    if callee.is_empty() {
-        return None;
+    structural_name_spans(excerpt, callee, true)
+        .into_iter()
+        .next()
+}
+
+/// Every place `name` is written as code in a declaration's captured text, as
+/// byte offsets in `excerpt`: with `calls_only`, those followed by `(`. The
+/// same text rules as [`structural_call_span`] apply to each.
+pub(crate) fn structural_name_spans(
+    excerpt: &str,
+    name: &str,
+    calls_only: bool,
+) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    if name.is_empty() {
+        return spans;
     }
     let bytes = excerpt.as_bytes();
-    let needle = callee.as_bytes();
+    let needle = name.as_bytes();
     let identifier = |byte: u8| byte == b'_' || byte.is_ascii_alphanumeric() || byte >= 0x80;
     let mut index = structural_body_start(excerpt).unwrap_or(0);
     while index < bytes.len() {
@@ -1700,15 +2011,107 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
                 };
             }
             _ if bytes[index..].starts_with(needle)
-                && bytes.get(index + needle.len()) == Some(&b'(')
-                && (index == 0 || !identifier(bytes[index - 1])) =>
+                && (index == 0 || !identifier(bytes[index - 1]))
+                && bytes
+                    .get(index + needle.len())
+                    .is_none_or(|next| !identifier(*next))
+                && (!calls_only || bytes.get(index + needle.len()) == Some(&b'(')) =>
             {
-                return Some((index, index + needle.len()));
+                spans.push((index, index + needle.len()));
+                index += needle.len();
             }
             _ => index += 1,
         }
     }
-    None
+    spans
+}
+
+/// The longest text of one use's line a reference carries.
+const MAX_PLACE_CHARS: usize = 160;
+/// The largest source file read to place uses.
+const MAX_PLACE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One line of code as a reference shows it: trimmed, and cut when it is long.
+pub(crate) fn bounded_line(line: &str) -> String {
+    let mut text = String::new();
+    for (count, character) in line.trim().chars().enumerate() {
+        if count == MAX_PLACE_CHARS {
+            text.push('…');
+            break;
+        }
+        text.push(character);
+    }
+    text
+}
+
+/// One source file split into lines, for placing byte spans in it.
+struct PlacedFile {
+    text: String,
+    line_starts: Vec<usize>,
+}
+
+impl PlacedFile {
+    fn read(path: &Path) -> Option<Self> {
+        if std::fs::metadata(path).ok()?.len() > MAX_PLACE_FILE_BYTES {
+            return None;
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut line_starts = vec![0];
+        line_starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+        Some(Self { text, line_starts })
+    }
+
+    /// The one-based line holding byte `at` and that line's trimmed text.
+    fn place(&self, at: usize) -> Option<(u32, String)> {
+        if at > self.text.len() || !self.text.is_char_boundary(at) {
+            return None;
+        }
+        let index = self.line_starts.partition_point(|start| *start <= at) - 1;
+        let start = self.line_starts[index];
+        let end = self
+            .line_starts
+            .get(index + 1)
+            .map_or(self.text.len(), |next| next - 1);
+        let text = bounded_line(&self.text[start..end]);
+        if text.is_empty() {
+            return None;
+        }
+        Some((u32::try_from(index + 1).ok()?, text))
+    }
+}
+
+/// An optional display placement read from current source bytes.
+/// Captured reference facts retain their original byte-span evidence.
+struct ReferencePlacement {
+    line: u32,
+    text: backend_engine::ProductText,
+}
+
+/// Projects one optional display placement per input fact, in input order.
+/// Missing, unreadable or oversized source files and invalid offsets yield no
+/// placement. The source text is bounded before it enters the display value.
+fn place_reference_facts(
+    root: Option<&Path>,
+    facts: &[backend_engine::ReferenceFact],
+) -> Vec<Option<ReferencePlacement>> {
+    let Some(root) = root else {
+        return facts.iter().map(|_| None).collect();
+    };
+    let mut files = BTreeMap::<String, Option<PlacedFile>>::new();
+    facts
+        .iter()
+        .map(|fact| {
+            let span = fact.evidence.source.as_ref()?;
+            let file = files
+                .entry(span.file.as_str().to_owned())
+                .or_insert_with(|| PlacedFile::read(&root.join(span.file.as_str())))
+                .as_ref()?;
+            let start = usize::try_from(span.start).ok()?;
+            let (line, text) = file.place(start)?;
+            let text = backend_engine::ProductText::new(text).ok()?;
+            Some(ReferencePlacement { line, text })
+        })
+        .collect()
 }
 
 /// The file bytes of `span`, a span in the captured text of a declaration
@@ -1755,7 +2158,9 @@ pub(crate) fn structural_file_span(
 
 #[cfg(test)]
 mod call_span_tests {
-    use super::{structural_call_span, structural_file_span};
+    use super::{
+        MAX_PLACE_CHARS, place_reference_facts, structural_call_span, structural_file_span,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -1804,6 +2209,77 @@ mod call_span_tests {
             None,
             "a file that no longer holds the indexed text places nothing"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn fact_at(path: &str, start: u32, end: u32) -> backend_engine::ReferenceFact {
+        backend_engine::ReferenceFact {
+            site: backend_engine::symbol_key("pkg::caller"),
+            target: backend_engine::SemanticLinkTarget::Local {
+                declaration: backend_engine::SemanticDeclarationIdentity {
+                    family: [1; 16],
+                    variant: [2; 16],
+                },
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_engine::SemanticLinkEvidence {
+                confidence: backend_library::SemanticConfidence::Compiler,
+                source: Some(backend_engine::SemanticSourceSpan {
+                    file: backend_engine::ProductText::new(path).expect("path"),
+                    start,
+                    end,
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn a_use_carries_the_line_it_is_written_on_and_that_lines_code() {
+        let root = std::env::temp_dir().join(format!("f-place-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let file = "import os\n\ndef run():\n    # not here: enclose(x)\n    value = enclose(\n        \"a\",\n    )\n    return value\n";
+        std::fs::write(root.join("a.py"), file).expect("file");
+        std::fs::write(root.join("unicode.py"), "π = enclose(x)\n").expect("UTF-8 file");
+        let at = file.rfind("enclose").expect("call");
+        let facts = vec![
+            fact_at("a.py", at as u32, (at + 7) as u32),
+            fact_at("missing.py", 0, 3),
+            fact_at("a.py", 9_999, 10_000),
+            fact_at("unicode.py", 1, 2),
+        ];
+        let original = facts.clone();
+        let placements = place_reference_facts(Some(&root), &facts);
+        assert_eq!(facts, original);
+        assert_eq!(placements.len(), facts.len());
+        let place = placements[0].as_ref().expect("placed");
+        assert_eq!(place.line, 5);
+        assert_eq!(place.text.as_str(), "value = enclose(");
+        assert!(placements[1].is_none(), "a missing file places nothing");
+        assert!(
+            placements[2].is_none(),
+            "a span outside the file places nothing"
+        );
+        assert!(
+            placements[3].is_none(),
+            "an offset inside a UTF-8 character places nothing"
+        );
+        let without_root = place_reference_facts(None, &facts);
+        assert_eq!(without_root.len(), facts.len());
+        assert!(without_root.iter().all(Option::is_none));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_text_of_a_long_line_is_bounded() {
+        let root = std::env::temp_dir().join(format!("f-place-long-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let line = format!("x = call({})", "a".repeat(400));
+        std::fs::write(root.join("b.py"), format!("{line}\n")).expect("file");
+        let facts = vec![fact_at("b.py", 4, 8)];
+        let placements = place_reference_facts(Some(&root), &facts);
+        let text = placements[0].as_ref().expect("placed").text.as_str();
+        assert_eq!(text.chars().count(), MAX_PLACE_CHARS + 1);
+        assert!(text.ends_with('…'));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

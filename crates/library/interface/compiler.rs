@@ -746,7 +746,10 @@ pub enum CompilerCause {
     /// `Fragment` remains for older callers that only have a phase. Compiler
     /// driver failures use this variant so source errors and their operands
     /// remain inspectable through library and transport boundaries.
-    FragmentFailure(CompilerFragmentFailure),
+    // Retain the complete typed IR fault in one cold allocation. Its largest
+    // variant carries bounded source text and must not widen every successful
+    // compiler reply or allocation-free unavailable terminal.
+    FragmentFailure(Box<CompilerFragmentFailure>),
 }
 
 /// One cold owner for a lowering terminal whose largest language projection
@@ -1040,8 +1043,13 @@ pub struct CompilerDiagnosticFacts {
     pub python_configuration: Option<PythonConfigurationRefusalFacts>,
     /// Exact TypeScript authority cause; native bytes and paths remain local.
     pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
+    /// Where a native TypeScript program stopped, for a program execution stop.
+    pub typescript_stop_site: Option<super::TypeScriptStopSite>,
     /// Bounded compiler-package limits and API capability facts, without paths.
     pub typescript_admission: Option<super::TypeScriptCompilerAdmissionDetail>,
+    /// Bounded, sanitized host cause text (project-relative paths only) for a
+    /// TypeScript host failure; never native process output.
+    pub typescript_cause: Option<super::TypeScriptFailureCause>,
     /// Exact Go dependency-admission cause; native bytes and paths remain local.
     pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
@@ -1111,6 +1119,10 @@ pub enum PythonAuthorityFailureKind {
     InvalidFactSpan,
     /// Captured user configuration was rejected by the pinned native schema.
     ConfigurationRefused,
+    /// Selected-program caller omitted the installed-environment disposition.
+    EnvironmentInputMissing,
+    /// Ordinary selected environment could not be captured as immutable input.
+    EnvironmentCaptureRefused,
 }
 
 impl PythonAuthorityFailureKind {
@@ -1139,6 +1151,8 @@ impl PythonAuthorityFailureKind {
             Self::WorkspaceIoFailed => "python_workspace_io_failed",
             Self::InvalidFactSpan => "python_invalid_fact_span",
             Self::ConfigurationRefused => "python_configuration_refused",
+            Self::EnvironmentInputMissing => "python_environment_input_missing",
+            Self::EnvironmentCaptureRefused => "python_environment_capture_refused",
         }
     }
 
@@ -1179,6 +1193,12 @@ impl PythonAuthorityFailureKind {
             Self::WorkspaceIoFailed => "Python checker workspace I/O failed",
             Self::InvalidFactSpan => "Python checker returned a source span outside captured bytes",
             Self::ConfigurationRefused => "Python configuration was refused by the native compiler",
+            Self::EnvironmentInputMissing => {
+                "Python checking requires an admitted installed-environment capture"
+            }
+            Self::EnvironmentCaptureRefused => {
+                "The selected Python environment could not be captured; install or repair its ordinary dependencies"
+            }
         }
     }
 }
@@ -1216,7 +1236,9 @@ impl CompilerDiagnostic {
             python_failure: None,
             python_configuration: None,
             typescript_failure: None,
+            typescript_stop_site: None,
             typescript_admission: None,
+            typescript_cause: None,
             go_failure: None,
             bytes: output,
         })))
@@ -1231,7 +1253,9 @@ impl CompilerDiagnostic {
             self.0.python_configuration = None;
         }
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.go_failure = None;
         self
     }
@@ -1242,7 +1266,9 @@ impl CompilerDiagnostic {
         self.0.python_configuration = Some(facts);
         self.0.python_failure = Some(PythonAuthorityFailureKind::ConfigurationRefused);
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.go_failure = None;
         self
     }
@@ -1254,10 +1280,27 @@ impl CompilerDiagnostic {
         failure: super::TypeScriptAuthorityFailureKind,
     ) -> Self {
         self.0.typescript_failure = Some(failure);
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self
+    }
+
+    /// Records where a native TypeScript program stopped. Meaningful only after
+    /// [`Self::with_typescript_failure`] named a program execution stop.
+    #[must_use]
+    pub fn with_typescript_stop_site(mut self, site: super::TypeScriptStopSite) -> Self {
+        if self
+            .0
+            .typescript_failure
+            .is_some_and(super::TypeScriptAuthorityFailureKind::is_program_execution_failure)
+            && site.is_valid()
+        {
+            self.0.typescript_stop_site = Some(site);
+        }
         self
     }
 
@@ -1269,9 +1312,22 @@ impl CompilerDiagnostic {
     ) -> Self {
         self.0.typescript_failure = Some(detail.failure_kind());
         self.0.typescript_admission = Some(detail);
+        self.0.typescript_stop_site = None;
+        self.0.typescript_cause = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self
+    }
+
+    /// Adds sanitized host cause text to an already retained plain TypeScript
+    /// failure kind. It is ignored unless that kind is present without admission
+    /// facts, so the text can never contradict a closed cause.
+    #[must_use]
+    pub fn with_typescript_cause(mut self, cause: super::TypeScriptFailureCause) -> Self {
+        if self.0.typescript_failure.is_some() && self.0.typescript_admission.is_none() {
+            self.0.typescript_cause = Some(cause);
+        }
         self
     }
 
@@ -1282,7 +1338,9 @@ impl CompilerDiagnostic {
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
         self
     }
 

@@ -4241,6 +4241,8 @@ const fn occurrence_link_kind(kind: ReferenceKind) -> backend_semantic::ir::Link
         ReferenceKind::FieldAccess => backend_semantic::ir::LinkKind::Reads,
         ReferenceKind::Import => backend_semantic::ir::LinkKind::Imports,
         ReferenceKind::Overrides => backend_semantic::ir::LinkKind::Overrides,
+        ReferenceKind::Implements => backend_semantic::ir::LinkKind::Implements,
+        ReferenceKind::Inherits => backend_semantic::ir::LinkKind::Inherits,
     }
 }
 

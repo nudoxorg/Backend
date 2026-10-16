@@ -1509,6 +1509,7 @@ dependencies = [
  "backend-flow",
  "backend-semantic",
  "backend-version",
+ "base64 0.22.1",
  "blake3",
  "serde",
  "serde_json",
@@ -1771,6 +1772,7 @@ version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
+ "backend-frontend-python",
  "backend-extension-turso",
  "backend-platform",
  "backend-semantic",

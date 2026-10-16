@@ -5,6 +5,7 @@
 
 mod cluster_coordinator;
 mod compiler;
+mod compiler_terminal_text;
 mod compiler_typescript_failure;
 mod compiler_typescript_observation;
 mod config;
@@ -19,6 +20,7 @@ mod terminal;
 mod toolchain_probe;
 mod typescript_host;
 mod typescript_program;
+mod typescript_program_lane;
 mod unit_authority_v2;
 
 pub(crate) use self::typescript_program::build_native_inputs;
@@ -73,7 +75,7 @@ pub use self::embedding_provision::{
     remove_embedding_runtime,
 };
 pub use self::host::{
-    CapturedLocalHostEnvironment,
+    CapturedLocalHostEnvironment, PythonInterpreterHostAdmission,
     InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,

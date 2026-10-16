@@ -59,14 +59,22 @@ pub(super) fn drive_child<
             },
         });
     }
-    if let Err(cause) = recipe.toolchain.validate_invocation() {
+    let external = recipe
+        .toolchain
+        .external()
+        .map_err(|cause| CompileFailure::ToolStart {
+            source_identity: source,
+            recipe: recipe_fact,
+            cause: std::io::Error::other(cause),
+        })?;
+    if let Err(cause) = external.validate_invocation() {
         return Err(CompileFailure::ToolStart {
             source_identity: source,
             recipe: recipe_fact,
             cause: std::io::Error::other(cause),
         });
     }
-    let mut command = ConcreteFrontend::command(profile, recipe.toolchain, native_work);
+    let mut command = ConcreteFrontend::command(profile, external, native_work);
     NativeCompilerEnvironment::apply(&mut command, recipe.toolchain.tool);
     ConcreteFrontend::configure_environment(native_work, &mut command);
     command

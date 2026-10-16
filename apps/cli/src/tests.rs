@@ -576,6 +576,27 @@ fn a_page_bound_outside_its_range_is_refused_with_the_value() {
 }
 
 #[test]
+fn package_graph_help_and_cli_lowering_share_the_engine_page_bound() {
+    let help = invoke::help_for(grammar_for("package-graph").expect("package graph grammar"));
+    assert!(help.contains(&format!(
+        "Range: 1 to {}; default 64.",
+        backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS
+    )));
+    assert!(
+        invoke::help_for(grammar_for("search").expect("search grammar"))
+            .contains("Range: 1 to 200; default 25.")
+    );
+    for (bound, valid) in [(128, true), (129, false)] {
+        let args = words(&format!(
+            "package-graph pkg:cargo/serde@1.0.228 dependencies --limit {bound}"
+        ));
+        let (options, command) = options::split(&args).expect("global page option");
+        let input = invoke::parse(&command, options.limit()).expect("CLI parse");
+        assert_eq!(lower(&input, "/abs/project").is_ok(), valid);
+    }
+}
+
+#[test]
 fn add_defaults_to_interactive_and_advertises_the_background_option() {
     let invocation = invoke::parse(&words("add /abs/project"), None).expect("parse Add");
     let Request::Index(path) = lower(&invocation, "/unused").expect("lower Add") else {
@@ -1007,15 +1028,32 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
     );
     assert_eq!(render::exit_code(&endpoint), ExitCode::from(1));
     let key = backend_library::IndexOperationKey::from_bytes([0x76; 32]).expect("saved key");
-    let unconfirmed = Fault::from_client_error(&ClientError::IndexOperationDeliveryUnknown {
-        operation_key: key,
-        cause: Box::new(ClientError::Disconnected(std::io::ErrorKind::WouldBlock)),
-    }, backend_present::Operand::Whole);
-    assert_eq!(render::exit_code(&unconfirmed), ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE));
+    let unconfirmed = Fault::from_client_error(
+        &ClientError::IndexOperationDeliveryUnknown {
+            operation_key: key,
+            cause: Box::new(ClientError::Disconnected(std::io::ErrorKind::WouldBlock)),
+        },
+        backend_present::Operand::Whole,
+    );
+    assert_eq!(
+        render::exit_code(&unconfirmed),
+        ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE)
+    );
     let wire = backend_present::fault_value(&unconfirmed);
-    assert_eq!(wire["unconfirmed_index_delivery"], serde_json::to_value(key).expect("same key"));
-    assert_eq!(wire["call"]["arguments"]["operation_key"], serde_json::to_value(key).expect("same key"));
-    assert!(wire["detail"].as_str().expect("detail").contains("may already be queued or accepted"));
+    assert_eq!(
+        wire["unconfirmed_index_delivery"],
+        serde_json::to_value(key).expect("same key")
+    );
+    assert_eq!(
+        wire["call"]["arguments"]["operation_key"],
+        serde_json::to_value(key).expect("same key")
+    );
+    assert!(
+        wire["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("may already be queued or accepted")
+    );
 }
 
 #[test]
@@ -1693,4 +1731,26 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
             .collect::<Vec<_>>(),
         expected[2..4]
     );
+}
+
+#[test]
+fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
+    use backend_present::{Request, lower};
+    let (options, rest) = options::split(&words("--limit 5 outline /p")).expect("options");
+    let invocation = invoke::parse(&rest, options.limit()).expect("shared page grammar");
+    assert!(
+        matches!(lower(&invocation, "/p").expect("native outline"), Request::OutlinePage { path, limit: 5 } if path == "/p")
+    );
+    let invocation = invoke::parse(&words("outline /p --limit 5 --cursor pc4-proof"), None)
+        .expect("cursor option");
+    assert!(
+        matches!(lower(&invocation, "/p").expect("continued page"), Request::ResumeQuery { query, cursor } if matches!(*query, Request::OutlinePage { limit: 5, .. }) && cursor == "pc4-proof")
+    );
+    let invocation = invoke::parse(&words("outline /p"), None).expect("default grammar");
+    assert!(matches!(
+        lower(&invocation, "/p").expect("full outline"),
+        Request::Outline(_)
+    ));
+    let invocation = invoke::parse(&words("outline /p --limit 0"), None).expect("option parse");
+    assert!(lower(&invocation, "/p").is_err());
 }

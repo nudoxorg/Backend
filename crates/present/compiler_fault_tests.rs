@@ -458,7 +458,7 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
     );
     assert_eq!(fault.slug().as_str(), "partially-published");
     let sentence = fault.cause().sentence();
-    assert!(sentence.contains("python: published 236 source files with Complete coverage"));
+    assert!(sentence.contains("python: published 236 source files with complete coverage"));
     assert!(sentence.contains("typescript: unavailable"));
     assert!(sentence.contains("requires tsc"));
     assert!(sentence.contains("Set NUDOX_TSC"));
@@ -526,7 +526,36 @@ fn native_typescript_program_refusal_retains_request_source_without_naming_a_hot
 }
 
 #[test]
+fn native_typescript_program_refusal_names_the_observed_stop_site_beside_the_request_source() {
+    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
+        CompilerDiagnostic, TypeScriptAuthorityFailureKind as T, TypeScriptStopPhase as P,
+        TypeScriptStopSite as S};
+    let failure = |site: S| PackageCompilerFailure::from_package_terminal("playwright.config.ts", &CompilerTerminal::Compile {
+        attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site-words") },
+        cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
+            diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
+                .map(|diagnostic| diagnostic.with_typescript_failure(T::NativeProjectCheckWorkBudgetExhausted).with_typescript_stop_site(site)) },
+    }).unwrap().unwrap();
+    let sentence = |site: S| compiler_fault(&failure(site)).cause().sentence().to_owned();
+    let both = sentence(S::new(Some(P::FileCheck), Some("node_modules/rxjs/dist/types/operators/pluck.d.ts"), 7, 9));
+    assert!(both.contains("requested from playwright.config.ts; stopped in file_check of node_modules/rxjs/dist/types/operators/pluck.d.ts after 7 of 9 work units"), "{both}");
+    assert!(both.contains("typescript_native_project_check_work_budget_exhausted"));
+    assert!(sentence(S::new(Some(P::Merge), None, 1, 2)).contains("stopped in merge after 1 of 2 work units"));
+    assert!(sentence(S::new(None, Some("src/app/index.tsx"), 3, 3)).contains("stopped at src/app/index.tsx after 3 of 3 work units"));
+    assert!(sentence(S::new(None, None, 0, 2)).contains("stopped between phases after 0 of 2 work units"));
+    // Without a site the sentence is exactly the request-context form.
+    let plain = PackageCompilerFailure::from_package_terminal("playwright.config.ts", &CompilerTerminal::Compile {
+        attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site-words") },
+        cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
+            diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
+                .map(|diagnostic| diagnostic.with_typescript_failure(T::NativeProjectCheckWorkBudgetExhausted)) },
+    }).unwrap().unwrap();
+    assert!(compiler_fault(&plain).cause().sentence().contains("TypeScript project (requested from playwright.config.ts):"));
+}
+
+#[test]
 fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words() {
+
     use backend_library::interface::{
         AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic,
         TypeScriptCompilerAdmissionCause as C, TypeScriptCompilerAdmissionDetail as D,

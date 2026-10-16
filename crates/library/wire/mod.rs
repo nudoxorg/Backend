@@ -5,6 +5,8 @@
 //! DTO surface.
 
 mod admission;
+mod bounded_json;
+pub use bounded_json::BoundedJsonError;
 #[cfg(test)]
 mod claim_index_tests;
 mod claims;
@@ -34,10 +36,11 @@ pub use claims::{WireCertificate, WireClaim, WireSchema};
 pub use codec::{
     MAX_COMMAND_BODY, MAX_REPLY_BODY, command_request_id, decode_command_body,
     decode_command_body_for_owner, decode_reply_body, decode_reply_body_with_verifier,
-    encode_command_body,
+    encode_command_body, encode_reply_body_bounded,
 };
 pub use command::{
-    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command, expand_binary_certificate_command,
+    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command,
+    expand_binary_certificate_command,
 };
 pub use event_dto::EventDto;
 pub use journal_grammar::JournalViewGrammarV3;
@@ -69,7 +72,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. The combined version-29 cutover adds typed
-/// TypeScript compiler admission details and native semantic source pages/epochs.
-/// Persisted view rows, certificates and compact events are unchanged.
-pub const DTO_VERSION: u16 = 29;
+/// Current matched-client transport cohort. Version 31 adds settled `Gapped`
+/// lane coverage and bounded compiler cause details. Version 30 catalog windows
+/// and predecessor spans remain strict; live peers must upgrade together.
+/// The view journal container stays version 3 and retains historical bytes.
+pub const DTO_VERSION: u16 = 31;

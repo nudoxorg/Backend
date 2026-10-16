@@ -384,6 +384,9 @@ pub struct LocalCompilerScratch {
     pub(crate) reopened_fragment_output: Vec<u8>,
     /// One analyzer operation lane with cumulative work counts for this compiler lane.
     pub(crate) rust_workspace_session_lane: RustWorkspaceSessionLane,
+    /// One exact TypeScript forest per lane, borrowed through checking and
+    /// selected-file lowering after fresh compiler-host closure admission.
+    pub(crate) typescript_program_lane: super::typescript_program_lane::TypeScriptProgramAuthorityLane,
 }
 
 pub(crate) enum FragmentOutput {
@@ -560,6 +563,7 @@ impl Default for LocalCompilerScratch {
             semantic_image_plan: vec![crate::publication::manifest::SemanticImageRegion::EMPTY],
             reopened_fragment_output: Vec::new(),
             rust_workspace_session_lane: RustWorkspaceSessionLane::default(),
+            typescript_program_lane: super::typescript_program_lane::TypeScriptProgramAuthorityLane::default(),
         }
     }
 }

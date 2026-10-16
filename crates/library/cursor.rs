@@ -18,6 +18,9 @@ pub const CURSOR_CONTROL_BYTES: usize = 2 + 32 * 5 + 2 + 8;
 
 /// Byte length of a self-describing bounded-query cursor envelope.
 pub const CURSOR_QUERY_BYTES: usize = CURSOR_CONTROL_BYTES + 8;
+/// Versioned query-only position; subscription/control bytes are unchanged.
+pub const CURSOR_WINDOW_QUERY_BYTES: usize = CURSOR_QUERY_BYTES + 8;
+const QUERY_WINDOW_MAGIC: &[u8; 4] = b"QW\0\x01";
 
 /// Bounded position in one branch/log/view/schema stream.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -29,7 +32,7 @@ pub struct Cursor {
     schema: u16,
     root: ViewStateRoot,
     sequence: u64,
-    query_offset: u64,
+    query_position: crate::QueryPosition,
 }
 
 impl Cursor {
@@ -78,7 +81,7 @@ impl Cursor {
             schema: frontier.schema,
             root: frontier.root,
             sequence: frontier.sequence,
-            query_offset: 0,
+            query_position: crate::QueryPosition::legacy(0),
         }
     }
 
@@ -169,13 +172,24 @@ impl Cursor {
     /// part of the branch/log stream identity or wire frontier.
     #[must_use]
     pub const fn query_offset(self) -> u64 {
-        self.query_offset
+        self.query_position.offset()
     }
 
     /// Binds a bounded query continuation to its next row offset.
     #[must_use]
     pub(crate) const fn with_query_offset(mut self, offset: u64) -> Self {
-        self.query_offset = offset;
+        self.query_position = crate::QueryPosition::legacy(offset);
+        self
+    }
+
+    /// Returns the typed legacy or independently authenticated query position.
+    #[must_use]
+    pub const fn query_position(self) -> crate::QueryPosition {
+        self.query_position
+    }
+
+    pub(crate) const fn with_query_position(mut self, position: crate::QueryPosition) -> Self {
+        self.query_position = position;
         self
     }
 
@@ -236,7 +250,7 @@ impl Cursor {
         if expected.schema != CURSOR_SCHEMA {
             return Err("unsupported subscription cursor schema".to_owned());
         }
-        if expected.query_offset != 0 {
+        if expected.query_offset() != 0 {
             return Err("subscription cursor carries a query offset".to_owned());
         }
         if bytes != expected.encode_control().as_ref() {
@@ -289,11 +303,9 @@ impl Cursor {
         if envelope_schema != CURSOR_SCHEMA || cursor_schema != CURSOR_SCHEMA {
             return Err("unsupported subscription cursor schema".to_owned());
         }
-        Ok(u64::from_be_bytes(
-            bytes[164..172]
-                .try_into()
-                .map_err(|_| "invalid subscription cursor sequence".to_owned())?,
-        ))
+        Ok(u64::from_be_bytes(bytes[164..172].try_into().map_err(
+            |_| "invalid subscription cursor sequence".to_owned(),
+        )?))
     }
 
     /// Encodes this cursor for a bounded query continuation.
@@ -304,36 +316,60 @@ impl Cursor {
     /// admits it by comparing every identity field with an owner cursor.
     #[must_use]
     pub fn encode_query(self) -> Box<[u8]> {
-        let mut bytes = self.encode_control().into_vec();
-        bytes.extend_from_slice(&self.query_offset.to_be_bytes());
+        let mut bytes = Vec::new();
+        if self.query_position.predecessor().is_some() {
+            bytes.extend_from_slice(QUERY_WINDOW_MAGIC);
+        }
+        bytes.extend_from_slice(&self.encode_control());
+        bytes.extend_from_slice(&self.query_offset().to_be_bytes());
+        if let Some(window) = self.query_position.predecessor() {
+            bytes.extend_from_slice(&window.issued().get().to_be_bytes());
+            bytes.extend_from_slice(&window.delivery().get().to_be_bytes());
+        }
         bytes.into_boxed_slice()
     }
 
-    /// Admits a bounded-query cursor against an owner-provided cursor.
-    ///
-    /// Raw bytes never become a typed cursor on their own. The owner cursor
-    /// supplies recipe, version, branch, log, schema, and root; only the
-    /// checked offset is read from the envelope.
-    ///
-    /// # Errors
-    /// Returns an error when the envelope is malformed, carries a different
-    /// owner identity, or does not describe a positive query offset.
+    /// Admits a query-only envelope against an already checked owner identity.
+    /// Offset/span remain untrusted positions until the producer reconstructs
+    /// and verifies the exact predecessor rows; no identity is decoded here.
     pub fn decode_query_against(bytes: &[u8], owner: Self) -> Result<Self, String> {
-        if bytes.len() != CURSOR_QUERY_BYTES {
-            return Err("invalid query cursor length".to_owned());
-        }
-        if bytes[..CURSOR_CONTROL_BYTES] != *owner.encode_control() {
+        let (body, windowed) = match bytes.len() {
+            CURSOR_QUERY_BYTES => (bytes, false),
+            CURSOR_WINDOW_QUERY_BYTES if bytes.starts_with(QUERY_WINDOW_MAGIC) => {
+                (&bytes[4..], true)
+            }
+            _ => return Err("invalid or unsupported query position encoding".to_owned()),
+        };
+        if body[..CURSOR_CONTROL_BYTES] != *owner.encode_control() {
             return Err("query cursor does not match the owner context".to_owned());
         }
         let offset = u64::from_be_bytes(
-            bytes[CURSOR_CONTROL_BYTES..]
+            body[CURSOR_CONTROL_BYTES..CURSOR_QUERY_BYTES]
                 .try_into()
                 .map_err(|_| "invalid query cursor offset".to_owned())?,
         );
         if offset == 0 {
             return Err("query cursor offset must be positive".to_owned());
         }
-        Ok(owner.with_query_offset(offset))
+        let position = if windowed {
+            let issued = crate::QueryLimit::new(u16::from_be_bytes([
+                body[CURSOR_QUERY_BYTES],
+                body[CURSOR_QUERY_BYTES + 1],
+            ]))
+            .ok_or_else(|| "invalid query position issued ceiling".to_owned())?;
+            let delivered = crate::QueryLimit::new(u16::from_be_bytes([
+                body[CURSOR_QUERY_BYTES + 2],
+                body[CURSOR_QUERY_BYTES + 3],
+            ]))
+            .ok_or_else(|| "invalid query predecessor span".to_owned())?;
+            let window = crate::QueryWindow::new(issued, delivered)
+                .ok_or_else(|| "query predecessor span exceeds issued ceiling".to_owned())?;
+            crate::QueryPosition::windowed(offset, window)
+                .ok_or_else(|| "query offset precedes its predecessor span".to_owned())?
+        } else {
+            crate::QueryPosition::legacy(offset)
+        };
+        Ok(owner.with_query_position(position))
     }
 
     /// Advances this cursor across one checked event.
@@ -785,6 +821,46 @@ mod tests {
     }
 
     #[test]
+    fn windowed_query_encoding_is_closed_and_keeps_legacy_control_bytes() {
+        let owner = Cursor::for_view_root(&make_root(view_state_root(&[])));
+        let window = crate::QueryWindow::new(
+            crate::QueryLimit::new(4).expect("issued"),
+            crate::QueryLimit::new(2).expect("span"),
+        )
+        .expect("window");
+        let cursor =
+            owner.with_query_position(crate::QueryPosition::windowed(6, window).expect("position"));
+        let bytes = cursor.encode_query();
+        assert_eq!(bytes.len(), CURSOR_WINDOW_QUERY_BYTES);
+        assert_eq!(Cursor::decode_query_against(&bytes, owner), Ok(cursor));
+        assert_eq!(cursor.encode_control(), owner.encode_control());
+        let legacy = owner.with_query_offset(6).encode_query();
+        assert_eq!(legacy.len(), CURSOR_QUERY_BYTES);
+        assert_eq!(
+            &legacy[..CURSOR_CONTROL_BYTES],
+            owner.encode_control().as_ref()
+        );
+        assert_eq!(
+            Cursor::decode_query_against(&legacy, owner),
+            Ok(owner.with_query_offset(6))
+        );
+        for length in 0..bytes.len() {
+            assert!(Cursor::decode_query_against(&bytes[..length], owner).is_err());
+        }
+        let mut trailing = bytes.to_vec();
+        trailing.push(0);
+        assert!(Cursor::decode_query_against(&trailing, owner).is_err());
+        for (at, value) in [(3, 2), (187, 0), (187, 5), (183, 1)] {
+            let mut malformed = bytes.to_vec();
+            malformed[at] = value;
+            assert!(
+                Cursor::decode_query_against(&malformed, owner).is_err(),
+                "mutant byte {at}"
+            );
+        }
+    }
+
+    #[test]
     fn owner_matching_allows_prior_sequence_but_rejects_foreign_frontiers() {
         let root = view_state_root(&[]);
         let base = Cursor::for_view_root(&make_root(root));
@@ -864,7 +940,10 @@ mod tests {
         assert!(Cursor::control_sequence(&wrong_cursor_schema).is_err());
         assert!(Cursor::control_sequence(&encoded[..encoded.len() - 1]).is_err());
 
-        let other = make_root(view_state_root(&[("foreign".to_owned(), "root".to_owned())]));
+        let other = make_root(view_state_root(&[(
+            "foreign".to_owned(),
+            "root".to_owned(),
+        )]));
         assert!(Cursor::decode_control_for_root(&encoded, &other).is_err());
     }
 

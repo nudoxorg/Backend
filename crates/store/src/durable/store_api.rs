@@ -292,6 +292,17 @@ impl FileStore {
     ///
     /// Returns an admission, bounds, corruption, or filesystem error.
     pub fn write_closure(&self, manifest: &ClosureManifest) -> Result<ClosureId, StoreError> {
+        let pin = self.acquire_gc_pin()?;
+        let _process_lock = self.acquire_process_lock()?;
+        let mut admission = nodes::RelationAdmission::new(self, &pin)?;
+        self.write_closure_admitted(manifest, &mut admission)
+    }
+
+    pub(in crate::durable) fn write_closure_admitted(
+        &self,
+        manifest: &ClosureManifest,
+        admission: &mut nodes::RelationAdmission<'_>,
+    ) -> Result<ClosureId, StoreError> {
         manifest.admit_with_registry(&self.relation_registry)?;
         // A complete closure lists every relation node it needs as a member,
         // but its path-copy `changed` set is relative to whichever manifest
@@ -304,18 +315,19 @@ impl FileStore {
         let mut unwritten = Vec::new();
         for object in manifest.objects() {
             if self.relation_registry.contains_schema(object.schema())
-                && !self.relation_ref_matches(object.schema(), object.version())?
+                && admission.existing(object.schema(), object.version())?.is_none()
             {
                 unwritten.push(object.clone());
             }
         }
-        self.write_closure_after_admission(manifest, &unwritten)
+        self.write_closure_after_admission(manifest, &unwritten, admission)
     }
 
     fn write_closure_after_admission(
         &self,
         manifest: &ClosureManifest,
         selected_roots: &[TypedObject],
+        admission: &mut nodes::RelationAdmission<'_>,
     ) -> Result<ClosureId, StoreError> {
         self.verify_manifest_value_targets(manifest)?;
         let mut changed = manifest
@@ -341,9 +353,9 @@ impl FileStore {
                 self.write_object_without_directory_sync(object)?;
             }
         }
-        self.write_root_relation_batch(&changed)?;
+        self.write_root_relation_batch(&changed, admission)?;
         sync_directory(&self.root.join("objects"))?;
-        let root = self.write_manifest_publication(manifest)?;
+        let root = self.write_manifest_publication(manifest, admission)?;
         let count = manifest.root_handle().summary().len;
         let bytes = nodes::encode_manifest_descriptor(manifest.id(), root, count)?;
         let path = self.closure_path(manifest.id());
@@ -393,18 +405,20 @@ impl FileStore {
     pub(super) fn write_root_closure(
         &self,
         manifest: &ClosureManifest,
+        admission: &mut nodes::RelationAdmission<'_>,
     ) -> Result<ClosureId, StoreError> {
         manifest.admit_objects_with_registry(&self.relation_registry)?;
-        self.write_closure_after_admission(manifest, &[])
+        self.write_closure_after_admission(manifest, &[], admission)
     }
 
     pub(super) fn write_workspace_root_closure(
         &self,
         closure: &WorkspaceClosure,
+        admission: &mut nodes::RelationAdmission<'_>,
     ) -> Result<ClosureId, StoreError> {
         let manifest = closure.control_manifest();
         manifest.admit_objects_with_registry(&self.relation_registry)?;
-        self.write_closure_after_admission(manifest, closure.selected_roots())?;
+        self.write_closure_after_admission(manifest, closure.selected_roots(), admission)?;
         self.validate_workspace_membership(closure)?;
         Ok(closure.membership_id())
     }
@@ -412,13 +426,16 @@ impl FileStore {
     /// Installs an admitted immutable frontier without selecting a workspace.
     /// Ordinary GC may reclaim it after the caller drops its membership pin.
     pub fn stage_workspace_frontier(&self, closure: &WorkspaceClosure) -> Result<(), StoreError> {
+        let pin = self.acquire_gc_pin()?;
+        let _process_lock = self.acquire_process_lock()?;
+        let mut admission = nodes::RelationAdmission::new(self, &pin)?;
         if !closure.is_root_only() {
             return Err(StoreError::Corrupt);
         }
         closure
             .control_manifest()
             .admit_objects_with_registry(&self.relation_registry)?;
-        self.write_closure_after_admission(closure.control_manifest(), closure.selected_roots())?;
+        self.write_closure_after_admission(closure.control_manifest(), closure.selected_roots(), &mut admission)?;
         Ok(())
     }
 

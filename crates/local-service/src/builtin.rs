@@ -172,7 +172,7 @@ mod local_manifest;
 mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
 mod search_source_page;
-use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
+use coverage::{SemanticDeployment, view_coverage};
 #[path = "builtin/lanes.rs"]
 mod lanes;
 use lanes::{FileLane, ProjectionLedger, SemanticFreshness, StructuralCause};
@@ -1924,8 +1924,9 @@ fn compose_owner_timed(
     {
         eprintln!("journey startup phase: SemanticAuthority::open begin");
     }
-    let mut semantic_authority = SemanticAuthority::open(&config.workspace)
-        .map_err(|error| ProcessError::Profile(error.to_string()))?;
+    let mut semantic_authority =
+        SemanticAuthority::open_with_product_authority(&config.workspace, product_secret)
+            .map_err(|error| ProcessError::Profile(error.to_string()))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -2207,6 +2208,12 @@ fn compose_owner_timed(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    // A previous owner process may have died between committing a Pending
+    // source capture and recording its terminal. Pending is not a lease, so
+    // close every such marker now, before the first client read can observe
+    // it. This is the only moment at which "no job exists yet" is a fact about
+    // the whole process rather than about one package.
+    commands.reconcile_interrupted_captures(&mut daemon);
     timing.begin(startup_timing::Phase::QueryWarmup);
     commands.warm_queries(&daemon);
     let commands = Arc::new(Mutex::new(commands));

@@ -1311,6 +1311,10 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let request = crate::SemanticShapeRequest::new(
         root.root(),
         source.clone(),
+        crate::SemanticSourceEpoch {
+            source_relation_root: [0x21; 32],
+            semantic_relation_root: [0x22; 32],
+        },
         vec![crate::SymbolAddress::selected(symbol)].into_boxed_slice(),
         crate::SemanticShapeBudget::new(4096, crate::MAX_SEMANTIC_SHAPE_BYTES as u32)
             .expect("hard limits are valid"),
@@ -1538,6 +1542,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     let other_basis_request = crate::SemanticShapeRequest::new(
         view_state_root(&[("different".to_owned(), "view".to_owned())]),
         source.clone(),
+        request.source_epoch(),
         request.symbols().to_vec().into_boxed_slice(),
         request.budget(),
     )
@@ -1871,7 +1876,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=28 {
+    for historical in 21..=30 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -2749,13 +2754,12 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 #[path = "index_ticket_reply_tests.rs"]
 mod index_ticket_reply;
 
-
 #[test]
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 29,
-        "combined source and admission detail cutover uses DTO29; worker refusal first shipped with DTO28"
+        DTO_VERSION, 31,
+        "matched DTO31 retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2770,7 +2774,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     .unwrap();
     let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
         .expect_err("DTO27 peer must refuse the current DTO before decoding its failure variant");
-    assert!(old_peer.contains("reply DTO version 29"));
+    assert!(old_peer.contains(&format!("reply DTO version {DTO_VERSION}")));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
     let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
@@ -2783,5 +2787,642 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     assert!(!error.contains("unknown variant"));
 }
 
+#[test]
+fn semantic_source_current_live_dto_refuses_dto28_before_source_or_epoch_payload() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("unchanged actual source capture");
+    let record: crate::SemanticVersionRecord =
+        serde_json::from_value(packet["surface"]["data"][0].clone()).expect("exact typed record");
+    let root = record
+        .selected_source_frontier
+        .as_ref()
+        .expect("captured frontier")
+        .source_relation_root;
+    let reference = crate::SemanticSourceReference::capture(&record, root, [34; 32], &[7; 32])
+        .expect("selector only; not native authority");
+    let command = crate::CommandDto::new(
+        1,
+        crate::Command::Surface(crate::SurfaceCommand::SemanticSource {
+            request: crate::SemanticSourceRequest {
+                reference,
+                range: Default::default(),
+            },
+        }),
+    );
+    let bytes = serde_json::to_vec(&command).expect("current exact live DTO");
+    let error = super::codec::check_version_header_against(&bytes, "command", 28)
+        .expect_err("old peer must refuse before new payload variant");
+    assert!(error.contains(&format!("command DTO version {DTO_VERSION}")));
+    assert!(error.contains("this build supports 28"));
+    let mut downgraded: serde_json::Value = serde_json::from_slice(&bytes).expect("wire envelope");
+    downgraded["version"] = serde_json::json!(28);
+    downgraded["command"] = serde_json::json!({"operation":"unknown_future_source"});
+    let error = crate::decode_command_body(&serde_json::to_vec(&downgraded).expect("old envelope"))
+        .expect_err("current peer refuses old version first");
+    assert!(error.contains("command DTO version 28"));
+    assert!(!error.contains("unknown variant"));
+}
+
 #[path = "typescript_admission_cutover_tests.rs"]
 mod typescript_admission_cutover;
+
+#[test]
+fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span() {
+    let (library, mut ids) = paged_query_fixture(0);
+    ids.sort();
+    let issued = QueryLimit::new(4).expect("issued");
+    let window =
+        crate::QueryWindow::new(issued, QueryLimit::new(2).expect("delivery")).expect("window");
+    let query = NameQuery::new("Thing", library.revision_root(), issued)
+        .with_window(window)
+        .expect("window");
+    let names = library.names(&query).expect("native names");
+    let symbol = symbol_key("pkg::Thing0");
+    let address = crate::SymbolAddress::canonical(symbol);
+    let page = crate::PageRequest::new(library.revision_root(), issued)
+        .with_window(window)
+        .expect("window");
+    let graph = library
+        .graph_page_from_ids(symbol, address, page, &ids)
+        .expect("native selected graph");
+    for (command, snapshot) in [
+        (Command::Name(query.clone()), names),
+        (
+            Command::GraphPage {
+                symbol: address,
+                page,
+            },
+            graph.snapshot,
+        ),
+    ] {
+        let reply = |snapshot: ViewSnapshot| match &command {
+            Command::Name(_) => CommandReply::Names(snapshot),
+            _ => CommandReply::ProjectionPage(crate::ProjectionPage {
+                terminal: snapshot
+                    .next
+                    .map_or(crate::PageTerminal::Complete, |cursor| {
+                        crate::PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
+                    }),
+                snapshot,
+            }),
+        };
+        let request = CommandDto::new(1, command.clone());
+        assert!(admit_reply(&request, &ReplyDto::new(1, reply(snapshot.clone()))).is_ok());
+        let next = snapshot.next.expect("native More");
+        let bad_positions = [
+            crate::QueryPosition::legacy(2),
+            crate::QueryPosition::windowed(3, window).expect("wrong offset"),
+            crate::QueryPosition::windowed(
+                2,
+                crate::QueryWindow::new(issued, QueryLimit::new(1).expect("wrong span"))
+                    .expect("window"),
+            )
+            .expect("wrong span"),
+            crate::QueryPosition::windowed(
+                2,
+                crate::QueryWindow::new(
+                    QueryLimit::new(3).expect("wrong credit"),
+                    QueryLimit::new(2).expect("span"),
+                )
+                .expect("window"),
+            )
+            .expect("wrong credit"),
+        ];
+        for position in bad_positions {
+            let mut bad = snapshot.clone();
+            bad.next = Some(next.with_query_position(position));
+            assert!(
+                admit_reply(&request, &ReplyDto::new(1, reply(bad))).is_err(),
+                "forged cursor advance/span/credit"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar() {
+    assert_eq!(DTO_VERSION, 31);
+    let issued = QueryLimit::new(4).expect("issued");
+    let fixed = CommandDto::new(
+        1,
+        Command::Name(NameQuery::new("Thing", view_state_root(&[]), issued)),
+    );
+    let legacy = serde_json::to_value(&fixed).expect("legacy shape");
+    assert!(legacy["command"]["data"].get("window").is_none());
+    let window =
+        crate::QueryWindow::new(issued, QueryLimit::new(2).expect("delivery")).expect("window");
+    let command = CommandDto::new(
+        1,
+        Command::Name(
+            NameQuery::new("Thing", view_state_root(&[]), issued)
+                .with_window(window)
+                .expect("window"),
+        ),
+    );
+    let bytes = serde_json::to_vec(&command).expect("new command");
+    let old_peer = super::codec::check_version_header_against(&bytes, "command", 29)
+        .expect_err("old peer rejects before its deny-unknown-fields decoder");
+    assert!(old_peer.contains(&format!("command DTO version {DTO_VERSION}")));
+    let mut old: serde_json::Value = serde_json::from_slice(&bytes).expect("envelope");
+    old["version"] = serde_json::json!(29);
+    let error = crate::decode_command_body(&serde_json::to_vec(&old).expect("old envelope"))
+        .expect_err("old version rejected before window shape");
+    assert!(error.contains("command DTO version 29"));
+    assert!(!error.contains("unknown field"));
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("existing grammar");
+    assert!(grammar.check_envelope_version(29).is_ok());
+    assert!(grammar.check_envelope_version(30).is_ok());
+    assert!(grammar.check_envelope_version(31).is_ok());
+    assert!(grammar.check_envelope_version(32).is_err());
+}
+
+#[test]
+fn legacy_wire_empty_initial_owner_cursor_admission_is_preserved() {
+    let (library, _) = paged_query_fixture(0);
+    let query = NameQuery::new(
+        "absent",
+        library.revision_root(),
+        QueryLimit::new(2).expect("credit"),
+    );
+    let empty = library.names(&query).expect("actual empty initial page");
+    let owner_position = Cursor::for_view(
+        empty.root.recipe(),
+        library.view().version(),
+        library.cursor().frontier(),
+    );
+    assert_eq!(owner_position.query_offset(), 0);
+    let command = CommandDto::new(1, Command::Name(query.with_cursor(owner_position)));
+    assert!(
+        admit_reply(&command, &ReplyDto::new(1, CommandReply::Names(empty))).is_ok(),
+        "shared wire admission historically allows an empty initial owner position"
+    );
+}
+
+#[test]
+fn borrowed_catalog_wire_is_byte_identical_to_the_existing_owned_projection() {
+    for case in 0..6 {
+        let (base, ids) = paged_query_fixture(0);
+        let mut rows = base.view().rows().to_vec();
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.document = vec![
+                Fragment::Text("quotes\"\\\nאב🙂".repeat(20)),
+                Fragment::Code("fn f() {\n}\t".to_owned()),
+                Fragment::Link {
+                    label: "other\"".to_owned(),
+                    target: symbol_key("pkg::Thing1"),
+                },
+                Fragment::Break,
+            ]
+            .into_boxed_slice();
+            row.signature = (i != 0).then(|| "fn f(λ: &str)".to_owned());
+            row.kind = (i != 1).then_some(crate::DeclarationKind::Function);
+            row.parent = (i == 2).then_some(symbol_key("pkg::Thing1"));
+            row.source = match case {
+                0 | 5 => crate::SourceAvailability::Captured(
+                    crate::SourceLocation::new("src/a\".rs", 2).expect("location"),
+                ),
+                1 => crate::SourceAvailability::NotCaptured,
+                2 => crate::SourceAvailability::NotHydrated,
+                3 => crate::SourceAvailability::Unconfigured,
+                _ => crate::SourceAvailability::stale_file("src/old.rs").expect("stale file"),
+            };
+            row.excerpt = match case {
+                0 => crate::SourceExcerpt::captured(
+                    "fn f() { λ }",
+                    crate::SourceExcerptExtent::Complete,
+                )
+                .expect("complete excerpt"),
+                1 => crate::SourceExcerpt::NotCaptured,
+                2 => crate::SourceExcerpt::NotHydrated,
+                3 => crate::SourceExcerpt::Unconfigured,
+                _ => {
+                    crate::SourceExcerpt::captured("fn f(λ", crate::SourceExcerptExtent::Truncated)
+                        .expect("truncated excerpt")
+                }
+            };
+            row.facts = match i {
+                0 => crate::DeclarationFacts::UNOBSERVED,
+                1 => crate::DeclarationFacts {
+                    deprecation: crate::Fact::Absent,
+                    obligation: crate::Fact::Absent,
+                },
+                _ => crate::DeclarationFacts {
+                    deprecation: crate::Fact::Present(crate::Deprecation::new(
+                        Some("1.0"),
+                        Some("use \"other\"\\λ"),
+                    )),
+                    obligation: crate::Fact::Present(crate::Obligation::Required),
+                },
+            };
+        }
+        let root = ViewRoot::new_checked(
+            base.view().recipe(),
+            base.view().basis(),
+            base.view().frontier(),
+            rows,
+            base.view().coverage().to_vec(),
+            base.view().capability().expect("owned fixture scope"),
+        )
+        .expect("real catalog root");
+        let library =
+            crate::Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("catalog");
+        let limit = QueryLimit::new(4).expect("issued");
+        let window =
+            crate::QueryWindow::new(limit, QueryLimit::new(2).expect("delivery")).expect("window");
+        let names = library
+            .names(
+                &NameQuery::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("names window"),
+            )
+            .expect("actual names");
+        let search = library
+            .search(
+                &Query::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("search window"),
+            )
+            .expect("actual search");
+        let mut sorted = ids.clone();
+        sorted.sort();
+        let graph = library
+            .graph_page_from_ids(
+                symbol_key("pkg::Thing0"),
+                crate::SymbolAddress::canonical(symbol_key("pkg::Thing0")),
+                crate::PageRequest::new(library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("graph window"),
+                &sorted,
+            )
+            .expect("actual selected graph");
+        let names_tail = library
+            .names(
+                &NameQuery::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("names window")
+                    .with_cursor(names.next.expect("names prefix")),
+            )
+            .expect("actual names tail");
+        let search_tail = library
+            .search(
+                &Query::new("Thing", library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("search window")
+                    .with_cursor(search.next.expect("search prefix")),
+            )
+            .expect("actual search tail");
+        let graph_tail = library
+            .graph_page_from_ids(
+                symbol_key("pkg::Thing0"),
+                crate::SymbolAddress::canonical(symbol_key("pkg::Thing0")),
+                crate::PageRequest::new(library.revision_root(), limit)
+                    .with_window(window)
+                    .expect("graph window")
+                    .with_continuation(crate::PageContinuation::from_cursor(
+                        graph.snapshot.next.expect("graph prefix"),
+                    )),
+                &sorted,
+            )
+            .expect("actual graph tail");
+        for body in [
+            CommandReply::Names(names),
+            CommandReply::Search(search),
+            CommandReply::ProjectionPage(graph),
+            CommandReply::Names(names_tail),
+            CommandReply::Search(search_tail),
+            CommandReply::ProjectionPage(graph_tail),
+        ] {
+            // This comparison tests transport spelling only. Empty certificate
+            // carries no producer authority, and no index/owner proof is claimed.
+            let mut dto = ReplyDto::new(17, body).with_certificate(WireCertificate::new());
+            if matches!(&dto.reply, CommandReply::Search(_)) {
+                dto = dto.with_semantic_search_status(crate::SemanticSearchStatus::Available);
+            }
+            assert_catalog_bytes_match_owned(&dto);
+        }
+    }
+}
+
+fn assert_catalog_bytes_match_owned(dto: &ReplyDto) {
+    let owned = super::reply::ReplyEnvelope {
+        version: DTO_VERSION,
+        request_id: dto.request_id,
+        reply: super::reply::reply_to_wire(&dto.reply).expect("maintained owned projection"),
+        certificate: dto.certificate().cloned(),
+        health_cursor: None,
+        semantic_search: dto.semantic_search_status(),
+    };
+    let expected = serde_json::to_vec(&owned).expect("existing complete bytes");
+    assert_eq!(
+        serde_json::to_vec(dto).expect("borrowed serializer"),
+        expected
+    );
+    assert_eq!(
+        crate::encode_reply_body_bounded(dto).expect("bounded native body"),
+        expected
+    );
+    assert_eq!(
+        super::bounded_json::bounded_json(dto, expected.len()).expect("exact bound"),
+        expected
+    );
+    assert!(matches!(
+        super::bounded_json::bounded_json(dto, expected.len() - 1),
+        Err(crate::BoundedJsonError::LimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
+    let source = object_version(b"library-source-v1");
+    let base = crate::Library::with_coverage(capability(source)).expect("covered built-in source");
+    let basis = base.view().basis();
+    let ids =
+        ["pkg::Thing0", "pkg::Thing1", "pkg::Thing2"].map(|name| RowId::Symbol(symbol_key(name)));
+    let rows = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Row::new(*id, basis, format!("Thing{i}\"λ")))
+        .collect();
+    let root = ViewRoot::new_checked(
+        base.view().recipe(),
+        basis,
+        base.view().frontier(),
+        rows,
+        base.view().coverage().to_vec(),
+        base.view().capability().expect("built-in coverage"),
+    )
+    .expect("checked populated built-in source");
+    let library = crate::Library::from_view(root.clone(), Cursor::for_view_root(&root))
+        .expect("built-in producer");
+    // Obtain real claims through the production certificate constructor. This
+    // transport-equivalence test does not claim these revision claims alone
+    // independently certify the selected catalog projection or its sidecars.
+    let revision = library.execute_dto(CommandDto::new(1, Command::Revision));
+    assert!(matches!(&revision.reply, CommandReply::Revision(_)));
+    let proof = revision
+        .certificate()
+        .expect("production revision certificate");
+    assert!(!proof.claims.is_empty());
+    let limit = QueryLimit::new(4).expect("complete three-row selection");
+    let mut sorted = ids;
+    sorted.sort();
+    let graph = library
+        .graph_page_from_ids(
+            symbol_key("pkg::Thing0"),
+            crate::SymbolAddress::canonical(symbol_key("pkg::Thing0")),
+            crate::PageRequest::new(library.revision_root(), limit),
+            &sorted,
+        )
+        .expect("actual graph selection");
+    let names = library
+        .names(&NameQuery::new("Thing", library.revision_root(), limit))
+        .expect("actual names selection");
+    let search = library
+        .search(&Query::new("Thing", library.revision_root(), limit))
+        .expect("actual search selection");
+    for mut body in [
+        CommandReply::Names(names),
+        CommandReply::Search(search),
+        CommandReply::ProjectionPage(graph),
+    ] {
+        let snapshot = match &mut body {
+            CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => snapshot,
+            CommandReply::ProjectionPage(page) => &mut page.snapshot,
+            _ => unreachable!("three catalog families"),
+        };
+        assert_eq!(snapshot.root.rows().len(), 3);
+        let relations = vec![crate::GraphRelation::new(
+            ids[0],
+            ids[1],
+            crate::SemanticLinkKind::Calls,
+        ).with_confidence(crate::SemanticConfidence::Syntactic)]
+        .into_boxed_slice();
+        let revision = crate::RichGraphRevision::new(
+            snapshot.root.root().to_bytes(),
+            crate::SemanticGenerationId::new([7; 32]),
+            [8; 32],
+        );
+        let rich =
+            crate::RichGraphSnapshot::from_view(&snapshot.root, ids[0], &relations, revision)
+                .expect("checked nonempty graph sidecar");
+        assert_eq!(rich.nodes.len(), 3);
+        assert_eq!(rich.edges.len(), 1);
+        assert_eq!(rich.edges[0].provenance.confidence, Some(crate::SemanticConfidence::Syntactic));
+        snapshot.graph_relations = Some(relations);
+        snapshot.rich_graph = Some(rich);
+        let dto = ReplyDto::new(18, body).with_certificate(proof.clone());
+        assert_catalog_bytes_match_owned(&dto);
+        let value = serde_json::to_value(&dto).expect("catalog sidecar shape");
+        let snapshot = if matches!(&dto.reply, CommandReply::ProjectionPage(_)) {
+            &value["reply"]["data"]["snapshot"]
+        } else {
+            &value["reply"]["data"]
+        };
+        assert_eq!(
+            snapshot["graph_relations"]["relations"]
+                .as_array()
+                .expect("typed edges")
+                .len(),
+            1
+        );
+        assert_eq!(snapshot["graph_relations"]["schema"], 2);
+        assert_eq!(snapshot["graph_relations"]["relations"][0]["confidence"], "syntactic");
+        assert_eq!(snapshot["rich_graph"]["edges"][0]["provenance"]["confidence"], "syntactic");
+        assert_eq!(
+            snapshot["rich_graph"]["nodes"]
+                .as_array()
+                .expect("rich nodes")
+                .len(),
+            3
+        );
+        assert_eq!(
+            snapshot["rich_graph"]["edges"]
+                .as_array()
+                .expect("rich edges")
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["certificate"]["claims"]
+                .as_array()
+                .expect("production claims")
+                .len(),
+            proof.claims.len()
+        );
+    }
+}
+
+#[test]
+fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort() {
+    assert_eq!(DTO_VERSION, 31);
+    // Use the real strict coverage projection, rather than a hand-written field.
+    let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
+        lane: crate::Lane::Semantic,
+    });
+    let projected = serde_json::to_value(coverage).expect("new strict variant");
+    let current = serde_json::to_vec(&serde_json::json!({
+        "version": DTO_VERSION,
+        "reply": {"coverage": projected, "unknown_future_field": true}
+    }))
+    .expect("cohort envelope");
+    let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
+        .expect_err("old peer stops before decoding a gapped variant");
+    assert!(old_peer.contains("reply DTO version 31"));
+    assert!(old_peer.contains("same build"));
+    assert!(!old_peer.contains("unknown variant"));
+    // A mutation under the previous cohort is refused before its nested shape.
+    let old_mutation = br#"{"version":30,"request_id":1,"command":{"index_operation_start":{"unknown_future_field":true}}}"#;
+    let error = crate::decode_command_body(old_mutation).expect_err("old live mutation refused");
+    assert!(error.contains("command DTO version 30"));
+    assert!(error.contains("this build supports 31"));
+    assert!(!error.contains("unknown field"));
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
+    for version in 21..=31 {
+        grammar
+            .check_envelope_version(version)
+            .expect("explicit maintained history");
+    }
+    assert!(grammar.check_envelope_version(32).is_err());
+}
+
+#[test]
+fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_journal_container() {
+    // The maintained certificate fixture owns these exact preimages.
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
+    let root = ViewRoot::new_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        Vec::new(),
+        vec![
+            crate::Coverage::Complete,
+            crate::Coverage::Gapped {
+                lane: crate::Lane::Semantic,
+            },
+        ],
+        capability(basis.object),
+    )
+    .expect("actual checked gapped projection");
+    let dto = ViewDto::new(
+        1,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+            rich_graph: None,
+        },
+    )
+    .with_certificate(certificate(&root));
+    let bytes = serde_json::to_vec(&dto).expect("DTO31 gapped snapshot");
+    let live = ViewDto::decode_with_certificate(&bytes, Some(capability(basis.object)))
+        .expect("current live certificate admission");
+    assert_eq!(live.snapshot.root, root);
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3)
+        .expect("unchanged journal container");
+    assert_eq!(
+        grammar
+            .decode_snapshot(&bytes, capability(basis.object))
+            .expect("strict persisted proof")
+            .snapshot
+            .root,
+        root
+    );
+    let mut forged: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
+    forged["snapshot"]["root"]["coverage"] = serde_json::json!([]);
+    assert!(
+        grammar
+            .decode_snapshot(
+                &serde_json::to_vec(&forged).expect("tampered wire"),
+                capability(basis.object)
+            )
+            .is_err(),
+        "coverage cannot change without its canonical root certificate"
+    );
+}
+
+#[test]
+fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_evidence() {
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
+    let labels = ["pkg::from", "pkg::to"];
+    let ids = labels.map(|label| RowId::Symbol(symbol_key(label)));
+    let root = ViewRoot::new_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        labels.iter().zip(ids).map(|(label, id)| Row::new(id, basis, *label)).collect(),
+        vec![crate::Coverage::Complete],
+        capability(basis.object),
+    ).expect("checked source rows");
+    let mut proof = certificate(&root);
+    for label in labels {
+        proof = proof.with_claim(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol_key(label).as_bytes()),
+            value: label.to_owned(),
+        });
+    }
+    let relation = crate::GraphRelation::new(ids[0], ids[1], crate::SemanticLinkKind::Calls)
+        .with_confidence(crate::SemanticConfidence::Syntactic);
+    let revision = crate::RichGraphRevision::new(
+        root.root().to_bytes(), crate::SemanticGenerationId::new([7; 32]), [8; 32],
+    );
+    let rich = crate::RichGraphSnapshot::from_view(&root, ids[0], &[relation], revision)
+        .expect("observed confidence graph");
+    let snapshot = ViewSnapshot {
+        root: root.clone(), freshness: Freshness::Current, next: None,
+        graph_relations: Some(vec![relation].into_boxed_slice()), rich_graph: Some(rich),
+    };
+    let current = serde_json::to_value(super::reply::snapshot_to_wire(&snapshot)).expect("wire");
+    let decode = |value: serde_json::Value| -> Result<ViewSnapshot, String> {
+        let wire = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        super::reply::snapshot_from_wire(wire, &proof, Some(capability(basis.object)))
+    };
+    let actual = decode(current.clone()).expect("current confidence");
+    assert_eq!(actual.root.root(), root.root());
+    assert_eq!(actual.graph_relations.as_ref().unwrap()[0].confidence, Some(crate::SemanticConfidence::Syntactic));
+    assert_eq!(actual.rich_graph.as_ref().unwrap().edges[0].provenance.confidence, Some(crate::SemanticConfidence::Syntactic));
+
+    let mut legacy = current.clone();
+    legacy["graph_relations"]["schema"] = 1.into();
+    legacy["graph_relations"]["relations"][0].as_object_mut().unwrap().remove("confidence");
+    legacy["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
+    let decoded_legacy = decode(legacy.clone()).expect("legacy sidecar and rich presentation remain readable");
+    assert_eq!(decoded_legacy.graph_relations.as_ref().unwrap()[0].confidence, None);
+    let legacy_rich = decoded_legacy.rich_graph.as_ref().unwrap();
+    assert_eq!(legacy_rich.edges[0].provenance.confidence, None);
+    assert_eq!(legacy_rich.edges[0].id, actual.rich_graph.as_ref().unwrap().edges[0].id);
+    assert_eq!(legacy_rich.layout, actual.rich_graph.as_ref().unwrap().layout);
+    assert_eq!(legacy_rich.revision, revision);
+    assert_eq!(decoded_legacy.root.root(), root.root());
+    let mut legacy_without_rich = legacy.clone();
+    legacy_without_rich["rich_graph"] = serde_json::Value::Null;
+    assert_eq!(decode(legacy_without_rich).expect("legacy sidecar alone").graph_relations.as_ref().unwrap()[0].confidence, None);
+
+    let mut unknown = current.clone();
+    unknown["graph_relations"]["relations"][0]["confidence"] = serde_json::Value::Null;
+    unknown["rich_graph"] = serde_json::Value::Null;
+    assert_eq!(decode(unknown).expect("explicit unknown confidence").graph_relations.as_ref().unwrap()[0].confidence, None);
+    let mut bad_schema = current.clone();
+    bad_schema["graph_relations"]["schema"] = 3.into();
+    assert!(decode(bad_schema).is_err());
+    let mut legacy_claim = legacy;
+    legacy_claim["graph_relations"]["relations"][0]["confidence"] = "compiler".into();
+    assert!(decode(legacy_claim).is_err());
+    let mut bad_confidence = current.clone();
+    bad_confidence["graph_relations"]["relations"][0]["confidence"] = "stronger-than-compiler".into();
+    assert!(decode(bad_confidence).is_err());
+    let mut extra = current.clone();
+    extra["graph_relations"]["relations"][0]["future_authority"] = true.into();
+    assert!(decode(extra).is_err());
+    let mut duplicate = current.clone();
+    let mut conflict = duplicate["graph_relations"]["relations"][0].clone();
+    conflict["confidence"] = "compiler".into();
+    duplicate["graph_relations"]["relations"].as_array_mut().unwrap().push(conflict);
+    assert!(decode(duplicate).is_err());
+    let mut disagreement = current;
+    disagreement["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
+    assert!(decode(disagreement).unwrap_err().contains("confidence"));
+}

@@ -10,6 +10,7 @@ use crate::Node;
 use std::sync::Arc;
 
 mod manifest;
+mod dependencies;
 mod relation;
 mod tree;
 mod wire;
@@ -18,6 +19,7 @@ pub use manifest::{
     DurableManifest, DurableManifestIdPage, DurableManifestPage, ManifestReadStats,
 };
 pub use relation::{OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead};
+pub(in crate::durable) use dependencies::{DependencyComplete, RelationAdmission};
 pub use tree::DurableTree;
 pub(in crate::durable) use wire::{
     decode_manifest_descriptor, encode_manifest_descriptor, is_manifest_descriptor,

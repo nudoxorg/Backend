@@ -764,6 +764,13 @@ impl<'a> VarianceComputer<'a> {
             usize::MAX
         });
 
+        // A stopped walk's partial mask cannot enter any local, session, or
+        // universe cache. The caller observes the same latched checkpoint and
+        // discards the interrupted file's output.
+        if tsz_common::ambient_stopped() {
+            return None;
+        }
+
         let opaque = self.opaque_gaps != opaque_at_entry;
         // Deduplicated resolution-failure fingerprint of this frame's subtree
         // (children's gaps stay in the log, so this slice includes them).
@@ -906,7 +913,7 @@ enum VarianceTarget {
     ThisType,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct VarianceVisitKey {
     type_id: TypeId,
     polarity: bool,
@@ -915,6 +922,7 @@ struct VarianceVisitKey {
     inside_mapped: bool,
     inside_unreliable_application: bool,
     inside_effective_bivariant_param: bool,
+    bound_type_params: smallvec::SmallVec<[Atom; 2]>,
 }
 
 impl<'a, 'b> VarianceVisitor<'a, 'b> {
@@ -1023,7 +1031,7 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
         }
 
         let completed_key = self.completed_key(type_id, polarity);
-        if completed_key.is_some_and(|key| self.completed.contains(&key)) {
+        if completed_key.as_ref().is_some_and(|key| self.completed.contains(key)) {
             return;
         }
 
@@ -1054,9 +1062,6 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
     }
 
     fn completed_key(&self, type_id: TypeId, polarity: bool) -> Option<VarianceVisitKey> {
-        if !self.bound_type_params.is_empty() {
-            return None;
-        }
         Some(VarianceVisitKey {
             type_id,
             polarity,
@@ -1065,6 +1070,7 @@ impl<'a, 'b> VarianceVisitor<'a, 'b> {
             inside_mapped: self.inside_mapped_depth > 0,
             inside_unreliable_application: self.inside_unreliable_application > 0,
             inside_effective_bivariant_param: self.inside_effective_bivariant_param > 0,
+            bound_type_params: self.bound_type_params.clone(),
         })
     }
 
@@ -1926,3 +1932,7 @@ impl<'a, 'b> TypeVisitor for VarianceVisitor<'a, 'b> {
     /// Module namespace: not handled.
     fn visit_module_namespace(&mut self, _symbol_ref: u32) {}
 }
+
+#[cfg(test)]
+#[path = "variance_work_tests.rs"]
+mod variance_work_tests;

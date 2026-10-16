@@ -222,19 +222,16 @@ pub(super) fn execute_semantic_graph(
         &available.retargeting_scopes(package, &profile_scopes),
     )?;
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.endpoint_pairs(&sources, package)?
     } else {
         Vec::new()
     };
-    for relation in view_build::structural_call_graph_relations_mapped(
-        view,
-        &pairs,
-        package,
-        source_id,
-        include_incoming,
-    ) {
-        relations.insert(relation);
-    }
+    extend_structural_graph_relations(
+        &mut relations,
+        view_build::structural_call_endpoint_relations_mapped(
+            view, &pairs, package, source_id, include_incoming,
+        ),
+    );
     let relations = relations.into_iter().collect::<Vec<_>>();
     let mut snapshot = library
         .graph_from_semantic_relations(semantic_query, &relations)
@@ -253,6 +250,22 @@ pub(super) fn execute_semantic_graph(
     .map_err(|error| BuiltinModelError(format!("build rich semantic graph: {error}")))?;
     snapshot.rich_graph = Some(rich_graph);
     Ok(Some(snapshot))
+}
+
+/// Keeps the selected semantic fact for an edge, using syntax only for missing edges.
+fn extend_structural_graph_relations(
+    relations: &mut BTreeSet<backend_engine::GraphRelation>,
+    structural: impl IntoIterator<Item = backend_engine::GraphRelation>,
+) {
+    let mut selected = relations
+        .iter()
+        .map(|relation| (relation.from, relation.to, relation.relation))
+        .collect::<BTreeSet<_>>();
+    for relation in structural {
+        if selected.insert((relation.from, relation.to, relation.relation)) {
+            relations.insert(relation);
+        }
+    }
 }
 
 pub(super) fn execute_structural_call_graph(
@@ -528,11 +541,10 @@ fn project_opened_semantic_graph(
                 else {
                     continue;
                 };
-                relations.insert(backend_engine::GraphRelation::new(
-                    source_id,
-                    target,
-                    semantic_link_kind(link.kind),
-                ));
+                relations.insert(
+                    backend_engine::GraphRelation::new(source_id, target, semantic_link_kind(link.kind))
+                        .with_confidence(semantic_confidence(link.confidence)),
+                );
             }
         }
         if include_incoming {
@@ -567,11 +579,10 @@ fn project_opened_semantic_graph(
                     if view.row_ref(from).is_none() {
                         continue;
                     }
-                    relations.insert(backend_engine::GraphRelation::new(
-                        from,
-                        source_id,
-                        semantic_link_kind(link.kind),
-                    ));
+                    relations.insert(
+                        backend_engine::GraphRelation::new(from, source_id, semantic_link_kind(link.kind))
+                            .with_confidence(semantic_confidence(link.confidence)),
+                    );
                 }
             }
         }
@@ -641,6 +652,7 @@ fn reference_fact_has_site_and_relation(
         .any(|fact| fact.site == site && fact.relation == relation)
 }
 
+#[cfg(test)]
 fn project_reference_facts_from_bytes(
     images: &[&[u8]],
     view: &backend_engine::ViewRoot,
@@ -657,13 +669,26 @@ fn project_reference_facts_from_bytes(
             })?,
         );
     }
+    let endpoints = structural_pairs
+        .iter()
+        .map(|(caller, callee)| {
+            (
+                view_build::StructuralCallEndpoint::LegacyCoordinate(caller.clone()),
+                view_build::StructuralCallEndpoint::LegacyCoordinate(callee.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let borrowed_pairs = endpoints
+        .iter()
+        .map(|(caller, callee)| (caller, callee))
+        .collect::<Vec<_>>();
     project_opened_reference_facts(
         &opened,
         view,
         package,
         target_symbol,
         project_paths,
-        structural_pairs,
+        &borrowed_pairs,
         None,
         &std::collections::BTreeMap::new(),
         &[],
@@ -677,7 +702,10 @@ fn project_opened_reference_facts(
     package: backend_engine::PackageKey,
     target_symbol: backend_engine::SymbolKey,
     project_paths: &BTreeSet<String>,
-    structural_pairs: &[(String, String)],
+    structural_pairs: &[(
+        &view_build::StructuralCallEndpoint,
+        &view_build::StructuralCallEndpoint,
+    )],
     // The package's source root, where a name-matched call's file is read
     // to place it; `None` places none.
     root: Option<&std::path::Path>,
@@ -827,18 +855,15 @@ fn project_opened_reference_facts(
             })?
     };
     let target_identity = view_build::structural_symbol_identity(target_symbol);
-    for (caller_coordinate, callee_coordinate) in structural_pairs {
-        let Some(callee_id) =
-            view_build::view_row_for_structural_coordinate(view, package, callee_coordinate)
-        else {
+    let structural_rows = view_build::StructuralCallRows::new(view, package);
+    for &(caller_endpoint, callee_endpoint) in structural_pairs {
+        let Some(callee_id) = structural_rows.mapped(callee_endpoint) else {
             continue;
         };
         if callee_id != target_row_id {
             continue;
         }
-        let Some(caller_id) =
-            view_build::view_row_for_structural_coordinate(view, package, caller_coordinate)
-        else {
+        let Some(caller_id) = structural_rows.mapped(caller_endpoint) else {
             continue;
         };
         let caller_row = view.row_ref(caller_id).ok_or_else(|| {
@@ -1013,7 +1038,7 @@ pub(super) fn execute_references(
         }
     }
     let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.coordinate_pairs(&sources, package)?
+        structural_calls.endpoint_pairs(&sources, package)?
     } else {
         Vec::new()
     };
@@ -1762,6 +1787,27 @@ mod project_call_tests {
 
     fn project_paths(files: &[&str]) -> BTreeSet<String> {
         files.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn structural_graph_union_keeps_selected_semantic_confidence_and_adds_only_missing_edges() {
+        let from = RowId::Symbol(backend_engine::symbol_key("pkg::from"));
+        let to = RowId::Symbol(backend_engine::symbol_key("pkg::to"));
+        let missing = RowId::Symbol(backend_engine::symbol_key("pkg::missing"));
+        for confidence in [None, Some(backend_engine::SemanticConfidence::Compiler), Some(backend_engine::SemanticConfidence::Heuristic)] {
+            let selected = GraphRelation { confidence, ..GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls) };
+            let mut relations = BTreeSet::from([selected]);
+            super::extend_structural_graph_relations(&mut relations, [
+                GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls)
+                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+                GraphRelation::new(from, missing, backend_engine::SemanticLinkKind::Calls)
+                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+            ]);
+            assert_eq!(relations.len(), 2);
+            assert!(relations.contains(&selected));
+            assert_eq!(relations.iter().find(|relation| relation.to == missing).unwrap().confidence,
+                Some(backend_engine::SemanticConfidence::Syntactic));
+        }
     }
 
     fn relation_targets(relations: &BTreeSet<GraphRelation>, from: RowId) -> Vec<RowId> {
@@ -8692,6 +8738,69 @@ mod project_call_tests {
         Ok(())
     }
 
+    #[test]
+    fn typed_structural_reference_endpoints_keep_shadowed_worker_sites_distinct()
+    -> Result<(), String> {
+        let path = "workers.ts";
+        let text = "const left = () => { function worker() { leftTarget(); } function leftTarget() {} }, right = () => { function worker() { rightTarget(); } function rightTarget() {} };";
+        let sources = indexed_sources(&[(path, analyze_source(path, text)?)])?;
+        let package = package_key("fixture");
+        let (view, rows) = super::view_build::structural_view_for_test(&sources)?;
+        let mut residence = super::view_build::StructuralCallResidence::default();
+        let pairs = residence
+            .endpoint_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mut sites = BTreeSet::new();
+        for (owner_name, target_name) in [("left", "leftTarget"), ("right", "rightTarget")] {
+            let owner = rows
+                .iter()
+                .find(|row| row.label == format!("fixture::{path}:1::{owner_name}"))
+                .ok_or("owner")?
+                .id;
+            let caller = rows
+                .iter()
+                .find(|row| {
+                    row.label == "fixture::workers.ts:1::worker"
+                        && row.parent.map(RowId::Symbol) == Some(owner)
+                })
+                .ok_or("exact caller")?
+                .id;
+            let RowId::Symbol(target) = rows
+                .iter()
+                .find(|row| row.label == format!("fixture::{path}:1::{target_name}"))
+                .ok_or("target")?
+                .id
+            else {
+                return Err("target symbol".to_owned());
+            };
+            let facts = super::project_opened_reference_facts(
+                &[],
+                &view,
+                package,
+                target,
+                &project_paths(&[path]),
+                &pairs,
+                None,
+                &BTreeMap::new(),
+                &[],
+                true,
+            )
+            .map_err(|error| error.to_string())?;
+            let RowId::Symbol(caller) = caller else {
+                return Err("caller symbol".to_owned());
+            };
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0].site, caller);
+            assert!(sites.insert(caller));
+        }
+        assert_eq!(
+            sites.len(),
+            2,
+            "the production opened-image reference path preserves both exact call sites"
+        );
+        Ok(())
+    }
+
     fn analyze_source(
         path: &str,
         source: &str,
@@ -8777,6 +8886,9 @@ mod project_call_tests {
             structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
         let relations =
             structural_call_graph_relations_mapped(&view, &pairs, package, sync_id, false);
+        if relations.iter().any(|relation| relation.confidence != Some(backend_engine::SemanticConfidence::Syntactic)) {
+            return Err("structural graph relations must retain syntactic confidence".to_owned());
+        }
         let targets = relations
             .iter()
             .map(|relation| relation.to)

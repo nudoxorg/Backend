@@ -50,7 +50,7 @@ pub(crate) struct FactsWire {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", content = "data", deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum FactWire<T> {
+pub(super) enum FactWire<T> {
     Absent,
     Present(T),
 }

@@ -495,15 +495,16 @@ pub(super) fn append_structural_query_facts(
         // structural evidence to either, so it contributes no query facts.
         // Skipping one odd file is the whole point: failing here is what made
         // a single unprofiled file refuse the entire rebuild.
-        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };
         if structural_plan.file(*file_key).is_none() {
             continue;
         }
-        for (index, declaration) in file.declarations.iter().enumerate() {
+        let mut index = 0usize;
+        super::structural::visit_complete_declarations(sources, record, |declaration| {
             let prepared = structural_plan.declaration(*file_key, index)?;
             let id = prepared.id.stable_key();
             let coordinate = prepared.coordinate.clone();
@@ -519,15 +520,23 @@ pub(super) fn append_structural_query_facts(
             } else {
                 declaration.documentation().to_owned()
             };
-            let parent = prepared
-                .parent
-                .as_deref()
-                .map(|coordinate| structural_plan.parent_id(*file_key, coordinate))
-                .transpose()?
-                .map(|parent| match parent {
-                    StructuralParent::Symbol(id) => id.stable_key(),
-                    StructuralParent::Package(package) => RowId::Package(package).stable_key(),
-                });
+            let parent = if let Some(binding) = prepared.parent_binding {
+                Some(
+                    structural_plan
+                        .binding_parent_id(*file_key, binding)?
+                        .stable_key(),
+                )
+            } else {
+                prepared
+                    .parent
+                    .as_deref()
+                    .map(|coordinate| structural_plan.parent_id(*file_key, coordinate))
+                    .transpose()?
+                    .map(|parent| match parent {
+                        StructuralParent::Symbol(id) => id.stable_key(),
+                        StructuralParent::Package(package) => RowId::Package(package).stable_key(),
+                    })
+            };
             facts.push(backend_extension_trustfall::SemanticQueryFact::new(
                 backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
                     backend_extension_trustfall::StructuralFallbackEvidence::new(
@@ -550,6 +559,18 @@ pub(super) fn append_structural_query_facts(
                     parent,
                     related: Box::new([]),
                 },
+            ));
+            index = index.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("structural declaration count overflow".to_owned())
+            })?;
+            Ok(())
+        })?;
+        if structural_plan
+            .file(*file_key)
+            .is_some_and(|file| file.declarations.len() != index)
+        {
+            return Err(BuiltinModelError(
+                "complete source-facts count differs from its structural plan".to_owned(),
             ));
         }
     }

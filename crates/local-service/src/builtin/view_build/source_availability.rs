@@ -50,8 +50,7 @@ impl SourceAvailability {
                 ));
             }
             let Some(profile) =
-                super::super::ingest::source_profile(std::path::Path::new(file.path))
-                    .map_err(BuiltinModelError)?
+                super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
             else {
                 continue;
             };

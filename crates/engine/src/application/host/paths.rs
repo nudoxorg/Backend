@@ -43,6 +43,7 @@ pub(super) struct TypeScriptNodeSelection {
 
 #[derive(Clone, Debug)]
 pub(super) struct TypeScriptHostSelection {
+    pub(super) direct_native: bool,
     pub(super) compiler: Option<PathBuf>,
     pub(super) compiler_explicit: bool,
     pub(super) compiler_origin: TypeScriptSelectionOrigin,
@@ -117,6 +118,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if let Some(path) = self.optional_absolute_path(variable)? {
             return self.validate_file(role, variable, path).map(Some);
         }
+        if self.discovery == LocalHostDiscovery::ClosedSnapshot
+            && variable == LocalHostVariable::NudoxPython
+            && let Some(path) = self.optional_absolute_path(LocalHostVariable::NudoxPythonDefault)?
+        {
+            return self.validate_file(role, LocalHostVariable::NudoxPythonDefault, path).map(Some);
+        }
         if self.discovery == LocalHostDiscovery::ExplicitOnly
             || self.discovery == LocalHostDiscovery::ClosedSnapshot
         {
@@ -132,21 +139,40 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         first_existing(role, candidates)
     }
 
-    /// Selects one complete installed or bundled TypeScript fallback for every local surface.
-    ///
-    /// Project-local TypeScript is still selected first by `TypeScriptProjectHost`. This host
-    /// tuple is used only when that project has no local compiler. An automatically discovered
-    /// `tsc` is admitted only when its package root and a Node runtime are both available, so a
-    /// PATH hit cannot create a half-configured global checker.
+    /// Selects the linked checker by default, or admits explicit external overrides.
+    /// External overrides retain the paired compiler/runtime and bundle validation policy.
     pub(super) fn typescript_host_selection(
         &self,
         home: Option<&Path>,
     ) -> Result<TypeScriptHostSelection, LocalCompilerHostError> {
+        // Native project compilation needs no installed compiler, runtime, or helper.
+        // Only caller-selected external overrides retain the Compiler API route.
+        let external_selected = [
+            LocalHostVariable::NudoxTypeScriptCompiler,
+            LocalHostVariable::NudoxTypeScriptNode,
+            LocalHostVariable::NudoxTypeScriptModuleRoot,
+            LocalHostVariable::NudoxTypeScriptReportProgram,
+        ]
+        .into_iter()
+        .any(|variable| self.environment.value(variable).is_some());
+        if !external_selected {
+            return Ok(TypeScriptHostSelection {
+                direct_native: true,
+                compiler: None,
+                compiler_explicit: false,
+                compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
+                node: None,
+                module_root: None,
+                module_root_explicit: false,
+                report_program: None,
+                bundled_application: None,
+            });
+        }
         let variable = LocalHostVariable::NudoxTypeScriptCompiler;
         let role = LocalHostPathRole::Native(NativeTool::TypeScriptCompiler);
         let explicit_compiler = self.optional_absolute_path(variable)?;
-        let module_root_explicit =
-            self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptModuleRoot)?
+        let module_root_explicit = self
+            .optional_absolute_path(LocalHostVariable::NudoxTypeScriptModuleRoot)?
             .is_some();
         // Freeze the locator without hashing unused SDK resources. Closed owners never infer
         // it from their own executable, which may be a different sibling or distribution.
@@ -200,8 +226,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             let module_root = self.typescript_module_root(Some(&compiler))?;
             let node = self.typescript_node_executable(home, Some(&compiler))?;
             if explicit_compiler.is_some()
-                || (module_root.is_some() && (node.is_some() || bundled_application.is_some())) {
+                || (module_root.is_some() && (node.is_some() || bundled_application.is_some()))
+            {
                 return Ok(TypeScriptHostSelection {
+                    direct_native: false,
                     compiler: Some(compiler),
                     compiler_explicit: explicit_compiler.is_some(),
                     compiler_origin: if explicit_compiler.is_some() {
@@ -219,6 +247,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         }
 
         Ok(TypeScriptHostSelection {
+            direct_native: false,
             compiler: None,
             compiler_explicit: false,
             compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
@@ -394,7 +423,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostVariable::NudoxCargoHome => (LocalHostPathRole::CargoHome, Directory),
             LocalHostVariable::NudoxClang => (Native(NativeTool::Clang), File),
             LocalHostVariable::LibclangPath => (LocalHostPathRole::Libclang, FileOrDirectory),
-            LocalHostVariable::NudoxPython => (Native(NativeTool::Python), File),
+            LocalHostVariable::NudoxPython
+            | LocalHostVariable::NudoxPythonDefault
+            | LocalHostVariable::NudoxPythonCandidate1
+            | LocalHostVariable::NudoxPythonCandidate2
+            | LocalHostVariable::NudoxPythonCandidate3
+            | LocalHostVariable::NudoxPythonCandidate4
+            | LocalHostVariable::NudoxPythonCandidate5
+            | LocalHostVariable::NudoxPythonCandidate6
+            | LocalHostVariable::NudoxPythonCandidate7
+            | LocalHostVariable::NudoxPythonCandidate8
+            | LocalHostVariable::NudoxPythonCandidate9
+            | LocalHostVariable::NudoxPythonCandidate10
+            | LocalHostVariable::NudoxPythonCandidate11 => (Native(NativeTool::Python), File),
             LocalHostVariable::NudoxTypeScriptCompiler
             | LocalHostVariable::NudoxTypeScriptDefaultCompiler => {
                 (Native(NativeTool::TypeScriptCompiler), File)
@@ -2563,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_only_service_discovers_a_paired_global_typescript_host_from_path() {
+    fn default_service_uses_linked_typescript_even_when_path_has_a_paired_host() {
         let root = private_test_directory("typescript-paired-install");
         let home = root.join("home");
         let module_root = root.join("prefix/lib/node_modules");
@@ -2587,24 +2628,12 @@ mod tests {
         let selection = host
             .typescript_host_selection(None)
             .expect("admit global TypeScript toolchain");
-        let selected_compiler = selection.compiler.expect("PATH contains tsc");
-        assert_eq!(
-            selected_compiler,
-            fs::canonicalize(&compiler).expect("canonical tsc")
-        );
-        assert_eq!(
-            selection.module_root,
-            Some(fs::canonicalize(&module_root).expect("canonical module root")),
-        );
-        let node_selection = selection.node.expect("compiler sibling provides Node");
-        assert_eq!(
-            node_selection.path,
-            fs::canonicalize(&node).expect("canonical Node")
-        );
-        assert_eq!(
-            node_selection.origin,
-            TypeScriptSelectionOrigin::PairedHostInstall
-        );
+        assert!(selection.direct_native);
+        assert!(selection.compiler.is_none());
+        assert!(selection.node.is_none());
+        assert!(selection.module_root.is_none());
+        assert!(selection.report_program.is_none());
+        assert!(selection.bundled_application.is_none());
 
         fs::remove_dir_all(root).expect("remove test directory");
     }
@@ -3076,6 +3105,30 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_python_capture_freezes_all_independent_versions_and_keeps_override_strict() {
+        let (root, mut environment) = installed_fixture("python-candidate-policy", false);
+        let alternate = root.join("python312/bin").join(if cfg!(windows) { "python.exe" } else { "python3.12" });
+        executable(&alternate);
+        environment.search_path = Some(std::env::join_paths([
+            root.join("bin"), alternate.parent().unwrap().to_path_buf()
+        ]).unwrap());
+        let captured = LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection().unwrap();
+        assert_eq!(captured.snapshot().path(LocalHostVariable::NudoxPython), None);
+        assert_eq!(captured.snapshot().path(LocalHostVariable::NudoxPythonDefault), Some(root.join("bin/python3").canonicalize().unwrap().as_path()));
+        let alternate = alternate.canonicalize().unwrap();
+        assert!(super::super::python_environment::INSTALLED_PYTHON_ROLES.into_iter().any(|role| captured.snapshot().path(role) == Some(alternate.as_path())));
+        let decoded = super::super::ClosedLocalHostEnvironmentSnapshot::parse(&captured.snapshot().encode().unwrap()).unwrap();
+        assert_eq!(decoded, *captured.snapshot());
+        environment.set(LocalHostVariable::NudoxPython, &alternate);
+        let explicit = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection().unwrap();
+        assert_eq!(explicit.snapshot().path(LocalHostVariable::NudoxPython), Some(alternate.as_path()));
+        assert!(super::super::python_environment::INSTALLED_PYTHON_ROLES.into_iter().all(|role| explicit.snapshot().path(role).is_none()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cold_go_cache_capture_survives_ordinary_dependency_setup() {
         let (root, mut environment) = installed_fixture("cold-go-cache", false);
         environment.go_module_cache = None;
@@ -3159,28 +3212,11 @@ mod tests {
             snapshot.path(LocalHostVariable::NudoxTypeScriptCompiler),
             None,
         );
+        assert_eq!(snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), None);
+        assert_eq!(snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultNode), None);
+        assert_eq!(snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot), None);
         assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
-            Some(
-                fs::canonicalize(root.join("lib/node_modules/typescript/bin/tsc"))
-                    .unwrap()
-                    .as_path()
-            ),
-        );
-        assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
-            Some(fs::canonicalize(root.join("bin/node")).unwrap().as_path()),
-        );
-        assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot),
-            Some(
-                fs::canonicalize(root.join("lib/node_modules"))
-                    .unwrap()
-                    .as_path()
-            ),
-        );
-        assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxPython),
+            snapshot.path(LocalHostVariable::NudoxPythonDefault),
             Some(
                 fs::canonicalize(root.join("bin/python3"))
                     .unwrap()
@@ -3239,9 +3275,9 @@ mod tests {
                 let incoming = LocalCompilerHostSelection::from_closed_snapshot(closed).unwrap();
                 assert_eq!(incoming.go_authority_failure(), Some(cause));
                 assert_eq!(incoming.snapshot().path(variable), None);
-                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_some());
-                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode).is_some());
-                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPython).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_none());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode).is_none());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPythonDefault).is_some());
             }
         }
         // A previously captured cause must survive the temporary frozen host construction.

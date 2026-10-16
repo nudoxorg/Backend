@@ -83,6 +83,17 @@ impl<'a> ModuleIndex<'a> {
             );
             return out;
         }
+        if let Some(rest) = project_alias_rest(specifier) {
+            for root in PROJECT_ALIAS_ROOTS {
+                let base = if root.is_empty() {
+                    rest.to_owned()
+                } else {
+                    format!("{root}/{rest}")
+                };
+                self.push_candidate(&base, &mut out);
+            }
+            return out;
+        }
         if specifier.contains("::") {
             let mut remainder = specifier;
             let mut base = caller_dir;
@@ -137,15 +148,59 @@ impl<'a> ModuleIndex<'a> {
 }
 
 struct FileFacts<'a> {
+    key: [u8; 32],
     path: &'a str,
     declarations: Cow<'a, [backend_compile::SourceDeclaration]>,
 }
 
 #[derive(Default)]
 struct FileDeclarations<'a> {
+    scope_parents: BTreeMap<backend_compile::SourceBinding, Option<backend_compile::SourceBinding>>,
+    scoped_names:
+        BTreeMap<&'a str, BTreeMap<Option<backend_compile::SourceBinding>, ScopedCallName>>,
     callable: BTreeMap<&'a str, BTreeSet<DeclarationId>>,
     methods: BTreeMap<&'a str, BTreeMap<&'a str, BTreeSet<DeclarationId>>>,
     nominal: BTreeSet<&'a str>,
+}
+
+#[derive(Default)]
+struct ScopedCallName {
+    bindings: usize,
+    targets: BTreeSet<DeclarationId>,
+}
+
+enum LocalCallTarget {
+    Unbound,
+    Bound(DeclarationId),
+    Unresolved,
+}
+
+impl FileDeclarations<'_> {
+    /// The nearest captured lexical scope that binds this name wins. An
+    /// observed noncallable/ambiguous binding shadows farther declarations and
+    /// imports. This remains syntactic evidence, not checker resolution.
+    fn scoped_target(&self, caller: backend_compile::SourceBinding, name: &str) -> LocalCallTarget {
+        let Some(scopes) = self.scoped_names.get(name) else {
+            return LocalCallTarget::Unbound;
+        };
+        let mut scope = Some(caller);
+        for _ in 0..256 {
+            if let Some(bound) = scopes.get(&scope) {
+                return match (bound.bindings, unique_target(bound.targets.iter().copied())) {
+                    (1, Some(target)) => LocalCallTarget::Bound(target),
+                    _ => LocalCallTarget::Unresolved,
+                };
+            }
+            let Some(binding) = scope else {
+                return LocalCallTarget::Unbound;
+            };
+            let Some(parent) = self.scope_parents.get(&binding) else {
+                return LocalCallTarget::Unresolved;
+            };
+            scope = *parent;
+        }
+        LocalCallTarget::Unresolved
+    }
 }
 
 /// Prejoined import targets, including empty resolutions. Its lifetime is one
@@ -157,7 +212,7 @@ struct ImportedCalls {
     resolved_specifiers: usize,
     unqualified: BTreeMap<String, BTreeSet<DeclarationId>>,
     qualified: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
-    methods: BTreeMap<String, BTreeSet<DeclarationId>>,
+    classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
 }
 
 impl ImportedCalls {
@@ -194,7 +249,9 @@ impl ImportedCalls {
                             if let Some(methods) = file.methods.get(exported.as_str()) {
                                 for (&name, targets) in methods {
                                     joined
-                                        .methods
+                                        .classes
+                                        .entry(import.local.clone())
+                                        .or_default()
                                         .entry(name.to_owned())
                                         .or_default()
                                         .extend(targets);
@@ -218,19 +275,59 @@ impl ImportedCalls {
         joined
     }
 
-    fn target(&self, local: &FileDeclarations<'_>, call: &CallSite) -> Option<DeclarationId> {
-        if let Some(targets) = local.callable.get(call.name.as_str()) {
-            return unique_target(targets.iter().copied());
+    fn target(
+        &self,
+        local: &FileDeclarations<'_>,
+        call: &CallSite,
+        exact_caller: Option<backend_compile::SourceBinding>,
+    ) -> Option<DeclarationId> {
+        match &call.receiver {
+            CallReceiver::Bare => {
+                if let Some(caller) = exact_caller {
+                    match local.scoped_target(caller, &call.name) {
+                        LocalCallTarget::Bound(target) => return Some(target),
+                        LocalCallTarget::Unresolved => return None,
+                        LocalCallTarget::Unbound => {}
+                    }
+                } else if let Some(targets) = local.callable.get(call.name.as_str()) {
+                    // A legacy file has no exact scope proof. Methods are not
+                    // free functions merely because they share this name.
+                    let methods = local
+                        .methods
+                        .values()
+                        .filter_map(|names| names.get(call.name.as_str()))
+                        .flatten()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    return unique_target(
+                        targets
+                            .iter()
+                            .copied()
+                            .filter(|target| !methods.contains(target)),
+                    );
+                }
+                unique_target(self.unqualified.get(&call.name)?.iter().copied())
+            }
+            CallReceiver::Path { root, depth: 1, .. } => {
+                if let Some(names) = self.qualified.get(root).or_else(|| self.classes.get(root)) {
+                    return unique_target(names.get(&call.name)?.iter().copied());
+                }
+                // An exact written type name can select its own associated
+                // method. Arbitrary receivers never inherit that type by name.
+                if local.nominal.contains(root.as_str()) {
+                    return unique_target(
+                        local
+                            .methods
+                            .get(root.as_str())?
+                            .get(call.name.as_str())?
+                            .iter()
+                            .copied(),
+                    );
+                }
+                None
+            }
+            CallReceiver::Path { .. } | CallReceiver::Expression { .. } => None,
         }
-        let methods = self.methods.get(&call.name).into_iter().flatten().copied();
-        let imported = match &call.qualifier {
-            Some(qualifier) => self
-                .qualified
-                .get(qualifier)
-                .and_then(|names| names.get(&call.name)),
-            None => self.unqualified.get(&call.name),
-        };
-        unique_target(methods.chain(imported.into_iter().flatten().copied()))
     }
 }
 
@@ -242,10 +339,37 @@ fn unique_target(mut targets: impl Iterator<Item = DeclarationId>) -> Option<Dec
     targets.all(|target| target == first).then_some(first)
 }
 
+/// Exact binding key belongs to one admitted source file/version. The cached
+/// projection's workspace root supplies the version witness for every key.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct StructuralCallBinding {
+    pub(crate) file: [u8; 32],
+    pub(crate) binding: backend_compile::SourceBinding,
+}
+
+/// Call endpoints retain their authority precision. Exact row IDs come from
+/// the shared structural identity plan; legacy coordinates retain the older
+/// synthetic first-label/last-label presentation policy.
+#[derive(Clone, Debug)]
+pub(crate) enum StructuralCallEndpoint {
+    Binding {
+        source: StructuralCallBinding,
+        row: RowId,
+        location: backend_compile::SourceLocation,
+        semantic_site_unique: bool,
+        name: String,
+    },
+    LegacyCoordinate(String),
+}
+
 pub(super) struct ProjectCalls {
     #[cfg(test)]
     resolved_specifiers: usize,
+    #[cfg(test)]
     coordinates: Vec<String>,
+    endpoints: Vec<StructuralCallEndpoint>,
+    by_binding: BTreeMap<StructuralCallBinding, DeclarationId>,
+    by_row: BTreeMap<RowId, DeclarationId>,
     by_coordinate: BTreeMap<String, DeclarationId>,
     outgoing: BTreeMap<DeclarationId, BTreeSet<DeclarationId>>,
     incoming: BTreeMap<DeclarationId, BTreeSet<DeclarationId>>,
@@ -256,7 +380,7 @@ impl ProjectCalls {
         sources: &IndexedSources,
         package: backend_engine::PackageKey,
     ) -> Result<Self, BuiltinModelError> {
-        let project = sources
+        let _project = sources
             .projects
             .values()
             .find(|project| project.package == package)
@@ -267,7 +391,7 @@ impl ProjectCalls {
             })?;
         let project_key = package.to_bytes();
         let mut files = Vec::new();
-        for (_, record) in &sources.files {
+        for (key, record) in &sources.files {
             let file = record
                 .file_fields()
                 .ok_or_else(|| BuiltinModelError("expected structural source file".to_owned()))?;
@@ -284,15 +408,22 @@ impl ProjectCalls {
                 Cow::Owned(complete_declarations_for_file(sources, record)?)
             };
             files.push(FileFacts {
+                key: *key,
                 path: file.path,
                 declarations,
             });
         }
+        let selected = files.iter().map(|file| file.key).collect::<BTreeSet<_>>();
+        let plan = StructuralProjectionPlan::of_files(sources, &BTreeSet::new(), &selected)?;
         let modules = ModuleIndex::new(files.iter().map(|file| file.path));
         let mut graph = Self {
             #[cfg(test)]
             resolved_specifiers: 0,
+            #[cfg(test)]
             coordinates: Vec::new(),
+            endpoints: Vec::new(),
+            by_binding: BTreeMap::new(),
+            by_row: BTreeMap::new(),
             by_coordinate: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
@@ -300,26 +431,97 @@ impl ProjectCalls {
         let mut declarations = Vec::with_capacity(files.len());
         let mut callers = Vec::with_capacity(files.len());
         for file in &files {
-            let containment =
-                FileContainment::new(&project.label, file.path, project_key, &file.declarations);
             let mut lookup = FileDeclarations::default();
             let mut file_callers = Vec::new();
-            for declaration in file.declarations.iter() {
+            let binding_names = file
+                .declarations
+                .iter()
+                .filter_map(|owner| match owner.binding_identity() {
+                    backend_compile::SourceBindingIdentity::Exact(binding) => {
+                        Some((binding.binding(), owner.name()))
+                    }
+                    backend_compile::SourceBindingIdentity::Legacy => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            for (index, declaration) in file.declarations.iter().enumerate() {
                 if declares_a_nominal_type(declaration.kind()) {
                     lookup.nominal.insert(declaration.name());
+                }
+                let exact_scope = match (declaration.binding_identity(), declaration.container()) {
+                    (
+                        backend_compile::SourceBindingIdentity::Exact(capture),
+                        Container::Binding { binding },
+                    ) => Some((capture.binding(), Some(*binding))),
+                    (backend_compile::SourceBindingIdentity::Exact(capture), Container::Module) => {
+                        Some((capture.binding(), None))
+                    }
+                    _ => None,
+                };
+                if let Some((binding, scope)) = exact_scope {
+                    lookup.scope_parents.insert(binding, scope);
+                    lookup
+                        .scoped_names
+                        .entry(declaration.name())
+                        .or_default()
+                        .entry(scope)
+                        .or_default()
+                        .bindings += 1;
                 }
                 if !structural_callable(declaration.kind()) {
                     continue;
                 }
-                let coordinate = containment.coordinate(declaration);
-                let id = *graph
-                    .by_coordinate
-                    .entry(coordinate.clone())
-                    .or_insert_with(|| {
-                        let id = DeclarationId(graph.coordinates.len());
-                        graph.coordinates.push(coordinate);
-                        id
-                    });
+                let prepared = plan.declaration(file.key, index)?;
+                let id = match declaration.binding_identity() {
+                    backend_compile::SourceBindingIdentity::Exact(capture) => {
+                        let source = StructuralCallBinding {
+                            file: file.key,
+                            binding: capture.binding(),
+                        };
+                        if let Some(&id) = graph.by_binding.get(&source) {
+                            id
+                        } else {
+                            let id = DeclarationId(graph.endpoints.len());
+                            graph.endpoints.push(StructuralCallEndpoint::Binding {
+                                source,
+                                row: prepared.id,
+                                location: declaration.location().clone(),
+                                semantic_site_unique: prepared.identity_preimage.is_none(),
+                                name: declaration.name().to_owned(),
+                            });
+                            graph.by_binding.insert(source, id);
+                            graph.by_row.insert(prepared.id, id);
+                            #[cfg(test)]
+                            graph.coordinates.push(prepared.coordinate.clone());
+                            id
+                        }
+                    }
+                    backend_compile::SourceBindingIdentity::Legacy => {
+                        if let Some(&id) = graph.by_coordinate.get(&prepared.coordinate) {
+                            id
+                        } else {
+                            let id = DeclarationId(graph.endpoints.len());
+                            graph
+                                .endpoints
+                                .push(StructuralCallEndpoint::LegacyCoordinate(
+                                    prepared.coordinate.clone(),
+                                ));
+                            graph.by_coordinate.insert(prepared.coordinate.clone(), id);
+                            #[cfg(test)]
+                            graph.coordinates.push(prepared.coordinate.clone());
+                            id
+                        }
+                    }
+                };
+                if let Some((_, scope)) = exact_scope {
+                    lookup
+                        .scoped_names
+                        .entry(declaration.name())
+                        .or_default()
+                        .entry(scope)
+                        .or_default()
+                        .targets
+                        .insert(id);
+                }
                 lookup
                     .callable
                     .entry(declaration.name())
@@ -335,10 +537,21 @@ impl ProjectCalls {
                             .or_default()
                             .insert(id);
                     }
+                    Container::Binding { binding } => {
+                        if let Some(&name) = binding_names.get(binding) {
+                            lookup
+                                .methods
+                                .entry(name)
+                                .or_default()
+                                .entry(declaration.name())
+                                .or_default()
+                                .insert(id);
+                        }
+                    }
                     Container::Module => {}
                 }
                 if let Some(excerpt) = declaration.source_excerpt().text() {
-                    file_callers.push((id, excerpt));
+                    file_callers.push((id, excerpt, exact_scope.map(|(binding, _)| binding)));
                 }
             }
             declarations.push(lookup);
@@ -355,9 +568,10 @@ impl ProjectCalls {
             {
                 graph.resolved_specifiers += imported.resolved_specifiers;
             }
-            for &(caller, excerpt) in &callers[at] {
+            for &(caller, excerpt, exact_caller) in &callers[at] {
                 for call in structural_excerpt_call_sites(excerpt) {
-                    let Some(callee) = imported.target(&declarations[at], &call) else {
+                    let Some(callee) = imported.target(&declarations[at], &call, exact_caller)
+                    else {
                         continue;
                     };
                     if caller == callee {
@@ -371,6 +585,50 @@ impl ProjectCalls {
         Ok(graph)
     }
 
+    pub(super) fn endpoint_pairs(
+        &self,
+    ) -> impl Iterator<Item = (&StructuralCallEndpoint, &StructuralCallEndpoint)> {
+        self.outgoing.iter().flat_map(move |(&caller, targets)| {
+            targets
+                .iter()
+                .map(move |&callee| (&self.endpoints[caller.0], &self.endpoints[callee.0]))
+        })
+    }
+
+    pub(super) fn neighborhood_for_row<'a>(
+        &'a self,
+        row: RowId,
+        legacy_coordinate: &str,
+        include_incoming: bool,
+    ) -> impl Iterator<Item = (&'a StructuralCallEndpoint, &'a StructuralCallEndpoint)> {
+        let source = self
+            .by_row
+            .get(&row)
+            .or_else(|| self.by_coordinate.get(legacy_coordinate))
+            .copied();
+        let outgoing = source.into_iter().flat_map(move |source| {
+            self.outgoing
+                .get(&source)
+                .into_iter()
+                .flatten()
+                .map(move |target| (source, *target))
+        });
+        let incoming = source
+            .filter(|_| include_incoming)
+            .into_iter()
+            .flat_map(move |source| {
+                self.incoming
+                    .get(&source)
+                    .into_iter()
+                    .flatten()
+                    .map(move |caller| (*caller, source))
+            });
+        outgoing
+            .chain(incoming)
+            .map(|(caller, callee)| (&self.endpoints[caller.0], &self.endpoints[callee.0]))
+    }
+
+    #[cfg(test)]
     pub(super) fn coordinate_pairs(&self) -> Vec<(String, String)> {
         let mut pairs = Vec::new();
         for (&caller, targets) in &self.outgoing {
@@ -385,6 +643,7 @@ impl ProjectCalls {
         pairs
     }
 
+    #[cfg(test)]
     pub(super) fn neighborhood<'a>(
         &'a self,
         coordinate: &str,
@@ -469,12 +728,27 @@ impl StructuralCallResidence {
             .calls)
     }
 
+    #[cfg(test)]
     pub(crate) fn coordinate_pairs(
         &mut self,
         sources: &IndexedSources,
         package: backend_engine::PackageKey,
     ) -> Result<Vec<(String, String)>, BuiltinModelError> {
         Ok(self.project_calls(sources, package)?.coordinate_pairs())
+    }
+
+    /// Borrows endpoints from the immutable projection certified by its
+    /// selected workspace/source root. Holding this borrow prevents replacement.
+    pub(crate) fn endpoint_pairs<'a>(
+        &'a mut self,
+        sources: &IndexedSources,
+        package: backend_engine::PackageKey,
+    ) -> Result<Vec<(&'a StructuralCallEndpoint, &'a StructuralCallEndpoint)>, BuiltinModelError>
+    {
+        Ok(self
+            .project_calls(sources, package)?
+            .endpoint_pairs()
+            .collect())
     }
 
     #[cfg(test)]
@@ -680,5 +954,80 @@ mod tests {
             )]
         );
         Ok(())
+    }
+    #[test]
+    fn a_method_name_alone_never_binds_an_unknown_receiver() {
+        let mut local = FileDeclarations::default();
+        local.nominal.insert("Only");
+        local
+            .callable
+            .entry("custom_name")
+            .or_default()
+            .insert(DeclarationId(0));
+        local
+            .methods
+            .entry("Only")
+            .or_default()
+            .entry("custom_name")
+            .or_default()
+            .insert(DeclarationId(0));
+        let imported = ImportedCalls::default();
+        for excerpt in [
+            "fn caller() { other.custom_name(); }",
+            "fn caller() { factory(x).custom_name(); }",
+            "fn caller() { items[0].custom_name(); }",
+            "fn caller() { nested.value.custom_name(); }",
+            "fn caller() { custom_name(); }",
+            "fn caller() { self.custom_name(); }",
+        ] {
+            let calls = structural_excerpt_call_sites(excerpt);
+            let selected = calls
+                .iter()
+                .find(|call| call.name == "custom_name")
+                .expect("written call");
+            assert_eq!(imported.target(&local, selected, None), None, "{excerpt}");
+        }
+        let calls = structural_excerpt_call_sites("fn caller() { Only::custom_name(); }");
+        let selected = calls
+            .iter()
+            .find(|call| call.name == "custom_name")
+            .expect("qualified method");
+        assert_eq!(
+            imported.target(&local, selected, None),
+            Some(DeclarationId(0))
+        );
+    }
+
+    #[test]
+    fn an_imported_type_method_stays_bound_to_that_type_alias() {
+        let local = FileDeclarations::default();
+        let mut imported = ImportedCalls::default();
+        imported
+            .classes
+            .entry("First".to_owned())
+            .or_default()
+            .entry("close".to_owned())
+            .or_default()
+            .insert(DeclarationId(0));
+        imported
+            .classes
+            .entry("Second".to_owned())
+            .or_default()
+            .entry("close".to_owned())
+            .or_default()
+            .insert(DeclarationId(1));
+        for (receiver, expected) in [
+            ("First", Some(DeclarationId(0))),
+            ("Second", Some(DeclarationId(1))),
+            ("unknown", None),
+        ] {
+            let calls =
+                structural_excerpt_call_sites(&format!("fn caller() {{ {receiver}.close(); }}"));
+            let selected = calls
+                .iter()
+                .find(|call| call.name == "close")
+                .expect("written close");
+            assert_eq!(imported.target(&local, selected, None), expected);
+        }
     }
 }

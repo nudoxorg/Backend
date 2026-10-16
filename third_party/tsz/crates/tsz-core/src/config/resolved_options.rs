@@ -11,7 +11,8 @@ use super::{
     CompilerOptions, build_path_mappings, checker_target_from_emitter,
     is_valid_identifier_or_qualified_name, jsx_emit_to_mode, normalize_option, parse_jsx_emit,
     parse_module_kind, parse_module_resolution, parse_new_line_kind, parse_script_target,
-    resolve_default_lib_files, resolve_lib_files,
+    apply_explicit_lib_aliases, default_lib_name_for_target, resolve_default_lib_files,
+    resolve_lib_files, resolve_lib_files_from_embedded,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -392,6 +393,22 @@ fn trimmed_non_empty(value: &str) -> Option<&str> {
 pub fn resolve_compiler_options(
     options: Option<&CompilerOptions>,
 ) -> Result<ResolvedCompilerOptions> {
+    resolve_compiler_options_inner(options, false)
+}
+
+/// Resolve compiler options using only TSZ's embedded standard-library
+/// catalog. This entry point never probes environment variables, executable
+/// paths, or the current working directory.
+pub fn resolve_compiler_options_embedded(
+    options: Option<&CompilerOptions>,
+) -> Result<ResolvedCompilerOptions> {
+    resolve_compiler_options_inner(options, true)
+}
+
+fn resolve_compiler_options_inner(
+    options: Option<&CompilerOptions>,
+    use_embedded_libs: bool,
+) -> Result<ResolvedCompilerOptions> {
     let mut resolved = ResolvedCompilerOptions::default();
     // TypeScript 6 defaults alwaysStrict emit on. An explicit
     // alwaysStrict=false below can still suppress the prologue.
@@ -401,7 +418,14 @@ pub fn resolve_compiler_options(
         resolved.printer.module = default_module;
         resolved.checker.module = default_module;
         resolved.checker.target = checker_target_from_emitter(resolved.printer.target);
-        resolved.lib_files = resolve_default_lib_files(resolved.printer.target)?;
+        resolved.lib_files = if use_embedded_libs {
+            resolve_lib_files_from_embedded(
+                &[default_lib_name_for_target(resolved.printer.target).to_string()],
+                true,
+            )?
+        } else {
+            resolve_default_lib_files(resolved.printer.target)?
+        };
         resolved.lib_is_default = true;
         resolved.module_suffixes = vec![String::new()];
         let default_resolution = resolved.effective_module_resolution();
@@ -581,13 +605,24 @@ pub fn resolve_compiler_options(
     }
 
     if let Some(lib_list) = options.lib.as_ref() {
-        resolved.lib_files = resolve_lib_files(lib_list)?;
+        resolved.lib_files = if use_embedded_libs {
+            resolve_lib_files_from_embedded(&apply_explicit_lib_aliases(lib_list), true)?
+        } else {
+            resolve_lib_files(lib_list)?
+        };
         resolved.lib_is_default = false;
     } else if !resolved.checker.no_lib {
         // noTypesAndSymbols is a test harness directive that controls baseline
         // output (type/symbol baselines), NOT lib loading. Default libs must
         // still be loaded so that globals like Symbol, Promise, etc. are available.
-        resolved.lib_files = resolve_default_lib_files(resolved.printer.target)?;
+        resolved.lib_files = if use_embedded_libs {
+            resolve_lib_files_from_embedded(
+                &[default_lib_name_for_target(resolved.printer.target).to_string()],
+                true,
+            )?
+        } else {
+            resolve_default_lib_files(resolved.printer.target)?
+        };
         resolved.lib_is_default = true;
     }
 

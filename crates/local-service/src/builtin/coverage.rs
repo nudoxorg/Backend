@@ -20,7 +20,7 @@ pub(super) type ActivatedProfiles = BTreeSet<(
     backend_semantic::vocabulary::LanguageProfile,
 )>;
 
-/// Whether this deployment configured the embedding half of the semantic lane.
+/// Whether this deployment configured optional vector search.
 ///
 /// The embedding provider is read from the environment once at startup and
 /// never changes while the owner runs, so an absent provider is a terminal
@@ -47,15 +47,25 @@ impl SemanticDeployment {
 
 /// Counts of selected semantic publication rows, partitioned by record variant.
 ///
-/// Pending captures and complete publications awaiting activation can move.
-/// Partial publications and refused captures are terminal observed results;
-/// they must never produce a fraction that tells the user to wait forever.
+/// Pending captures and publications awaiting activation can move; only they
+/// produce a fraction. Publications with settled source gaps and refused
+/// captures are terminal observed results and must never produce a fraction
+/// that tells the user to wait forever.
+///
+/// A publication with source gaps (for example a source the configured
+/// compiler program excludes) is usable, so it counts as published and
+/// completed like any other readable generation and additionally marks the
+/// tally `gapped`. A refusal or stale capture marks it `incomplete`. Which
+/// words the lane and the project row use for those facts is decided once, in
+/// [`SemanticTally::coverage`] and [`merge_package_state`], so the two cannot
+/// disagree.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct SemanticTally {
     published: u16,
     completed: u16,
     terminal: Option<SemanticUnavailableReason>,
     incomplete: bool,
+    gapped: bool,
 }
 
 /// One exact fault for a selected row count that cannot fit the wire fraction.
@@ -80,14 +90,15 @@ impl SemanticTally {
         }
         match record {
             ProductSemanticPublicationRecord::Published { coverage, .. } => {
-                if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
-                    self.incomplete = true;
-                    return Ok(());
-                }
                 self.published = self.published.checked_add(1).ok_or_else(count_overflow)?;
-                if matches!(coverage, SemanticPublicationCoverage::Complete)
-                    && activated.contains(&(key.package_key(), key.profile()))
-                {
+                if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
+                    // Every published artifact is complete; the authority
+                    // checked only part of the declared scope. Readable and
+                    // settled, so it completes like any generation and marks
+                    // the lane partial instead of failing the project.
+                    self.gapped = true;
+                }
+                if activated.contains(&(key.package_key(), key.profile())) {
                     self.completed = self.completed.checked_add(1).ok_or_else(count_overflow)?;
                 }
             }
@@ -176,7 +187,15 @@ impl SemanticTally {
             if !capture_matches_source(source, key, capture)? {
                 // Still check a Published claim against its retained selection.
                 // Source staleness must not launder an unrelated selected claim.
-                self.observe_current(key, selected, Some(capture.outcome()), activated)?;
+                // A stale capture promises no progress and certifies nothing:
+                // the scratch tally validates the claim, and only its terminal
+                // reason survives, so the stale profile is neither in flight
+                // nor usable.
+                let mut scratch = Self::default();
+                scratch.observe_current(key, selected, Some(capture.outcome()), activated)?;
+                if let Some(reason) = scratch.terminal {
+                    self.retain_terminal(reason);
+                }
                 self.incomplete = true;
                 return Ok(());
             }
@@ -203,28 +222,21 @@ impl SemanticTally {
 
     /// Renders the tally as the view's coverage vector.
     ///
-    /// Completeness refers to the indexed source inventory. A refused or
-    /// published partial native scope prevents readiness even when another
-    /// profile remains pending. Pending captures retain their exact fraction
-    /// only when no declared native scope has already failed.
-    pub(super) fn coverage(self, deployment: SemanticDeployment) -> Vec<ViewCoverage> {
+    /// Completeness refers to the indexed source inventory. Precedence is
+    /// fixed and independent of page or iteration order:
+    ///
+    /// 1. Work still moving (a pending capture, or a publication awaiting
+    ///    activation) reads as the exact fraction. A reader may wait.
+    /// 2. Once everything settled, a readable publication stands for the
+    ///    lane. Source gaps, or a profile refused while another published,
+    ///    make it `Gapped`: usable, and nothing further will change it.
+    /// 3. With no readable publication, a refused or stale scope is
+    ///    `Unavailable`.
+    /// 4. With no native refusal, the observed compiler scope is complete.
+    /// Optional vector configuration has its own SemanticSearchStatus and
+    /// never changes this compiler tally.
+    pub(super) fn coverage(self) -> Vec<ViewCoverage> {
         let mut coverage = vec![ViewCoverage::Complete];
-        let refused = match self.terminal {
-            Some(SemanticUnavailableReason::Rejected) => Some(Reason::Incomplete),
-            Some(SemanticUnavailableReason::Cancelled) => Some(Reason::Cancelled),
-            _ => None,
-        };
-        if let Some(reason) = if self.incomplete {
-            Some(Reason::Incomplete)
-        } else {
-            refused
-        } {
-            coverage.push(ViewCoverage::Unavailable {
-                lane: Lane::Semantic,
-                reason,
-            });
-            return coverage;
-        }
         if self.completed < self.published {
             coverage.push(ViewCoverage::Partial {
                 lane: Lane::Semantic,
@@ -233,20 +245,23 @@ impl SemanticTally {
             });
             return coverage;
         }
-        if let Some(reason) = self.terminal_reason(deployment) {
+        let refused = self.incomplete || self.terminal.is_some();
+        if self.published > 0 {
+            if self.gapped || refused {
+                coverage.push(ViewCoverage::Gapped {
+                    lane: Lane::Semantic,
+                });
+                return coverage;
+            }
+        } else if refused {
+            let reason = self.terminal.map(terminal_reason).unwrap_or(Reason::Incomplete);
             coverage.push(ViewCoverage::Unavailable {
                 lane: Lane::Semantic,
                 reason,
             });
+            return coverage;
         }
         coverage
-    }
-
-    /// Native outcomes qualify declared scope even without embeddings.
-    fn terminal_reason(self, deployment: SemanticDeployment) -> Option<Reason> {
-        self.terminal.map(terminal_reason).or_else(|| {
-            matches!(deployment, SemanticDeployment::Unconfigured).then_some(Reason::Unconfigured)
-        })
     }
 }
 
@@ -284,15 +299,10 @@ pub(super) fn capture_row_state(
     match outcome {
         ProductSemanticCaptureOutcome::Pending { .. } => RowState::Loading,
         ProductSemanticCaptureOutcome::Failed { .. }
-        | ProductSemanticCaptureOutcome::Unavailable { .. }
-        | ProductSemanticCaptureOutcome::Published {
-            coverage: SemanticPublicationCoverage::Partial(_),
-            ..
-        } => RowState::Failed,
-        ProductSemanticCaptureOutcome::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            ..
-        } => RowState::Ready,
+        | ProductSemanticCaptureOutcome::Unavailable { .. } => RowState::Failed,
+        // A publication with source gaps is readable and settled. The gaps are
+        // reported by the lane (`Gapped`), not by failing the project.
+        ProductSemanticCaptureOutcome::Published { .. } => RowState::Ready,
     }
 }
 
@@ -328,25 +338,33 @@ fn captured_package_state(
 fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_engine::RowState {
     use backend_engine::RowState;
     match record {
-        ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Partial(_),
-            ..
-        }
-        | ProductSemanticPublicationRecord::Unavailable(
-            SemanticUnavailableReason::Rejected | SemanticUnavailableReason::Cancelled,
-        ) => RowState::Failed,
-        ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            ..
-        }
-        | ProductSemanticPublicationRecord::Unavailable(
-            SemanticUnavailableReason::Toolchain | SemanticUnavailableReason::ProjectAuthority,
-        ) => RowState::Ready,
+        ProductSemanticPublicationRecord::Unavailable(_) => RowState::Failed,
+        ProductSemanticPublicationRecord::Published { .. } => RowState::Ready,
+    }
+}
+
+/// Combines the lifecycles of two profiles of one package.
+///
+/// Work still moving dominates: while any profile is pending the project is
+/// indexing, whatever its siblings reported. Once nothing moves, a readable
+/// profile keeps the project usable, so a project fails only when every
+/// profile failed. This is the row-level twin of [`SemanticTally::coverage`],
+/// which applies the same precedence to the lane, and the result does not
+/// depend on relation order.
+fn merge_package_state(
+    current: backend_engine::RowState,
+    next: backend_engine::RowState,
+) -> backend_engine::RowState {
+    use backend_engine::RowState;
+    match (current, next) {
+        (RowState::Loading, _) | (_, RowState::Loading) => RowState::Loading,
+        (RowState::Ready, _) | (_, RowState::Ready) => RowState::Ready,
+        (RowState::Failed, RowState::Failed) => RowState::Failed,
     }
 }
 
 /// Applies package-scoped observations without erasing retained declarations.
-/// Failure dominates pending and ready profiles regardless of relation order.
+/// The merge is order independent: see [`merge_package_state`].
 fn package_states(
     snapshot: &WorkspaceSnapshot,
 ) -> Result<
@@ -375,7 +393,7 @@ fn package_states(
                 states
                     .entry(key.package_key())
                     .and_modify(|current: &mut backend_engine::RowState| {
-                        *current = (*current).max(state);
+                        *current = merge_package_state(*current, state);
                     })
                     .or_insert(state);
             }
@@ -404,7 +422,7 @@ fn package_states(
             states
                 .entry(key.package_key())
                 .and_modify(|current: &mut backend_engine::RowState| {
-                    *current = (*current).max(state)
+                    *current = merge_package_state(*current, state);
                 })
                 .or_insert(state);
         }
@@ -481,7 +499,7 @@ pub(super) fn package_row_state(
         visit_selected_package(&captures, package, |key, capture| {
             observed.insert(key.clone());
             let current = captured_package_state(&source, key, capture)?;
-            state = Some(state.map_or(current, |prior| prior.max(current)));
+            state = Some(state.map_or(current, |prior| merge_package_state(prior, current)));
             Ok(())
         })?;
     }
@@ -491,7 +509,7 @@ pub(super) fn package_row_state(
     visit_selected_package(&relation, package, |key, record| {
         if !observed.contains(key) {
             let current = publication_row_state(record);
-            state = Some(state.map_or(current, |prior| prior.max(current)));
+            state = Some(state.map_or(current, |prior| merge_package_state(prior, current)));
         }
         Ok(())
     })?;
@@ -515,41 +533,20 @@ pub(super) fn qualify_package_rows(
 }
 
 /// Returns whether one coverage entry qualifies the semantic lane.
+#[cfg(test)]
 fn is_semantic_lane(coverage: ViewCoverage) -> bool {
     matches!(
         coverage,
         ViewCoverage::Partial {
             lane: Lane::Semantic,
             ..
+        } | ViewCoverage::Gapped {
+            lane: Lane::Semantic,
         } | ViewCoverage::Unavailable {
             lane: Lane::Semantic,
             ..
         }
     )
-}
-
-/// Folds the deployment's embedding terminal into a coverage vector produced
-/// elsewhere, leaving the semantic lane with at most one entry.
-///
-/// The vector already carries the deployment terminal when it came from
-/// [`view_coverage`]; this reconciliation exists so a reply assembled from any
-/// other path cannot silently drop the fact that no embedding lane is
-/// configured, and so the lane can never be described twice.
-pub(super) fn reconcile_semantic_lane(
-    coverage: &[ViewCoverage],
-    deployment: SemanticDeployment,
-) -> Vec<ViewCoverage> {
-    let mut reconciled = coverage.to_vec();
-    if matches!(deployment, SemanticDeployment::Configured)
-        || reconciled.iter().copied().any(is_semantic_lane)
-    {
-        return reconciled;
-    }
-    reconciled.push(ViewCoverage::Unavailable {
-        lane: Lane::Semantic,
-        reason: Reason::Unconfigured,
-    });
-    reconciled
 }
 
 /// Reads the selected semantic publication rows and reports the view coverage.
@@ -560,7 +557,7 @@ pub(super) fn reconcile_semantic_lane(
 pub(super) fn view_coverage(
     snapshot: &WorkspaceSnapshot,
     activated: &ActivatedProfiles,
-    deployment: SemanticDeployment,
+    _deployment: SemanticDeployment,
 ) -> Result<Vec<ViewCoverage>, BuiltinModelError> {
     let relation = snapshot
         .relation::<super::BuiltinSemanticRelation>()
@@ -618,7 +615,7 @@ pub(super) fn view_coverage(
             after = Some(next);
         }
     }
-    Ok(tally.coverage(deployment))
+    Ok(tally.coverage())
 }
 
 #[cfg(test)]

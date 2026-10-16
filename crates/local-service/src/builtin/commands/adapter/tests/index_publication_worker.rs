@@ -116,13 +116,19 @@ fn after_grant_state(
                 let completed = completion.as_ref().map(|done| {
                     let disposition = match &done.disposition {
                         Disposition::Ready => "Ready".to_owned(),
+                        Disposition::Refreshed => "Refreshed".to_owned(),
+                        Disposition::SourcePrepared => "SourcePrepared".to_owned(),
+                        Disposition::SourceCaptured => "SourceCaptured".to_owned(),
                         Disposition::Unselected(error) => format!("Unselected({error:?})"),
                         Disposition::Pending(error) => format!("Pending({error:?})"),
                     };
                     let head = match &done.work.head {
                         Head::Writer(_) => "Writer",
+                        Head::Unprepared(_) => "Unprepared",
                         Head::Pending(_) => "Pending",
                         Head::Published(_) => "Published",
+                        Head::Refresh(_) => "Refresh",
+                        Head::Refreshed(_) => "Refreshed",
                         Head::Moving => "Moving",
                     };
                     format!(
@@ -145,6 +151,9 @@ fn after_grant_state(
                     worker.observed_state()
                 )
             }
+            IndexJobWork::PreparingSource { worker, .. } => format!("PreparingSource(finished={:?})", worker.as_ref().map(|worker| worker.is_finished())),
+            IndexJobWork::SourceRetiring { .. } => "SourceRetiring".to_owned(),
+            IndexJobWork::RetirementPending { .. } => "RetirementPending".to_owned(),
             IndexJobWork::Transition => "Transition".to_owned(),
         };
         format!(
@@ -758,6 +767,7 @@ fn index_publication_worker_refused_install_retains_the_original_unselected_capa
             match event {
                 Event::Complete(done) => break done,
                 Event::Grant { reply, .. } => drop(reply),
+                Event::RefreshApproval { reply, .. } => drop(reply),
             }
         }
         assert!(Instant::now() < deadline);
@@ -1015,6 +1025,63 @@ fn graph_page(
         CommandReply::Surface(backend_library::SurfaceReply::PackageGraphPage(page)) => page,
         other => panic!("actual package graph page, not a projection refusal: {other:?}"),
     }
+}
+
+#[test]
+fn native_graph_frontier_refuses_forgery_and_resumes_with_same_cold_owner_key() {
+    let mut fixture = native_fixture();
+    let (source, _) =
+        crate::builtin::local_manifest::local_dependency_facts(Path::new(&fixture.label))
+            .expect("real manifest")
+            .expect("real selected local authority");
+    let request = backend_library::PackageGraphPageRequest::new(
+        source.coordinate,
+        backend_library::PackageGraphDirection::Dependencies,
+        Some(source.authority),
+        1,
+    )
+    .expect("one edge page");
+    let first = graph_page(&mut fixture, request.clone());
+    assert_eq!(first.limit, 1);
+    let backend_library::PackageGraphPageTerminal::More(cursor) = first.terminal.clone() else {
+        panic!("real two-edge manifest continues");
+    };
+    assert_ne!(cursor.seal, [0; 32]);
+    let second = graph_page(&mut fixture, request.clone().with_cursor(cursor.clone()));
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(first.rows[0].facts_version, second.rows[0].facts_version);
+
+    let mut forged = cursor.clone();
+    forged.after_edge_id = [0xff; 32];
+    let command = Command::Surface(backend_library::SurfaceCommand::PackageGraphPage {
+        request: request.clone().with_cursor(forged),
+    });
+    let body =
+        serde_json::to_vec(&backend_engine::CommandDto::new(0xb92, command)).expect("actual wire");
+    let (adapter, daemon) = fixture.parts();
+    let Executed::Reply(bytes) = adapter
+        .execute_or_defer(daemon, &body, 0xb92)
+        .expect("actual hostile dispatch")
+    else {
+        panic!("read cannot queue")
+    };
+    let reply = backend_engine::decode_reply_dto(&bytes).expect("bounded correlated refusal");
+    assert!(
+        matches!(reply.reply, CommandReply::Failed(_)),
+        "hostile frontier must never return an empty successful Complete page: {:?}",
+        reply.reply
+    );
+
+    let journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(journal));
+    let cold = graph_page(&mut fixture, request.with_cursor(cursor));
+    assert_eq!(
+        cold, second,
+        "persisted key and checked roots authenticate cold continuation"
+    );
 }
 
 fn native_dispatch_receipt_control(partial: bool) {

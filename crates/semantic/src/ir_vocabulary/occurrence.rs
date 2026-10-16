@@ -4,6 +4,16 @@
 //! discriminants; the 446,947-declaration parity corpus is expressed in
 //! them), reshaped into borrowed, allocation-free records.
 
+/// The name of the entity that owns the references written at module level.
+///
+/// A lane whose module is not a declaration of its own has no row for what
+/// is written outside every declaration (a call, a decorator argument, an
+/// `if __name__ == "__main__"` block). It pushes one module entity carrying
+/// this name, spanning the whole source, so those references have an owner.
+/// The name is a marker, not a spelling the source contains; a reader names
+/// the row after the file instead.
+pub const MODULE_OWNER_NAME: &[u8] = b"<module>";
+
 /// The fidelity with which a reference fact was resolved.
 ///
 /// The lattice is totally ordered from the honest surface tier
@@ -103,6 +113,11 @@ pub enum ReferenceKind {
     /// The wire code lives only on this discriminant; encoding derives it
     /// directly so rustc rejects duplicate assignments.
     Overrides = 7,
+    /// A type declares that it implements an interface or trait, or the
+    /// language proves it does (a Go method set that satisfies an interface).
+    Implements = 8,
+    /// A type names a base type it inherits from (`class A(B)`).
+    Inherits = 9,
 }
 
 /// Exact reference-kind-code rejection retaining the observed byte.
@@ -134,6 +149,8 @@ impl TryFrom<u8> for ReferenceKind {
             5 => Ok(Self::FieldAccess),
             6 => Ok(Self::Import),
             7 => Ok(Self::Overrides),
+            8 => Ok(Self::Implements),
+            9 => Ok(Self::Inherits),
             actual => Err(ReferenceKindCodeError { actual }),
         }
     }

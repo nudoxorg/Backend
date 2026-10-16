@@ -30,3 +30,6 @@ tsz = { package = "tsz-core", git = "https://github.com/tsz-org/tsz.git", rev = 
 tsz-common = { git = "https://github.com/tsz-org/tsz.git", rev = "153b25adb393f134c61ddde7a14cc1ff1954fc2a" }
 [lib]
 path = "lib.rs"
+
+[build-dependencies]
+sha2.workspace = true

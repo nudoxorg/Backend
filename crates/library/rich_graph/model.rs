@@ -208,7 +208,8 @@ impl RichGraphEdge {
 
     /// Converts an existing compiler sidecar edge into rich graph form.
     #[must_use]
-    pub fn from_relation(relation: GraphRelation, provenance: GraphProvenance) -> Self {
+    pub fn from_relation(relation: GraphRelation, mut provenance: GraphProvenance) -> Self {
+        provenance.confidence = relation.confidence;
         Self::new(
             GraphNodeId::for_row(relation.from),
             GraphNodeId::for_row(relation.to),

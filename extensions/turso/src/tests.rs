@@ -994,13 +994,15 @@ fn graph_publication_and_reads_are_bound_to_the_selected_view_root() {
         )
         .expect("valid first page");
         assert!(matches!(
-            projection.read_package_graph_page(&request).await,
+            projection.read_unsealed_package_graph_page_for_test(&request).await,
             Err(PackageGraphReadError::Projection(
                 ProjectionError::StaleTransition
             ))
         ));
         let cursor = backend_library::PackageGraphCursor {
             schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: 4,
+            seal: [0; 32],
             view_root: *view.root().as_bytes(),
             facts_witness: CheckedPackageGraphFacts::new(facts)
                 .expect("checked facts")
@@ -1012,7 +1014,7 @@ fn graph_publication_and_reads_are_bound_to_the_selected_view_root() {
         };
         let continued = request.with_cursor(cursor);
         assert!(matches!(
-            projection.read_package_graph_page(&continued).await,
+            projection.read_unsealed_package_graph_page_for_test(&continued).await,
             Err(PackageGraphReadError::StaleCursor)
         ));
         drop(projection);
@@ -1873,7 +1875,7 @@ fn typed_source_inventory_caps_each_kind_independently() {
         )
         .expect("first page request");
         assert!(matches!(
-            projection.read_package_graph_page(&request).await,
+            projection.read_unsealed_package_graph_page_for_test(&request).await,
             Err(PackageGraphReadError::Request(
                 backend_library::PackageGraphPageError::AuthorityFanout
             ))
@@ -2054,7 +2056,7 @@ fn both_graph_read_surfaces_reject_noncanonical_or_inconsistent_edge_rows() {
             )
             .expect("exact page request");
             assert!(matches!(
-                projection.read_package_graph_page(&request).await,
+                projection.read_unsealed_package_graph_page_for_test(&request).await,
                 Err(PackageGraphReadError::Projection(_))
             ), "paged read accepted corrupt row: {message}");
             drop(projection);
@@ -3757,7 +3759,7 @@ fn captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selecto
         )
         .expect("bounded first page");
         let first = writer
-            .read_package_graph_page(&request)
+            .read_unsealed_package_graph_page_for_test(&request)
             .await
             .expect("old page1");
         let backend_library::PackageGraphPageTerminal::More(cursor) = first.terminal.clone() else {
@@ -3765,7 +3767,7 @@ fn captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selecto
         };
         let next = request.clone().with_cursor(cursor);
         let second = writer
-            .read_package_graph_page(&next)
+            .read_unsealed_package_graph_page_for_test(&next)
             .await
             .expect("old page2");
         let captured = writer
@@ -3788,21 +3790,21 @@ fn captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selecto
             .expect("original writer mutates same-generation WAL");
         assert_eq!(
             captured
-                .read_package_graph_page(&request)
+                .read_unsealed_package_graph_page_for_test(&request)
                 .await
                 .expect("retained page1"),
             first
         );
         assert_eq!(
             captured
-                .read_package_graph_page(&next)
+                .read_unsealed_package_graph_page_for_test(&next)
                 .await
                 .expect("original cursor page2"),
             second
         );
         assert_ne!(
             writer
-                .read_package_graph_page(&request)
+                .read_unsealed_package_graph_page_for_test(&request)
                 .await
                 .expect("new graph"),
             first
@@ -3819,7 +3821,7 @@ fn captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selecto
         assert_eq!(captured.package_graph_revision(), old_revision);
         assert_eq!(
             captured
-                .read_package_graph_page(&next)
+                .read_unsealed_package_graph_page_for_test(&next)
                 .await
                 .expect("old cursor survives selector change"),
             second

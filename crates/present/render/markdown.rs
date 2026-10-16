@@ -28,7 +28,7 @@ use crate::outline::{OutlineEntry, OutlineTree};
 use crate::page::{MemberGroup, Page, Prose, RelationGroup, Source, Truncation};
 use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_history_details};
 use crate::record::{Record, RecordList};
-use crate::shelf::{Readiness, Shelf};
+use crate::shelf::Shelf;
 use crate::status::Status;
 use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, bounded_text};
 
@@ -79,7 +79,15 @@ pub fn answer_with_detail(
             summary_with_cursor(value, cursor, target)
         }
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
-        Answer::Product(value) => product_with_detail(value, detail),
+        Answer::Product(value) => product_projection(value, Some(detail), Some(target)),
+        Answer::Outline(value) if matches!(target, ContinuationTarget::McpInvocation(_)) => {
+            let mut text = outline(value);
+            if let Some(cursor) = cursor {
+                text.push_str("\n\n");
+                text.push_str(&continuation_note(target, cursor));
+            }
+            text
+        }
         _ => answer(value),
     }
 }
@@ -123,8 +131,16 @@ pub fn summary_with_cursor(
     if footer.as_ref().is_some_and(|line| {
         line.len().saturating_add(1) > MAX_PREVIEW_TEXT_BYTES.saturating_sub(heading_bytes)
     }) {
-        footer = if list.has_more() && list.continuation().is_some() {
-            Some("… more rows; use `structuredContent.nextCursor` to continue".to_owned())
+        footer = if list.has_more()
+            && (list.continuation().is_some()
+                || (cursor.is_some() && matches!(target, ContinuationTarget::McpInvocation(_))))
+        {
+            Some(match target {
+                ContinuationTarget::McpInvocation(_) => {
+                    "… more rows; copy `structuredContent.continuation_call` to continue".to_owned()
+                }
+                _ => "… more rows; use `structuredContent.nextCursor` to continue".to_owned(),
+            })
         } else if list.has_more() {
             Some("… more rows at this revision; raise `limit` to see them".to_owned())
         } else {
@@ -304,7 +320,12 @@ fn summary_continuation(
     cursor: Option<&str>,
     target: ContinuationTarget<'_>,
 ) -> Option<String> {
-    if list.has_more() && list.continuation().is_some() {
+    // A caller can supply the exact executable surface cursor separately
+    // from the native page value. Rendering it never admits native authority.
+    if list.has_more()
+        && (list.continuation().is_some()
+            || (cursor.is_some() && matches!(target, ContinuationTarget::McpInvocation(_))))
+    {
         Some(cursor.map_or_else(
             || "… more rows; this rendering does not include the continuation token".to_owned(),
             |cursor| continuation_note(target, cursor),
@@ -435,14 +456,26 @@ pub fn fault(fault: &Fault) -> String {
     let _ = write!(out, "\n{}", fault.cause().sentence());
     if let Some(call) = fault.affordance().tool_call() {
         let _ = write!(out, "\n→ `{}`", tool_call_text(&call));
-    } else if let crate::Affordance::RecoverOwner { .. } = fault.affordance()
-        && let Some(shell) = fault.affordance().shell()
+    } else if matches!(
+        fault.affordance(),
+        crate::Affordance::RecoverOwner { .. }
+            | crate::Affordance::ReadPackageGraphJson { .. }
+            | crate::Affordance::RecoverStartup { .. }
+    ) && let Some(shell) = fault.affordance().shell()
     {
         // An indented code block preserves even literal backticks and newlines
         // inside quoted path operands without inventing an MCP scope change.
+        let location = if matches!(
+            fault.affordance(),
+            crate::Affordance::ReadPackageGraphJson { .. }
+        ) {
+            "Run on the machine serving this request to read the same input as complete JSON"
+        } else {
+            "Run in a shell"
+        };
         let _ = write!(
             out,
-            "\n→ Run in a shell:\n\n    {}",
+            "\n→ {location}:\n\n    {}",
             shell.replace('\n', "\n    ")
         );
     }
@@ -686,15 +719,8 @@ pub fn shelf(shelf: &Shelf) -> String {
             entry.identity().name(),
             entry.readiness().name()
         );
-        if let Readiness::Indexing { rows } = entry.readiness() {
-            let _ = write!(head, " · {} row(s)", rows.get());
-        }
-        match entry.declarations() {
-            Some(count) if count.get() > 0 => {
-                let _ = write!(head, " · {} declaration(s)", count.get());
-            }
-            Some(_) => {}
-            None => head.push_str(" · declaration count unavailable"),
+        for tag in entry.count_tags() {
+            let _ = write!(head, " · {tag}");
         }
         for language in entry.languages() {
             let _ = write!(
@@ -710,11 +736,19 @@ pub fn shelf(shelf: &Shelf) -> String {
             lines.push(fault(reason));
         }
     }
-    lines.push(format!(
+    let mut footer = format!(
         "{} project(s) · revision {}",
         shelf.entries().len(),
         shelf.revision()
-    ));
+    );
+    let statement = shelf.lane_statement();
+    if let Some((words, _)) = &statement {
+        let _ = write!(footer, " · {words}");
+    }
+    lines.push(footer);
+    if let Some((_, line)) = statement {
+        lines.push(coverage(line));
+    }
     lines.finish()
 }
 
@@ -786,16 +820,20 @@ pub fn status(status: &Status) -> String {
 /// Renders one durable product answer: a heading, then one record per row.
 #[must_use]
 pub fn product(view: &ProductView) -> String {
-    product_projection(view, None)
+    product_projection(view, None, None)
 }
 
 /// Renders the same receipt with a copyable MCP action retaining its detail.
 #[must_use]
 pub fn product_with_detail(view: &ProductView, detail: Detail) -> String {
-    product_projection(view, Some(detail))
+    product_projection(view, Some(detail), None)
 }
 
-fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
+fn product_projection(
+    view: &ProductView,
+    detail: Option<Detail>,
+    target: Option<ContinuationTarget<'_>>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", view.heading()));
     if let Some(reason) = view.fault() {
@@ -808,18 +846,20 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
     if let Some(note) = view.note() {
         lines.push(note);
         if view.records().is_empty() {
-            index_search_page_footer(view, &mut lines);
+            semantic_source_footer(view, &mut lines, target);
+            index_search_page_footer(view, &mut lines, target);
             index_job_footer(view, detail, &mut lines);
             return lines.finish();
         }
     }
     if view.records().is_empty() {
         lines.push("no row at this revision");
-        index_search_page_footer(view, &mut lines);
+        index_search_page_footer(view, &mut lines, target);
         index_job_footer(view, detail, &mut lines);
         return lines.finish();
     }
-    for record in view.records() {
+    let readable_records = view.readable_records();
+    for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
         if !record.tags().is_empty() {
             let _ = write!(head, "  ·  {}", record.tags().join(" · "));
@@ -833,9 +873,37 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
         }
     }
     lines.push(format!("{} row(s)", view.records().len()));
-    index_search_page_footer(view, &mut lines);
+    if let Some(page) = view.package_graph_page()
+        && matches!(
+            &page.terminal,
+            backend_library::PackageGraphPageTerminal::More(_)
+        )
+        && let Some(ContinuationTarget::McpInvocation(invocation)) = target
+    {
+        lines.push(invocation.continuation_note());
+    }
+    semantic_source_footer(view, &mut lines, target);
+    if matches!(target, None | Some(ContinuationTarget::CliOption))
+        && let Some(command) =
+            view.package_graph_cli_continuation(detail.unwrap_or(Detail::Standard))
+    {
+        lines.push(format!("Continue: `{command}`"));
+    }
+    index_search_page_footer(view, &mut lines, target);
     index_job_footer(view, detail, &mut lines);
     lines.finish()
+}
+
+fn semantic_source_footer(
+    view: &ProductView,
+    lines: &mut Lines,
+    target: Option<ContinuationTarget<'_>>,
+) {
+    if matches!(view.semantic_data(), Some(crate::ProductSemanticData::Source(chunk)) if chunk.next.is_some())
+        && let Some(ContinuationTarget::McpInvocation(invocation)) = target
+    {
+        lines.push(invocation.continuation_note());
+    }
 }
 
 fn index_job_footer(view: &ProductView, detail: Option<Detail>, lines: &mut Lines) {
@@ -897,7 +965,11 @@ fn index_job_footer(view: &ProductView, detail: Option<Detail>, lines: &mut Line
     }
 }
 
-fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
+fn index_search_page_footer(
+    view: &ProductView,
+    lines: &mut Lines,
+    reader_target: Option<ContinuationTarget<'_>>,
+) {
     let Some(page) = view.index_search_page() else {
         return;
     };
@@ -913,14 +985,20 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        let target = match page
-            .cursor_projection()
-            .map_or(CursorTarget::CliOption, |projection| projection.target())
-        {
-            CursorTarget::CliOption => ContinuationTarget::CliOption,
-            CursorTarget::McpIndexSearchTool => ContinuationTarget::McpTool("backend.index_search"),
-            CursorTarget::SurfaceCommand => ContinuationTarget::McpSurfaceCommand,
-        };
+        let target = reader_target
+            .filter(|target| matches!(target, ContinuationTarget::McpInvocation(_)))
+            .unwrap_or_else(|| {
+                match page
+                    .cursor_projection()
+                    .map_or(CursorTarget::CliOption, |projection| projection.target())
+                {
+                    CursorTarget::CliOption => ContinuationTarget::CliOption,
+                    CursorTarget::McpIndexSearchTool => {
+                        ContinuationTarget::McpTool("backend.index_search")
+                    }
+                    CursorTarget::SurfaceCommand => ContinuationTarget::McpSurfaceCommand,
+                }
+            });
         lines.push(continuation_note(target, cursor));
     }
 }

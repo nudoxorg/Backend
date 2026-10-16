@@ -30,6 +30,8 @@ use super::typescript_host::{
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
 
+mod direct;
+
 const MAX_BRIDGE_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BRIDGE_FILES: usize = 16_384;
 const MAX_BRIDGE_REQUESTS: usize = 131_072;
@@ -54,6 +56,8 @@ pub(crate) struct NativeTypeScriptInputs {
     /// Membership of every captured package source in the exact configured program.
     pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptPackageSourceMembership>,
     pub(crate) work_units: u64,
+    /// What one file of this program may spend before it alone becomes a coverage gap.
+    pub(crate) file_work_units: u64,
     pub(crate) solution: bool,
 }
 
@@ -338,6 +342,32 @@ const matcherEnvironment = sys => {
   }
   return {currentDirectory:path.resolve(currentDirectory), caseSensitive:caseSensitiveValue};
 };
+// Paths outside the admitted roots (the workspace and the TypeScript module
+// root) are not part of the program universe. Probing them cannot be witnessed
+// by the host, so the bridge answers "absent" without touching the disk and
+// records nothing (for example Vite's rooted `import logo from '/vite.svg'`
+// makes the compiler probe the filesystem root). The ancestor `node_modules`
+// and `node_modules/@types` negative candidates stay observed because the host
+// witnesses them by parent identity. This mirrors the host's
+// path_is_admitted / external_negative_module_candidate; MAX_PROJECT_ANCESTORS
+// is pinned to the host constant by a unit test.
+const MAX_PROJECT_ANCESTORS = 32;
+const admittedRoots = [path.resolve(workspaceRoot), path.resolve(compilerApiPath, '..', '..', '..')];
+const insideRoot = (candidate, root) =>
+  candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+const negativeModuleCandidates = new Set();
+{
+  let ancestor = path.dirname(path.resolve(workspaceRoot));
+  for (let count = 0; count < MAX_PROJECT_ANCESTORS; count++) {
+    negativeModuleCandidates.add(path.join(ancestor, 'node_modules'));
+    negativeModuleCandidates.add(path.join(ancestor, 'node_modules', '@types'));
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+}
+const outsideProgramUniverse = resolved =>
+  !admittedRoots.some(root => insideRoot(resolved, root)) && !negativeModuleCandidates.has(resolved);
 const chargeAccess = () => {
   if (accessOperations >= MAX_ACCESS_OPERATIONS) {
     throw closureFault('limit', 'TypeScript compiler filesystem access count exceeded its bound');
@@ -610,6 +640,10 @@ try {
         chargeAccess();
         const p = args[0];
         const resolvedPath = path.resolve(p);
+        if ((name === 'readFile' || name === 'fileExists' || name === 'directoryExists' || name === 'realpath')
+            && outsideProgramUniverse(resolvedPath)) {
+          return name === 'realpath' ? p : name === 'readFile' ? undefined : false;
+        }
         let value;
         let directoryViewPaths = [];
         let directoryRealpaths = [];
@@ -741,7 +775,12 @@ try {
     ? ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost)
     : {options:ts.getDefaultCompilerOptions(), fileNames:inferredRootNames, errors:[], projectReferences:[]};
   if (!parsed) throw new Error('getParsedCommandLineOfConfigFile returned no project');
-  if (configDiagnostics.length || (parsed.errors || []).length) throw new Error('selected config has Compiler API parse diagnostics');
+  if (configDiagnostics.length || (parsed.errors || []).length) {
+    // Name the first compiler diagnostics (code and text) so a refusal is actionable.
+    const described = configDiagnostics.concat(parsed.errors || []).slice(0, 2)
+      .map(item => 'TS' + item.code + ': ' + ts.flattenDiagnosticMessageText(item.messageText, ' ')).join('; ');
+    throw new Error('selected config has Compiler API parse diagnostics: ' + described);
+  }
   if (!admitProjectForest && parsed.projectReferences && parsed.projectReferences.length) {
     result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
       root_names:parsed.fileNames.map(name => path.resolve(name)),
@@ -1165,12 +1204,11 @@ pub(crate) fn build_native_forest_inputs(
         .collect::<BTreeMap<_, _>>();
     let mut work_units = 0u64;
     for (index, node) in nodes.iter().enumerate() {
-        work_units = work_units.saturating_add(node.native.work_units);
-        if work_units > MAX_PROJECT_WORK_UNITS {
-            return Err(bridge_error(
-                "project forest exceeds the shared checker work allowance",
-            ));
-        }
+        // The forest shares one counter. Its sum is clamped to the project cap
+        // rather than refused: a large project must degrade, not fail admission.
+        work_units = work_units
+            .saturating_add(node.native.work_units)
+            .min(MAX_PROJECT_WORK_UNITS);
         for (path, member) in &node.native.package_membership {
             if let Some(program_path) = member.selected_program_path() {
                 let owner = membership.get_mut(path).ok_or_else(|| {
@@ -1228,16 +1266,33 @@ fn build_native_inputs_for_config(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
+    if matches!(
+        inputs.authority,
+        super::typescript_host::TypeScriptProjectInputAuthority::Native
+    ) {
+        return direct::build_direct_inputs_for_config(
+            inputs,
+            resolver,
+            package_sources,
+            config,
+            forest,
+            aggregate,
+            validated_host,
+            deadline,
+            cancelled,
+        );
+    }
     check_admission_control(deadline, cancelled)?;
+    let api = inputs.compiler_api()?;
     // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
     // is probed separately to establish the selected tool identity, but it is
     // not the Compiler API module. Resolve that module only from the exact
     // captured TypeScript package closure so `require` cannot silently select
     // a different install from Node's module search path.
-    let compiler_api_path = inputs
+    let compiler_api_path = api
         .typescript_module_root
         .join("typescript/lib/typescript.js");
-    let expected_version = std::str::from_utf8(inputs.compiler_version)
+    let expected_version = std::str::from_utf8(api.compiler_version)
         .ok()
         .map(str::trim)
         .and_then(|version| version.strip_prefix("Version ").or(Some(version)))
@@ -1247,7 +1302,7 @@ fn build_native_inputs_for_config(
         .iter()
         .find(|file| normalize_path(&file.path) == normalize_path(&compiler_api_path))
         .ok_or_else(|| TypeScriptProjectHostError::CompilerApiEntryMissing {
-            package_root: inputs
+            package_root: api
                 .typescript_module_root
                 .join("typescript")
                 .into_boxed_path(),
@@ -1274,6 +1329,7 @@ fn build_native_inputs_for_config(
             if let Some(export) = report.missing_compiler_api_export.as_deref() {
                 return Err(TypeScriptProjectHostError::CompilerApiExportMissing {
                     package_root: inputs
+                        .compiler_api()?
                         .typescript_module_root
                         .join("typescript")
                         .into_boxed_path(),
@@ -1595,7 +1651,7 @@ fn build_native_inputs_for_config(
         &file_formats,
         resolver_witness.digest(),
     )?;
-    let work_units = calculate_work_units(inputs, &sources, &libraries, closure_work_units);
+    let work = calculate_work_allowance(inputs, &sources, &libraries, closure_work_units);
     let options = TszProjectOptions {
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
@@ -1616,7 +1672,8 @@ fn build_native_inputs_for_config(
             access_digest,
         },
         package_membership,
-        work_units,
+        work_units: work.program,
+        file_work_units: work.per_file,
         solution,
     })
 }
@@ -1703,7 +1760,7 @@ fn run_program_bridge_with_forest_limits(
         ),
     ];
     let output = run_typescript_program_bridge(
-        inputs.node_path,
+        inputs.compiler_api()?.node_path,
         COMPILER_API_PROGRAM_SCRIPT,
         &arguments,
         inputs.package_root,
@@ -1725,7 +1782,7 @@ fn select_config<'a>(
     let selected = super::typescript_host::select_project_config(
         inputs.package_root,
         inputs.config_candidates,
-    )?;
+    );
     if selected.is_some_and(|config| {
         config.dependency_authority
             != super::typescript_host::TypeScriptConfigDependencyAuthority::Program
@@ -2518,42 +2575,123 @@ fn compiler_access_digest(
     Ok(digest.finalize().into())
 }
 
-fn calculate_work_units(
+/// Work admitted to one native TypeScript program.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProgramWorkAllowance {
+    /// Everything parse, bind, merge, checker planning, the application files'
+    /// checks, and every lazy semantic query of this program may spend.
+    pub(crate) program: u64,
+    /// What one application file's semantic check, or one file's lowering
+    /// queries, may spend before that file alone becomes a coverage gap.
+    pub(crate) per_file: u64,
+}
+
+/// The measured shape of one admitted program: what its allowance is derived from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProgramWorkShape {
+    /// Program members that are not declaration files; these are semantically
+    /// checked and lowered, so they carry the program's real work.
+    pub(crate) application_files: u64,
+    /// Bytes of those application files.
+    pub(crate) application_bytes: u64,
+    /// Bytes of declaration sources, default libraries, and captured
+    /// configuration. They are parsed, bound, and merged, but only the parts
+    /// that application code reaches are ever resolved.
+    pub(crate) declaration_bytes: u64,
+    /// Replay work of the compiler API's filesystem transcript.
+    pub(crate) closure_replay_work: u64,
+}
+
+impl ProgramWorkShape {
+    // Calibrated on measured real projects. Units admitted for a complete publication:
+    // Angular 19 starter 17M (4 application files), Next.js 15 app 6M (6 files).
+    // Parse, bind and merge cost about 0.2 units per declaration byte. Checking and
+    // lowering cost is set by the application files and by how much library surface
+    // they touch (the first file to touch Angular core pays about 12M), so every
+    // application file carries its own generous term (an Angular 21 RealWorld app
+    // spent 11 to 15M per file, 459M units for its first 30 files). The allowance is
+    // a runaway guard with headroom, not a prediction.
+    const BASE_UNITS: u64 = 150_000_000;
+    const DECLARATION_UNITS_PER_BYTE: u64 = 8;
+    const APPLICATION_UNITS_PER_BYTE: u64 = 1_000;
+    const APPLICATION_FILE_UNITS: u64 = 20_000_000;
+    const CLOSURE_REPLAY_UNITS: u64 = 256;
+    /// A single file may spend at most this share of its program's allowance...
+    const FILE_SHARE_DENOMINATOR: u64 = 8;
+    /// ...but never less than this, so that a small program cannot starve a
+    /// file that legitimately resolves a large generic library.
+    const MIN_FILE_UNITS: u64 = 60_000_000;
+
+    /// Allowances for this shape, never above the global project cap.
+    pub(crate) fn allowance(self) -> ProgramWorkAllowance {
+        let program = Self::BASE_UNITS
+            .saturating_add(
+                self.declaration_bytes
+                    .saturating_mul(Self::DECLARATION_UNITS_PER_BYTE),
+            )
+            .saturating_add(
+                self.application_bytes
+                    .saturating_mul(Self::APPLICATION_UNITS_PER_BYTE),
+            )
+            .saturating_add(
+                self.application_files
+                    .saturating_mul(Self::APPLICATION_FILE_UNITS),
+            )
+            .saturating_add(
+                self.closure_replay_work
+                    .saturating_mul(Self::CLOSURE_REPLAY_UNITS),
+            )
+            .min(MAX_PROJECT_WORK_UNITS);
+        let per_file = (program / Self::FILE_SHARE_DENOMINATOR)
+            .max(Self::MIN_FILE_UNITS)
+            .min(program);
+        ProgramWorkAllowance { program, per_file }
+    }
+}
+
+/// Whether a program path names a declaration file (`.d.ts`, `.d.mts`, `.d.cts`,
+/// or an arbitrary-extension `.d.<ext>.ts`). Such files are parsed and bound but
+/// carry no application work of their own.
+fn is_declaration_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    [".ts", ".mts", ".cts"]
+        .iter()
+        .filter_map(|suffix| name.strip_suffix(suffix))
+        .any(|stem| stem.ends_with(".d") || stem.contains(".d."))
+}
+
+fn calculate_work_allowance(
     inputs: &TypeScriptProjectInputs<'_>,
     sources: &[TszFileInput],
     libraries: &[std::sync::Arc<backend_frontend_typescript::TszLibFile>],
     closure_work_units: u64,
-) -> u64 {
-    let source_bytes = sources
-        .iter()
-        .map(|source| source.source.len() as u64)
-        .sum::<u64>();
-    let library_bytes = libraries
-        .iter()
-        .map(|library| {
-            library
-                .arena
-                .get_source_file_at(library.root_index)
-                .map(|source| source.text.len() as u64)
-                .unwrap_or(0)
-        })
-        .sum::<u64>();
-    let config_bytes = inputs
-        .config_candidates
-        .iter()
-        .map(|config| config.bytes.len() as u64)
-        .sum::<u64>();
-    let bytes = source_bytes
-        .saturating_add(library_bytes)
-        .saturating_add(config_bytes);
-    let count = (sources.len() as u64)
-        .saturating_add(libraries.len() as u64)
-        .saturating_add(inputs.typescript_files.len() as u64);
-    1_000_000_u64
-        .saturating_add(bytes.saturating_mul(48))
-        .saturating_add(count.saturating_mul(65_536))
-        .saturating_add(closure_work_units.saturating_mul(256))
-        .min(MAX_PROJECT_WORK_UNITS)
+) -> ProgramWorkAllowance {
+    let mut shape = ProgramWorkShape {
+        closure_replay_work: closure_work_units,
+        ..ProgramWorkShape::default()
+    };
+    for source in sources {
+        let bytes = source.source.len() as u64;
+        if is_declaration_path(&source.path) {
+            shape.declaration_bytes = shape.declaration_bytes.saturating_add(bytes);
+        } else {
+            shape.application_files = shape.application_files.saturating_add(1);
+            shape.application_bytes = shape.application_bytes.saturating_add(bytes);
+        }
+    }
+    for library in libraries {
+        let bytes = library
+            .arena
+            .get_source_file_at(library.root_index)
+            .map_or(0, |source| source.text.len() as u64);
+        shape.declaration_bytes = shape.declaration_bytes.saturating_add(bytes);
+    }
+    for config in inputs.config_candidates.iter() {
+        shape.declaration_bytes = shape
+            .declaration_bytes
+            .saturating_add(config.bytes.len() as u64);
+    }
+    shape.allowance()
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -2619,6 +2757,79 @@ mod tests {
             b"export const value = '\xff';".as_slice(),
         ] {
             assert!(super::compiler_api_utf8_text_sha256(unsupported).is_err());
+        }
+    }
+
+    #[test]
+    fn bridge_script_pins_the_hosts_negative_module_ancestor_bound() {
+        assert!(super::COMPILER_API_PROGRAM_SCRIPT.contains(&format!(
+            "const MAX_PROJECT_ANCESTORS = {};",
+            super::super::typescript_host::MAX_PROJECT_ANCESTORS
+        )));
+    }
+
+    #[test]
+    #[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+    fn rooted_specifiers_outside_the_admitted_roots_are_absent_without_observation() {
+        use std::{env, fs, path::PathBuf};
+
+        let node = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_NODE").expect("set the pinned Node executable"),
+        );
+        let compiler_api = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_TYPESCRIPT_API").expect("set the pinned TypeScript API"),
+        );
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "nudox-typescript-rooted-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create isolated TypeScript source fixture");
+        let fixture = TemporaryProgramRoot(root);
+        let root = fixture.0.as_path();
+        // Vite's public-directory import: TypeScript treats `/vite.svg` as a rooted
+        // module path and probes the filesystem root, which no program may witness.
+        fs::write(
+            root.join("main.ts"),
+            "import logo from '/vite.svg';\nexport const url: string = logo;\n",
+        )
+        .expect("write rooted import");
+        fs::write(
+            root.join("assets.d.ts"),
+            "declare module '*.svg' { const url: string; export default url; }\n",
+        )
+        .expect("write ambient svg module");
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","noEmit":true},"include":["*.ts"]}"#,
+        )
+        .expect("write config");
+        let config = fs::canonicalize(root.join("tsconfig.json")).expect("canonical config");
+        let canonical_root = fs::canonicalize(root).expect("canonical root");
+        let report = run_program_report(&canonical_root, &node, &compiler_api, Some(&config), &[]);
+        assert!(report.error.is_none(), "bridge error: {:?}", report.error);
+        let compiler_root = compiler_api
+            .ancestors()
+            .nth(3)
+            .expect("module root above typescript/lib/typescript.js")
+            .to_path_buf();
+        for access in &report.accesses {
+            let path = std::path::Path::new(&access.path);
+            let negative_candidate = path
+                .file_name()
+                .is_some_and(|name| name == "node_modules" || name == "@types");
+            assert!(
+                path.starts_with(&canonical_root)
+                    || path.starts_with(&compiler_root)
+                    || negative_candidate,
+                "outside probe was observed: {}",
+                access.path
+            );
         }
     }
 
@@ -3320,7 +3531,7 @@ process.stdout.write(JSON.stringify(outputs));
         .expect("construct exact configured compiler program and closure");
         native
             .closure_witness
-            .validate_current(admitted.witness.as_ref())
+            .validate_current(admitted.witness().as_ref())
             .expect("captured compiler and resolver closure still matches");
 
         let project_root = super::normalize_path(&root);
@@ -3415,6 +3626,8 @@ process.stdout.write(JSON.stringify(outputs));
         });
         let serialized = serde_json::to_string(&matcher_input).expect("serialize exact snapshots");
         let compiler_api_path = inputs
+            .compiler_api()
+            .unwrap()
             .typescript_module_root
             .join("typescript/lib/typescript.js");
         let arguments = [
@@ -3422,7 +3635,7 @@ process.stdout.write(JSON.stringify(outputs));
             OsString::from(serialized),
         ];
         let output = run_typescript_program_bridge(
-            inputs.node_path,
+            inputs.compiler_api().unwrap().node_path,
             MATCHER_NEGATIVE_PROBE_SCRIPT,
             &arguments,
             &root,
@@ -3480,3 +3693,110 @@ fn bridge_error(message: &str) -> TypeScriptProjectHostError {
 #[cfg(all(test, unix))]
 #[path = "typescript_program/membership_tests.rs"]
 mod membership_tests;
+
+#[cfg(test)]
+mod work_allowance_tests {
+    use super::{MAX_PROJECT_WORK_UNITS, ProgramWorkShape, is_declaration_path};
+
+    #[test]
+    fn declaration_paths_are_recognised_in_every_spelling_and_application_paths_are_not() {
+        for declaration in [
+            "node_modules/@angular/core/index.d.ts",
+            "src/types/globals.d.ts",
+            "lib/esm/index.d.mts",
+            "lib/cjs/index.d.cts",
+            "src/assets/logo.d.svg.ts",
+            "index.d.ts",
+        ] {
+            assert!(is_declaration_path(declaration), "{declaration}");
+        }
+        for application in [
+            "src/main.ts",
+            "src/app/app.component.tsx",
+            "src/dts.ts",
+            "src/odd.d.txt",
+            "src/mod.mts",
+            "src/index.cts",
+            "src/model.d/x.ts",
+            "declare.ts",
+        ] {
+            assert!(!is_declaration_path(application), "{application}");
+        }
+    }
+
+    #[test]
+    fn an_empty_program_still_gets_a_working_floor_and_a_file_slice_within_it() {
+        let allowance = ProgramWorkShape::default().allowance();
+        assert!(allowance.program >= ProgramWorkShape::BASE_UNITS);
+        assert!(allowance.per_file >= 1);
+        assert!(allowance.per_file <= allowance.program);
+    }
+
+    #[test]
+    fn work_scales_with_application_files_not_with_dependency_declarations() {
+        let declarations_only = ProgramWorkShape {
+            declaration_bytes: 50 * 1024 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        let one_more_application_file = ProgramWorkShape {
+            declaration_bytes: 50 * 1024 * 1024,
+            application_files: 1,
+            application_bytes: 4 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert!(
+            one_more_application_file.program
+                >= declarations_only.program + ProgramWorkShape::APPLICATION_FILE_UNITS,
+            "every application file adds its own admitted work"
+        );
+        // 50 MiB of dependency typings add parse/bind cost, not application-sized work.
+        assert!(
+            declarations_only.program - ProgramWorkShape::BASE_UNITS
+                <= 50 * 1024 * 1024 * ProgramWorkShape::DECLARATION_UNITS_PER_BYTE
+        );
+    }
+
+    #[test]
+    fn a_files_slice_is_a_bounded_share_of_the_program_and_never_below_the_floor() {
+        let small = ProgramWorkShape {
+            application_files: 3,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert_eq!(
+            small.per_file,
+            ProgramWorkShape::MIN_FILE_UNITS.min(small.program)
+        );
+        let large = ProgramWorkShape {
+            application_files: 4_000,
+            application_bytes: 40 * 1024 * 1024,
+            declaration_bytes: 64 * 1024 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert_eq!(
+            large.per_file,
+            (large.program / ProgramWorkShape::FILE_SHARE_DENOMINATOR)
+                .max(ProgramWorkShape::MIN_FILE_UNITS)
+        );
+        assert!(
+            large.per_file < large.program,
+            "one hot file can never consume the whole program"
+        );
+    }
+
+    #[test]
+    fn the_global_cap_bounds_every_allowance_without_overflow() {
+        let absurd = ProgramWorkShape {
+            application_files: u64::MAX,
+            application_bytes: u64::MAX,
+            declaration_bytes: u64::MAX,
+            closure_replay_work: u64::MAX,
+        }
+        .allowance();
+        assert_eq!(absurd.program, MAX_PROJECT_WORK_UNITS);
+        assert!(absurd.per_file <= absurd.program);
+    }
+}

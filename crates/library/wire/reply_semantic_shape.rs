@@ -742,35 +742,14 @@ fn shape_wire_tree_summary(batch: &SemanticShapeBatchWire) -> Result<(Vec<u8>, u
 }
 
 fn bounded_shape_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
-    struct BoundedWriter(Vec<u8>);
-
-    impl std::io::Write for BoundedWriter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            let total = self
-                .0
-                .len()
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("semantic-shape wire size overflowed"))?;
-            if total > crate::MAX_SEMANTIC_SHAPE_BYTES {
-                return Err(std::io::Error::other(
-                    "semantic-shape wire payload exceeds its fixed byte bound",
-                ));
+    super::super::bounded_json::bounded_json(value, crate::MAX_SEMANTIC_SHAPE_BYTES).map_err(
+        |error| match error {
+            super::super::BoundedJsonError::LimitExceeded { .. } => {
+                "semantic-shape wire payload exceeds its fixed byte bound".to_owned()
             }
-            self.0
-                .try_reserve(bytes.len())
-                .map_err(std::io::Error::other)?;
-            self.0.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let mut output = BoundedWriter(Vec::new());
-    serde_json::to_writer(&mut output, value).map_err(|error| error.to_string())?;
-    Ok(output.0)
+            error => error.to_string(),
+        },
+    )
 }
 
 fn shape_wire_node(nodes: &mut usize) -> Result<(), String> {

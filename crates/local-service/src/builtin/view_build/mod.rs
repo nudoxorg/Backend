@@ -18,6 +18,7 @@ mod image_reopen;
 mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
+mod kinds;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
@@ -66,14 +67,15 @@ pub(in crate::builtin) use source_availability::{
     CurrentNativeProgram, SelectedSourceArtifacts, SourceAvailability,
 };
 pub(crate) use structural::{
-    StructuralCallResidence, structural_call_graph_relations_mapped,
-    structural_call_graph_relations_resident, structural_call_span, structural_file_span,
-    structural_reference_facts_resident, structural_symbol_identity,
-    view_row_for_structural_coordinate,
+    StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows,
+    structural_call_endpoint_relations_mapped, structural_call_graph_relations_resident,
+    structural_call_span, structural_file_span, structural_reference_facts_resident,
+    structural_symbol_identity, view_row_for_structural_coordinate,
 };
 #[cfg(test)]
 pub(crate) use structural::{
-    structural_call_coordinate_pairs, structural_call_graph_relations, structural_reference_facts,
+    structural_call_coordinate_pairs, structural_call_graph_relations,
+    structural_call_graph_relations_mapped, structural_reference_facts,
 };
 
 #[cfg(test)]
@@ -83,6 +85,14 @@ use semantic::{ProfileStalePaths, SourceRowProjection};
 #[cfg(test)]
 use structural::StructuralParent;
 use structural::StructuralProjectionPlan;
+
+/// Exercises the canonical structural row projection in sibling command tests.
+#[cfg(test)]
+pub(in crate::builtin) fn structural_view_for_test(
+    sources: &super::IndexedSources,
+) -> Result<(backend_engine::ViewRoot, Vec<backend_engine::Row>), String> {
+    tests::cross_file_view(sources)
+}
 
 /// Builds the structural declaration plan and drops it. Benchmarks time this.
 pub(super) fn project_structural_plan(
@@ -190,14 +200,18 @@ fn semantic_profile_is_complete(
     )>,
     package: Option<backend_engine::PackageKey>,
     path: &str,
+    python_version: Option<backend_semantic::vocabulary::PythonVersion>,
 ) -> Result<bool, super::BuiltinModelError> {
     let Some(package) = package else {
         return Ok(false);
     };
     // A file whose extension has no semantic profile is never covered by a
     // completed compile, so it keeps its structural facts.
-    let Some(profile) = super::ingest::source_profile(std::path::Path::new(path))
-        .map_err(super::BuiltinModelError)?
+    let Some(profile) = super::ingest::source_profile_with_python_version(
+        std::path::Path::new(path),
+        python_version,
+    )
+    .map_err(super::BuiltinModelError)?
     else {
         return Ok(false);
     };
@@ -908,6 +922,302 @@ pub fn execute() {}
                 "parent {parent:?} did not resolve into {symbols:?}"
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_binding_parentage_survives_the_canonical_structural_row_projection()
+    -> Result<(), String> {
+        let path = "scheduler.ts";
+        let source = concat!(
+            "export const unrelated = 0, generateSchedule = () => {\n",
+            "  const allSections = [1];\n",
+            "  const missingSections = [2];\n",
+            "  return { allSections, missingSections };\n",
+            "};\n",
+        );
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let sources = structural_sources(
+            [0x31; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let scratch = std::env::temp_dir();
+        let mut projection =
+            SourceRowProjection::new(&initial, &sources, 64, &targets, &plan, &scratch)
+                .map_err(|error| error.to_string())?;
+        for (key, file) in &sources.files {
+            projection
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                .map_err(|error| error.to_string())?;
+        }
+        let rows = projection
+            .finish(Vec::new())
+            .map_err(|error| error.to_string())?;
+        let schedule = "fixture::scheduler.ts:1::generateSchedule";
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:2::allSections")?,
+            schedule
+        );
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:3::missingSections")?,
+            schedule
+        );
+        assert_eq!(parent_of(&rows, schedule)?, "fixture::scheduler.ts");
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:1::unrelated")?,
+            "fixture::scheduler.ts"
+        );
+        let parent = rows
+            .iter()
+            .find(|row| row.label == schedule)
+            .ok_or("schedule row")?
+            .id;
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.parent.map(RowId::Symbol) == Some(parent))
+                .count(),
+            2,
+            "document/outline consumers receive exactly the actual local members"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_binding_parentage_round_trips_shadowed_bindings_into_distinct_stored_rows()
+    -> Result<(), String> {
+        use backend_compile::{Container, SourceBindingIdentity};
+        use backend_version::{CanonicalRelation, Relation};
+        let path = "shadow.ts";
+        let source = "const left = () => { const worker = () => { const value = 1; return value; }; return worker; }, right = () => { const worker = () => { const value = 1; return value; }; return worker; };";
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let mut sources = structural_sources(
+            [0x32; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )?;
+        for (_, record) in &mut sources.files {
+            let mut bytes = Vec::new();
+            backend_engine::ProductSourceRelation::encode_value(record, &mut bytes);
+            assert_eq!(
+                &bytes[..4],
+                b"PSRG",
+                "new anchors require a new persisted format"
+            );
+            *record = backend_engine::ProductSourceRelation::decode_value(&bytes)
+                .map_err(|error| format!("decode exact source facts: {error:?}"))?;
+            assert_eq!(
+                record
+                    .file_fields()
+                    .ok_or("file fields")?
+                    .declarations
+                    .as_ref(),
+                analysis.declarations().as_ref()
+            );
+        }
+        let project_rows =
+            |sources: &super::super::IndexedSources| -> Result<Vec<backend_engine::Row>, String> {
+                let plan = StructuralProjectionPlan::of(sources, &BTreeSet::new())
+                    .map_err(|error| error.to_string())?;
+                let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+                let targets = super::SemanticTargets::default();
+                let scratch = std::env::temp_dir();
+                let mut projection =
+                    SourceRowProjection::new(&initial, sources, 64, &targets, &plan, &scratch)
+                        .map_err(|error| error.to_string())?;
+                for (key, file) in &sources.files {
+                    projection
+                        .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                        .map_err(|error| error.to_string())?;
+                }
+                projection
+                    .finish(Vec::new())
+                    .map_err(|error| error.to_string())
+            };
+        let rows = project_rows(&sources)?;
+        assert_eq!(
+            rows.len(),
+            8,
+            "package, module and all six bindings survive storage"
+        );
+        let file_key = sources.files[0].0;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let file = sources.files[0].1.file_fields().ok_or("file")?;
+        for (index, declaration) in file.declarations.iter().enumerate() {
+            let prepared = plan
+                .declaration(file_key, index)
+                .map_err(|error| error.to_string())?;
+            let row = rows
+                .iter()
+                .find(|row| row.id == prepared.id)
+                .ok_or("stored binding row")?;
+            if let Container::Binding { binding } = declaration.container() {
+                let parent = plan
+                    .binding_parent_id(file_key, *binding)
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(row.parent.map(RowId::Symbol), Some(parent));
+                let owner = file.declarations.iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *binding)).ok_or("exact stored owner")?;
+                if declaration.name() == "value" {
+                    assert_eq!(owner.name(), "worker");
+                    let Container::Binding { binding: outer } = owner.container() else {
+                        return Err("worker lost outer binding".to_owned());
+                    };
+                    let outer = file.declarations.iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *outer)).ok_or("exact outer")?;
+                    let SourceBindingIdentity::Exact(own) = declaration.binding_identity() else {
+                        return Err("value lacks binding".to_owned());
+                    };
+                    assert_eq!(
+                        outer.name(),
+                        if own.owner().0 < source.find("right").ok_or("right")? as u32 {
+                            "left"
+                        } else {
+                            "right"
+                        }
+                    );
+                }
+            }
+        }
+        let mut facts = Vec::new();
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        for row in rows.iter().filter(|row| matches!(row.id, RowId::Symbol(_))) {
+            let fact = facts
+                .iter()
+                .find(|fact| fact.presentation().id == row.id.stable_key())
+                .ok_or("stored query fact")?;
+            assert_eq!(
+                fact.presentation().parent,
+                row.parent.map(|parent| RowId::Symbol(parent).stable_key())
+            );
+        }
+        let workers = rows
+            .iter()
+            .filter(|row| row.label == "fixture::shadow.ts:1::worker")
+            .collect::<Vec<_>>();
+        assert_eq!(workers.len(), 2);
+        assert_ne!(workers[0].id, workers[1].id);
+        assert_ne!(workers[0].parent, workers[1].parent);
+        for worker in workers {
+            assert!(worker.identity_preimage().is_some());
+        }
+        for name in ["left", "right"] {
+            assert!(
+                rows.iter().any(|row| row.id
+                    == RowId::Symbol(symbol_key(&format!("fixture::shadow.ts:1::{name}"))))
+            );
+        }
+        // Reordering captures cannot change an exact duplicate binding's row ID or parent.
+        let mut reordered = sources.files[0]
+            .1
+            .file_fields()
+            .ok_or("source")?
+            .declarations
+            .to_vec();
+        reordered.reverse();
+        let reversed = structural_sources(
+            [0x32; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from(reordered),
+        )?;
+        let reverse_rows = project_rows(&reversed)?;
+        let graph = |rows: &[backend_engine::Row]| {
+            rows.iter()
+                .map(|row| (row.id, row.parent))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(graph(&rows), graph(&reverse_rows));
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_binding_parentage_refuses_cross_file_and_outside_owner_targets()
+    -> Result<(), String> {
+        use backend_compile::{
+            Container, SourceBindingCapture, SourceBindingIdentity, SourceDeclaration,
+        };
+        let parent_capture = SourceBindingCapture::new(0, 100, 9, 14).ok_or("parent capture")?;
+        let child_capture = SourceBindingCapture::new(30, 50, 36, 41).ok_or("child capture")?;
+        let parent = SourceDeclaration::at_path(
+            "other.ts",
+            "outer",
+            "function",
+            1,
+            "function outer() {}",
+            "",
+        )?
+        .with_binding_identity(SourceBindingIdentity::Exact(parent_capture));
+        let child =
+            SourceDeclaration::at_path("child.ts", "child", "constant", 1, "const child = 1;", "")?
+                .with_binding_identity(SourceBindingIdentity::Exact(child_capture))
+                .with_container(Container::Binding {
+                    binding: parent_capture.binding(),
+                });
+        let mut sources = structural_sources(
+            [0x33; 32],
+            "child.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([child.clone()]),
+        )?;
+        let other = structural_sources(
+            [0x33; 32],
+            "other.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([parent]),
+        )?;
+        sources.files.extend(other.files);
+        let mut keys = sources
+            .files
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        keys.sort();
+        sources
+            .projects
+            .get_mut(&[0x33; 32])
+            .ok_or("project")?
+            .files = Arc::from(keys);
+        let error = match StructuralProjectionPlan::of(&sources, &BTreeSet::new()) {
+            Ok(_) => {
+                return Err("same byte anchor in another file was accepted as parent".to_owned());
+            }
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("exact structural parent binding is absent"));
+        let outside_parent = SourceBindingCapture::new(0, 20, 9, 14).ok_or("outside parent")?;
+        let parent = SourceDeclaration::at_path(
+            "child.ts",
+            "outer",
+            "function",
+            1,
+            "function outer() {}",
+            "",
+        )?
+        .with_binding_identity(SourceBindingIdentity::Exact(outside_parent));
+        let sources = structural_sources(
+            [0x33; 32],
+            "child.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([parent, child]),
+        )?;
+        let error = match StructuralProjectionPlan::of(&sources, &BTreeSet::new()) {
+            Ok(_) => return Err("a non-containing parent owner was accepted".to_owned()),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("does not strictly contain its child owner"));
         Ok(())
     }
 
@@ -1847,9 +2157,9 @@ pub fn execute() {}
     fn complete_c_publication_does_not_suppress_cxx_fallback() -> Result<(), String> {
         let package = package_key("mixed-c-cxx");
         let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::C(CStandard::C23))]);
-        if !semantic_profile_is_complete(&complete, Some(package), "source.c")
+        if !semantic_profile_is_complete(&complete, Some(package), "source.c", None)
             .map_err(|error| error.to_string())?
-            || semantic_profile_is_complete(&complete, Some(package), "source.cpp")
+            || semantic_profile_is_complete(&complete, Some(package), "source.cpp", None)
                 .map_err(|error| error.to_string())?
         {
             return Err("C and C++ semantic fallback profiles collapsed".to_owned());
@@ -1940,7 +2250,7 @@ pub fn execute() {}
         ))
     }
 
-    fn cross_file_view(
+    pub(super) fn cross_file_view(
         sources: &super::super::IndexedSources,
     ) -> Result<(ViewRoot, Vec<Row>), String> {
         let (initial, _) = initial_view().map_err(|error| error.to_string())?;
@@ -2606,7 +2916,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 caller_id,
                 callee_id,
                 backend_library::SemanticLinkKind::Calls,
-            ));
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic));
         }
         Ok(relations
             .into_iter()
@@ -2725,6 +3035,272 @@ pub fn decoy_mention() { let _ = "parse_config("; }
     }
 
     #[test]
+    fn typescript_exact_call_endpoints_keep_shadowed_workers_and_local_targets_distinct()
+    -> Result<(), String> {
+        use backend_version::{CanonicalRelation, Relation};
+        let path = "workers.ts";
+        let text = "const left = () => { function worker() { leftTarget(); } function leftTarget() {} }, right = () => { function worker() { rightTarget(); } function rightTarget() {} };";
+        let declarations = analyze_source(backend_engine::SourceLanguage::TypeScript, path, text)?;
+        let (mut sources, package) = cross_file_sources(&[(
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            declarations,
+        )])?;
+        for (_, record) in &mut sources.files {
+            let mut bytes = Vec::new();
+            backend_engine::ProductSourceRelation::encode_value(record, &mut bytes);
+            *record = backend_engine::ProductSourceRelation::decode_value(&bytes)
+                .map_err(|error| format!("stored facts: {error:?}"))?;
+        }
+        let (view, rows) = cross_file_view(&sources)?;
+        let workers = rows
+            .iter()
+            .filter(|row| row.label == "fixture::workers.ts:1::worker")
+            .collect::<Vec<_>>();
+        assert_eq!(workers.len(), 2);
+        assert_ne!(workers[0].id, workers[1].id);
+        assert_ne!(workers[0].parent, workers[1].parent);
+        let left = row_for_coordinate(&rows, "fixture::workers.ts:1::left")?;
+        let right = row_for_coordinate(&rows, "fixture::workers.ts:1::right")?;
+        let left_worker = workers
+            .iter()
+            .find(|worker| worker.parent.map(RowId::Symbol) == Some(left))
+            .ok_or("left worker")?
+            .id;
+        let right_worker = workers
+            .iter()
+            .find(|worker| worker.parent.map(RowId::Symbol) == Some(right))
+            .ok_or("right worker")?
+            .id;
+        let left_target = row_for_coordinate(&rows, "fixture::workers.ts:1::leftTarget")?;
+        let right_target = row_for_coordinate(&rows, "fixture::workers.ts:1::rightTarget")?;
+        let expected = BTreeSet::from([
+            backend_engine::GraphRelation::new(
+                left_worker,
+                left_target,
+                backend_library::SemanticLinkKind::Calls,
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
+            backend_engine::GraphRelation::new(
+                right_worker,
+                right_target,
+                backend_library::SemanticLinkKind::Calls,
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
+        ]);
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let mut facts = Vec::new();
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        for worker in &workers {
+            let fact = facts
+                .iter()
+                .find(|fact| fact.presentation().id == worker.id.stable_key())
+                .ok_or("exact worker query fact")?;
+            assert_eq!(
+                fact.presentation().parent,
+                worker
+                    .parent
+                    .map(|parent| RowId::Symbol(parent).stable_key())
+            );
+        }
+        let mut residence = super::StructuralCallResidence::default();
+        let pairs = residence
+            .endpoint_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(
+            pairs.len(),
+            2,
+            "complete adjacency retains both exact caller excerpts"
+        );
+        let projected = super::StructuralCallRows::new(&view, package);
+        let complete = pairs
+            .iter()
+            .map(|&(caller, callee)| {
+                Ok(backend_engine::GraphRelation::new(
+                    projected.mapped(caller).ok_or("exact caller")?,
+                    projected.mapped(callee).ok_or("exact target")?,
+                    backend_library::SemanticLinkKind::Calls,
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic))
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        assert_eq!(complete, expected);
+        for (caller, target) in [(left_worker, left_target), (right_worker, right_target)] {
+            let mapped = super::structural_call_endpoint_relations_mapped(
+                &view, &pairs, package, caller, false,
+            );
+            assert_eq!(
+                mapped,
+                vec![backend_engine::GraphRelation::new(
+                    caller,
+                    target,
+                    backend_library::SemanticLinkKind::Calls
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic)]
+            );
+        }
+        // Even a lone semantic-shaped worker row cannot distinguish the
+        // two exact source bindings at this display site. It must not inherit
+        // either caller's edges through a name/line fallback.
+        let semantic_worker = Row::in_package(
+            RowId::Symbol(symbol_key("collapsed-semantic-worker")),
+            view.basis(),
+            package,
+            "worker",
+        )
+        .with_source(backend_compile::SourceLocation::new(path, 1)?);
+        let mut semantic_rows = rows
+            .iter()
+            .filter(|row| row.id != left_worker && row.id != right_worker)
+            .cloned()
+            .collect::<Vec<_>>();
+        semantic_rows.push(semantic_worker.clone());
+        let collapsed = republish(&view, semantic_rows)?;
+        assert!(
+            super::structural_call_endpoint_relations_mapped(
+                &collapsed,
+                &pairs,
+                package,
+                semantic_worker.id,
+                false
+            )
+            .is_empty(),
+            "one semantic display row cannot prove which shadowed binding it represents"
+        );
+        // Borrowed pairs are used before the residence can be replaced by a
+        // subsequent request; resident neighborhoods resolve by exact RowId.
+        drop(pairs);
+        for (caller, target) in [(left_worker, left_target), (right_worker, right_target)] {
+            let outgoing = super::structural_call_graph_relations_resident(
+                &mut residence,
+                &view,
+                &sources,
+                package,
+                caller,
+                false,
+            )
+            .map_err(|error| error.to_string())?
+            .ok_or("exact outgoing neighborhood")?;
+            let incoming = super::structural_call_graph_relations_resident(
+                &mut residence,
+                &view,
+                &sources,
+                package,
+                target,
+                true,
+            )
+            .map_err(|error| error.to_string())?
+            .ok_or("exact incoming neighborhood")?;
+            let edge = backend_engine::GraphRelation::new(
+                caller,
+                target,
+                backend_library::SemanticLinkKind::Calls,
+            ).with_confidence(backend_library::SemanticConfidence::Syntactic);
+            assert_eq!(outgoing, vec![edge.clone()]);
+            assert_eq!(incoming, vec![edge]);
+            let label = view.row_ref(target).ok_or("target row")?.label.as_str();
+            let references = super::structural_reference_facts(&view, &sources, label)
+                .map_err(|error| error.to_string())?;
+            let RowId::Symbol(caller_symbol) = caller else {
+                return Err("caller symbol".to_owned());
+            };
+            assert_eq!(references.len(), 1);
+            assert_eq!(references[0].site, caller_symbol);
+        }
+        // A source-view refresh changes the graph; fixture roots have no
+        // authenticated cache witness, so every request must rebuild.
+        let changed_text = text.replace("rightTarget", "rightAlternate");
+        let changed_declarations = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            path,
+            &changed_text,
+        )?;
+        let (changed, _) = cross_file_sources(&[(
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            changed_declarations,
+        )])?;
+        let changed_pairs = residence
+            .endpoint_pairs(&changed, package)
+            .map_err(|error| error.to_string())?;
+        let (changed_view, changed_rows) = cross_file_view(&changed)?;
+        let alternate = row_for_coordinate(&changed_rows, "fixture::workers.ts:1::rightAlternate")?;
+        let changed_lookup = super::StructuralCallRows::new(&changed_view, package);
+        let targets = changed_pairs
+            .iter()
+            .filter_map(|&(_, target)| changed_lookup.mapped(target))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            targets,
+            BTreeSet::from([left_target, alternate]),
+            "changed source must not reuse the previous right-target edge"
+        );
+        drop(changed_pairs);
+        let inaccessible = text.replace("rightTarget();", "leftTarget();");
+        let inaccessible = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            path,
+            &inaccessible,
+        )?;
+        let (inaccessible, _) = cross_file_sources(&[(
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            inaccessible,
+        )])?;
+        assert_eq!(
+            residence
+                .endpoint_pairs(&inaccessible, package)
+                .map_err(|error| error.to_string())?
+                .len(),
+            1,
+            "a unique same-file target inside the unrelated sibling scope is not visible to the other worker"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_shadowed_worker_call_baseline_preserves_each_exact_caller() -> Result<(), String>
+    {
+        let path = "workers.ts";
+        let text = "const left = () => { function worker() { leftTarget(); } function leftTarget() {} }, right = () => { function worker() { rightTarget(); } function rightTarget() {} };";
+        let declarations = analyze_source(backend_engine::SourceLanguage::TypeScript, path, text)?;
+        let (sources, package) = cross_file_sources(&[(
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            declarations,
+        )])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let workers = rows
+            .iter()
+            .filter(|row| row.label == "fixture::workers.ts:1::worker")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            workers.len(),
+            2,
+            "the reviewed capture/persistence already retains both bindings"
+        );
+        assert_ne!(workers[0].id, workers[1].id);
+        for (owner_name, target_name) in [("left", "leftTarget"), ("right", "rightTarget")] {
+            let owner = row_for_coordinate(&rows, &format!("fixture::{path}:1::{owner_name}"))?;
+            let worker = workers
+                .iter()
+                .find(|worker| worker.parent.map(RowId::Symbol) == Some(owner))
+                .ok_or("exact worker")?
+                .id;
+            let target = row_for_coordinate(&rows, &format!("fixture::{path}:1::{target_name}"))?;
+            let edges = calls_relations(&view, &sources, package, worker, false)?;
+            assert_eq!(
+                edges,
+                vec![backend_engine::GraphRelation::new(
+                    worker,
+                    target,
+                    backend_library::SemanticLinkKind::Calls
+                ).with_confidence(backend_library::SemanticConfidence::Syntactic)],
+                "each stored worker must own only its own excerpt's outgoing call"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_call_labels_keep_first_coordinate_and_last_graph_edge() -> Result<(), String> {
         let apply = analyze_source(
             backend_engine::SourceLanguage::TypeScript,
@@ -2736,6 +3312,13 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "weeks.ts",
             "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
         )?;
+        // This control specifies the legacy synthetic label policy, not
+        // exact binding authority. All original first/last-edge assertions stay.
+        let legacy = |declarations: Arc<[backend_compile::SourceDeclaration]>| -> Arc<[backend_compile::SourceDeclaration]> {
+            declarations.iter().cloned().map(|decl| decl.with_binding_identity(backend_compile::SourceBindingIdentity::Legacy)).collect::<Vec<_>>().into()
+        };
+        let apply = legacy(apply);
+        let weeks = legacy(weeks);
         let (sources, package) = cross_file_sources(&[
             (
                 "apply-set.ts",

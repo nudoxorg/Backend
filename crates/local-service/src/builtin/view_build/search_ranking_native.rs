@@ -94,10 +94,20 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
         .map(|(path, source)| OwnedPackageSource::new(path, source).expect("source"))
         .collect::<Vec<_>>()
         .into_boxed_slice();
+    let environment = backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+        &project_root,
+        backend_frontend_python::legacy::checker::PythonProjectControl {
+            cancelled: &std::sync::atomic::AtomicBool::new(false),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
+        },
+    )
+    .expect("explicit absent installed environment witness");
     let staged = client
         .compile_package_sources_staged(
             OwnedPackageSourceSet::new(request, project_root.clone(), sources)
-                .expect("complete fixture frontier"),
+                .expect("complete fixture frontier")
+                .with_python_environment(environment)
+                .expect("Python environment input"),
         )
         .expect("genuine selected native Python compiler output");
     assert_eq!(staged.artifacts().len(), modules.len());

@@ -10,6 +10,7 @@ mod fixtures;
 mod arbitrary_extension_ts6263_family;
 mod cache_statistics;
 mod canonical_entry_path;
+mod captured_filesystem;
 mod conditional_types_flavor;
 mod diagnostics_ts2307;
 mod diagnostics_ts2792;

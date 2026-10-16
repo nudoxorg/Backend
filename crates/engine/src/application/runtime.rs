@@ -9,9 +9,8 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, RwLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        OnceLock,
         mpsc::{
             Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
         },
@@ -20,7 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::driver::{CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use crate::driver::{
+    CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection,
+};
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
@@ -52,6 +53,7 @@ const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
 const COMPILER_LANE_QUEUE_CAPACITY: usize = 1;
+const MAX_PYTHON_SNAPSHOT_WITNESS_BYTES: usize = 64 * 1024 * 1024;
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -64,7 +66,7 @@ fn compiler_lane_count() -> usize {
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
     MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_FRAGMENT_BYTES, MAX_PACKAGE_SEMANTIC_BYTES,
-    StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
+    PackageExecutionAuthority, StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
     StagedVersionedPlaneSegment,
 };
 use crate::application::executor::{
@@ -170,6 +172,7 @@ pub struct OwnedPackageSourceSet {
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
+    python_environment: Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 }
 
 impl OwnedPackageSourceSet {
@@ -211,6 +214,7 @@ impl OwnedPackageSourceSet {
             package_root: package_root.into_boxed_path(),
             sources,
             input_claim: None,
+            python_environment: None,
         })
     }
 
@@ -222,6 +226,35 @@ impl OwnedPackageSourceSet {
     pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
         self.input_claim = Some(input);
         self
+    }
+
+    /// Attach immutable installed dependencies separately from selected sources.
+    /// Their content identity binds this request's input claim and native witness;
+    /// dependency members do not contribute package artifact cardinality.
+    pub fn with_python_environment(
+        mut self,
+        environment: backend_frontend_python::legacy::checker::PythonEnvironmentCapture,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Python(_)) {
+            return Err(PackageSourceSetError::RawSourceProfileMismatch);
+        }
+        self.python_environment = Some(
+            backend_frontend_python::legacy::checker::PythonEnvironmentInput::Captured(environment),
+        );
+        Ok(self)
+    }
+
+    /// Carries a genuine environment refusal to the normal per-profile compiler
+    /// terminal, after structural source capture has been retained.
+    pub fn with_python_environment_input(
+        mut self,
+        environment: backend_frontend_python::legacy::checker::PythonEnvironmentInput,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Python(_)) {
+            return Err(PackageSourceSetError::RawSourceProfileMismatch);
+        }
+        self.python_environment = Some(environment);
+        Ok(self)
     }
 
     fn facts(&self) -> RequestFacts {
@@ -393,6 +426,26 @@ pub enum LocalRuntimeGoAuthorityFailure {
     ToolchainIdentityUnavailable,
     /// An explicitly selected Go oracle producer could not be admitted.
     OracleUnavailable,
+}
+
+impl LocalRuntimeGoAuthorityFailure {
+    /// Sentence naming what could not be admitted and how to repair it.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::ExecutableUnavailable => {
+                "the selected go executable could not be used; set NUDOX_GO to its absolute path"
+            }
+            Self::GoRootUnavailable => "the selected go executable did not report a usable GOROOT",
+            Self::ModuleCacheUnavailable => {
+                "the Go module cache could not be opened; check GOMODCACHE"
+            }
+            Self::ToolchainIdentityUnavailable => {
+                "the Go installation could not be read to establish its identity"
+            }
+            Self::OracleUnavailable => "the selected Go oracle (NUDOX_GO_ORACLE) could not be used",
+        }
+    }
 }
 
 /// One closed Python checker admission state.
@@ -619,7 +672,11 @@ impl AdmittedRustRequestAuthority {
     ) -> Option<Self> {
         if profile.language() != Language::Rust
             || resolved.tool != NativeTool::Rustc
-            || resolved.as_ref() != toolchain.tool.as_path()
+            || resolved
+                .external()
+                .ok()
+                .map(|external| external.executable())
+                != Some(toolchain.tool.as_path())
             || configuration.toolchain.selected_rustc() != toolchain.tool.as_path()
         {
             return None;
@@ -790,6 +847,50 @@ impl LocalCompilerPlaneExecutionSeed {
             recipe_identity: LocalCompilerPlaneRecipeIdentity(*recipe.finalize().as_bytes()),
             input,
         }
+    }
+}
+
+#[cfg(test)]
+mod typescript_project_authority_transition_tests {
+    use super::*;
+    use backend_semantic::vocabulary::TypeScriptSource;
+
+    #[test]
+    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints() {
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let target = ContentId::from_canonical_bytes(b"same project target");
+        let seed = LocalCompilerPlaneExecutionSeed::for_typescript_project(
+            target, profile, Stage::LowerIr, ContentId::from_digest([41; 32]), [42; 32],
+        ).unwrap();
+        let input = SemanticInputWitness::claimed_state(
+            [43; 32], backend_version::ScopeRoot::from_bytes([44; 32]), Coverage::Partial,
+        );
+        let local = seed.bind_input(input);
+        let portable = LocalCompilerExecutionIdentity {
+            target, profile, stage: Stage::LowerIr,
+            toolchain: NativeTool::TypeScriptCompiler,
+            toolchain_identity: [91; 32],
+            local_authority_fingerprint: [92; 32],
+            environment_identity: [93; 32], target_platform_identity: [94; 32],
+            invocation_recipe: crate::application::CompilerInvocationRecipeV2::new(
+                profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
+                ContentId::from_digest([91; 32]), [93; 32], [94; 32], [95; 32],
+            ).unwrap(),
+        };
+        let (execution, plane) = PackageExecutionAuthority::RuntimeStartup {
+            execution: Some(portable), plane: None,
+        }.with_admitted_typescript_project(seed).identities();
+        assert!(execution.is_none(), "a startup candidate is not portable project admission");
+        let admitted = plane.unwrap().bind_input(input);
+        assert_eq!(admitted, local);
+        assert_eq!(admitted.input_witness(), input);
+        assert_eq!(admitted.input_witness().coverage().state(), Coverage::Partial);
+        let (execution, plane) = PackageExecutionAuthority::Fixed {
+            execution: Some(portable), plane: None,
+        }.with_admitted_typescript_project(seed).identities();
+        assert_eq!(execution, Some(portable), "foreign pinned portable authority must remain a strict constraint");
+        assert_eq!(plane.unwrap().bind_input(input), local);
+        assert_ne!(portable.toolchain_identity(), local.toolchain_identity());
     }
 }
 
@@ -1274,6 +1375,7 @@ fn update_admitted_rust_toolchain_identity(
     identity.update(
         backend_frontend_rust::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes(),
     );
+    identity.update(backend_frontend_rust::legacy::RUST_ANALYSIS_CONFIG_POLICY_ID_V1.as_bytes());
     identity.update(b"rust-toolchain-ready.v1\0");
     update_path_identity(identity, &toolchain.tool);
     update_path_identity(identity, cargo);
@@ -1312,20 +1414,30 @@ fn package_authority_fingerprint(
             update_string_list_identity(&mut identity, &rust.features);
         }
         Language::TypeScript => {
-            identity.update(
-                &authority
-                    .typescript
-                    .as_ref()?
-                    .local_configuration_fingerprint(),
-            );
-            match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
-                Some((content, location)) => {
-                    identity.update(&[1]);
-                    identity.update(content.as_ref());
-                    identity.update(&location);
-                }
-                None => {
-                    identity.update(&[0]);
+            if runtime.is_some_and(|runtime| {
+                matches!(
+                    runtime.probe_invocation,
+                    ToolchainProbeInvocation::NativeTypeScript
+                )
+            }) {
+                identity.update(b"linked-native-typescript-project-v1\0");
+                identity.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+            } else {
+                identity.update(
+                    &authority
+                        .typescript
+                        .as_ref()?
+                        .local_configuration_fingerprint(),
+                );
+                match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
+                    Some((content, location)) => {
+                        identity.update(&[1]);
+                        identity.update(content.as_ref());
+                        identity.update(&location);
+                    }
+                    None => {
+                        identity.update(&[0]);
+                    }
                 }
             }
         }
@@ -1868,6 +1980,7 @@ enum ToolchainProbeInvocation {
     #[default]
     Native,
     DeferredNativePython,
+    NativeTypeScript,
     TypeScriptScript {
         node: Box<Path>,
         module_root: Box<Path>,
@@ -1941,6 +2054,20 @@ impl PendingToolchainProbe {
 }
 
 impl LocalRuntimeToolchain {
+    /// Linked TSZ is ready without an executable or a startup version probe.
+    pub(crate) fn compiled_native_typescript() -> Self {
+        Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::TypeScriptCompiler,
+                identity: Some(ResolvedToolchain::native_typescript().identity),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: None,
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::NativeTypeScript,
+        }
+    }
+
     /// Probes one absolute native executable under explicit output and deadline bounds, then owns
     /// the executable together with the identity of the exact returned version bytes.
     ///
@@ -2153,6 +2280,7 @@ impl LocalRuntimeToolchain {
         if matches!(
             self.probe_invocation,
             ToolchainProbeInvocation::DeferredNativePython
+                | ToolchainProbeInvocation::NativeTypeScript
         ) {
             return None; // Request admission is not an external executable --version probe.
         }
@@ -2163,7 +2291,8 @@ impl LocalRuntimeToolchain {
                 .expect("probing toolchain retains its admitted executable")
                 .to_path_buf();
             match &self.probe_invocation {
-                ToolchainProbeInvocation::DeferredNativePython => {
+                ToolchainProbeInvocation::DeferredNativePython
+                | ToolchainProbeInvocation::NativeTypeScript => {
                     unreachable!("request-time admission")
                 }
                 ToolchainProbeInvocation::Native => PendingToolchainProbe::Native {
@@ -2182,6 +2311,14 @@ impl LocalRuntimeToolchain {
     }
 
     fn selection(&self) -> Result<ToolchainSelection<'_>, ToolchainResolutionError> {
+        if matches!(
+            self.probe_invocation,
+            ToolchainProbeInvocation::NativeTypeScript
+        ) {
+            return Ok(ToolchainSelection::ResolvedNative(
+                ResolvedToolchain::native_typescript(),
+            ));
+        }
         match (
             self.facts.state,
             self.executable.as_deref(),
@@ -2189,8 +2326,9 @@ impl LocalRuntimeToolchain {
         ) {
             (LocalRuntimeToolchainState::Ready, Some(executable), Some(identity)) => {
                 let resolved = match &self.probe_invocation {
-                    ToolchainProbeInvocation::DeferredNativePython => {
-                        unreachable!("deferred row has no ready identity")
+                    ToolchainProbeInvocation::DeferredNativePython
+                    | ToolchainProbeInvocation::NativeTypeScript => {
+                        unreachable!("linked or deferred row has no external executable")
                     }
                     ToolchainProbeInvocation::Native => {
                         ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
@@ -2245,6 +2383,31 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 mod global_typescript_probe_tests {
     use super::*;
 
+    #[test]
+    fn linked_typescript_is_ready_without_a_path_or_pending_probe() {
+        let row = LocalRuntimeToolchain::compiled_native_typescript();
+        assert_eq!(row.state, LocalRuntimeToolchainState::Ready);
+        assert!(row.executable_path().is_none());
+        assert!(row.probe_request().is_none());
+        let ToolchainSelection::ResolvedNative(authority) =
+            row.selection().expect("native authority")
+        else {
+            panic!("linked compiler is available");
+        };
+        assert!(authority.external().is_err());
+        assert_eq!(row.identity, Some(authority.identity));
+        let profile =
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        assert!(
+            package_authority_fingerprint(
+                profile,
+                &LocalRuntimePackageAuthority::default(),
+                Some(&row)
+            )
+            .is_some()
+        );
+    }
+
     fn executable_script(path: &Path, contents: &str) {
         use std::os::unix::fs::PermissionsExt;
 
@@ -2273,10 +2436,16 @@ mod global_typescript_probe_tests {
             .expect("create compiler script directory");
         std::fs::create_dir_all(package_root.join("lib")).expect("create TypeScript lib dir");
         std::fs::write(&script, contents).expect("write fake TypeScript entry");
-        std::fs::write(package_root.join("lib/tsc.js"), "module.exports=require('./_tsc.js');\n")
-            .expect("write fake compiler launcher");
-        std::fs::write(package_root.join("lib/_tsc.js"), "module.exports={version:'5.9.3'};\n")
-            .expect("write fake compiler body");
+        std::fs::write(
+            package_root.join("lib/tsc.js"),
+            "module.exports=require('./_tsc.js');\n",
+        )
+        .expect("write fake compiler launcher");
+        std::fs::write(
+            package_root.join("lib/_tsc.js"),
+            "module.exports={version:'5.9.3'};\n",
+        )
+        .expect("write fake compiler body");
         (
             std::fs::canonicalize(module_root).expect("canonical TypeScript module root"),
             std::fs::canonicalize(script).expect("canonical TypeScript script"),
@@ -2323,6 +2492,7 @@ mod global_typescript_probe_tests {
         else {
             panic!("admitted TypeScript script remains available")
         };
+        let invocation = invocation.external().expect("external script invocation");
         assert_eq!(
             invocation.invocation(),
             crate::driver::NativeInvocation::InterpretedScript {
@@ -2466,6 +2636,20 @@ pub enum LocalRuntimeRustAuthorityFailure {
     Deadline,
     /// The selected compiler, Cargo, and sysroot could not form a toolchain.
     ToolchainUnavailable,
+}
+
+impl LocalRuntimeRustAuthorityFailure {
+    /// Sentence naming what could not be admitted.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::CargoHomeUnavailable => "the default Cargo home could not be created or opened",
+            Self::SysrootUnavailable => "rustc did not report a usable sysroot",
+            Self::Cancelled => "the request was cancelled",
+            Self::Deadline => "the request deadline passed",
+            Self::ToolchainUnavailable => "rustc, cargo and the sysroot did not form a toolchain",
+        }
+    }
 }
 
 /// Request-time inferred sysroot and, when absent, default Cargo-home admission.
@@ -2717,6 +2901,9 @@ pub struct LocalRuntimePackageAuthority {
     pub typescript: Option<ExplicitTypeScriptChecker>,
     /// Compiled native State producer or explicitly selected external per-file checker.
     pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
+    /// Independent host-policy interpreter capability for installed input capture.
+    /// It never names a project-selected venv executable.
+    pub python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
     /// One owner-shared request-time admission; lane workers never own independent caches.
     pub deferred_native_python: Option<Arc<DeferredNativePython>>,
     /// Rust Analyzer/Cargo authority.
@@ -3087,6 +3274,107 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
+    /// Clone the independent frozen policy; resolving it is confined to a
+    /// selected installed environment request, never checker/owner startup.
+    pub fn python_interpreter_admission(
+        &self,
+    ) -> Option<Arc<super::host::PythonInterpreterHostAdmission>> {
+        self.shared.python_interpreter.clone()
+    }
+
+    /// Checks the exact retained local Python program, producer, selected binding,
+    /// and all original source/config/environment fences. Public coverage stays
+    /// unchanged; this is not a complete ambient host read-set certificate.
+    pub fn python_snapshot_is_current(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        selected_binding: [u8; 32],
+        cancelled: &AtomicBool,
+    ) -> bool {
+        if !self.is_ready() {
+            return false;
+        }
+        let toolchain = self
+            .capabilities()
+            .for_profile(profile)
+            .toolchain_identity();
+        let witness = self.shared.python_snapshots.lock().ok().and_then(|cache| {
+            cache
+                .entries
+                .get(&(root.to_path_buf(), profile))
+                .filter(|entry| {
+                    entry.input == input
+                        && entry.binding == selected_binding
+                        && Some(entry.toolchain) == toolchain
+                })
+                .map(|entry| Arc::clone(&entry.witness))
+        });
+        witness.is_some_and(|witness| {
+            witness
+                .validate_current(
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled,
+                        deadline: std::time::Instant::now() + Duration::from_secs(15 * 60),
+                    },
+                )
+                .is_ok()
+        })
+    }
+
+    /// Records only a compiler-produced fence for the binding actually selected
+    /// by the publication recorder. Eviction is a cache miss, never lost coverage.
+    pub fn remember_python_snapshot(
+        &self,
+        root: &Path,
+        input: [u8; 32],
+        selected_binding: [u8; 32],
+        staged: &StagedSemanticPackage,
+    ) {
+        let profile = staged.profile();
+        let Some(witness) = staged.python_snapshot_witness() else {
+            return;
+        };
+        let Some(toolchain) = self
+            .capabilities()
+            .for_profile(profile)
+            .toolchain_identity()
+        else {
+            return;
+        };
+        let bytes = witness.retained_bytes();
+        if bytes > MAX_PYTHON_SNAPSHOT_WITNESS_BYTES {
+            return;
+        }
+        if let Ok(mut cache) = self.shared.python_snapshots.lock() {
+            // Bound total retained metadata. Whole installed payloads are absent
+            // from these witnesses; replacing a project releases its prior fence.
+            let key = (root.to_path_buf(), profile);
+            if let Some(previous) = cache.entries.remove(&key) {
+                cache.bytes = cache.bytes.saturating_sub(previous.bytes);
+            }
+            while cache.bytes.saturating_add(bytes) > MAX_PYTHON_SNAPSHOT_WITNESS_BYTES {
+                let Some(key) = cache.entries.keys().next().cloned() else {
+                    break;
+                };
+                if let Some(previous) = cache.entries.remove(&key) {
+                    cache.bytes = cache.bytes.saturating_sub(previous.bytes);
+                }
+            }
+            cache.bytes += bytes;
+            cache.entries.insert(
+                key,
+                PythonSnapshotEntry {
+                    input,
+                    binding: selected_binding,
+                    toolchain,
+                    witness,
+                    bytes,
+                },
+            );
+        }
+    }
     /// Starts one compiler owner and waits until all borrowed configuration is valid.
     ///
     /// # Errors
@@ -3116,6 +3404,7 @@ impl LocalCompilerClient {
             .package_authority
             .deferred_native_python
             .clone();
+        let python_interpreter = configuration.package_authority.python_interpreter.clone();
         let native_python_timeout = configuration.timeout;
         let capability_signal = Arc::new(CapabilitySignal::new());
         let (command_tx, command_rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
@@ -3157,8 +3446,10 @@ impl LocalCompilerClient {
                         capabilities,
                         capability_signal,
                         input_witnesses,
+                        python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         go_authority,
                         native_python,
+                        python_interpreter,
                         native_python_timeout,
                         native_python_observations: probe_tx,
                     }),
@@ -3603,17 +3894,24 @@ impl LocalCompilerClient {
         cancelled: &AtomicBool,
     ) -> Result<Option<GoPackageAuthorityWitness>, PackageSemanticRuntimeError> {
         let facts = request.facts();
-        if facts.language != Language::Go { return Ok(None); }
-        let Some(oracle) = &self.shared.go_authority else { return Ok(None); };
+        if facts.language != Language::Go {
+            return Ok(None);
+        }
+        let Some(oracle) = &self.shared.go_authority else {
+            return Ok(None);
+        };
         if cancelled.load(Ordering::Acquire) {
             return Err(PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
             ));
         }
-        let witness = oracle.package_authority_witness_cancellable(&request.package_root, Some(cancelled))
-            .map_err(|error| PackageSemanticRuntimeError::Package(
-                PackageSemanticError::GoAuthorityWitness(error),
-            ))?;
+        let witness = oracle
+            .package_authority_witness_cancellable(&request.package_root, Some(cancelled))
+            .map_err(|error| {
+                PackageSemanticRuntimeError::Package(PackageSemanticError::GoAuthorityWitness(
+                    error,
+                ))
+            })?;
         if cancelled.load(Ordering::Acquire) {
             return Err(PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
@@ -3684,7 +3982,7 @@ pub enum PackageSemanticRuntimeError {
     #[error("package source frontier failed worker-side admission")]
     Admission(#[from] PackageSourceSetError),
     /// Runtime ownership or panic terminal.
-    #[error("package compiler runtime failed: {0:?}")]
+    #[error("package compiler runtime failed: {}", super::compiler_terminal_text::TerminalText::new("", .0))]
     Runtime(CompilerTerminal),
     /// Package authority, lowering, publication, or reopen terminal.
     #[error(transparent)]
@@ -3746,10 +4044,25 @@ struct RuntimeShared {
     capabilities: Arc<RwLock<LocalCompilerCapabilities>>,
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
+    python_snapshots: Mutex<PythonSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
     native_python: Option<Arc<DeferredNativePython>>,
+    python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
     native_python_timeout: LocalCompilerTimeout,
     native_python_observations: Sender<ToolchainProbeObservation>,
+}
+
+#[derive(Default)]
+struct PythonSnapshotCache {
+    entries: HashMap<(PathBuf, LanguageProfile), PythonSnapshotEntry>,
+    bytes: usize,
+}
+struct PythonSnapshotEntry {
+    input: [u8; 32],
+    binding: [u8; 32],
+    toolchain: [u8; 32],
+    witness: Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>,
+    bytes: usize,
 }
 
 struct CapabilitySignal {
@@ -4686,11 +4999,20 @@ fn queue_package_sources(
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
-    let package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
+    let mut package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
         capability
             .local_authority_fingerprint()
             .map(|base| package_go_authority_fingerprint(base, witness))
     });
+    if let Some(environment) = &request.python_environment {
+        package_authority_fingerprint = capability.local_authority_fingerprint().map(|base| {
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"compiler-application.python-installed-environment.v1\0");
+            identity.update(&base);
+            identity.update(&environment.identity());
+            *identity.finalize().as_bytes()
+        });
+    }
     let reusable_go_authority =
         go_authority_witness_allows_semantic_reuse(facts.language, go_authority_witness.as_ref());
     let reservation_bytes = staged_output_reservation(
@@ -5101,9 +5423,13 @@ fn run_lane(
                                 &sources,
                             )?;
                             let package = match raw_sources.as_ref() {
-                                Some(raw_sources) => package.with_python_raw_sources(raw_sources)?,
+                                Some(raw_sources) => {
+                                    package.with_python_raw_sources(raw_sources)?
+                                }
                                 None => package,
                             };
+                            let package = package
+                                .with_python_environment(request.python_environment.as_ref());
                             let package = match go_authority_witness.as_ref() {
                                 Some(witness) => package.with_go_authority_witness(witness),
                                 None => package,
@@ -5119,8 +5445,10 @@ fn run_lane(
                             execution
                                 .stage_package_sources(
                                     package,
-                                    execution_identity,
-                                    plane_execution_seed,
+                                    PackageExecutionAuthority::RuntimeStartup {
+                                        execution: execution_identity,
+                                        plane: plane_execution_seed,
+                                    },
                                     embedding_runtime.as_deref(),
                                     embedding_cache_session,
                                     embedding_requirement,
@@ -6003,8 +6331,10 @@ mod request_lease_tests {
             ))),
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
+            python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             go_authority: None,
             native_python: None,
+            python_interpreter: None,
             native_python_timeout: configuration.timeout,
             native_python_observations: channel().0,
         }
@@ -6200,16 +6530,24 @@ mod deferred_rust_toolchain_tests {
             deferred.resolve(control(&cancelled)),
             Err(LocalRuntimeRustAuthorityFailure::SysrootUnavailable)
         );
-        assert!(home.join(".cargo").is_dir(), "only a Rust request creates it");
+        assert!(
+            home.join(".cargo").is_dir(),
+            "only a Rust request creates it"
+        );
 
         write_tool(
             &rustc,
             &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", sysroot.display()),
         );
-        let admitted = deferred.resolve(control(&cancelled)).expect("retry succeeds");
+        let admitted = deferred
+            .resolve(control(&cancelled))
+            .expect("retry succeeds");
         assert_eq!(admitted.tool, rustc);
         assert_eq!(admitted.sysroot, sysroot);
-        assert_eq!(admitted.cargo_home.as_deref(), Some(home.join(".cargo").as_path()));
+        assert_eq!(
+            admitted.cargo_home.as_deref(),
+            Some(home.join(".cargo").as_path())
+        );
 
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
@@ -6867,6 +7205,17 @@ mod deferred_native_python_tests {
                 vec![OwnedPackageSource::new("source.py", source).unwrap()].into_boxed_slice(),
             )
             .unwrap()
+            .with_python_environment(
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+                    &project,
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled: &AtomicBool::new(false),
+                        deadline: std::time::Instant::now() + Duration::from_secs(180),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap()
         };
         let deferred = Arc::new(DeferredNativePython::new().unwrap());
         let client =
@@ -6920,6 +7269,53 @@ mod deferred_native_python_tests {
             .compile_package_sources_staged(package())
             .expect("same owner second actual State");
         assert_eq!(repeat.artifacts().len(), 1);
+        let input = [0x51; 32];
+        let selected_binding = [0x52; 32];
+        client.remember_python_snapshot(&project, input, selected_binding, &repeat);
+        let reuse_cancelled = AtomicBool::new(false);
+        assert!(client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            [0x53; 32],
+            selected_binding,
+            &reuse_cancelled
+        ));
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            [0x54; 32],
+            &reuse_cancelled
+        ));
+        reuse_cancelled.store(true, Ordering::Release);
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        reuse_cancelled.store(false, Ordering::Release);
+        std::fs::write(
+            project.join("source.py"),
+            "def changed():\n    return 'changed'\n",
+        )
+        .unwrap();
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        std::fs::write(project.join("source.py"), source).unwrap();
         assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 1);
         drop(repeat);
         drop(staged);

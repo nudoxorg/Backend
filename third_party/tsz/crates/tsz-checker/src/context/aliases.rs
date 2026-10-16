@@ -335,6 +335,14 @@ pub enum ResolvedModuleRequestOutcome {
     External { identity: String },
     Unresolved,
 }
+/// The agreed outcome of every explicit request for one source/specifier pair,
+/// reduced to what generic lookups use. See `project_module_consensus_memo`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectModuleConsensus {
+    File(usize),
+    External,
+    Unresolved,
+}
 pub type ResolvedModuleRequestOutcomeMap = FxHashMap<
     (
         usize,

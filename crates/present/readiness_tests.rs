@@ -165,7 +165,14 @@ fn bounded_mcp_hint_preserves_complete_receipt_and_cli_single_observation_semant
     for phase in capture["runs"].as_array().expect("actual states") {
         let reply: SurfaceReply =
             serde_json::from_value(phase["reply"].clone()).expect("actual typed receipt");
-        let ordinary = product_view(&reply);
+        let ordinary = product_view(&reply).with_cli_context(Some(StartupRecoveryContext::new(
+            "/workspace/project".to_owned(),
+            "/private/owner.sock".to_owned(),
+            "/installed/backend-cli".to_owned(),
+            StartupRecoveryCommand::Status,
+            StartupRecoveryMode::Active,
+            StartupRecoveryWorkspace::Explicit("/private/state".to_owned()),
+        )));
         let bounded = ordinary
             .clone()
             .with_bounded_index_poll()
@@ -190,7 +197,10 @@ fn bounded_mcp_hint_preserves_complete_receipt_and_cli_single_observation_semant
                 64
             );
             assert!(markdown::product(&bounded).contains(&action.call.to_string()));
-            assert!(text::product(&bounded, Theme::plain()).contains(&action.shell));
+            assert!(
+                text::product(&bounded, Theme::plain())
+                    .contains(action.shell.as_deref().expect("observed CLI context"))
+            );
             for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
                 let payload = encode_answer(
                     &Answer::Product(Box::new(bounded.clone())),
@@ -233,7 +243,18 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
         "name":"backend.index_progress",
         "arguments":{"operation_key":"5a".repeat(32)}
     });
-    let expected_shell = format!("nudox index_progress --operation-key {}", "5a".repeat(32));
+    let cli_context = StartupRecoveryContext::new(
+        "/workspace/project".to_owned(),
+        "/private/owner.sock".to_owned(),
+        "/installed/backend-cli".to_owned(),
+        StartupRecoveryCommand::Status,
+        StartupRecoveryMode::Active,
+        StartupRecoveryWorkspace::Explicit("/private/state".to_owned()),
+    );
+    let poll = Affordance::PollIndexOperation { operation_key: key };
+    let expected_shell = poll
+        .poll_shell_in_context(&cli_context, None)
+        .expect("observed CLI context");
     for state in [
         IndexOperationState::Accepted,
         IndexOperationState::Active {
@@ -251,7 +272,7 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
             SurfaceReply::IndexOperationStarted(observation.clone()),
             SurfaceReply::IndexOperationStatus(observation.clone()),
         ] {
-            let view = product_view(&reply);
+            let view = product_view(&reply).with_cli_context(Some(cli_context.clone()));
             let answer = Answer::Product(Box::new(view.clone()));
             assert!(
                 answer.fault().is_none(),
@@ -259,7 +280,7 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
             );
             let action = IndexPollDto::new(&view).expect("one exact observation");
             assert_eq!(action.call, expected_call);
-            assert_eq!(action.shell, expected_shell);
+            assert_eq!(action.shell.as_deref(), Some(expected_shell.as_str()));
             let markdown = markdown::product(&view);
             assert_eq!(markdown.matches("backend.index_progress").count(), 1);
             assert!(markdown.contains(&expected_call.to_string()));
@@ -268,7 +289,7 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
                 "durable guidance does not bind to an old owner"
             );
             let human = text::product(&view, Theme::plain());
-            assert_eq!(human.matches("nudox index_progress").count(), 1);
+            assert_eq!(human.matches(&expected_shell).count(), 1);
             assert!(human.contains(&expected_shell));
             assert!(!human.contains("backend index_progress"));
 
@@ -293,7 +314,11 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
                 let mut detailed_call = expected_call.clone();
                 detailed_call["arguments"]["detail"] = serde_json::json!(detail.name());
                 assert_eq!(body["index_poll"]["call"], detailed_call);
-                assert_eq!(body["index_poll"]["shell"], expected_shell);
+                assert_eq!(
+                    body["index_poll"]["shell"],
+                    poll.poll_shell_in_context(&cli_context, Some(detail))
+                        .expect("same detail in CLI observation")
+                );
                 assert!(payload.bytes.len() < 4096, "a poll hint must stay small");
                 let mut older = serde_json::to_value(ProductDto::new(&view)).expect("DTO");
                 older.as_object_mut().expect("object").remove("index_poll");

@@ -596,6 +596,7 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::IndexSearch { .. }
             | SurfaceCommand::PackageVersions { .. }
             | SurfaceCommand::SemanticVersions { .. }
+            | SurfaceCommand::SemanticSource { .. }
             | SurfaceCommand::PackageProfile { .. }
             | SurfaceCommand::Subscriptions
             | SurfaceCommand::Projects
@@ -822,6 +823,8 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         | ClientError::Io(_)
         | ClientError::Startup(_)
         | ClientError::Transport(_)
+        | ClientError::ResponseTooLarge { .. }
+        | ClientError::ResponseFrameTooLarge { .. }
         | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
         ClientError::BasisMismatch { .. }
         | ClientError::FreshnessMismatch

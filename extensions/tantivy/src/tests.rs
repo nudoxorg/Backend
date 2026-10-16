@@ -1849,6 +1849,47 @@ fn state_for(
     DocumentState::new(binding, coverage, documents, Limits::default()).expect("document state")
 }
 
+#[test]
+fn failed_final_stage_barriers_preserve_the_old_search_root_and_allow_retry() {
+    for directory_failure in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "backend-tantivy-final-barrier-{}-{directory_failure}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let private_root = OwnedWorkspaceDirectory::open(&root).expect("private root");
+        let previous = state_for(
+            vec![(document(1), vec![("name".into(), "previouscanary".into())])],
+            [0x61; 32],
+        );
+        let next = state_for(
+            vec![(document(2), vec![("name".into(), "nextcanary".into())])],
+            [0x62; 32],
+        );
+        let old = TantivySource::open_or_build_in_dir(&previous, Limits::default(), &root)
+            .expect("previous root");
+        crate::deferred::fail_next_flush(directory_failure);
+        assert!(TantivySource::open_or_build_in_dir(&next, Limits::default(), &root).is_err());
+        assert_eq!(term_hits(&old, "previouscanary"), vec![document(1)]);
+        let generations = std::fs::read_dir(root.join(DURABLE_ROOTS_DIRECTORY))
+            .expect("namespace")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().expect("entry type").is_dir())
+            .count();
+        assert_eq!(generations, 1, "failed barrier exposes no generation and retires its stage");
+        let (new, action) = TantivySource::open_or_build_in_dir_with_action(
+            &next, Limits::default(), &root,
+        ).expect("retry");
+        assert_eq!(action, DurableProjectionAction::Built);
+        assert_eq!(term_hits(&new, "nextcanary"), vec![document(2)]);
+        drop((old, new, private_root));
+        std::fs::remove_dir_all(root).expect("remove roots");
+    }
+}
+
 fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
     source
         .search(&Query::new(vec![term.to_owned()], Limits::default()).expect("query"))

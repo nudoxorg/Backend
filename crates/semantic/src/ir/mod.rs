@@ -63,10 +63,10 @@ pub use crate::ir_vocabulary::{
     ExternalDeclarationIdentity, ExternalEntityRef, ExternalFragmentId, ExternalProductRef,
     ExternalTypeRef, ForeignDeclarationId, ForeignKey, ForeignKeyFault, ForeignOrigin,
     FunctionVariadicForm, ListSpan, MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
-    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, NominalRef, Occurrence, OccurrenceTarget,
-    PYTHON_NATIVE_SOURCE_ECOSYSTEM, PackageLineage, PackageLineageFault, PackageLineageView,
-    PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product,
-    ProductChildRole, ProductChildRoleCodeError, ProductChildren, ProductConstructorFault,
+    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, MODULE_OWNER_NAME, NominalRef, Occurrence,
+    OccurrenceTarget, PYTHON_NATIVE_SOURCE_ECOSYSTEM, PackageLineage, PackageLineageFault,
+    PackageLineageView, PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError,
+    Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren, ProductConstructorFault,
     ProductConstructorTag, ProductId, ProductList, ProductListId, ProductRef,
     PythonSourceCoordinate, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,
     Resolution, SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
@@ -275,7 +275,7 @@ pub use semantic_render::{
     SemanticDocumentReference, SemanticImageSourceSyntaxDialect, SourceSyntaxDialect,
     SourceSyntaxError, TypeScriptSemanticDocumentDialect, UnsupportedSemanticStage,
     prepare_canonical_type, prepare_neutral, prepare_profile, prepare_semantic_document,
-    prepare_source_syntax,
+    prepare_source_syntax, render_source_callable, render_source_type,
 };
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,

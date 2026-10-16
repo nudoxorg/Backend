@@ -20,6 +20,8 @@ mod canonical;
 mod display;
 #[path = "semantic_render/document.rs"]
 mod document;
+#[path = "semantic_render/source_type.rs"]
+mod source_type;
 
 pub use canonical::{
     CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
@@ -34,6 +36,7 @@ pub use document::{
     SemanticImageSourceSyntaxDialect, SourceSyntaxDialect, SourceSyntaxError,
     TypeScriptSemanticDocumentDialect, prepare_semantic_document, prepare_source_syntax,
 };
+pub use source_type::{render_source_callable, render_source_type};
 
 pub(crate) mod sealed {
     pub trait Sealed {}

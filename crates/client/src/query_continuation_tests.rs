@@ -38,6 +38,15 @@ fn owner_with_label(context: u8, count: usize, sequence: u64, label: &str) -> Li
     owner_with_labels(context, count, sequence, &[label])
 }
 fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) -> Library {
+    owner_with_package(context, count, sequence, labels, None)
+}
+fn owner_with_package(
+    context: u8,
+    count: usize,
+    sequence: u64,
+    labels: &[&str],
+    package: Option<&str>,
+) -> Library {
     let object = object_version(b"library-source-v1");
     let scope = ScopeRoot::from_bytes(object.to_bytes());
     let observation = admit_producer_observation(
@@ -55,7 +64,7 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
     )
     .expect("evidence");
     let basis = Basis::new(view_state_root(&[]), object);
-    let rows = labels
+    let mut rows: Vec<Row> = labels
         .iter()
         .cycle()
         .take(count)
@@ -68,6 +77,13 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
             )
         })
         .collect();
+    if let Some(package) = package {
+        let key = backend_library::package_key(package);
+        for row in &mut rows {
+            row.package = Some(key);
+        }
+        rows.push(Row::new(RowId::Package(key), basis, package));
+    }
     let root = ViewRoot::new_checked(
         view_key(b"library-view-v1"),
         basis,
@@ -169,8 +185,11 @@ impl CommandTransport for Transport {
             let recipe = match &request.command {
                 Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query),
                 Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query),
-                Command::GraphPage { symbol, .. } => {
-                    QueryPageRecipe::graph(library.revision_root(), *symbol)
+                Command::GraphPage { symbol, page } => {
+                    QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
+                }
+                Command::OutlinePage { package, page } => {
+                    QueryPageRecipe::outline(library.revision_root(), *package, page.limit())
                 }
                 _ => unreachable!("query reply"),
             };
@@ -2168,5 +2187,608 @@ fn caller_context_cancels_preparation_without_sending_shared_worker_control() {
         sent.len(),
         2,
         "only one Revision and one Search; cancellation sends no owner control"
+    );
+}
+
+fn delivery_window(issued: u16, delivery: u16) -> backend_library::QueryWindow {
+    backend_library::QueryWindow::new(
+        QueryLimit::new(issued).expect("issued"),
+        QueryLimit::new(delivery).expect("delivery"),
+    )
+    .expect("window")
+}
+
+fn read_window(
+    session: &mut Session,
+    family: u8,
+    delivery: u16,
+    continuation: Option<PageContinuation>,
+) -> Result<ReplyDto, ClientError> {
+    let window = delivery_window(4, delivery);
+    match family {
+        0 => session.names_page_window("Thing", window, continuation),
+        1 => session.search_page_window("Thing", window, continuation),
+        _ => session.graph_page_window("graph::source", window, continuation),
+    }
+}
+
+fn window_snapshot(reply: &ReplyDto) -> &backend_library::ViewSnapshot {
+    match &reply.reply {
+        CommandReply::Names(page) | CommandReply::Search(page) => page,
+        CommandReply::ProjectionPage(page) => &page.snapshot,
+        _ => panic!("catalog window reply"),
+    }
+}
+
+#[test]
+fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_smaller_delivery() {
+    // The injected transport refusal exercises Session consumption and re-import;
+    // native producer, strict DTO decoding, certificates and admission remain real.
+    struct RefuseWideResume(Transport);
+    impl CommandTransport for RefuseWideResume {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            let refused = match &request.command {
+                Command::Name(query) => {
+                    query.cursor().is_some() && query.window().delivery().get() > 1
+                }
+                Command::Search(query) => {
+                    query.cursor().is_some() && query.window().delivery().get() > 1
+                }
+                Command::GraphPage { page, .. } => {
+                    page.continuation().is_some() && page.window().delivery().get() > 1
+                }
+                _ => false,
+            };
+            let basis = super::query_continuation::basis(&request.command);
+            let reply = self.0.request(request)?;
+            if refused {
+                Err(ClientError::ResponseTooLarge { basis })
+            } else {
+                Ok(reply)
+            }
+        }
+    }
+    for family in 0..3 {
+        let (owner, requests) = if family < 2 {
+            fixture()
+        } else {
+            (
+                Arc::new(Mutex::new(graph_fixture(false, 1, 7))),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+        };
+        let mut issuing = session(&owner, &requests);
+        let first = read_window(&mut issuing, family, 4, None).expect("first window");
+        let next = PageContinuation::from_cursor(window_snapshot(&first).next.expect("successor"));
+        let signed_input = issuing
+            .encode_query_continuation(next)
+            .expect("portable input");
+        let mut resumed = Session::from_transport(
+            "/private/window-owner.sock",
+            RefuseWideResume(Transport {
+                owner: owner.clone(),
+                requests: requests.clone(),
+                graph_ids: None,
+            }),
+        );
+        let imported = resumed
+            .decode_page_continuation(&signed_input)
+            .expect("original immutable proof");
+        assert_eq!(imported, next);
+        assert!(resumed.prepared_query.is_some());
+        assert!(matches!(
+            read_window(&mut resumed, family, 4, Some(imported)),
+            Err(ClientError::ResponseTooLarge { basis: Some(_) })
+        ));
+        assert!(
+            resumed.prepared_query.is_none(),
+            "the failed read consumed preparation"
+        );
+        let same = resumed
+            .decode_page_continuation(&signed_input)
+            .expect("re-import exact same signed input");
+        assert_eq!(same, imported);
+        let actual = read_window(&mut resumed, family, 1, Some(same)).expect("smaller delivery");
+        let mut replay = session(&owner, &requests);
+        let same = replay
+            .decode_page_continuation(&signed_input)
+            .expect("fresh-session same proof");
+        let repeated =
+            read_window(&mut replay, family, 1, Some(same)).expect("deterministic retry");
+        assert_eq!(window_snapshot(&actual), window_snapshot(&repeated));
+        assert_eq!(window_snapshot(&actual).root.row_count(), 1);
+        if let Some(cursor) = window_snapshot(&actual).next {
+            assert_eq!(cursor.query_offset(), 5);
+            assert_eq!(
+                cursor.query_position().predecessor(),
+                Some(delivery_window(4, 1))
+            );
+        }
+        let mut seen = window_snapshot(&first)
+            .root
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut reply = actual;
+        let mut emitted = 4;
+        let mut delivery = 2;
+        loop {
+            let page = window_snapshot(&reply);
+            emitted += page.root.row_count();
+            for row in page.root.rows() {
+                assert!(seen.insert(row.id), "no duplicate frontier row");
+            }
+            let Some(cursor) = page.next else {
+                break;
+            };
+            assert_eq!(cursor.query_offset(), emitted);
+            let token = resumed
+                .encode_query_continuation(PageContinuation::from_cursor(cursor))
+                .expect("next portable command");
+            let mut fresh = session(&owner, &requests);
+            let next = fresh
+                .decode_page_continuation(&token)
+                .expect("fresh authority");
+            reply = read_window(&mut fresh, family, delivery, Some(next))
+                .expect("next bounded delivery");
+            resumed = fresh;
+            delivery = if delivery == 2 { 1 } else { 2 };
+        }
+        assert_eq!(seen.len(), if family < 2 { 37 } else { 7 });
+        assert_eq!(emitted as usize, seen.len());
+        // An exact selected-source change is still rejected before a retry page.
+        *owner.lock().expect("owner") = if family < 2 {
+            self::owner(2, 37, 0)
+        } else {
+            graph_fixture(false, 2, 7)
+        };
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&signed_input)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn portable_window_versions_zero_spans_and_credit_mismatches_refuse() {
+    let (owner, requests) = fixture();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .names_page_window("Thing", delivery_window(4, 2), None)
+        .expect("native window");
+    let good = issuing
+        .encode_query_continuation(PageContinuation::from_cursor(
+            page(&first).next.expect("next"),
+        ))
+        .expect("portable window");
+    for (field, value) in [
+        ("version", 2),
+        ("delivery", 0),
+        ("delivery", 5),
+        ("issued", 0),
+    ] {
+        let mut bad = token_value(&good);
+        bad["command"]["data"]["cursor"]["query_window"][field] = serde_json::json!(value);
+        let before = requests.lock().expect("requests").len();
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&token(&bad))
+                .is_err()
+        );
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "malformed window before owner RPC"
+        );
+    }
+    let mut changed = token_value(&good);
+    changed["command"]["data"]["window"]["issued"] = serde_json::json!(3);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&token(&changed))
+            .is_err()
+    );
+}
+
+#[test]
+fn adaptive_session_refuses_unprepared_active_cursor_but_authenticates_portable_legacy_handover() {
+    let (owner, requests) = fixture();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .names_page("Thing", 4, None)
+        .expect("legacy fixed page");
+    let next = PageContinuation::from_cursor(page(&first).next.expect("legacy next"));
+    let active = issuing.encode_page_continuation(next);
+    let portable = issuing
+        .encode_query_continuation(next)
+        .expect("legacy command with complete proof");
+    assert_eq!(
+        issuing
+            .decode_page_continuation(&active)
+            .expect("legacy active still decodes"),
+        next
+    );
+    let before = requests.lock().expect("requests").len();
+    assert!(matches!(
+        issuing.names_page_window("Thing", delivery_window(4, 1), Some(next)),
+        Err(ClientError::Protocol(_))
+    ));
+    assert_eq!(
+        requests.lock().expect("requests").len(),
+        before,
+        "explicit refusal before a new page can consume the only retained authority"
+    );
+    let imported = issuing
+        .decode_page_continuation(&portable)
+        .expect("portable legacy proof");
+    let second = issuing
+        .names_page_window("Thing", delivery_window(4, 1), Some(imported))
+        .expect("authenticate old recipe before new window recipe");
+    assert_eq!(
+        page(&second)
+            .next
+            .expect("windowed successor")
+            .query_position()
+            .predecessor(),
+        Some(delivery_window(4, 1))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A preparing read outlives its connection: the owner retires a connection
+// after its frame budget, and a long preparation is exactly what spends it.
+// ---------------------------------------------------------------------------
+
+/// Wraps the real-owner preparing transport with the owner's per-connection
+/// frame budget. A frame past the budget meets a closed peer, as on the real
+/// listener, and a reopened connection starts a fresh budget.
+struct RetiringPreparing {
+    inner: PreparingTransport,
+    cap: usize,
+    used: usize,
+    advertise: bool,
+    /// Frames that reached a retired peer.
+    lost: Arc<std::sync::atomic::AtomicUsize>,
+    /// Outcomes of successive reopen attempts; an empty script reopens.
+    reopen: std::collections::VecDeque<Result<bool, ClientError>>,
+    reopened: Arc<std::sync::atomic::AtomicUsize>,
+    /// Frames seen so far, across connections.
+    seen: usize,
+    /// The frame with this 1-based ordinal meets this error once, whatever
+    /// the budget.
+    fail_once: Option<(usize, ClientError)>,
+}
+impl RetiringPreparing {
+    fn gate(&mut self) -> Result<(), ClientError> {
+        self.seen += 1;
+        if self
+            .fail_once
+            .as_ref()
+            .is_some_and(|(at, _)| *at == self.seen)
+        {
+            return Err(self
+                .fail_once
+                .take()
+                .map(|(_, error)| error)
+                .expect("scripted"));
+        }
+        if self.used >= self.cap {
+            self.lost.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(ClientError::Disconnected(std::io::ErrorKind::BrokenPipe));
+        }
+        self.used += 1;
+        Ok(())
+    }
+}
+impl CommandTransport for RetiringPreparing {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        self.gate()?;
+        self.inner.request(request)
+    }
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        self.gate()?;
+        self.inner.request_with_budget(request, remaining)
+    }
+    fn frames_remaining(&self) -> Option<usize> {
+        self.advertise.then(|| self.cap - self.used)
+    }
+    fn reconnect_within(
+        &mut self,
+        _budget: Duration,
+        _context: Option<&RequestContext>,
+    ) -> Result<bool, ClientError> {
+        self.reopened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.reopen.pop_front().unwrap_or(Ok(true)) {
+            Ok(true) => {
+                self.used = 0;
+                Ok(true)
+            }
+            other => other,
+        }
+    }
+}
+
+struct RetiringRun {
+    session: Session,
+    sent: Arc<Mutex<Vec<CommandDto>>>,
+    lost: Arc<std::sync::atomic::AtomicUsize>,
+    reopened: Arc<std::sync::atomic::AtomicUsize>,
+}
+fn retiring_session(
+    library: &Arc<Mutex<Library>>,
+    preparing: usize,
+    cap: usize,
+    advertise: bool,
+    reopen: Vec<Result<bool, ClientError>>,
+    fail_once: Option<(usize, ClientError)>,
+) -> RetiringRun {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let lost = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let session = Session::from_transport(
+        "/private/retiring-owner.sock",
+        RetiringPreparing {
+            inner: PreparingTransport {
+                inner: Transport {
+                    owner: Arc::clone(library),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    graph_ids: None,
+                },
+                states: std::iter::repeat_n(
+                    backend_library::QueryPreparationState::Preparing,
+                    preparing,
+                )
+                .collect(),
+                repeat: false,
+                fault: None,
+                sent: Arc::clone(&sent),
+                budgets: Arc::new(Mutex::new(Vec::new())),
+            },
+            cap,
+            used: 0,
+            advertise,
+            lost: Arc::clone(&lost),
+            reopen: reopen.into(),
+            reopened: Arc::clone(&reopened),
+            seen: 0,
+            fail_once,
+        },
+    );
+    RetiringRun {
+        session,
+        sent,
+        lost,
+        reopened,
+    }
+}
+fn searches(sent: &Arc<Mutex<Vec<CommandDto>>>) -> Vec<CommandDto> {
+    sent.lock()
+        .expect("sent")
+        .iter()
+        .filter(|request| matches!(request.command, Command::Search(_)))
+        .cloned()
+        .collect()
+}
+
+/// The reported failure: a search preparing for ~27 s polled 256 times,
+/// reached the owner's frame budget, and ended `broken pipe` with the read
+/// "not restarted". The same pinned request is asked again on a fresh
+/// connection, unchanged, and the search returns real rows.
+#[test]
+fn a_preparing_search_survives_the_owner_retiring_its_connection() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    // Revision selection plus four preparing polls and the ready answer need
+    // six frames; the budget is three, so the connection is retired mid-wait.
+    let mut run = retiring_session(&library, 4, 3, false, vec![], None);
+    let reply = run
+        .session
+        .search("Thing", 3)
+        .expect("the retirement is survived, not reported");
+    let CommandReply::Search(page) = reply.reply else {
+        panic!("real rows, not a failure")
+    };
+    assert_eq!(page.root.row_count(), 3);
+    let lost = run.lost.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(lost >= 1, "the budget really was exhausted: {lost}");
+    assert_eq!(
+        run.reopened.load(std::sync::atomic::Ordering::Relaxed),
+        lost,
+        "every lost frame was answered by exactly one reopen"
+    );
+    let reads = searches(&run.sent);
+    assert_eq!(reads.len(), 5, "four preparing answers, then the rows");
+    for pair in reads.windows(2) {
+        assert_eq!(pair[0].command, pair[1].command, "same pinned query");
+        assert_eq!(pair[0].certificate(), pair[1].certificate());
+    }
+    assert_eq!(
+        run.sent
+            .lock()
+            .expect("sent")
+            .iter()
+            .filter(|request| matches!(request.command, Command::Revision))
+            .count(),
+        1,
+        "the revision is never refreshed"
+    );
+}
+
+/// With the budget known the connection is replaced before it is spent, so no
+/// poll is ever written to a retired peer.
+#[test]
+fn a_known_frame_budget_replaces_the_connection_before_a_poll_is_lost() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let mut run = retiring_session(&library, 4, 3, true, vec![], None);
+    run.session
+        .search("Thing", 3)
+        .expect("the search completes across proactive reopens");
+    assert_eq!(run.lost.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(run.reopened.load(std::sync::atomic::Ordering::Relaxed) >= 1);
+    assert_eq!(searches(&run.sent).len(), 5);
+}
+
+/// Polls are paced with a growing wait, not a fixed 100 ms: five preparing
+/// answers cost at least 100 + 200 + 400 + 500 + 500 ms, where the fixed pace
+/// would have spent 500 ms and five times the frames per second.
+#[test]
+fn preparation_polls_back_off_instead_of_burning_frames() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let mut run = retiring_session(&library, 5, 100, false, vec![], None);
+    let started = std::time::Instant::now();
+    run.session.search("Thing", 3).expect("search");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1700),
+        "poll cadence grows toward its ceiling: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A read timeout is a live owner that did not answer; the same pinned read is
+/// asked again on a fresh connection to the same listener.
+#[test]
+fn a_slow_owner_during_preparation_is_asked_again_on_a_fresh_connection() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    // Frame 1 is the revision read; frame 2 is the first pinned poll.
+    let mut run = retiring_session(
+        &library,
+        1,
+        100,
+        false,
+        vec![],
+        Some((2, ClientError::Disconnected(std::io::ErrorKind::WouldBlock))),
+    );
+    let reply = run
+        .session
+        .search("Thing", 3)
+        .expect("a timed-out poll is asked again, not reported");
+    assert!(matches!(reply.reply, CommandReply::Search(_)));
+    assert_eq!(run.reopened.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        searches(&run.sent).len(),
+        2,
+        "the poll that timed out never reached the owner"
+    );
+}
+
+/// A replacement that is lost too (a dying owner's last accept) is waited out;
+/// no owner at all, or a transport that cannot reopen, keeps the original loss.
+#[test]
+fn reopening_waits_out_lost_replacements_and_keeps_the_loss_when_nothing_answers() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let reset = || ClientError::Disconnected(std::io::ErrorKind::ConnectionReset);
+    let mut run = retiring_session(
+        &library,
+        1,
+        2,
+        false,
+        vec![Err(reset()), Err(reset()), Ok(true)],
+        None,
+    );
+    run.session
+        .search("Thing", 3)
+        .expect("lost replacements are retried within the deadline");
+    assert!(run.reopened.load(std::sync::atomic::Ordering::Relaxed) >= 3);
+
+    for reopen in [
+        Err(ClientError::Disconnected(
+            std::io::ErrorKind::ConnectionRefused,
+        )),
+        Ok(false),
+    ] {
+        let mut run = retiring_session(&library, 3, 1, false, vec![reopen], None);
+        let error = run
+            .session
+            .search("Thing", 3)
+            .expect_err("nothing to ask again");
+        assert!(
+            matches!(
+                error,
+                ClientError::QueryPreparationDisconnected {
+                    kind: std::io::ErrorKind::BrokenPipe,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            run.reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "one attempt, no spin"
+        );
+    }
+}
+
+#[test]
+fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_scope_changes() {
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        7,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .outline_page("/p", 3, None)
+        .expect("native outline page");
+    let CommandReply::ProjectionPage(first) = first.reply else {
+        panic!("projection");
+    };
+    let next = PageContinuation::from_cursor(first.snapshot.next.expect("more"));
+    let token = issuing
+        .encode_query_continuation(next)
+        .expect("portable native outline proof");
+    let mut fresh = session(&owner, &requests);
+    let imported = fresh
+        .decode_page_continuation(&token)
+        .expect("fresh owner admits proof");
+    let resumed = fresh
+        .outline_page("/p", 3, Some(imported))
+        .expect("exact successor");
+    let CommandReply::ProjectionPage(resumed) = resumed.reply else {
+        panic!("projection");
+    };
+    assert_eq!(resumed.snapshot.root.row_count(), 3);
+    assert_eq!(
+        resumed
+            .snapshot
+            .next
+            .expect("last page follows")
+            .query_offset(),
+        6
+    );
+    for (path, credit) in [("/other", 3), ("/p", 1)] {
+        let mut fresh = session(&owner, &requests);
+        let imported = fresh.decode_page_continuation(&token).expect("same proof");
+        let before = requests.lock().expect("requests").len();
+        assert!(fresh.outline_page(path, credit, Some(imported)).is_err());
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "refused before sending"
+        );
+    }
+    let mut changed = token_value(&token);
+    changed["command"]["data"]["page"]["limit"] = serde_json::json!(1);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&self::token(&changed))
+            .is_err(),
+        "native recipe binds exact credit"
+    );
+    *owner.lock().expect("owner") = owner_with_package(2, 7, 0, &["Thing"], Some("/p"));
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&token)
+            .is_err(),
+        "foreign issuing scope"
     );
 }

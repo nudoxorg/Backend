@@ -10,7 +10,7 @@ use crate::driver::{
         frontend::NativeFrontend,
         work::{create_artifact_directory, remove_directory_if_present, write_artifact},
     },
-    types::{NativeArtifactRole, NativeWorkError, ResolvedToolchain},
+    types::{ExternalToolchain, NativeArtifactRole, NativeWorkError},
 };
 
 const ARGUMENTS_FILE: &str = "compiler-probe.javac.args";
@@ -49,7 +49,7 @@ impl NativeFrontend for JavaFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command {
         let mut command = Command::new(toolchain.executable());

@@ -355,7 +355,7 @@ fn retained_symbol_document_address_requires_exact_unique_membership_and_full_ba
             &DocumentQuery::selected(external, view.root()).with_source_basis(source)
         )
     );
-    assert!(document.fragments.is_empty());
+    assert_eq!(document.fragments, row.document);
     assert_eq!(document.location, SourceAvailability::NotCaptured);
     assert_eq!(document.excerpt, SourceExcerpt::NotCaptured);
     for coordinate in [

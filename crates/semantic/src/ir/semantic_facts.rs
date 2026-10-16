@@ -161,50 +161,71 @@ impl<'bytes> OccurrenceLane<'bytes> {
     /// kind and confidence must decode, every relative span must stay
     /// ordered, and every foreign key path must be non-empty.
     pub fn admit(&self, entity_count: u32) -> Result<(), OccurrenceFault> {
+        self.admit_indexed(entity_count).map_err(|(_, fault)| fault)
+    }
+
+    /// Like [`Self::admit`], while also returning the rejected row ordinal
+    /// for callers that retain it separately from the exact fault.
+    pub(crate) fn admit_indexed(&self, entity_count: u32) -> Result<(), (u32, OccurrenceFault)> {
         for (position, input) in self.inputs.iter().enumerate() {
             let ordinal = u32::try_from(position).unwrap_or(u32::MAX);
             if input.owner.raw >= entity_count {
-                return Err(OccurrenceFault::Owner {
+                return Err((
                     ordinal,
-                    owner: input.owner,
-                    entity_count,
-                });
+                    OccurrenceFault::Owner {
+                        ordinal,
+                        owner: input.owner,
+                        entity_count,
+                    },
+                ));
             }
             match input.occurrence.target {
                 OccurrenceTarget::Stable(_) => {}
                 OccurrenceTarget::Local(target) => {
                     if target.raw >= entity_count {
-                        return Err(OccurrenceFault::LocalTarget {
+                        return Err((
                             ordinal,
-                            target: target.raw,
-                            entity_count,
-                        });
+                            OccurrenceFault::LocalTarget {
+                                ordinal,
+                                target: target.raw,
+                                entity_count,
+                            },
+                        ));
                     }
                 }
                 OccurrenceTarget::Foreign(foreign) => {
                     if foreign.path.is_empty() {
-                        return Err(OccurrenceFault::EmptyPath { ordinal });
+                        return Err((ordinal, OccurrenceFault::EmptyPath { ordinal }));
                     }
                 }
             }
             if ReferenceKind::try_from(u8::from(input.occurrence.kind)).is_err() {
-                return Err(OccurrenceFault::ReferenceKind {
+                return Err((
                     ordinal,
-                    actual: u8::from(input.occurrence.kind),
-                });
+                    OccurrenceFault::ReferenceKind {
+                        ordinal,
+                        actual: u8::from(input.occurrence.kind),
+                    },
+                ));
             }
             if Confidence::try_from(u8::from(input.occurrence.confidence)).is_err() {
-                return Err(OccurrenceFault::Confidence {
+                return Err((
                     ordinal,
-                    actual: u8::from(input.occurrence.confidence),
-                });
+                    OccurrenceFault::Confidence {
+                        ordinal,
+                        actual: u8::from(input.occurrence.confidence),
+                    },
+                ));
             }
             if input.occurrence.span.start > input.occurrence.span.end {
-                return Err(OccurrenceFault::Span {
+                return Err((
                     ordinal,
-                    start: input.occurrence.span.start,
-                    end: input.occurrence.span.end,
-                });
+                    OccurrenceFault::Span {
+                        ordinal,
+                        start: input.occurrence.span.start,
+                        end: input.occurrence.span.end,
+                    },
+                ));
             }
         }
         Ok(())

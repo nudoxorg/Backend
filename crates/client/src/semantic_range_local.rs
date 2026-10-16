@@ -2449,15 +2449,8 @@ mod tests {
 
 #[cfg(any(unix, windows))]
 fn connect_stream(path: &Path) -> Result<backend_replication::LocalStream, ClientError> {
-    let stream = backend_replication::LocalStream::connect(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound
-            || error.kind() == std::io::ErrorKind::ConnectionRefused
-        {
-            ClientError::Disconnected(error.kind())
-        } else {
-            ClientError::Io(error.to_string())
-        }
-    })?;
+    let stream = backend_replication::LocalStream::connect(path)
+        .map_err(crate::map_endpoint_connect_error)?;
     configure_stream(&stream);
     Ok(stream)
 }

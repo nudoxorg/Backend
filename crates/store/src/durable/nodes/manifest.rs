@@ -3,7 +3,7 @@
 use super::super::{
     ClosureId, FileStore, Hash, ObjectId, StoreError, TypedObject, fs, io_error, map_read_error,
 };
-use super::{ManifestDescriptor, NODE_MAX_COUNT};
+use super::{ManifestDescriptor, NODE_MAX_COUNT, RelationAdmission};
 use crate::closure::{ClosureManifest, ManifestRelation};
 use backend_version::{CheckedCanonicalRoot, IdContext, SchemaIdentity, UntrustedId};
 use std::collections::HashSet;
@@ -130,23 +130,24 @@ impl FileStore {
     pub(in crate::durable) fn write_manifest_publication(
         &self,
         manifest: &ClosureManifest,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<ObjectId, StoreError> {
         fs::create_dir_all(self.root.join("nodes")).map_err(|error| io_error(&error))?;
         let schema = SchemaIdentity::of_relation::<ManifestRelation>();
         let root = manifest.root_handle();
         let mut stats = super::TreeWriteStats::default();
         let mut seen = HashSet::new();
-        let incremental = manifest
-            .tree_source_root()
-            .is_some_and(|source| self.relation_ref_path(schema, &source).is_file());
+        let incremental = if let Some(source) = manifest.tree_source_root() {
+            admission.existing(schema, &source)?.is_some()
+        } else { false };
         if incremental {
             let frontier = manifest.tree_frontier().ok_or(StoreError::Corrupt)?;
             for node in frontier {
-                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false)?;
+                self.write_relation_node_handle(node, schema, &mut stats, &mut seen, false, admission)?;
             }
-            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, false)
+            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, false, admission)
         } else {
-            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, true)
+            self.write_relation_node_handle(&root, schema, &mut stats, &mut seen, true, admission)
         }
     }
 

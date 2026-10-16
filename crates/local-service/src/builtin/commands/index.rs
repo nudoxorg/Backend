@@ -4,6 +4,11 @@ use super::super::{
     BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use super::index_operation::IndexOperationJournal;
+use source_preparation::{
+    PreparedScanCompilation, PreparedScanProfiles, PreparedScanSource, prepare_scan_source,
+};
+#[path = "index_source_preparation.rs"]
+mod source_preparation;
 use backend_engine::WorkspaceSnapshot;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
@@ -25,6 +30,9 @@ use backend_engine::builtin::{
     product_source_file_facts_row_keys, semantic_capture_relation,
 };
 use backend_extension_turso::SourceObservationReceipt;
+use backend_frontend_python::legacy::checker::{
+    PythonEnvironmentCapture, PythonEnvironmentInput, PythonProjectControl,
+};
 use backend_library::interface::{
     CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
     PackageUrl,
@@ -37,6 +45,9 @@ use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
+pub(super) use source_preparation::{
+    CaptureFailurePlan, PreparedSourceScan, SourceCompilePlan, SourceRoute, prepare_source_scan,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -225,7 +236,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         false,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
-        PreparedIndex::Compile(_) => Err(BuiltinModelError(
+        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
     }
@@ -256,6 +267,7 @@ fn prepare_index_project_at(
         execution_intent,
         owner_cluster.is_some(),
         Arc::new(AtomicBool::new(false)),
+        compiler.python_interpreter_admission(),
     )?;
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
@@ -305,6 +317,7 @@ pub(super) fn capture_index_scan(
     execution_intent: CompileExecutionIntent,
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
+    interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
 ) -> Result<IndexScanWork, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
@@ -354,6 +367,7 @@ pub(super) fn capture_index_scan(
         reusable,
         capture_workspace_snapshot,
         cancellation,
+        interpreter,
     })
 }
 
@@ -364,11 +378,12 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
         return Err(IndexScanFailure::Cancelled);
     }
     let source_coordinate = work.source_root.to_string_lossy();
-    let scan = ingest::scan_project_for_unproven_authorities_cancellable(
+    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable_with_interpreter(
         &source_coordinate,
         work.project_key,
         &work.reusable,
         &work.cancellation,
+        work.interpreter.as_deref(),
     )
     .map_err(|error| {
         if work.cancellation.load(Ordering::Acquire) {
@@ -377,6 +392,19 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
             IndexScanFailure::Refused(BuiltinModelError(error))
         }
     })?;
+    if let Some(PythonEnvironmentInput::Captured(environment)) = &scan.python_environment {
+        // Preserve source inventory and structural rows for browsing. The
+        // explicitly selected installed venv is dependency input, not a project
+        // program member, even when its name is local/py3 rather than venv.
+        scan.compiler_sources.retain(|source| {
+            !matches!(source.profile, LanguageProfile::Python(_))
+                || !environment.is_dependency_member(Path::new(&source.relative_path))
+        });
+        scan.reused_compiler_files.retain(|source| {
+            !matches!(source.profile, LanguageProfile::Python(_))
+                || !environment.is_dependency_member(Path::new(&source.relative_path))
+        });
+    }
     // Remote execution is available only when a complete, confined workspace
     // inventory can be captured. Failure to build that optional evidence
     // leaves the existing local compile path available.
@@ -448,60 +476,36 @@ pub(super) fn finish_index_scan(
     committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     mut index_operations: Option<&mut IndexOperationJournal>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
-    let current_root = daemon.engine().daemon().owner().head().root();
-    if current_root != result.work.workspace_root {
-        return Err(BuiltinModelError(
-            "workspace selection changed while the project scan was running; retry indexing"
-                .to_owned(),
-        ));
-    }
-    let IndexScanResult {
-        work,
-        scan,
-        workspace_snapshot,
-    } = result;
-    let final_revision_fence = scan.revision_fence.clone();
-    let cancellation = work.cancellation.clone();
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
-    let relation = base_snapshot
-        .relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
-    let facts_relation = product_source_file_facts_relation(&base_snapshot)
-        .map_err(|error| BuiltinModelError(format!("open product source facts: {error}")))?;
-    let IndexScanWork {
+    let PreparedScanSource {
         package,
         label,
-        source_root,
-        coordinate,
+        requested_root: requested_root_owned,
+        coordinate: coordinate_owned,
         request_id,
         execution_intent,
         project_key,
         before,
-        old_files,
-        reusable,
-        ..
-    } = work;
-    let requested_root = source_root.as_path();
-    let coordinate = coordinate.as_ref();
-    let revision_fence = &scan.revision_fence;
-    if cancellation.load(Ordering::Acquire) {
-        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
-    }
-    if !ingest::compiler_revision_is_current_with_cancellation(
-        revision_fence,
-        Some(cancellation.as_ref()),
-    )
-    .map_err(BuiltinModelError)?
-    {
-        return Err(BuiltinModelError(
-            "project root or files changed after source admission; retry indexing".to_owned(),
-        ));
-    }
-    // Use the root pinned by the scan for configuration, compiler-input, and
-    // profile reads. Keep the original spelling only for alias-retarget checks
-    // at later admission fences.
+        mut project,
+        mut file_keys,
+        mut changes,
+        mut source_facts_changes,
+        revision_fence: final_revision_fence,
+        python_environment,
+        cancellation,
+        workspace_snapshot,
+        profiles,
+    } = prepare_scan_source(
+        &base_snapshot,
+        result,
+        compiler,
+        semantic_authority,
+        operation_key,
+    )?;
+    let revision_fence = &final_revision_fence;
     let source_root = revision_fence.canonical_root();
-    let inputs = compiler_input_admissions(source_root, &scan, compiler);
+    let requested_root = requested_root_owned.as_path();
+    let coordinate = coordinate_owned.as_ref();
     let semantic_context = SemanticCompilationContext::admit(
         package,
         &label,
@@ -509,135 +513,9 @@ pub(super) fn finish_index_scan(
         coordinate,
         request_id,
         compiler,
+        python_environment.as_ref(),
+        cancellation.as_ref(),
     )?;
-    let live = ingest::live_compiler_profiles(
-        source_root,
-        &scan.compiler_sources,
-        &scan.reused_compiler_files,
-    );
-    let present =
-        ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
-    let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
-        .map_err(BuiltinModelError)?;
-    // Persist candidate observations first. They fence compilation but remain
-    // private to freshness and query paths until the combined product intent
-    // commits.
-    let mut observed_profiles = live.clone();
-    observed_profiles.extend(lost.iter().copied());
-    let mut observations = BTreeMap::new();
-    for profile in observed_profiles {
-        let coordinate =
-            super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
-        let key = ProductSemanticPublicationKey::new(
-            semantic_context.package_reference.clone(),
-            coordinate,
-            profile,
-        )
-        .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let input_digest = semantic_input_digest(&scan, profile);
-        let count = scan
-            .compiler_sources
-            .iter()
-            .filter(|source| source.profile == profile)
-            .count()
-            .saturating_add(
-                scan.reused_compiler_files
-                    .iter()
-                    .filter(|source| source.profile == profile)
-                    .count(),
-            );
-        let count = u64::try_from(count)
-            .map_err(|_| BuiltinModelError("semantic source count exceeds u64".to_owned()))?;
-        observations.insert(
-            profile,
-            semantic_authority.observe(&key, input_digest, count)?,
-        );
-    }
-    let mut file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project_update = ProductSourceRecord::project_with_membership_pages(
-        &label,
-        scan.source_version,
-        file_keys.clone(),
-        None,
-    )
-    .map_err(BuiltinModelError)?;
-    let mut project = project_update.project_record().clone();
-    let mut changes = Vec::new();
-    if before.as_ref() != Some(&project) {
-        changes.push(BuiltinSourceChange {
-            key: project_key,
-            after: Some(project.clone()),
-        });
-    }
-    let new_page_keys = project_update
-        .membership_pages()
-        .iter()
-        .map(|(key, _)| *key)
-        .collect::<BTreeSet<_>>();
-    for (key, page) in project_update.membership_pages() {
-        let current = relation
-            .lookup(key)
-            .map_err(|error| BuiltinModelError(format!("read project membership page: {error}")))?;
-        if current.as_ref() != Some(page) {
-            changes.push(BuiltinSourceChange {
-                key: *key,
-                after: Some(page.clone()),
-            });
-        }
-    }
-    if let Some(previous) = before
-        .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
-    {
-        changes.extend(
-            previous
-                .files
-                .page_keys()
-                .iter()
-                .copied()
-                .filter(|key| !new_page_keys.contains(key))
-                .map(|key| BuiltinSourceChange { key, after: None }),
-        );
-    }
-    for (key, record) in &scan.files {
-        let current = relation
-            .lookup(&key)
-            .map_err(|error| BuiltinModelError(format!("read indexed source file: {error}")))?;
-        if current.as_ref() != Some(record) {
-            changes.push(BuiltinSourceChange {
-                key: *key,
-                after: Some(record.clone()),
-            });
-        }
-    }
-    let selected = file_keys.iter().copied().collect::<BTreeSet<_>>();
-    changes.extend(
-        old_files
-            .iter()
-            .copied()
-            .filter(|key| !selected.contains(key))
-            .map(|key| BuiltinSourceChange { key, after: None }),
-    );
-    let mut source_facts_changes = prepare_source_facts_changes(
-        &relation,
-        facts_relation.as_ref(),
-        scan.source_facts,
-        &scan.files,
-        &old_files,
-    )?;
-    // Source comparisons and exact after-images are now prepared. The committed
-    // project is reread below before compilation; the scan's decoded compact
-    // rows and accounting/configuration payloads are not compiler authority.
-    drop(scan.files);
-    drop(scan.encoded_fact_bytes);
-    drop(scan.compiler_configuration);
-    // Keep these source rows private until every semantic profile has been
-    // admitted. The eventual BuiltinIntent carries source and semantic roots
-    // in one workspace transition.
-    // This compiler owner does not expose a complete typed present-and-negative
-    // read set, so its source/configuration digest cannot authorize reuse.
-    // Every live semantic profile rebuilds until the authority can prove its
-    // complete input closure.
     let (
         semantic_changes,
         selected,
@@ -645,67 +523,26 @@ pub(super) fn finish_index_scan(
         capture_changes,
         profile_refusals,
         partial_plan,
-    ) = {
-        let fresh_profiles = scan
-            .compiler_sources
-            .iter()
-            .map(|source| {
-                ingest::compilation_profile(source_root, &source.relative_path, source.profile)
-            })
-            .collect::<BTreeSet<_>>();
-        let mut reusable_inputs = BTreeSet::new();
-        for (profile, admitted) in &inputs {
-            if compiler_exact_witness_is_current(
-                daemon,
-                package,
-                &label,
-                coordinate,
-                compiler,
-                source_root,
-                *profile,
-                *admitted,
-            )? {
-                reusable_inputs.insert(*profile);
-            }
-        }
-        let dirty = profiles_requiring_compilation(
-            &live,
-            &lost,
-            &fresh_profiles,
-            &inputs,
-            &reusable_inputs,
-        );
-        let (fresh, reused) = ingest::select_compiler_inputs(
-            source_root,
-            scan.compiler_sources,
-            scan.reused_compiler_files,
-            &dirty,
-        );
-        if dirty.is_empty() {
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
-                None,
-            )
-        } else {
-            // Admit the exact structural source frontier together with a
-            // per-profile Pending marker before entering any compiler path.
-            // Candidate observations remain private until this one workspace
-            // transition commits; the selected semantic generation remains
-            // the prior coherent claim and is stale against the new source.
-            let (captures, pending_changes, _capture_observations) =
-                prepare_source_capture_changes(
-                    daemon,
-                    package,
-                    &semantic_context,
-                    &dirty,
-                    &observations,
-                    scan.source_version,
-                    operation_key,
-                )?;
+    ) = match profiles {
+        PreparedScanProfiles::Reused => (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
+            None,
+        ),
+        PreparedScanProfiles::Compile(compilation) => {
+            let PreparedScanCompilation {
+                fresh,
+                reused,
+                source_admission_policy,
+                observations,
+                captures,
+                pending_changes,
+            } = *compilation;
+            // The synchronous reference path commits the independently
+            // admitted source/Pending frontier before materializing inputs.
             if !ingest::compiler_revision_is_current_with_cancellation(
                 revision_fence,
                 Some(cancellation.as_ref()),
@@ -780,7 +617,7 @@ pub(super) fn finish_index_scan(
                 revision_fence,
                 fresh,
                 reused,
-                scan.source_admission_policy,
+                source_admission_policy,
                 Some(cancellation.as_ref()),
             )
             .map_err(BuiltinModelError);
@@ -799,6 +636,7 @@ pub(super) fn finish_index_scan(
             };
             if defer && owner_cluster.is_none() {
                 return prepare_deferred_compile(
+                    &daemon.engine().daemon().owner().snapshot(),
                     package,
                     &label,
                     project_key,
@@ -813,6 +651,7 @@ pub(super) fn finish_index_scan(
                     &observations,
                     captures,
                     semantic_authority,
+                    None,
                 )
                 .map(PreparedIndex::Compile);
             }
@@ -1221,8 +1060,8 @@ mod owned_source_facts_handoff_tests {
     }
 }
 
-fn prepare_source_capture_changes(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn prepare_source_capture_changes_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     context: &SemanticCompilationContext<'_>,
     profiles: &BTreeSet<LanguageProfile>,
@@ -1237,7 +1076,6 @@ fn prepare_source_capture_changes(
     ),
     BuiltinModelError,
 > {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
@@ -1327,11 +1165,21 @@ fn current_project_frontier(
     ),
     BuiltinModelError,
 > {
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    current_project_frontier_for_snapshot(&daemon.engine().daemon().owner().snapshot(), project_key)
+}
+
+fn current_project_frontier_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    project_key: [u8; 32],
+) -> Result<
+    (
+        ProductSourceRecord,
+        Vec<[u8; 32]>,
+        CapturedProjectFileFrontier,
+    ),
+    BuiltinModelError,
+> {
+    let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open committed source frontier: {error}")))?;
     let project = relation
@@ -1604,7 +1452,20 @@ fn terminal_capture_changes(
     reason: backend_engine::builtin::SemanticUnavailableReason,
     compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
 ) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    terminal_capture_changes_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        captures,
+        reason,
+        compiler_failure,
+    )
+}
+
+fn terminal_capture_changes_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
     let relation = semantic_capture_relation(&snapshot)
         .map_err(|error| BuiltinModelError(format!("open pending semantic captures: {error}")))?
         .ok_or_else(|| {
@@ -1903,6 +1764,7 @@ pub(super) struct IndexScanWork {
     reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
+    interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
 }
 
 /// Worker scan outcome, distinguishing an explicit job cancellation from an
@@ -1956,6 +1818,9 @@ pub(super) enum PreparedIndex {
     Ready(PreparedProductSelection),
     /// A compile to run off the owner loop, then publish on it.
     Compile(DeferredIndex),
+    /// A configured cluster route, including its local fallback, runs on an
+    /// owned worker after the independent source capture was installed.
+    Cluster(SourceCompilePlan),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
@@ -1963,6 +1828,7 @@ pub(super) enum PreparedIndex {
 /// authority, while source changes and serving selections remain private until
 /// the combined workspace marker commits.
 pub(super) struct DeferredIndex {
+    compiler: LocalCompilerClient,
     package: backend_engine::PackageKey,
     label: String,
     project_key: [u8; 32],
@@ -2274,6 +2140,7 @@ impl DeferredIndex {
 /// the in-place local route does (`compile_semantic_publications` with no
 /// compiler cluster), stopping short of the compile itself.
 fn prepare_deferred_compile(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     project_key: [u8; 32],
@@ -2288,6 +2155,7 @@ fn prepare_deferred_compile(
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     for source in sources {
@@ -2297,6 +2165,8 @@ fn prepare_deferred_compile(
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
+    let structural_only =
+        take_structural_only_profiles(snapshot, context, observations, &mut by_profile)?;
     let mut profiles = Vec::with_capacity(by_profile.len());
     for (profile, sources) in by_profile {
         let mut attempt_for_error = None;
@@ -2337,6 +2207,9 @@ fn prepare_deferred_compile(
                 u64::from(expected_artifacts),
             )?;
             let attempt = semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+            if let Some(retained) = retained_attempts.as_mut() {
+                retained.push(attempt.clone());
+            }
             attempt_for_error = Some(attempt.clone());
             let input_claim = SemanticInputWitness::claimed_state(
                 scan_input_digest,
@@ -2350,6 +2223,15 @@ fn prepare_deferred_compile(
             )
             .map_err(|error| BuiltinModelError(error.to_string()))?
             .with_input_claim(input_claim);
+            let sources = match context
+                .python_environment
+                .filter(|_| matches!(profile, LanguageProfile::Python(_)))
+            {
+                Some(environment) => sources
+                    .with_python_environment_input(environment.clone())
+                    .map_err(|error| BuiltinModelError(error.to_string()))?,
+                None => sources,
+            };
             Ok::<_, BuiltinModelError>(DeferredProfile {
                 key,
                 expected_artifacts,
@@ -2385,6 +2267,7 @@ fn prepare_deferred_compile(
     }
     let expected_profiles = profiles.len();
     Ok(DeferredIndex {
+        compiler: context.compiler.clone(),
         package,
         label: label.to_owned(),
         project_key,
@@ -2399,7 +2282,7 @@ fn prepare_deferred_compile(
         expected_profiles,
         completed_profiles: 0,
         captures,
-        semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
+        semantic_changes: structural_only,
         capture_publications: Vec::with_capacity(expected_profiles),
         cargo_alias_observations: BTreeMap::new(),
         refused_profiles: BTreeMap::new(),
@@ -2548,6 +2431,12 @@ pub(super) fn finish_deferred_profile_for_snapshot(
             return Err(error.into());
         }
     };
+    job.compiler.remember_python_snapshot(
+        &job.source_root,
+        *profile.attempt.input_digest(),
+        *claim.binding().identity.as_ref(),
+        &staged,
+    );
     let completion = record_semantic_publication(
         &relation,
         profile.key.clone(),
@@ -2703,14 +2592,7 @@ fn prepare_terminal_profile_partition_for_snapshot(
     Ok((profile_refusals.into_boxed_slice(), partial_plan))
 }
 
-pub(super) fn finish_deferred_index(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    job: DeferredIndex,
-) -> Result<PreparedProductSelection, BuiltinModelError> {
-    finish_deferred_index_for_snapshot(&daemon.engine().daemon().owner().snapshot(), job)
-}
-
-fn finish_deferred_index_for_snapshot(
+pub(super) fn finish_deferred_index_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
@@ -2839,6 +2721,8 @@ struct SemanticCompilationContext<'request> {
     coordinate: Option<&'request PackageUrl>,
     correlation: CorrelationId,
     compiler: &'request LocalCompilerClient,
+    python_environment: Option<&'request PythonEnvironmentInput>,
+    cancellation: &'request AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -2857,6 +2741,9 @@ enum ReadSetCompleteness {
     /// Exact authority-reported present and negative reads. Only this state
     /// can authorize the exact witness once a lane exposes it.
     Complete(ExactInputWitness),
+    /// Exact local captured Python program. This permits snapshot reuse while
+    /// preserving the prior partial coverage; it is not host read completeness.
+    CapturedPythonSnapshot(ExactInputWitness),
 }
 
 #[cfg(test)]
@@ -2898,15 +2785,26 @@ fn compiler_input_admissions(
                 profile,
                 CompilerInputAdmission {
                     lineage: capabilities.for_profile(profile).session_lineage(),
-                    read_set_completeness: ReadSetCompleteness::Unproven,
+                    read_set_completeness: if matches!(profile, LanguageProfile::Python(_))
+                        && scan
+                            .python_environment
+                            .as_ref()
+                            .is_some_and(|input| input.captured().is_ok())
+                    {
+                        ReadSetCompleteness::CapturedPythonSnapshot(ExactInputWitness::from_digest(
+                            semantic_input_digest(scan, profile),
+                        ))
+                    } else {
+                        ReadSetCompleteness::Unproven
+                    },
                 },
             )
         })
         .collect()
 }
 
-fn compiler_exact_witness_is_current(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn compiler_exact_witness_is_current_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     coordinate: Option<&PackageUrl>,
@@ -2914,18 +2812,171 @@ fn compiler_exact_witness_is_current(
     source_root: &Path,
     profile: LanguageProfile,
     admission: CompilerInputAdmission,
+    cancellation: &AtomicBool,
 ) -> Result<bool, BuiltinModelError> {
-    let ReadSetCompleteness::Complete(witness) = admission.read_set_completeness else {
-        return Ok(false);
-    };
-    let Some(lineage) = admission.lineage else {
-        return Ok(false);
-    };
-    let Some(binding) = selected_semantic_binding(daemon, package, label, coordinate, profile)?
+    let Some(binding) =
+        selected_semantic_binding_for_snapshot(snapshot, package, label, coordinate, profile)?
     else {
         return Ok(false);
     };
-    Ok(compiler.exact_input_witness_is_current(source_root, profile, lineage, witness, binding))
+    Ok(match admission.read_set_completeness {
+        ReadSetCompleteness::CapturedPythonSnapshot(witness) => compiler
+            .python_snapshot_is_current(
+                source_root,
+                profile,
+                witness.digest(),
+                binding,
+                cancellation,
+            ),
+        ReadSetCompleteness::Complete(witness) => admission.lineage.is_some_and(|lineage| {
+            compiler.exact_input_witness_is_current(source_root, profile, lineage, witness, binding)
+        }),
+        ReadSetCompleteness::Unproven => false,
+    })
+}
+
+/// Selects a missing incidental compiler without deleting its captured scope.
+/// Only a strict minority with no retained generation may stay structural.
+fn structural_only_profiles(
+    candidates: &BTreeSet<LanguageProfile>,
+    counts: &BTreeMap<LanguageProfile, u64>,
+    prior: &BTreeSet<LanguageProfile>,
+    absent: impl Fn(LanguageProfile) -> bool,
+    admitted: impl Fn(LanguageProfile) -> bool,
+) -> BTreeSet<LanguageProfile> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|profile| {
+            absent(*profile)
+                && !prior.contains(profile)
+                && counts.get(profile).is_some_and(|count| {
+                    counts.iter().any(|(other, larger)| {
+                        other != profile && admitted(*other) && larger > count
+                    })
+                })
+        })
+        .collect()
+}
+
+fn take_structural_only_profiles(
+    snapshot: &WorkspaceSnapshot,
+    context: &SemanticCompilationContext<'_>,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    sources: &mut BTreeMap<LanguageProfile, Vec<OwnedPackageSource>>,
+) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
+    use backend_engine::application::LocalCompilerCapabilityState as State;
+    let candidates = sources.keys().copied().collect::<BTreeSet<_>>();
+    let counts = observations
+        .iter()
+        .filter_map(|(profile, receipt)| match receipt.observation().value() {
+            backend_extension_turso::SourceObservationValue::KnownCount(count) => {
+                Some((*profile, *count))
+            }
+            _ => None,
+        })
+        .collect();
+    let capabilities = context.compiler.capabilities();
+    let mut prior = BTreeSet::new();
+    for profile in &candidates {
+        if selected_semantic_binding_for_snapshot(
+            snapshot,
+            context.package,
+            context.package_reference.as_str(),
+            context.coordinate,
+            *profile,
+        )?
+        .is_some()
+        {
+            prior.insert(*profile);
+        }
+    }
+    let skipped = structural_only_profiles(
+        &candidates,
+        &counts,
+        &prior,
+        |profile| {
+            let capability = capabilities.for_profile(profile);
+            capability.state() == State::Unavailable
+                && capability.setup_issue().is_some_and(|issue| {
+                    issue.failure == backend_library::interface::CompilerToolFailure::Missing
+                })
+        },
+        |profile| {
+            matches!(
+                capabilities.for_profile(profile).state(),
+                State::Ready | State::Deferred
+            )
+        },
+    );
+    let mut changes = Vec::with_capacity(skipped.len());
+    for profile in skipped {
+        let coordinate = super::super::compiler_scope::semantic_coordinate(
+            context.package,
+            profile,
+            context.coordinate,
+        )?;
+        let key = ProductSemanticPublicationKey::new(
+            context.package_reference.clone(),
+            coordinate,
+            profile,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+        // Keep the original Pending capture and exact source tuple. Completion
+        // turns this explicit unavailable selection into a terminal Toolchain
+        // gap; another successful profile makes the project ready (partial).
+        changes.push(BuiltinSemanticChange {
+            key,
+            after: Some(ProductSemanticPublicationRecord::Unavailable(
+                backend_engine::builtin::SemanticUnavailableReason::Toolchain,
+            )),
+        });
+        sources.remove(&profile);
+        eprintln!(
+            "locald: {} sources remain structurally readable; incidental compiler is not configured",
+            profile.language().name()
+        );
+    }
+    Ok(changes)
+}
+
+#[cfg(test)]
+mod structural_only_profile_tests {
+    use super::*;
+    use backend_semantic::vocabulary::{PythonVersion, TypeScriptSource};
+    const PYTHON: LanguageProfile = LanguageProfile::Python(PythonVersion::Python313);
+    const SCRIPT: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+
+    fn decide(
+        counts: &[(LanguageProfile, u64)],
+        absent: &[LanguageProfile],
+        prior: &[LanguageProfile],
+        broken: &[LanguageProfile],
+    ) -> BTreeSet<LanguageProfile> {
+        let counts = counts.iter().copied().collect::<BTreeMap<_, _>>();
+        structural_only_profiles(
+            &counts.keys().copied().collect(),
+            &counts,
+            &prior.iter().copied().collect(),
+            |profile| absent.contains(&profile),
+            |profile| !absent.contains(&profile) && !broken.contains(&profile),
+        )
+    }
+    #[test]
+    fn only_an_absent_minority_without_a_prior_generation_degrades() {
+        assert_eq!(
+            decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[], &[]),
+            BTreeSet::from([SCRIPT])
+        );
+        for counts in [[(PYTHON, 2), (SCRIPT, 2)], [(PYTHON, 2), (SCRIPT, 27)]] {
+            assert!(decide(&counts, &[SCRIPT], &[], &[]).is_empty());
+        }
+        assert!(decide(&[(SCRIPT, 2)], &[SCRIPT], &[], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[SCRIPT], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT, PYTHON], &[], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[SCRIPT], &[], &[PYTHON]).is_empty());
+        assert!(decide(&[(PYTHON, 27), (SCRIPT, 2)], &[], &[], &[]).is_empty());
+    }
 }
 
 fn profiles_requiring_compilation(
@@ -2936,11 +2987,22 @@ fn profiles_requiring_compilation(
     exact_witnesses_current: &BTreeSet<LanguageProfile>,
 ) -> BTreeSet<LanguageProfile> {
     let mut dirty = lost.iter().chain(fresh).copied().collect::<BTreeSet<_>>();
+    // A fresh byte scan may reproduce the exact previously selected captured
+    // Python program. Only its genuine compiler-produced fence can remove it.
+    dirty.retain(|profile| {
+        !(exact_witnesses_current.contains(profile)
+            && inputs.get(profile).is_some_and(|admission| {
+                matches!(
+                    admission.read_set_completeness,
+                    ReadSetCompleteness::CapturedPythonSnapshot(_)
+                )
+            }))
+    });
     for profile in live {
         let complete_read_set = inputs.get(profile).is_some_and(|admission| {
             matches!(
                 admission.read_set_completeness,
-                ReadSetCompleteness::Complete(_)
+                ReadSetCompleteness::Complete(_) | ReadSetCompleteness::CapturedPythonSnapshot(_)
             )
         });
         if !complete_read_set || !exact_witnesses_current.contains(profile) {
@@ -2997,8 +3059,8 @@ fn observe_compiler_configuration(
         .collect()
 }
 
-fn selected_semantic_binding(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn selected_semantic_binding_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     coordinate: Option<&PackageUrl>,
@@ -3010,11 +3072,7 @@ fn selected_semantic_binding(
         super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
     let key = ProductSemanticPublicationKey::new(package_reference, coordinate, profile)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("open selected semantic publication: {error}"))
@@ -3039,6 +3097,8 @@ impl<'request> SemanticCompilationContext<'request> {
         coordinate: Option<&'request PackageUrl>,
         request_id: u64,
         compiler: &'request LocalCompilerClient,
+        python_environment: Option<&'request PythonEnvironmentInput>,
+        cancellation: &'request AtomicBool,
     ) -> Result<Self, BuiltinModelError> {
         let package_reference = backend_engine::PackageReference::parse(package_label.to_owned())
             .map_err(|error| {
@@ -3056,6 +3116,8 @@ impl<'request> SemanticCompilationContext<'request> {
             coordinate,
             correlation: CorrelationId(request_id),
             compiler,
+            python_environment,
+            cancellation,
         })
     }
 }
@@ -3081,6 +3143,39 @@ fn compile_semantic_publications(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
 ) -> Result<CompiledSemanticPublications, BuiltinModelError> {
+    compile_semantic_publications_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        context,
+        sources,
+        revision_fence,
+        observations,
+        semantic_authority,
+        workspace_snapshot,
+        owner_cluster,
+        pending_stored_acks,
+        execution_intent,
+        None,
+        None,
+        #[cfg(test)]
+        &mut || {},
+    )
+}
+
+fn compile_semantic_publications_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    context: &SemanticCompilationContext<'_>,
+    sources: Vec<ingest::CompilerSource>,
+    revision_fence: &ingest::CompilerRevisionFence,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    workspace_snapshot: Option<&ingest::CompilerWorkspaceSnapshot>,
+    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
+    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    execution_intent: CompileExecutionIntent,
+    cancellation_owner: Option<Arc<AtomicBool>>,
+    mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
+    #[cfg(test)] before_local_compile: &mut dyn FnMut(),
+) -> Result<CompiledSemanticPublications, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -3094,18 +3189,21 @@ fn compile_semantic_publications(
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-    let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
+    let mut changes = if owner_cluster.is_none() {
+        take_structural_only_profiles(snapshot, context, observations, &mut by_profile)?
+    } else {
+        Vec::with_capacity(by_profile.len().saturating_mul(2))
+    };
     let mut completions = Vec::with_capacity(by_profile.len());
     let mut refused_profiles = BTreeMap::new();
     let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
+        if context.cancellation.load(Ordering::Acquire) {
+            return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+        }
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
         let coordinate = super::super::compiler_scope::semantic_coordinate(
@@ -3141,17 +3239,38 @@ fn compile_semantic_publications(
         let observation = if let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
         {
             let compiler_target = CompilerPackageTargetV2::for_package(key.coordinate().clone());
-            let execution_identity = context.compiler.execution_identity(
-                compiler_target.target(),
-                profile,
-                backend_semantic::vocabulary::Stage::LowerIr,
-            );
+            let execution_identity = context
+                .compiler
+                .execution_identity(
+                    compiler_target.target(),
+                    profile,
+                    backend_semantic::vocabulary::Stage::LowerIr,
+                )
+                .filter(|_| {
+                    !matches!(profile, LanguageProfile::Python(_))
+                        || context
+                            .python_environment
+                            .is_some_and(|input| input.captured().is_ok())
+                });
             if let Some(identity) = execution_identity.filter(|identity| {
                 identity.target() == compiler_target.target()
                     && identity.profile() == profile
                     && identity.stage() == backend_semantic::vocabulary::Stage::LowerIr
             }) {
-                let capture_source = CompilerWorkspaceCaptureView::new(snapshot, &source_paths);
+                let environment = context
+                    .python_environment
+                    .filter(|_| matches!(profile, LanguageProfile::Python(_)))
+                    .and_then(|input| input.captured().ok());
+                let capture_source = CompilerWorkspaceCaptureView::new(
+                    snapshot,
+                    &source_paths,
+                    environment,
+                    PythonProjectControl {
+                        cancelled: context.cancellation,
+                        deadline: std::time::Instant::now()
+                            + std::time::Duration::from_secs(15 * 60),
+                    },
+                )?;
                 let package_lineage = PackageLineageId::from_canonical_parts(
                     b"nudox-local-product",
                     key.package().as_str().as_bytes(),
@@ -3252,7 +3371,11 @@ fn compile_semantic_publications(
         // The live local compiler still consumes a source/config subset whose
         // complete positive and negative reads are not proven.
         let mut attempt = if captured_work.is_some() {
-            Some(semantic_authority.begin_candidate_attempt(&key, &observation)?)
+            let attempt = semantic_authority.begin_candidate_attempt(&key, &observation)?;
+            if let Some(retained) = retained_attempts.as_mut() {
+                retained.push(attempt.clone());
+            }
+            Some(attempt)
         } else {
             None
         };
@@ -3673,6 +3796,9 @@ fn compile_semantic_publications(
                 drop(attempt.take());
                 let local_attempt =
                     semantic_authority.begin_candidate_attempt(&key, &local_observation)?;
+                if let Some(retained) = retained_attempts.as_mut() {
+                    retained.push(local_attempt.clone());
+                }
                 let local_input_claim = SemanticInputWitness::claimed_state(
                     scan_input_digest,
                     ScopeRoot::from_bytes(scan_input_digest),
@@ -3685,8 +3811,25 @@ fn compile_semantic_publications(
                 )
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .with_input_claim(local_input_claim);
+                let source_set = match context
+                    .python_environment
+                    .filter(|_| matches!(profile, LanguageProfile::Python(_)))
+                {
+                    Some(environment) => source_set
+                        .with_python_environment_input(environment.clone())
+                        .map_err(|error| BuiltinModelError(error.to_string()))?,
+                    None => source_set,
+                };
+                #[cfg(test)]
+                before_local_compile();
                 let local_compile_started = Instant::now();
-                let compiled = context.compiler.compile_package_sources_staged(source_set);
+                let compiled = match cancellation_owner.as_ref() {
+                    Some(cancelled) => context.compiler.compile_package_sources_staged_cancellable(
+                        source_set,
+                        Arc::clone(cancelled),
+                    ),
+                    None => context.compiler.compile_package_sources_staged(source_set),
+                };
                 let compiler_failure = typed_package_compiler_failure(&compiled)?;
                 let (staged, publication_coverage) =
                     match admit_local_compile(compiled, expected_artifacts) {
@@ -3748,6 +3891,12 @@ fn compile_semantic_publications(
                     &staged,
                     revision_fence,
                 )?;
+                context.compiler.remember_python_snapshot(
+                    context.source_root,
+                    scan_input_digest,
+                    *publication.0.binding().identity.as_ref(),
+                    &staged,
+                );
                 (
                     publication.0,
                     publication.1,
@@ -4534,14 +4683,18 @@ fn pre_offer_result_or_local_fallback<T>(
 struct CompilerWorkspaceCaptureView<'snapshot> {
     snapshot: &'snapshot ingest::CompilerWorkspaceSnapshot,
     entries: Vec<CompilerWorkspaceEntryV2>,
+    environment: Option<&'snapshot PythonEnvironmentCapture>,
+    control: PythonProjectControl<'snapshot>,
 }
 
 impl<'snapshot> CompilerWorkspaceCaptureView<'snapshot> {
     fn new(
         snapshot: &'snapshot ingest::CompilerWorkspaceSnapshot,
         source_paths: &BTreeSet<String>,
-    ) -> Self {
-        let entries = snapshot
+        environment: Option<&'snapshot PythonEnvironmentCapture>,
+        control: PythonProjectControl<'snapshot>,
+    ) -> Result<Self, BuiltinModelError> {
+        let mut entries = snapshot
             .entries()
             .iter()
             .map(|entry| match entry.kind {
@@ -4562,8 +4715,27 @@ impl<'snapshot> CompilerWorkspaceCaptureView<'snapshot> {
                     CompilerWorkspaceEntryV2::file(entry.path.as_str(), length, role)
                 }
             })
-            .collect();
-        Self { snapshot, entries }
+            .collect::<Vec<_>>();
+        let environment = match environment {
+            Some(environment) => {
+                let path = backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_INPUT_PATH;
+                if snapshot.entries().iter().any(|entry| entry.path == path) {
+                    return Err(BuiltinModelError(
+                        "project conflicts with reserved Python environment input member".into(),
+                    ));
+                }
+                entries.push(CompilerWorkspaceEntryV2::file(path, environment.encoded_length(), backend_engine::compiler_cluster_transport::CompilerWorkspaceFileRoleV2::PythonEnvironment));
+                Some(environment)
+            }
+            None => None,
+        };
+        entries.sort_by(|left, right| left.path().cmp(right.path()));
+        Ok(Self {
+            snapshot,
+            entries,
+            environment,
+            control,
+        })
     }
 }
 
@@ -4579,10 +4751,21 @@ impl backend_engine::compiler_cluster_transport::WorkspaceSnapshotSourceV2
     }
 
     fn fence_digest(&self) -> [u8; 32] {
-        self.snapshot.fence_digest()
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"backend.compiler-workspace.python-environment.v1\0");
+        hash.update(&self.snapshot.fence_digest());
+        if let Some(environment) = &self.environment {
+            hash.update(&environment.identity());
+        }
+        *hash.finalize().as_bytes()
     }
 
     fn revalidate(&self) -> Result<bool, String> {
+        if let Some(environment) = &self.environment {
+            environment
+                .validate_current(self.control)
+                .map_err(|error| error.to_string())?;
+        }
         self.snapshot.revalidate()
     }
 
@@ -4593,6 +4776,49 @@ impl backend_engine::compiler_cluster_transport::WorkspaceSnapshotSourceV2
         chunk_bytes: usize,
         consume: &mut dyn FnMut(&[u8]) -> Result<(), String>,
     ) -> Result<u64, String> {
+        if path == backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_INPUT_PATH {
+            let environment = self
+                .environment
+                .ok_or_else(|| "Python environment member is not admitted".to_owned())?;
+            if environment.encoded_length() > max_bytes || chunk_bytes == 0 {
+                return Err("Python environment stream exceeds input bound".into());
+            }
+            struct Chunks<'a, 'control> {
+                consume: &'a mut dyn FnMut(&[u8]) -> Result<(), String>,
+                chunk_bytes: usize,
+                control: PythonProjectControl<'control>,
+            }
+            impl std::io::Write for Chunks<'_, '_> {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    for chunk in bytes.chunks(self.chunk_bytes) {
+                        if self.control.cancelled.load(Ordering::Acquire) {
+                            return Err(std::io::Error::other(ingest::INDEX_SCAN_CANCELLED));
+                        }
+                        if std::time::Instant::now() >= self.control.deadline {
+                            return Err(std::io::Error::other(
+                                "Python environment capture deadline expired",
+                            ));
+                        }
+                        (self.consume)(chunk).map_err(std::io::Error::other)?;
+                    }
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            environment
+                .write_encoded(
+                    &mut Chunks {
+                        consume,
+                        chunk_bytes,
+                        control: self.control,
+                    },
+                    self.control,
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(environment.encoded_length());
+        }
         self.snapshot
             .stream_file(path, max_bytes, chunk_bytes, consume)
     }
@@ -6013,28 +6239,58 @@ fn is_compiler_configuration(path: &str) -> bool {
 
 fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.local-service.semantic-input.v2\0");
+    hasher.update(if matches!(profile, LanguageProfile::Python(_)) {
+        b"backend.local-service.semantic-input.python-installed-environment.v3\0".as_slice()
+    } else {
+        b"backend.local-service.semantic-input.v2\0".as_slice()
+    });
     hasher.update(&scan.source_version);
     hasher.update(&<[u8; 2]>::from(profile));
-    for source in scan
-        .compiler_sources
-        .iter()
-        .filter(|source| source.profile == profile)
-    {
-        let path = source.relative_path.as_bytes();
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path);
-        hasher.update(&source.content);
+    if matches!(profile, LanguageProfile::Python(_)) {
+        hasher.update(b"installed-environment-cohort.v1\0");
+        if let Some(environment) = &scan.python_environment {
+            hasher.update(&environment.identity());
+        }
     }
-    for source in scan
-        .reused_compiler_files
-        .iter()
-        .filter(|source| source.profile == profile)
-    {
-        let path = source.relative_path.as_bytes();
-        hasher.update(&(path.len() as u64).to_le_bytes());
-        hasher.update(path);
-        hasher.update(&source.content);
+    if matches!(profile, LanguageProfile::Python(_)) {
+        let sources = scan
+            .compiler_sources
+            .iter()
+            .filter(|source| source.profile == profile)
+            .map(|source| (source.relative_path.as_str(), &source.content))
+            .chain(
+                scan.reused_compiler_files
+                    .iter()
+                    .filter(|source| source.profile == profile)
+                    .map(|source| (source.relative_path.as_str(), &source.content)),
+            )
+            .collect::<BTreeMap<_, _>>();
+        for (path, content) in sources {
+            hasher.update(&(path.len() as u64).to_le_bytes());
+            hasher.update(path.as_bytes());
+            hasher.update(content);
+        }
+    } else {
+        for source in scan
+            .compiler_sources
+            .iter()
+            .filter(|source| source.profile == profile)
+        {
+            let path = source.relative_path.as_bytes();
+            hasher.update(&(path.len() as u64).to_le_bytes());
+            hasher.update(path);
+            hasher.update(&source.content);
+        }
+        for source in scan
+            .reused_compiler_files
+            .iter()
+            .filter(|source| source.profile == profile)
+        {
+            let path = source.relative_path.as_bytes();
+            hasher.update(&(path.len() as u64).to_le_bytes());
+            hasher.update(path);
+            hasher.update(&source.content);
+        }
     }
     for configuration in scan
         .compiler_configuration
@@ -6187,7 +6443,7 @@ pub(super) fn semantic_version_record(
     }
 }
 
-fn selected_project_source_frontier(
+pub(super) fn selected_project_source_frontier(
     snapshot: &backend_engine::WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
 ) -> Result<Option<backend_engine::SelectedProjectSourceFrontier>, BuiltinModelError> {
@@ -6662,6 +6918,9 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
     })
 }
 
+// Keep the canonical full-history freshness control without manufacturing
+// owner source-reference authority. Production discovery uses native DTO29 pages.
+#[cfg(test)]
 pub(in crate::builtin) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,

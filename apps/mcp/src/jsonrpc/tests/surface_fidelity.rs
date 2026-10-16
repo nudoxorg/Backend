@@ -117,6 +117,48 @@ impl Engine for RetainedProduct {
         Ok(ReplyDto::new(17, reply))
     }
 
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        let cursor = continuation.map(PageContinuation::cursor);
+        let reply = match probe {
+            Probe::Search { text, limit } => {
+                assert_eq!(limit, window.issued().get());
+                let query = Query::new(text, self.library.revision_root(), window.issued())
+                    .with_window(window)
+                    .expect("search window");
+                let query = if let Some(cursor) = cursor {
+                    query.with_cursor(cursor)
+                } else {
+                    query
+                };
+                selected_search_page(&self.library, &query).map(CommandReply::Search)
+            }
+            Probe::Names { text, limit } => {
+                assert_eq!(limit, window.issued().get());
+                let query = backend_library::NameQuery::new(
+                    text,
+                    self.library.revision_root(),
+                    window.issued(),
+                )
+                .with_window(window)
+                .expect("names window");
+                let query = if let Some(cursor) = cursor {
+                    query.with_cursor(cursor)
+                } else {
+                    query
+                };
+                self.library.names(&query).map(CommandReply::Names)
+            }
+            _ => return self.probe(probe),
+        }
+        .map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, reply))
+    }
+
     fn surface(&mut self, _command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         Err(ClientError::CommandFailed(
             backend_library::CommandFailure::MutationRequiresOwner,
@@ -150,6 +192,27 @@ impl Product for RetainedProduct {
                 self.symbol(&coordinate)?,
                 backend_library::SymbolAddress::canonical(symbol_key(&coordinate)),
                 self.page(limit, continuation),
+            )
+            .map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+
+    fn graph_page_window(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let page = self
+            .page(window.issued().get(), continuation)
+            .with_window(window)
+            .expect("graph window");
+        let page = self
+            .library
+            .graph_page_for_address(
+                self.symbol(&coordinate)?,
+                backend_library::SymbolAddress::canonical(symbol_key(&coordinate)),
+                page,
             )
             .map_err(|error| ClientError::CommandFailed(error.into()))?;
         Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))

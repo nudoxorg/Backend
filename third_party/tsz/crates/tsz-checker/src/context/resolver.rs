@@ -544,6 +544,15 @@ impl<'a> CheckerContext<'a> {
             return Some(false);
         }
         self.get_binder_for_file(importer)?;
+        // One program-wide set answers what scanning every binder would, in one probe.
+        if let Some(facts) = self
+            .shared_program_facts
+            .as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
+        {
+            self.types.execution_checkpoint(1).ok()?;
+            return Some(facts.is_ambient_module_name(owner));
+        }
         for binder in self.all_binders.as_ref()?.iter() {
             self.types.execution_checkpoint(1).ok()?;
             if binder.declared_modules.contains(owner)
@@ -1171,8 +1180,8 @@ impl<'a> CheckerContext<'a> {
         specifier: &str,
     ) -> bool {
         matches!(
-            self.project_module_consensus_for_specifier(source_file_idx, specifier),
-            Some(crate::context::ResolvedModuleRequestOutcome::External { .. })
+            self.project_module_consensus_memoized(source_file_idx, specifier),
+            Some(crate::context::ProjectModuleConsensus::External)
         )
     }
 
@@ -1183,10 +1192,74 @@ impl<'a> CheckerContext<'a> {
         source_file_idx: usize,
         specifier: &str,
     ) -> Option<usize> {
-        match self.project_module_consensus_for_specifier(source_file_idx, specifier) {
-            Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => Some(*target),
+        match self.project_module_consensus_memoized(source_file_idx, specifier) {
+            Some(crate::context::ProjectModuleConsensus::File(target)) => Some(target),
             _ => None,
         }
+    }
+
+    /// [`Self::project_module_consensus_for_specifier`], computed once per pair.
+    ///
+    /// A hit is charged one unit so cancellation and deadlines are still observed.
+    /// Nothing is recorded when the computation saw a stop: its `None` is then an
+    /// artifact of the stop, not an answer.
+    fn project_module_consensus_memoized(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+    ) -> Option<crate::context::ProjectModuleConsensus> {
+        use crate::context::{ProjectModuleConsensus, ResolvedModuleRequestOutcome};
+        // Without the compiler-owned outcome map there is no consensus to remember.
+        let outcomes = self.project_module_resolution_outcomes.as_ref()?;
+        // The answer depends only on the immutable outcome map, so every context of one
+        // program (each file's checker and every delegation child) shares one memo.
+        let shared = self
+            .shared_program_facts
+            .as_ref()
+            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
+            .map(|facts| (facts, outcomes));
+        if let Some((facts, outcomes_id)) = shared {
+            if let Some(hit) = facts.consensus_get(outcomes_id, source_file_idx, specifier) {
+                self.types.execution_checkpoint(1).ok()?;
+                return hit;
+            }
+            let computed = self
+                .project_module_consensus_for_specifier(source_file_idx, specifier)
+                .map(|outcome| match outcome {
+                    ResolvedModuleRequestOutcome::File(target) => ProjectModuleConsensus::File(*target),
+                    ResolvedModuleRequestOutcome::External { .. } => ProjectModuleConsensus::External,
+                    ResolvedModuleRequestOutcome::Unresolved => ProjectModuleConsensus::Unresolved,
+                });
+            if self.types.execution_checkpoint(0).is_ok() {
+                facts.consensus_insert(outcomes_id, source_file_idx, specifier, computed);
+            }
+            return computed;
+        }
+        if let Some(hit) = self
+            .project_module_consensus_memo
+            .borrow()
+            .get(&source_file_idx)
+            .and_then(|by_specifier| by_specifier.get(specifier))
+            .copied()
+        {
+            self.types.execution_checkpoint(1).ok()?;
+            return hit;
+        }
+        let computed = self
+            .project_module_consensus_for_specifier(source_file_idx, specifier)
+            .map(|outcome| match outcome {
+                ResolvedModuleRequestOutcome::File(target) => ProjectModuleConsensus::File(*target),
+                ResolvedModuleRequestOutcome::External { .. } => ProjectModuleConsensus::External,
+                ResolvedModuleRequestOutcome::Unresolved => ProjectModuleConsensus::Unresolved,
+            });
+        if self.types.execution_checkpoint(0).is_ok() {
+            self.project_module_consensus_memo
+                .borrow_mut()
+                .entry(source_file_idx)
+                .or_default()
+                .insert(specifier.to_owned(), computed);
+        }
+        computed
     }
 
     /// A generic lookup cannot recover lost syntax, but it can verify that

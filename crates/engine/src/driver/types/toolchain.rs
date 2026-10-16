@@ -65,14 +65,194 @@ pub struct ResolvedToolchainView {
     pub identity: ContentId<ToolchainDomain>,
 }
 
-/// Caller-resolved absolute executable capability with private execution authority.
+/// Closed authority for a linked checker or a separately admitted executable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResolvedToolchain<'path> {
+    authority: ResolvedAuthority<'path>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResolvedAuthority<'path> {
+    /// Path-bearing authority admitted for a child process.
+    External(ExternalToolchain<'path>),
+    /// Linked TSZ authority; carries no executable or process capability.
+    EmbeddedTypeScript(ResolvedToolchainView),
+}
+
+impl Deref for ResolvedToolchain<'_> {
+    type Target = ResolvedToolchainView;
+
+    fn deref(&self) -> &Self::Target {
+        match &self.authority {
+            ResolvedAuthority::External(external) => &external.view,
+            ResolvedAuthority::EmbeddedTypeScript(view) => view,
+        }
+    }
+}
+
+/// A linked checker cannot be used as an external process authority.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("linked compiler authority has no external invocation")]
+pub struct NotExternalToolchain;
+
+impl<'path> ResolvedToolchain<'path> {
+    /// Authority of the exact native TSZ implementation linked into this image.
+    pub fn native_typescript() -> Self {
+        Self {
+            authority: ResolvedAuthority::EmbeddedTypeScript(ResolvedToolchainView {
+                tool: NativeTool::TypeScriptCompiler,
+                identity: ContentId::from_canonical_bytes(
+                    backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY,
+                ),
+            }),
+        }
+    }
+
+    /// Extracts external launch authority or refuses a linked checker explicitly.
+    pub fn external(self) -> Result<ExternalToolchain<'path>, NotExternalToolchain> {
+        match self.authority {
+            ResolvedAuthority::External(external) => Ok(external),
+            ResolvedAuthority::EmbeddedTypeScript(_) => Err(NotExternalToolchain),
+        }
+    }
+
+    pub(crate) fn invocation_identity(self) -> ContentId<ToolchainDomain> {
+        match self.authority {
+            ResolvedAuthority::External(external) => external.invocation_identity(),
+            ResolvedAuthority::EmbeddedTypeScript(view) => view.identity,
+        }
+    }
+
+    pub(crate) fn invocation_location_identity(self) -> Option<[u8; 32]> {
+        match self.authority {
+            ResolvedAuthority::External(external) => external.invocation_location_identity(),
+            ResolvedAuthority::EmbeddedTypeScript(_) => None,
+        }
+    }
+
+    pub(crate) fn interpreter_identity(self) -> Option<ContentId<ToolchainDomain>> {
+        match self.authority {
+            ResolvedAuthority::External(external) => external.interpreter_identity(),
+            ResolvedAuthority::EmbeddedTypeScript(_) => None,
+        }
+    }
+
+    /// Binds one absolute executable path to exact caller-probed tool version bytes.
+    pub fn from_version(
+        tool: NativeTool,
+        executable: &'path Path,
+        version_bytes: &[u8],
+    ) -> Result<Self, ToolchainResolutionError> {
+        ExternalToolchain::from_version(tool, executable, version_bytes).map(|external| Self {
+            authority: ResolvedAuthority::External(external),
+        })
+    }
+
+    /// Rebinds a caller-owned executable path to its already-proven exact toolchain identity.
+    ///
+    /// This preserves version provenance when an outer asynchronous adapter takes ownership of
+    /// configuration without running a second ambient tool probe.
+    pub fn from_identity(
+        tool: NativeTool,
+        executable: &'path Path,
+        identity: ContentId<ToolchainDomain>,
+    ) -> Result<Self, ToolchainResolutionError> {
+        ExternalToolchain::from_identity(tool, executable, identity).map(|external| Self {
+            authority: ResolvedAuthority::External(external),
+        })
+    }
+
+    /// Binds a TypeScript script to its exact versioned compiler and interpreter inputs.
+    pub(crate) fn from_interpreted_script(
+        tool: NativeTool,
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        script_version_bytes: &[u8],
+        interpreter_version_bytes: &[u8],
+        script_file_digest: [u8; 32],
+        interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
+    ) -> Result<Self, ToolchainResolutionError> {
+        ExternalToolchain::from_interpreted_script(
+            tool,
+            interpreter,
+            script,
+            module_root,
+            script_version_bytes,
+            interpreter_version_bytes,
+            script_file_digest,
+            interpreter_file_digest,
+            module_closure_digest,
+        )
+        .map(|external| Self {
+            authority: ResolvedAuthority::External(external),
+        })
+    }
+
+    /// Binds exact already-admitted identities and file snapshots to a script invocation.
+    pub(crate) fn from_interpreted_identities(
+        tool: NativeTool,
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        script_identity: ContentId<ToolchainDomain>,
+        interpreter_identity: ContentId<ToolchainDomain>,
+        script_file_digest: [u8; 32],
+        interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
+    ) -> Result<Self, ToolchainResolutionError> {
+        ExternalToolchain::from_interpreted_identities(
+            tool,
+            interpreter,
+            script,
+            module_root,
+            script_identity,
+            interpreter_identity,
+            script_file_digest,
+            interpreter_file_digest,
+            module_closure_digest,
+        )
+        .map(|external| Self {
+            authority: ResolvedAuthority::External(external),
+        })
+    }
+
+    /// Binds a compiler launch to the private witness already admitted for one project package.
+    /// The host rechecks its complete file-content closure at package boundaries; each spawn does
+    /// only same-object checks, avoiding a second full Node/package hash for every source file.
+    pub(crate) fn from_project_invocation(
+        tool: NativeTool,
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        script_version_bytes: &[u8],
+        interpreter_version_bytes: &[u8],
+        lease: &'path TypeScriptProjectInvocationLease,
+    ) -> Result<Self, ToolchainResolutionError> {
+        ExternalToolchain::from_project_invocation(
+            tool,
+            interpreter,
+            script,
+            module_root,
+            script_version_bytes,
+            interpreter_version_bytes,
+            lease,
+        )
+        .map(|external| Self {
+            authority: ResolvedAuthority::External(external),
+        })
+    }
+}
+
+/// Caller-resolved absolute executable capability with private execution authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExternalToolchain<'path> {
     view: ResolvedToolchainView,
     invocation: ResolvedInvocation<'path>,
 }
 
-impl<'path> Deref for ResolvedToolchain<'path> {
+impl<'path> Deref for ExternalToolchain<'path> {
     type Target = ResolvedToolchainView;
 
     fn deref(&self) -> &Self::Target {
@@ -82,7 +262,7 @@ impl<'path> Deref for ResolvedToolchain<'path> {
 
 /// Exposes the already-validated executable path without granting a second
 /// mutable or ambient tool-resolution route.
-impl AsRef<Path> for ResolvedToolchain<'_> {
+impl AsRef<Path> for ExternalToolchain<'_> {
     fn as_ref(&self) -> &Path {
         self.executable()
     }
@@ -137,7 +317,7 @@ pub enum NativeInvocationError {
     },
 }
 
-impl<'path> ResolvedToolchain<'path> {
+impl<'path> ExternalToolchain<'path> {
     /// Binds one absolute executable path to exact caller-probed tool version bytes.
     pub fn from_version(
         tool: NativeTool,
@@ -428,7 +608,8 @@ impl<'path> ResolvedToolchain<'path> {
         Ok(())
     }
 
-    pub(crate) fn executable(self) -> &'path Path {
+    /// Exact executable or script path admitted for this external authority.
+    pub fn executable(self) -> &'path Path {
         match self.invocation {
             ResolvedInvocation::NativeExecutable { executable } => executable,
             ResolvedInvocation::InterpretedScript { script, .. } => script,
@@ -473,5 +654,25 @@ impl<'path> ToolchainSelection<'path> {
                 ToolchainSelectionFact::ExplicitlyUnavailable { tool }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+
+    #[test]
+    fn native_typescript_has_identity_and_refuses_external_launch_authority() {
+        let native = ResolvedToolchain::native_typescript();
+        assert_eq!(native.tool, NativeTool::TypeScriptCompiler);
+        assert_eq!(
+            native.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(
+                backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY,
+            )
+        );
+        assert_eq!(native.external(), Err(NotExternalToolchain));
+        assert_eq!(native.invocation_location_identity(), None);
+        assert_eq!(native.interpreter_identity(), None);
     }
 }

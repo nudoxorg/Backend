@@ -293,6 +293,11 @@ pub struct RecursionGuard<K: Hash + Eq + Copy> {
     max_depth: u32,
     max_iterations: u32,
     max_visiting: u32,
+    /// Whether every `enter` also polls the thread-ambient execution checkpoint.
+    ///
+    /// Enabled only for variance, whose interrupted mask is excluded from all
+    /// cache publication. Other profiles keep their existing controls.
+    ambient_poll: bool,
     /// Sticky verdict recording which limit class, if any, has fired.
     limit_state: RecursionLimitState,
 }
@@ -309,13 +314,19 @@ impl<K: Hash + Eq + Copy> RecursionGuard<K> {
             max_depth,
             max_iterations,
             max_visiting: 10_000,
+            ambient_poll: false,
             limit_state: RecursionLimitState::Clear,
         }
     }
 
     /// Create a guard from a named [`RecursionProfile`].
     pub fn with_profile(profile: RecursionProfile) -> Self {
-        Self::new(profile.max_depth(), profile.max_iterations())
+        let mut guard = Self::new(profile.max_depth(), profile.max_iterations());
+        // Variance walks have an audited no-publication stop boundary. Other
+        // profiles retain their existing explicit/iteration controls until
+        // their cache publication paths have equivalent stop proof.
+        guard.ambient_poll = matches!(profile, RecursionProfile::Variance);
+        guard
     }
 
     /// Builder: set a custom max visiting-set size.
@@ -341,6 +352,14 @@ impl<K: Hash + Eq + Copy> RecursionGuard<K> {
     pub fn enter(&mut self, key: K) -> RecursionResult {
         // Saturating add prevents overflow with very high max_iterations.
         self.iterations = self.iterations.saturating_add(1);
+
+        // A stopped execution is an exhausted iteration budget: every caller already
+        // unwinds a denied entry conservatively, and the sticky limit state keeps
+        // limit-truncated results out of caches.
+        if self.ambient_poll && !tsz_common::ambient_poll() {
+            self.limit_state = RecursionLimitState::IterationExceeded;
+            return RecursionResult::IterationExceeded;
+        }
 
         if self.iterations > self.max_iterations {
             self.limit_state = RecursionLimitState::IterationExceeded;

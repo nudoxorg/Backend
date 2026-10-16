@@ -5,6 +5,7 @@
 //! contains no test logic itself; it only wires up the shards.
 
 mod extends_cycle_and_jsx_factory_values;
+mod captured_filesystem;
 mod extends_empty_specifier;
 mod extends_missing_target;
 mod files_list_empty;

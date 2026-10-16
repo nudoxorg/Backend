@@ -8,16 +8,19 @@
 use crate::fault::Fault;
 use crate::identity::{Identity, KeyTag};
 use crate::language::Language;
+use crate::readiness::PublishedFacts;
+use backend_library::Lane;
 
 /// How ready one shelf entry is.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Readiness {
     /// Every declared lane covered this project.
     Ready,
-    /// Indexing published rows but has not finished.
+    /// Indexing is running and has not finished.
     Indexing {
-        /// Rows published so far.
-        rows: RowCount,
+        /// Rows published so far, when the reply carried the published count.
+        /// Absent means "not read", never zero.
+        rows: Option<RowCount>,
     },
     /// Indexing stopped with a typed failure.
     Failed {
@@ -116,6 +119,8 @@ pub struct ShelfEntry {
     readiness: Readiness,
     languages: Box<[LanguageCount]>,
     declarations: Option<RowCount>,
+    published_rows: Option<RowCount>,
+    partial_lanes: Box<[Lane]>,
 }
 
 impl ShelfEntry {
@@ -127,7 +132,23 @@ impl ShelfEntry {
             readiness,
             languages: Box::new([]),
             declarations: None,
+            published_rows: None,
+            partial_lanes: Box::new([]),
         }
+    }
+
+    /// Attaches the published row count of the revision this entry was read at.
+    #[must_use]
+    pub const fn with_published_rows(mut self, rows: Option<RowCount>) -> Self {
+        self.published_rows = rows;
+        self
+    }
+
+    /// Marks the lanes which finished with settled source gaps.
+    #[must_use]
+    pub fn with_partial_lanes(mut self, lanes: Vec<Lane>) -> Self {
+        self.partial_lanes = lanes.into_boxed_slice();
+        self
     }
 
     /// Attaches per-language declaration counts, most declarations first.
@@ -140,11 +161,9 @@ impl ShelfEntry {
                 .cmp(&left.declarations)
                 .then_with(|| left.language.cmp(&right.language))
         });
-        self.declarations = Some(RowCount::new(
-            sorted
-                .iter()
-                .fold(0_u64, |total, row| total.saturating_add(row.declarations.get())),
-        ));
+        self.declarations = Some(RowCount::new(sorted.iter().fold(0_u64, |total, row| {
+            total.saturating_add(row.declarations.get())
+        })));
         self.languages = sorted.into_boxed_slice();
         self
     }
@@ -172,6 +191,55 @@ impl ShelfEntry {
     pub const fn declarations(&self) -> Option<RowCount> {
         self.declarations
     }
+
+    /// Returns the count tags every renderer prints after the readiness word,
+    /// in print order: the lanes which finished with settled gaps, the rows the
+    /// owner published at this revision, then the declaration count.
+    ///
+    /// A count the reply did not carry is reported as unavailable. It is never
+    /// printed as zero, and a row count is never offered as a declaration
+    /// count: they are different statements.
+    #[must_use]
+    pub fn count_tags(&self) -> Vec<String> {
+        let mut tags = Vec::new();
+        let indexing_rows = match &self.readiness {
+            Readiness::Indexing { rows } => *rows,
+            Readiness::Ready | Readiness::Failed { .. } | Readiness::Requested => None,
+        };
+        for lane in self.partial_lanes() {
+            tags.push(format!("{} partial", crate::coverage::lane_name(*lane)));
+        }
+        if let Some(rows) = indexing_rows.or(self.published_rows) {
+            tags.push(format!("{} row(s)", rows.get()));
+        }
+        match self.declarations {
+            Some(count) if count.get() > 0 => {
+                tags.push(format!("{} declaration(s)", count.get()));
+            }
+            Some(_) => {}
+            // With a published row count the line already carries a count; a
+            // second clause calling the declaration count unavailable only
+            // contradicts it. A reply carrying no count at all still says so.
+            None if indexing_rows.or(self.published_rows).is_none() => {
+                tags.push("declaration count unavailable".to_owned());
+            }
+            None => {}
+        }
+        tags
+    }
+
+    /// Returns the rows the owner published at this revision, when known.
+    #[must_use]
+    pub const fn published_rows(&self) -> Option<RowCount> {
+        self.published_rows
+    }
+
+    /// Returns the lanes which finished with settled source gaps. A project
+    /// with such a lane is ready and usable, and says where it is partial.
+    #[must_use]
+    pub fn partial_lanes(&self) -> &[Lane] {
+        &self.partial_lanes
+    }
 }
 
 /// The whole shelf at one immutable revision.
@@ -179,22 +247,60 @@ impl ShelfEntry {
 pub struct Shelf {
     revision: KeyTag,
     entries: Box<[ShelfEntry]>,
+    facts: PublishedFacts,
 }
 
 impl Shelf {
+    pub(crate) fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        for entry in &mut self.entries {
+            if let Readiness::Failed { fault } = &mut entry.readiness {
+                *fault = fault.clone().with_mcp_exposure(exposure);
+            }
+        }
+    }
+
     /// Records one shelf at an exact revision.
     #[must_use]
     pub fn new(revision: KeyTag, entries: impl Into<Box<[ShelfEntry]>>) -> Self {
         Self {
             revision,
             entries: entries.into(),
+            facts: PublishedFacts::unread(),
         }
+    }
+
+    /// Attaches what the owner published at this revision, so the shelf can
+    /// print the same lane statement `status` prints.
+    #[must_use]
+    pub fn with_facts(mut self, facts: PublishedFacts) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Returns the lane coverage and row count of the revision, when read.
+    #[must_use]
+    pub const fn facts(&self) -> &PublishedFacts {
+        &self.facts
     }
 
     /// Returns the revision this shelf was read at.
     #[must_use]
     pub const fn revision(&self) -> KeyTag {
         self.revision
+    }
+
+    /// Returns the workspace-level statement every renderer prints under the
+    /// project list: the readiness word, the published row count, and the lane
+    /// line `status` prints for the same revision. Absent when the reply
+    /// carried no lane coverage.
+    #[must_use]
+    pub fn lane_statement(&self) -> Option<(String, crate::coverage::CoverageLine)> {
+        let line = *self.facts.lanes()?;
+        let mut words = vec![format!("lanes {}", line.readiness())];
+        if let Some(rows) = self.facts.rows() {
+            words.push(format!("{} row(s)", rows.get()));
+        }
+        Some((words.join(" · "), line))
     }
 
     /// Returns every project in display order.

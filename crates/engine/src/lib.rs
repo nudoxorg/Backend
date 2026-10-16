@@ -129,17 +129,16 @@ pub use backend_replication::{FramedStream, FramedStreamError};
 // into one of the lower crates.
 pub use backend_library::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
-    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, Basis, BranchKey,
+    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, Basis, BoundedJsonError, BranchKey,
     CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily, CapabilityId,
     CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
     CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
     CompleteViewProjection, Coverage as ViewCoverage, CoverageCapability, Cursor, CursorEvent,
     CursorResetReason, DTO_VERSION, DeclarationChange, DeclarationReadExtent, DeclarationRecord,
-    DependencyAuthority,
-    DependencyEvidence, DependencyFacts, DependencyScope, DiffRecord, Document,
-    EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization,
-    EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, FaultRows,
-    ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DiffRecord,
+    Document, EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric,
+    EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto,
+    FaultRows, ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
     ForgeRepositoryMetadataRecord, Fragment, Freshness, FreshnessState, Frontier, GraphAuthority,
     GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind, GraphLayoutEdge, GraphLayoutInput,
     GraphNeighborhoodQuery, GraphNodeId, GraphPageTerminal, GraphProvenance, GraphQueryControl,
@@ -169,17 +168,17 @@ pub use backend_library::{
     RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge, RichGraphError,
     RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision, RichGraphSnapshot, Row,
     RowChange, RowId, RowIdentityPreimage, RowIdentityPreimageError, RowState,
-    SelectedProjectSourceFrontier,
-    SemanticArrayShape, SemanticCallableShape, SemanticConfidence, SemanticDeclarationIdentity,
-    SemanticDeclarationShape, SemanticGenerationId, SemanticHistoryImageIdentity,
-    SemanticHistoryImagePublicationProof, SemanticHistoryInputReplayStatus,
-    SemanticHistoryPublicationProof, SemanticHistoryPublicationStatus,
-    SemanticHistorySelectionStamp, SemanticImagePayloadBytes, SemanticLanguageProfile,
-    SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticLiteral,
-    SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary, SemanticShapeBatch,
-    SemanticShapeBatchSchema, SemanticShapeBudget, SemanticShapeEntry, SemanticShapeFact,
-    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SelectedProjectSourceFrontier, SemanticArrayShape, SemanticCallableShape, SemanticConfidence,
+    SemanticDeclarationIdentity, SemanticDeclarationShape, SemanticGenerationId,
+    SemanticHistoryImageIdentity, SemanticHistoryImagePublicationProof,
+    SemanticHistoryInputReplayStatus, SemanticHistoryPublicationProof,
+    SemanticHistoryPublicationStatus, SemanticHistorySelectionStamp, SemanticImagePayloadBytes,
+    SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind,
+    SemanticLinkTarget, SemanticLiteral, SemanticObjectMember, SemanticPropertyKey,
+    SemanticShapeAdmissionSummary, SemanticShapeBatch, SemanticShapeBatchSchema,
+    SemanticShapeBudget, SemanticShapeEntry, SemanticShapeFact, SemanticShapeImageOrigin,
+    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
+    SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
     SemanticShapeSourceSchema, SemanticShapeUnavailable, SemanticSourceSpan, SemanticTypeElement,
     SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, SemanticVersionFreshness,
     SemanticVersionRecord, SeverityLevel, SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto,
@@ -302,6 +301,16 @@ pub fn encode_reply_dto(reply: &ReplyDto) -> Result<Vec<u8>, String> {
     serde_json::to_vec(reply).map_err(|error| error.to_string())
 }
 
+/// Streams a reply under the unchanged native body ceiling.
+///
+/// # Errors
+/// Keeps byte overflow distinct from serialization, arithmetic and allocation failures.
+pub fn encode_reply_dto_bounded(
+    reply: &ReplyDto,
+) -> Result<Vec<u8>, BoundedJsonError> {
+    backend_library::encode_reply_body_bounded(reply)
+}
+
 /// Encodes one producer-certified event DTO for a subscription payload.
 /// Applications use this facade instead of adding a second direct dependency
 /// on the portable library's serialization implementation.
@@ -378,6 +387,7 @@ pub use daemon::{
     SelectedReadHead, SubscriptionReply, ViewBinding, ViewBindingAdmission, ViewBindingState,
     ViewPersistence,
 };
+pub use daemon::{PreparedReadHeadRefresh, PublishedReadHeadRefresh};
 pub use dispatch::{
     AcceptedResultProof, AuthoritySnapshot, AuthorityTransition, Blake3AuthorityVerifier,
     CompleteSemanticCoverage, CompleteSemanticCoverageCapability, CompositeAdmissionValidator,
@@ -432,12 +442,11 @@ pub use workspace::{
     PreparedTransition, PreparedWorkspaceCandidate, PublicationStatus, PublishGrant, Published,
     PublishedPublication, PublishedWorkspaceWriter, RelationIdentity, RelationKeyPrefix,
     RetiredWorkspaceHead, TransactionId, TransactionSchema, TransactionVersion, TransitionWork,
-    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceError, WorkspaceGcPin,
-    WorkspaceDirectoryAdmission, WorkspaceHead, WorkspaceModel, WorkspaceOwner,
-    WorkspacePublicationFailure, WorkspaceRecord,
-    WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
-    WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
-    WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceDirectoryAdmission,
+    WorkspaceError, WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner,
+    WorkspacePublicationFailure, WorkspaceRecord, WorkspaceRelationChild, WorkspaceRelationError,
+    WorkspaceRelationFault, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
+    WorkspaceRelationNodePage, WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
 };
 
 /// Generic engine composition around one daemon owner.

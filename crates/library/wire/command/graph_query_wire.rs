@@ -30,6 +30,13 @@ pub(crate) fn request_from_wire_against_owner(
         AdmittedGraphQueryInput::new(value.query, variables).map_err(|error| error.to_string())?;
     let continuation = value.page.continuation.take();
     let page = page_request_from_wire(value.page, certificate)?;
+    if page.window().is_windowed()
+        || page
+            .continuation()
+            .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+    {
+        return Err("structured graph query does not admit catalog delivery windows".to_owned());
+    }
     let mut request = GraphQueryRequest::bind(input, page.basis(), page.limit());
     certificate.cursor_claim(owner)?;
     let projection = request
@@ -87,6 +94,13 @@ pub(crate) fn request_from_wire(
     let input =
         AdmittedGraphQueryInput::new(value.query, variables).map_err(|error| error.to_string())?;
     let page = page_request_from_wire(value.page, certificate)?;
+    if page.window().is_windowed()
+        || page
+            .continuation()
+            .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+    {
+        return Err("structured graph query does not admit catalog delivery windows".to_owned());
+    }
     let mut request = GraphQueryRequest::bind(input, page.basis(), page.limit());
     if let Some(continuation) = page.continuation() {
         request = request.with_continuation(continuation);

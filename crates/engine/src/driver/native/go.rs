@@ -10,7 +10,7 @@ use crate::driver::{
         frontend::NativeFrontend,
         work::{create_artifact_directory, remove_directory_if_present, write_artifact},
     },
-    types::{NativeArtifactRole, NativeWorkError, ResolvedToolchain},
+    types::{ExternalToolchain, NativeArtifactRole, NativeWorkError},
 };
 
 const SOURCE_FILE: &str = "compiler-probe.go";
@@ -39,7 +39,7 @@ impl NativeFrontend for GoFrontend {
 
     fn command(
         profile: Self::Profile,
-        toolchain: ResolvedToolchain<'_>,
+        toolchain: ExternalToolchain<'_>,
         native_work: &Path,
     ) -> Command {
         let mut command = Command::new(toolchain.executable());

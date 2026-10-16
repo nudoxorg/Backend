@@ -3,13 +3,13 @@
 use super::super::{
     FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, sync_directory,
 };
-use super::{TreeWriteStats, wire};
+use super::{RelationAdmission, TreeWriteStats, wire};
 use crate::UntrustedObjectId;
 use backend_version::{
     CanonicalRelation, CheckedCanonicalRoot, CommittedChild, IdContext, SchemaIdentity, StateRoot,
     TreeNodeLoader, TreeNodeView, UntrustedId, admit_canonical_root_claim,
 };
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::io::Read as _;
 
 /// An owned, read-only adapter for the version layer's lazy relation tree.
@@ -134,35 +134,61 @@ impl FileStore {
     pub(in crate::durable) fn write_root_relation_batch(
         &self,
         objects: &[TypedObject],
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<(), StoreError> {
-        let relation_objects = objects
-            .iter()
+        let relation_objects = objects.iter()
             .filter(|object| self.relation_registry.contains_schema(object.schema()))
             .collect::<Vec<_>>();
-        let batch = relation_objects
-            .iter()
-            .map(|object| (object.schema(), *object.version()))
-            .collect::<BTreeSet<_>>();
-        for object in &relation_objects {
-            object.verify_wire_version(&self.relation_registry)?;
-            let decoded = self.relation_registry.node_references(
-                object.schema(),
-                object.version(),
-                object.bytes(),
-            )?;
-            for child in &decoded.children {
-                if !batch.contains(&(object.schema(), *child))
-                    && !self.relation_ref_matches(object.schema(), child)?
-                {
-                    return Err(StoreError::Corrupt);
+        let mut stats = NodeWriteCounters::default();
+        self.write_relation_objects_in_order(&relation_objects, &mut stats, admission)
+    }
+
+    fn write_relation_objects_in_order(
+        &self,
+        objects: &[&TypedObject],
+        stats: &mut NodeWriteCounters,
+        admission: &mut RelationAdmission<'_>,
+    ) -> Result<(), StoreError> {
+        if objects.len() > super::NODE_MAX_COUNT { return Err(StoreError::Bounds); }
+        let members = objects.iter().enumerate()
+            .map(|(index, object)| ((object.schema(), *object.version()), index))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let identities = objects.iter().enumerate()
+            .map(|(index, object)| (object.id(), index))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut states = vec![0_u8; objects.len()];
+        for root in 0..objects.len() {
+            let mut pending = vec![(root, false)];
+            while let Some((index, finish)) = pending.pop() {
+                if states[index] == 2 { continue; }
+                let object = objects[index];
+                if finish {
+                    self.write_relation_object(object, object.schema(), object.version(), stats, admission)?;
+                    states[index] = 2;
+                    continue;
+                }
+                if states[index] == 1 { return Err(StoreError::Corrupt); }
+                states[index] = 1;
+                object.verify_wire_version(&self.relation_registry)?;
+                let references = self.relation_registry.node_references(object.schema(), object.version(), object.bytes())?;
+                pending.push((index, true));
+                for version in references.children {
+                    if let Some(child) = members.get(&(object.schema(), version)) {
+                        if states[*child] != 2 { pending.push((*child, false)); }
+                    } else if admission.existing(object.schema(), &version)?.is_none() {
+                        return Err(StoreError::Corrupt);
+                    }
+                }
+                for reference in references.value_references {
+                    if let Some(child) = identities.get(&ObjectId::from_bytes(reference)) {
+                        if states[*child] != 2 { pending.push((*child, false)); }
+                    }
+                }
+                if pending.len() > super::NODE_MAX_COUNT.checked_mul(4).ok_or(StoreError::Bounds)? {
+                    return Err(StoreError::Bounds);
                 }
             }
         }
-        let mut stats = NodeWriteCounters::default();
-        for object in relation_objects {
-            self.write_relation_object(object, object.schema(), object.version(), &mut stats)?;
-        }
-        sync_directory(&self.root.join("nodes"))?;
         Ok(())
     }
 
@@ -202,7 +228,10 @@ impl FileStore {
         let schema = SchemaIdentity::of_relation::<R>();
         let mut counters = NodeWriteCounters::default();
         let mut seen = HashSet::new();
-        let root = self.write_relation_node_view(root, schema, &mut counters, &mut seen)?;
+        let pin = self.acquire_gc_pin()?;
+        let _process_lock = self.acquire_process_lock()?;
+        let mut admission = RelationAdmission::new(self, &pin)?;
+        let root = self.write_relation_node_view(root, schema, &mut counters, &mut seen, &mut admission)?;
         Ok(super::RelationNodeWriteStats {
             root,
             nodes_written: counters.nodes_written,
@@ -331,34 +360,41 @@ impl FileStore {
         &self,
         update: &backend_version::LazyPreparedUpdate<R>,
     ) -> Result<super::RelationNodeWriteStats, StoreError> {
+        let pin = self.acquire_gc_pin()?;
+        let _process_lock = self.acquire_process_lock()?;
+        let mut admission = RelationAdmission::new(self, &pin)?;
+        self.write_lazy_relation_update_admitted(update, &mut admission)
+    }
+
+    pub(in crate::durable) fn write_lazy_relation_update_admitted<R: CanonicalRelation>(
+        &self,
+        update: &backend_version::LazyPreparedUpdate<R>,
+        admission: &mut RelationAdmission<'_>,
+    ) -> Result<super::RelationNodeWriteStats, StoreError> {
         fs::create_dir_all(self.root.join("nodes")).map_err(|error| io_error(&error))?;
         let schema = SchemaIdentity::of_relation::<R>();
         let target = update.target().root().to_bytes();
         let mut counters = NodeWriteCounters::default();
         let mut root_object = None;
         let mut seen = HashSet::new();
-        for node in update.changed_nodes() {
-            let version = node.commitment().to_bytes();
-            if !seen.insert(version) {
-                continue;
-            }
-            let object = TypedObject::from_state_root(node.commitment(), node)?;
-            let (object_id, _) =
-                self.write_relation_object(&object, schema, &version, &mut counters)?;
-            if version == target {
-                root_object = Some(object_id);
-            }
+        let objects = update.changed_nodes().iter().map(|node| {
+            TypedObject::from_state_root(node.commitment(), node)
+        }).collect::<Result<Vec<_>, StoreError>>()?;
+        let objects = objects.iter().filter(|object| seen.insert(*object.version())).collect::<Vec<_>>();
+        self.write_relation_objects_in_order(&objects, &mut counters, admission)?;
+        for object in objects {
+            if object.version() == &target { root_object = Some(object.id()); }
         }
         let root = if let Some(root) = root_object {
             root
-        } else if self.relation_ref_matches(schema, &target)? {
+        } else if admission.existing(schema, &target)?.is_some() {
             self.read_relation_ref(schema, &target)?
         } else {
             // An empty initial tree has no changed frontier but still needs a
             // durable root node so its closure descriptor survives reopen.
             let object =
                 TypedObject::from_state_root(update.target().root(), update.target().node())?;
-            self.write_relation_object(&object, schema, &target, &mut counters)?
+            self.write_relation_object(&object, schema, &target, &mut counters, admission)?
                 .0
         };
         Ok(super::RelationNodeWriteStats {
@@ -415,6 +451,7 @@ impl FileStore {
         schema: SchemaIdentity,
         stats: &mut NodeWriteCounters,
         seen: &mut HashSet<Hash>,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<ObjectId, StoreError> {
         let version = node.state_root().to_bytes();
         if !seen.insert(version) {
@@ -424,14 +461,14 @@ impl FileStore {
         if object.schema() != schema || object.version() != &version {
             return Err(StoreError::Corrupt);
         }
-        self.write_relation_object(&object, schema, &version, stats)?;
         for child in node.children() {
             let child_version = child.id().to_bytes();
-            if self.relation_ref_matches(schema, &child_version)? {
+            if admission.existing(schema, &child_version)?.is_some() {
                 continue;
             }
-            self.write_relation_node_view(child, schema, stats, seen)?;
+            self.write_relation_node_view(child, schema, stats, seen, admission)?;
         }
+        self.write_relation_object(&object, schema, &version, stats, admission)?;
         Ok(object.id())
     }
 
@@ -441,7 +478,8 @@ impl FileStore {
         schema: SchemaIdentity,
         stats: &mut TreeWriteStats,
         seen: &mut HashSet<Hash>,
-        recurse: bool,
+        _recurse: bool,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<ObjectId, StoreError> {
         let version = node.id().to_bytes();
         if !seen.insert(version) {
@@ -451,16 +489,12 @@ impl FileStore {
         if object.schema() != schema || object.version() != &version {
             return Err(StoreError::Corrupt);
         }
-        self.write_relation_object_for_tree(&object, schema, &version, stats)?;
-        if recurse {
-            for child in node.children() {
-                let child_version = child.id().to_bytes();
-                if self.relation_ref_matches(schema, &child_version)? {
-                    continue;
-                }
-                self.write_relation_node_handle(&child, schema, &mut *stats, seen, true)?;
-            }
+        for child in node.children() {
+            let child_version = child.id().to_bytes();
+            if admission.existing(schema, &child_version)?.is_some() { continue; }
+            self.write_relation_node_handle(&child, schema, &mut *stats, seen, true, admission)?;
         }
+        self.write_relation_object_for_tree(&object, schema, &version, stats, admission)?;
         Ok(object.id())
     }
 
@@ -470,8 +504,11 @@ impl FileStore {
         schema: SchemaIdentity,
         version: &Hash,
         stats: &mut NodeWriteCounters,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<(ObjectId, bool), StoreError> {
+        admission.verify_for(self)?;
         let receipt = self.write_relation_object_with_receipt(object)?;
+        admission.object_written(receipt);
         if receipt.created() {
             stats.nodes_written = stats
                 .nodes_written
@@ -482,6 +519,9 @@ impl FileStore {
                 .checked_add(usize::try_from(receipt.bytes()).map_err(|_| StoreError::Bounds)?)
                 .ok_or(StoreError::Bounds)?;
         }
+        admission.checkpoint(1, object.id())?;
+        let complete = admission.admit_object(object.id())?.ok_or(StoreError::Corrupt)?;
+        admission.checkpoint(2, object.id())?;
         let index_path = self.relation_ref_path(schema, version);
         let index_created = if index_path.is_file() {
             if self.read_relation_ref(schema, version)? != object.id() {
@@ -489,11 +529,11 @@ impl FileStore {
             }
             false
         } else {
-            wire::write_relation_ref(
+            wire::write_complete_relation_ref(
                 &index_path,
                 schema,
                 version,
-                object.id(),
+                complete,
                 &self.root.join("nodes"),
             )?
         };
@@ -503,6 +543,7 @@ impl FileStore {
                 .checked_add(wire::relation_ref_encoded_len())
                 .ok_or(StoreError::Bounds)?;
         }
+        admission.reference_installed(schema, version, object.id(), index_created)?;
         relation_write_checkpoint()?;
         Ok((object.id(), index_created))
     }
@@ -513,12 +554,15 @@ impl FileStore {
         schema: SchemaIdentity,
         version: &Hash,
         stats: &mut TreeWriteStats,
+        admission: &mut RelationAdmission<'_>,
     ) -> Result<(), StoreError> {
         stats.nodes_visited = stats
             .nodes_visited
             .checked_add(1)
             .ok_or(StoreError::Bounds)?;
+        admission.verify_for(self)?;
         let receipt = self.write_relation_object_with_receipt(object)?;
+        admission.object_written(receipt);
         if receipt.created() {
             stats.nodes_written = stats
                 .nodes_written
@@ -529,6 +573,9 @@ impl FileStore {
                 .checked_add(usize::try_from(receipt.bytes()).map_err(|_| StoreError::Bounds)?)
                 .ok_or(StoreError::Bounds)?;
         }
+        admission.checkpoint(1, object.id())?;
+        let complete = admission.admit_object(object.id())?.ok_or(StoreError::Corrupt)?;
+        admission.checkpoint(2, object.id())?;
         let index_path = self.relation_ref_path(schema, version);
         let index_created = if index_path.is_file() {
             if self.read_relation_ref(schema, version)? != object.id() {
@@ -536,11 +583,11 @@ impl FileStore {
             }
             false
         } else {
-            wire::write_relation_ref(
+            wire::write_complete_relation_ref(
                 &index_path,
                 schema,
                 version,
-                object.id(),
+                complete,
                 &self.root.join("nodes"),
             )?
         };
@@ -550,36 +597,19 @@ impl FileStore {
                 .checked_add(wire::relation_ref_encoded_len())
                 .ok_or(StoreError::Bounds)?;
         }
+        admission.reference_installed(schema, version, object.id(), index_created)?;
         relation_write_checkpoint()?;
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::durable) fn relation_ref_matches(
         &self,
         schema: SchemaIdentity,
         version: &Hash,
     ) -> Result<bool, StoreError> {
-        match self.read_relation_ref_if_present(schema, version)? {
-            Some(object_id) => {
-                // Relation references are a rebuildable local index. GC may
-                // sweep the unrooted immutable node while leaving its tiny
-                // reference file behind; treat that dangling cache entry as
-                // a miss so a later closure can reinstall the deterministic
-                // node. An existing but malformed or conflicting object is
-                // still rejected below.
-                self.with_verified_object_claim_if_present(
-                    UntrustedObjectId::from_bytes(*object_id.as_bytes()),
-                    |object| {
-                        if object.schema() != schema || object.version() != version {
-                            return Err(StoreError::Corrupt);
-                        }
-                        Ok(true)
-                    },
-                )
-                .map(|matches| matches.unwrap_or(false))
-            }
-            None => Ok(false),
-        }
+        let pin = self.acquire_gc_pin()?;
+        Ok(RelationAdmission::new(self, &pin)?.existing(schema, version)?.is_some())
     }
 
     pub(in crate::durable) fn relation_ref_exists(
@@ -615,7 +645,7 @@ impl FileStore {
             .ok_or(StoreError::Corrupt)
     }
 
-    fn read_relation_ref_if_present(
+    pub(super) fn read_relation_ref_if_present(
         &self,
         schema: SchemaIdentity,
         version: &Hash,
@@ -712,6 +742,173 @@ mod tests {
         let path = store.object_path(id);
         fs::remove_file(&path).expect("remove immutable object fixture");
         fs::write(path, bytes).expect("write replacement object fixture");
+    }
+
+    fn branch() -> crate::Node {
+        let map = crate::OrderedMap::try_from_iter((0..2048_u64).map(|key| {
+            (key.to_be_bytes().to_vec(), crate::StoredValue::new(vec![1], 1, vec![]))
+        })).expect("branch fixture");
+        let node = map.root_node();
+        assert!(node.children().next().is_some(), "fixture must have dependencies");
+        node
+    }
+
+    fn root_object(node: &crate::Node) -> TypedObject {
+        TypedObject::from_state_root(node.canonical().commitment(), node.canonical()).expect("root object")
+    }
+
+    fn install_branch(store: &FileStore, root: &crate::Node) -> Result<ObjectId, StoreError> {
+        let pin = store.acquire_gc_pin()?;
+        let _process_lock = store.acquire_process_lock()?;
+        let mut admission = RelationAdmission::new(store, &pin)?;
+        store.write_relation_node_handle(root, SchemaIdentity::of_relation::<crate::RawRelation>(),
+            &mut TreeWriteStats::default(), &mut HashSet::new(), true, &mut admission)
+    }
+
+    #[test]
+    fn legacy_parent_reference_without_descendants_is_a_miss_after_cold_reopen_and_repairs() {
+        let (store, path) = test_store("legacy-incomplete-parent");
+        let node = branch();
+        let object = root_object(&node);
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        assert_eq!(store.relation_ref_matches(schema, &version), Ok(false));
+        drop(store);
+        let store = FileStore::open(&path, 1024 * 1024).expect("cold reopen");
+        assert_eq!(store.relation_ref_matches(schema, &version), Ok(false));
+        install_branch(&store, &node).expect("repair complete dependency graph");
+        assert_eq!(store.relation_ref_matches(schema, &version), Ok(true));
+        drop(store);
+        let store = FileStore::open(&path, 1024 * 1024).expect("reopen repaired tree");
+        assert_eq!(store.relation_ref_matches(schema, &version), Ok(true));
+        drop(store);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn interruption_after_object_or_child_barriers_never_installs_a_parent_reference() {
+        for point in [1, 2] {
+            let (store, path) = test_store("interrupted-parent");
+            let node = branch();
+            let object = root_object(&node);
+            super::super::dependencies::set_test_fault(point, object.id());
+            assert!(install_branch(&store, &node).is_err());
+            assert!(store.contains_object(object.id()).expect("parent object exists"));
+            assert!(!store.relation_ref_exists(object.schema(), object.version()).expect("parent ref absent"));
+            assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(false));
+            drop(store);
+            let store = FileStore::open(&path, 1024 * 1024).expect("cold reopen");
+            assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(false));
+            install_branch(&store, &node).expect("retry complete admission");
+            assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
+            drop(store);
+            fs::remove_dir_all(path).expect("remove fixture");
+        }
+    }
+
+    #[test]
+    fn failed_dependency_file_or_directory_barrier_cannot_populate_the_reuse_memo() {
+        for point in [3, 4] {
+            let (store, path) = test_store("dependency-barrier-failure");
+            let node = branch();
+            let object = root_object(&node);
+            install_branch(&store, &node).expect("install complete branch");
+            let pin = store.acquire_gc_pin().expect("GC custody");
+            let mut admission = RelationAdmission::new(&store, &pin).expect("dependency admission");
+            super::super::dependencies::set_test_fault(point, object.id());
+            assert!(admission.existing(object.schema(), object.version()).is_err());
+            let child = node.children().next().expect("child");
+            fs::remove_file(store.object_path(root_object(&child).id())).expect("simulate lost child");
+            assert!(admission.existing(object.schema(), object.version()).expect("probe again").is_none());
+            drop((admission, pin, store));
+            fs::remove_dir_all(path).expect("remove fixture");
+        }
+    }
+
+    #[test]
+    fn cancelled_dependency_admission_grants_no_reuse_receipt_and_releases_gc_custody() {
+        let (store, path) = test_store("cancelled-dependencies");
+        let node = branch();
+        let object = root_object(&node);
+        install_branch(&store, &node).expect("install complete branch");
+        let pin = store.acquire_gc_pin().expect("GC custody");
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let mut admission = RelationAdmission::controlled(&store, &pin, Some(&cancelled)).expect("controlled admission");
+        assert!(admission.existing(object.schema(), object.version()).is_err());
+        assert!(store.try_with_gc_exclusive_lease(|| Ok(())).expect("try GC").is_none());
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        assert!(admission.existing(object.schema(), object.version()).expect("retry").is_some());
+        drop((admission, pin));
+        assert!(store.try_with_gc_exclusive_lease(|| Ok(())).expect("try GC again").is_some());
+        drop(store);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn dependency_admission_refuses_a_pin_for_another_store() {
+        let (first, first_path) = test_store("first-pin-root");
+        let (second, second_path) = test_store("second-pin-root");
+        let pin = second.acquire_gc_pin().expect("second root pin");
+        assert!(RelationAdmission::new(&first, &pin).is_err());
+        drop((pin, first, second));
+        fs::remove_dir_all(first_path).expect("remove first root");
+        fs::remove_dir_all(second_path).expect("remove second root");
+    }
+
+    #[test]
+    fn cold_recovery_removes_only_a_reference_writers_orphan_temporary_link() {
+        let (store, path) = test_store("orphan-ref-link");
+        let node = branch();
+        let object = root_object(&node);
+        install_branch(&store, &node).expect("complete branch");
+        let reference = store.relation_ref_path(object.schema(), object.version());
+        let temporary = reference.with_file_name(format!(
+            ".{}.4242.17.tmp", reference.file_name().expect("name").to_string_lossy(),
+        ));
+        fs::hard_link(&reference, &temporary).expect("simulate crash before temporary unlink");
+        let unrelated = path.join("nodes/notes.tmp");
+        fs::write(&unrelated, b"not a store writer temporary").expect("unrelated file");
+        drop(store);
+        let store = FileStore::open(&path, 1024 * 1024).expect("recover writer temporary");
+        assert!(!temporary.exists());
+        assert!(unrelated.exists());
+        assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
+        drop(store);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn relation_dependency_crash_probe_child() {
+        let Some(path) = std::env::var_os("BACKEND_STORE_DEPENDENCY_CRASH_ROOT") else { return; };
+        let point = std::env::var("BACKEND_STORE_DEPENDENCY_CRASH_POINT")
+            .expect("crash point").parse::<u8>().expect("numeric crash point");
+        let store = FileStore::open(PathBuf::from(path), 1024 * 1024).expect("child store");
+        let node = branch();
+        super::super::dependencies::set_test_fault(point, root_object(&node).id());
+        assert!(install_branch(&store, &node).is_ok(), "crash point must terminate the child");
+    }
+
+    #[test]
+    fn process_loss_between_parent_object_and_reference_cold_reopens_without_false_reuse() {
+        for point in [1_u8, 2] {
+            let (store, path) = test_store("process-loss-parent");
+            drop(store);
+            let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "durable::nodes::relation::tests::relation_dependency_crash_probe_child", "--nocapture"])
+                .env("BACKEND_STORE_DEPENDENCY_CRASH_ROOT", &path)
+                .env("BACKEND_STORE_DEPENDENCY_CRASH_POINT", point.to_string())
+                .status().expect("run crash child");
+            assert_eq!(status.code(), Some(160 + i32::from(point)));
+            let store = FileStore::open(&path, 1024 * 1024).expect("recover after process loss");
+            let node = branch();
+            let object = root_object(&node);
+            assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(false));
+            install_branch(&store, &node).expect("retry after process loss");
+            assert_eq!(store.relation_ref_matches(object.schema(), object.version()), Ok(true));
+            drop(store);
+            fs::remove_dir_all(path).expect("remove fixture");
+        }
     }
 
     #[test]

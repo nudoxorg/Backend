@@ -14,6 +14,7 @@
 
 use crate::drive::ContinuationCursor;
 use crate::fault::{Fault, Operand};
+use crate::words::wire_words;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
@@ -367,6 +368,10 @@ impl From<&SemanticHistoryPublicationStatus> for ProductSemanticHistoryStatus {
 pub enum ProductSemanticData {
     /// Exact compiler-version records usable as the shape read source operand.
     Versions(Box<[SemanticVersionRecord]>),
+    /// Bounded native descriptor page; source images are retrieved separately.
+    VersionsPage(backend_library::SemanticVersionsPage),
+    /// Exact native byte range of one complete captured semantic source.
+    Source(backend_library::SemanticSourceChunk),
     /// Existing shape wire egress after certificate-bearing direct admission.
     Shapes(backend_library::SemanticShapeExport),
 }
@@ -379,11 +384,15 @@ pub struct ProductView {
     note: Option<String>,
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
+    owner_cursor: Option<CursorProjection>,
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
     index_progress_poll: Option<backend_client::IndexProgressReference>,
+    cli_context: Option<crate::StartupRecoveryContext>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    package_graph_page: Option<backend_library::PackageGraphPage>,
+    package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
@@ -565,6 +574,14 @@ impl IndexSearchPageInfo {
 }
 
 impl ProductView {
+    /// Projects executable advice through the reader’s exposed MCP route.
+    pub fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        self.fault = self
+            .fault
+            .take()
+            .map(|fault| fault.with_mcp_exposure(exposure));
+    }
+
     /// Returns the heading naming what was asked.
     #[must_use]
     pub fn heading(&self) -> &str {
@@ -685,6 +702,19 @@ impl ProductView {
             .and_then(IndexJobProjection::poll_affordance)
     }
 
+    /// Supplies immutable, already-admitted CLI metadata for optional shell advice.
+    #[must_use]
+    pub fn with_cli_context(mut self, context: Option<crate::StartupRecoveryContext>) -> Self {
+        self.cli_context = context;
+        self
+    }
+
+    /// A missing CLI is independent of the callable MCP observation capability.
+    #[must_use]
+    pub fn cli_context(&self) -> Option<&crate::StartupRecoveryContext> {
+        self.cli_context.as_ref()
+    }
+
     /// Adds an opt-in bounded MCP continuation to a complete pending answer.
     /// Full/immediate clients and the CLI can retain their existing projection.
     /// # Errors
@@ -737,19 +767,74 @@ impl ProductView {
         self.package_source_membership_page.as_ref()
     }
 
+    /// Exact native graph page, including typed edges and its guarded cursor.
+    #[must_use]
+    pub fn package_graph_page(&self) -> Option<&backend_library::PackageGraphPage> {
+        self.package_graph_page.as_ref()
+    }
+
+    /// Readable native graph evidence is projected directly from the retained
+    /// owner page. Machine records stay compact while canonical data appears
+    /// once in JSON; readable fields are never silently hidden behind JSON.
+    pub(crate) fn readable_records(&self) -> std::borrow::Cow<'_, [ProductRecord]> {
+        match &self.package_graph_page {
+            Some(page) => std::borrow::Cow::Owned(
+                package_graph_page_records(page, GraphRecordProjection::Readable)
+                    .records
+                    .into_vec(),
+            ),
+            None => std::borrow::Cow::Borrowed(&self.records),
+        }
+    }
+
+    /// Copyable native CLI continuation, preserving the original optional
+    /// authority selector rather than substituting the selected source.
+    #[must_use]
+    pub fn package_graph_cli_continuation(&self, detail: crate::Detail) -> Option<String> {
+        let page = self.package_graph_page()?;
+        let backend_library::PackageGraphPageTerminal::More(cursor) = &page.terminal else {
+            return None;
+        };
+        let direction = match page.direction {
+            backend_library::PackageGraphDirection::Dependencies => "dependencies",
+            backend_library::PackageGraphDirection::Dependents => "dependents",
+        };
+        let mut arguments = vec![
+            page.package.as_str().to_owned(),
+            direction.to_owned(),
+            "--limit".to_owned(),
+            page.limit.to_string(),
+            "--detail".to_owned(),
+            detail.name().to_owned(),
+        ];
+        if let Some(authority) = self.package_graph_request_authority {
+            arguments.extend(["--authority".to_owned(), authority.selector()]);
+        }
+        arguments.extend(["--cursor".to_owned(), serde_json::to_string(cursor).ok()?]);
+        crate::shell::command("package-graph", &arguments)
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
-        self.index_search_page
-            .as_ref()?
-            .cursor_projection()
+        self.owner_cursor
+            .as_ref()
             .map(CursorProjection::family)
+            .or_else(|| {
+                self.index_search_page
+                    .as_ref()?
+                    .cursor_projection()
+                    .map(CursorProjection::family)
+            })
     }
 
     /// Replaces the caller-facing cursor while retaining its owner family.
     #[must_use]
     pub fn project_cursor(mut self, token: impl Into<String>, target: CursorTarget) -> Self {
         let token = token.into();
+        if let Some(cursor) = self.owner_cursor.as_mut() {
+            *cursor = CursorProjection::projected(cursor.family.clone(), token.clone(), target);
+        }
         if let Some(cursor) = self
             .index_search_page
             .as_mut()
@@ -907,11 +992,15 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            owner_cursor: None,
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            package_graph_page: None,
+            package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
         }
@@ -926,11 +1015,15 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            owner_cursor: None,
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            package_graph_page: None,
+            package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
         }
@@ -943,11 +1036,15 @@ impl ProductView {
             note: None,
             fault: None,
             index_search_page: None,
+            owner_cursor: None,
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            package_graph_page: None,
+            package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
         }
@@ -960,11 +1057,15 @@ impl ProductView {
             note: Some(note.into()),
             fault: None,
             index_search_page: None,
+            owner_cursor: None,
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            package_graph_page: None,
+            package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
         }
@@ -977,11 +1078,15 @@ impl ProductView {
             note: None,
             fault: Some(fault),
             index_search_page: None,
+            owner_cursor: None,
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            package_graph_page: None,
+            package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
         }
@@ -1011,6 +1116,27 @@ pub fn product_view(reply: &SurfaceReply) -> ProductView {
         .unwrap_or_else(|| session_view(reply))
 }
 
+/// Moves exact native graph data into the presentation answer without a
+/// second owned copy of every edge. Other product routes keep their existing
+/// shared projection and fault policy.
+#[must_use]
+pub fn product_view_for_owned_command(
+    command: &backend_library::SurfaceCommand,
+    reply: SurfaceReply,
+) -> ProductView {
+    match reply {
+        SurfaceReply::PackageGraphPage(page) => {
+            let mut view = package_graph_page_records(&page, GraphRecordProjection::Compact);
+            view.package_graph_page = Some(page);
+            if let backend_library::SurfaceCommand::PackageGraphPage { request } = command {
+                view.package_graph_request_authority = request.authority;
+            }
+            view
+        }
+        reply => product_view_for_command(command, &reply),
+    }
+}
+
 /// Attaches the caller's package to metadata failures without inventing SDK causes.
 #[must_use]
 pub fn product_view_for_command(
@@ -1018,6 +1144,9 @@ pub fn product_view_for_command(
     reply: &SurfaceReply,
 ) -> ProductView {
     let mut view = product_view(reply);
+    if let backend_library::SurfaceCommand::PackageGraphPage { request } = command {
+        view.package_graph_request_authority = request.authority;
+    }
     if let backend_library::SurfaceCommand::Dependencies { package }
     | backend_library::SurfaceCommand::Dependents { package } = command
         && let Some(fault) = view.fault.take()
@@ -1124,6 +1253,48 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
         SurfaceReply::PackageGraphPage(page) => package_graph_page_view(page),
         SurfaceReply::Owner(metadata) => owner_view(metadata),
+        SurfaceReply::SemanticSource(chunk) => {
+            let mut view = ProductView::rows("semantic-source", Vec::new());
+            view.note = Some(format!(
+                "Exact source bytes {}..{} of {}; {}.",
+                chunk.offset,
+                chunk.next.unwrap_or(chunk.source.total_bytes),
+                chunk.source.total_bytes,
+                if chunk.next.is_some() {
+                    "continue from the returned next offset"
+                } else {
+                    "final range; admit the complete source digest before use"
+                }
+            ));
+            view.semantic_data = Some(ProductSemanticData::Source(chunk.clone()));
+            view
+        }
+        SurfaceReply::SemanticVersionsPage(page) => {
+            let mut view = ProductView::rows(
+                "semantic-versions",
+                page.entries.iter().map(semantic_descriptor_row).collect(),
+            );
+            view.note = Some(format!(
+                "Versions {}..{} of {} in this exact native snapshot; {}.",
+                page.offset,
+                page.offset + page.entries.len() as u64,
+                page.total,
+                if page.more {
+                    "resume the returned cursor"
+                } else {
+                    "discovery complete"
+                }
+            ));
+            view.owner_cursor = page.next_cursor.clone().map(|cursor| {
+                CursorProjection::projected(
+                    ContinuationCursor::SemanticVersions(cursor.clone()),
+                    cursor.as_str(),
+                    CursorTarget::CliOption,
+                )
+            });
+            view.semantic_data = Some(ProductSemanticData::VersionsPage(page.clone()));
+            view
+        }
         SurfaceReply::SemanticVersions(records) => {
             let mut view = ProductView::rows(
                 "semantic-versions",
@@ -1170,7 +1341,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                         None,
                         vec![
                             format!("Project frontier: {file_count} file(s) total"),
-                            format!("exclusions: {exclusions:?}"),
+                            format!("exclusions: {}", wire_words(exclusions)),
                             format!(
                                 "continuation: {}",
                                 if next.is_some() {
@@ -1186,7 +1357,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                             file.path.clone(),
                             Some(file.path.clone()),
                             vec![
-                                format!("{:?}", file.language),
+                                wire_words(&file.language),
                                 format!(
                                     "InputContentSchema v1: {}",
                                     encode_id(&file.content_version)
@@ -1217,8 +1388,9 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 } => ProductView::scalar(
                     "package-source-membership",
                     format!(
-                        "The selected source membership for {} is unavailable: {reason:?}.",
-                        package.as_str()
+                        "The selected source membership for {} is unavailable: {}.",
+                        package.as_str(),
+                        wire_words(reason)
                     ),
                 ),
             };
@@ -1274,7 +1446,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
             let state = match &status.state {
                 backend_library::IndexOperationState::Accepted => "accepted".to_owned(),
                 backend_library::IndexOperationState::Active { stage, .. } => {
-                    format!("active at {}", index_stage(*stage))
+                    format!("active at {}", index_stage_name(*stage))
                 }
                 backend_library::IndexOperationState::Published(receipt) => {
                     let _published_root = receipt.view_root();
@@ -1338,19 +1510,19 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                         }
                         backend_library::IndexOperationSemanticProfileState::Unavailable {
                             reason,
-                        } => format!("unavailable: {reason:?}"),
+                        } => format!("unavailable: {reason}"),
                         backend_library::IndexOperationSemanticProfileState::Failed {
                             prior,
                             reason,
                         } => format!(
-                            "failed: {reason:?}; prior generation {} is retained as stale",
+                            "failed: {reason}; prior generation {} is retained as stale",
                             lower_hex(&prior.generation)
                         ),
                         backend_library::IndexOperationSemanticProfileState::Published {
                             generation,
                             coverage,
                         } => format!(
-                            "published generation {} with {coverage:?} coverage",
+                            "published generation {} with {coverage}",
                             lower_hex(&generation)
                         ),
                     };
@@ -1383,7 +1555,7 @@ fn index_start_view(result: &IndexStartResult) -> ProductView {
                 format!("index job {} started", ticket.id()),
                 Some(index_ticket_json(ticket)),
                 vec![
-                    format!("stage {}", index_stage(*stage)),
+                    format!("stage {}", index_stage_name(*stage)),
                     "poll index_progress".to_owned(),
                 ],
             )],
@@ -1432,7 +1604,7 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
     match observation {
         IndexJobObservation::Pending(page) => {
             let mut tags = vec![
-                format!("stage {}", index_stage(page.stage)),
+                format!("stage {}", index_stage_name(page.stage)),
                 format!("next_sequence {}", page.next_sequence),
             ];
             if page.truncated {
@@ -1450,7 +1622,7 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
                 let mut tags = vec![format!("sequence {}", event.sequence)];
                 let title = match &event.kind {
                     IndexJobProgressKind::StageChanged { stage } => {
-                        format!("stage changed to {}", index_stage(*stage))
+                        format!("stage changed to {}", index_stage_name(*stage))
                     }
                     IndexJobProgressKind::ProfileStarted {
                         profile,
@@ -1517,7 +1689,9 @@ fn index_cancellation_view(status: &IndexCancelStatus) -> ProductView {
     }
 }
 
-fn index_stage(stage: IndexJobStage) -> &'static str {
+/// The word a progress line uses for one indexing stage.
+#[must_use]
+pub fn index_stage_name(stage: IndexJobStage) -> &'static str {
     match stage {
         IndexJobStage::Acquiring => "acquiring",
         IndexJobStage::Staging => "staging",
@@ -1934,7 +2108,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-source-file",
-                    format!("The owner could not read this source file: {reason:?}."),
+                    format!(
+                        "The owner could not read this source file: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
@@ -1948,7 +2125,7 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                         format!("truncated at {limit} paths; additional paths may exist")
                     }
                     backend_library::CargoPackageSourceInventoryCoverageV1::Partial { reason } => {
-                        format!("partial inventory ({reason:?}); additional paths may exist")
+                        format!("partial inventory ({}); additional paths may exist", wire_words(&reason))
                     }
                 };
                 let mut records = Vec::with_capacity(inventory.paths.len().saturating_add(1));
@@ -1980,7 +2157,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 reason, ..
             } => ProductView::scalar(
                 "cargo-source-inventory",
-                format!("The owner could not list this source: {reason:?}."),
+                format!(
+                    "The owner could not list this source: {}.",
+                    wire_words(reason)
+                ),
             ),
         },
         SurfaceReply::CargoPackageReadme(result) => match result {
@@ -1991,10 +2171,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 ProductView::scalar(
                     "cargo-package-readme",
                     format!(
-                        "{:?}/{} · {:?}\nOrigin JSON: {}\n\n{}",
-                        readme.root_scope,
+                        "{}/{} · {}\nOrigin JSON: {}\n\n{}",
+                        wire_words(&readme.root_scope),
                         readme.path.as_str(),
-                        readme.selection,
+                        wire_words(&readme.selection),
                         origin,
                         readme.contents
                     ),
@@ -2003,7 +2183,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeResultV1::Absent { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme",
-                    format!("This exact Cargo package release has no README ({reason:?})."),
+                    format!(
+                        "This exact Cargo package release has no README ({}).",
+                        wire_words(reason)
+                    ),
                 )
             }
             backend_library::CargoPackageReadmeResultV1::Stale { .. } => ProductView::scalar(
@@ -2013,7 +2196,10 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme",
-                    format!("The owner could not read this package README: {reason:?}."),
+                    format!(
+                        "The owner could not read this package README: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
@@ -2033,7 +2219,8 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             } => ProductView::scalar(
                 "cargo-package-readme-link",
                 format!(
-                    "{root_scope:?}/{}{}\n\n{}",
+                    "{}/{}{}\n\n{}",
+                    wire_words(root_scope),
                     path.as_str(),
                     fragment
                         .as_deref()
@@ -2048,11 +2235,14 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             backend_library::CargoPackageReadmeLinkResultV1::Unavailable { reason, .. } => {
                 ProductView::scalar(
                     "cargo-package-readme-link",
-                    format!("The owner could not follow this README link: {reason:?}."),
+                    format!(
+                        "The owner could not follow this README link: {}.",
+                        wire_words(reason)
+                    ),
                 )
             }
         },
-        other => ProductView::scalar("surface", format!("{:?}", other.id())),
+        other => ProductView::scalar("surface", backend_library::command_spec(other.id()).name),
     }
 }
 
@@ -2176,18 +2366,13 @@ fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> Prod
 }
 
 fn owner_row(record: &RegistryPackageRecord) -> ProductRecord {
-    if matches!(
-        &record.coordinate,
-        PackageReference::Local(_)
-    ) && record.coordinate.as_str().contains("::")
+    if matches!(&record.coordinate, PackageReference::Local(_))
+        && record.coordinate.as_str().contains("::")
     {
         return ProductRecord::new(
             record.name.as_str(),
             Some(record.coordinate.as_str().to_owned()),
-            vec![
-                format!("{:?}", record.ecosystem).to_lowercase(),
-                "indexed file".to_owned(),
-            ],
+            vec![wire_words(&record.ecosystem), "indexed file".to_owned()],
         );
     }
     registry_row(record)
@@ -2248,6 +2433,41 @@ fn dependency_view(
 }
 
 fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductView {
+    let mut view = package_graph_page_records(page, GraphRecordProjection::Compact);
+    view.package_graph_page = Some(page.clone());
+    view
+}
+
+/// Formats a complete native page borrowed by the raw operator response.
+/// All graph evidence remains readable without cloning the canonical page.
+#[must_use]
+pub fn package_graph_markdown(
+    page: &backend_library::PackageGraphPage,
+    detail: crate::Detail,
+    invocation: crate::McpInvocation<'_>,
+) -> String {
+    let view = package_graph_page_records(page, GraphRecordProjection::Readable);
+    let mut text = crate::markdown::product_with_detail(&view, detail);
+    if matches!(
+        page.terminal,
+        backend_library::PackageGraphPageTerminal::More(_)
+    ) {
+        text.push_str("\n\n");
+        text.push_str(invocation.continuation_note());
+    }
+    text
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GraphRecordProjection {
+    Compact,
+    Readable,
+}
+
+pub(crate) fn package_graph_page_records(
+    page: &backend_library::PackageGraphPage,
+    projection: GraphRecordProjection,
+) -> ProductView {
     use backend_library::{PackageGraphDirection, PackageGraphKnowledge, PackageGraphPageTerminal};
     let direction = match page.direction {
         PackageGraphDirection::Dependencies => "dependencies",
@@ -2257,6 +2477,7 @@ fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductV
         format!("{} · {direction}", page.package.as_str()),
         Some(page.package.as_str().to_owned()),
         vec![
+            format!("effective page limit: {}", page.limit),
             format!("view root: {}", lower_hex(&page.view_root)),
             format!("facts witness: {}", lower_hex(&page.facts_witness)),
             page.catalog_snapshot
@@ -2335,33 +2556,36 @@ fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductV
                 Some(edge.source.as_str().to_owned()),
             ),
         };
-        let authority = edge.source_authority.selector();
-        let mut tags = vec![
-            format!("source authority: {authority}"),
-            format!(
-                "requirement: {}",
-                single_line(edge.target.requirement.as_str())
-            ),
-            format!("scope: {}", format!("{:?}", edge.scope).to_lowercase()),
-            format!("evidence: {:?}", edge.evidence.authority),
-            format!("frontier: {}", lower_hex(&edge.evidence.frontier)),
-            format!("provenance: {}", lower_hex(&edge.evidence.provenance)),
-        ];
+        // The exact owner facet carries every requirement, authority and
+        // evidence byte once. Human rows preserve edge membership and scope
+        // without repeating those payloads in both text and canonical JSON.
+        let mut tags = vec![format!("scope: {}", wire_words(&edge.scope))];
         if edge.optional {
             tags.push("optional".to_owned());
         }
-        if let Some(resolved) = &edge.target.resolved {
-            tags.push(format!("resolved: {}", resolved.as_str()));
+        if matches!(projection, GraphRecordProjection::Readable) {
+            tags.extend([
+                format!(
+                    "requirement: {}",
+                    single_line(edge.target.requirement.as_str())
+                ),
+                format!("source authority: {}", edge.source_authority.selector()),
+                format!("evidence: {}", wire_words(&edge.evidence.authority)),
+                format!("frontier: {}", lower_hex(&edge.evidence.frontier)),
+                format!("provenance: {}", lower_hex(&edge.evidence.provenance)),
+            ]);
+            if let Some(resolved) = &edge.target.resolved {
+                tags.push(format!("resolved: {}", resolved.as_str()));
+            }
         }
         ProductRecord::new(title, target, tags)
     }));
     match &page.terminal {
-        PackageGraphPageTerminal::More(cursor) => {
-            let encoded = serde_json::to_string(cursor).unwrap_or_else(|_| "{}".to_owned());
+        PackageGraphPageTerminal::More(_) => {
             records.push(ProductRecord::new(
                 "More graph rows · pass this cursor to continue",
-                Some(encoded),
-                vec!["cursor is bound to this exact root, facts witness and authority".to_owned()],
+                None,
+                vec![format!("continue with limit={} and the exact owner cursor in package_graph_page.terminal", page.limit)],
             ));
         }
         PackageGraphPageTerminal::Cancelled => {
@@ -2389,9 +2613,9 @@ fn dependency_row(record: &PackageDependencyRecord) -> ProductRecord {
             .as_ref()
             .map(|package| package.as_str().to_owned()),
         vec![
-            format!("{:?}", record.scope).to_lowercase(),
+            wire_words(&record.scope),
             record.target.ecosystem.as_str().to_owned(),
-            format!("authority: {:?}", record.evidence.authority).to_lowercase(),
+            format!("authority: {}", wire_words(&record.evidence.authority)),
         ],
     )
 }
@@ -2405,16 +2629,16 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
         format!("{} {}", record.name.as_str(), record.version.as_str()),
         Some(record.coordinate.as_str().to_owned()),
         vec![
-            format!("{:?}", record.ecosystem).to_lowercase(),
+            wire_words(&record.ecosystem),
             format!("{} byte(s)", record.bytes),
-            format!("release: {:?}", record.standing).to_lowercase(),
+            format!("release: {}", wire_words(&record.standing)),
             registry_authority_tag(record.authority),
-            format!("downloads: {:?}", record.downloads).to_lowercase(),
+            format!("downloads: {}", wire_words(&record.downloads)),
             format!(
-                "advisory: {:?} / {:?}",
-                record.advisory.coverage, record.advisory.freshness
-            )
-            .to_lowercase(),
+                "advisory: {} / {}",
+                wire_words(&record.advisory.coverage),
+                wire_words(&record.advisory.freshness)
+            ),
             native_metadata_tag(record),
         ],
     )
@@ -2614,7 +2838,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             "warn ({})",
             reasons
                 .iter()
-                .map(|reason| format!("{reason:?}"))
+                .map(wire_words)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2622,7 +2846,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             "deny ({})",
             reasons
                 .iter()
-                .map(|reason| format!("{reason:?}"))
+                .map(wire_words)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2632,8 +2856,8 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
         None,
         vec![
             format!("decision: {decision}"),
-            format!("coverage: {:?}", advisory.coverage),
-            format!("freshness: {:?}", advisory.freshness),
+            format!("coverage: {}", wire_words(&advisory.coverage)),
+            format!("freshness: {}", wire_words(&advisory.freshness)),
             format!("yanked: {}", advisory.yanked),
             format!("unlisted: {}", advisory.unlisted),
         ],
@@ -2649,7 +2873,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             let sources = claim
                 .source_ids
                 .iter()
-                .map(|source| format!("{:?}:{}", source.source, source.id))
+                .map(|source| format!("{}:{}", wire_words(&source.source), source.id))
                 .collect::<Vec<_>>()
                 .join(", ");
             let aliases = if claim.aliases.is_empty() {
@@ -2660,7 +2884,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             let affected = claim
                 .affected
                 .iter()
-                .map(|range| format!("{}:{:?}", range.package.name, range.matcher))
+                .map(|range| format!("{}:{}", range.package.name, wire_words(&range.matcher)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let fixed = if claim.fixed_ranges.is_empty() {
@@ -2674,13 +2898,13 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
                 vec![
                     format!("sources: {sources}"),
                     format!("aliases: {aliases}"),
-                    format!("severity: {:?}", claim.severity),
+                    format!("severity: {}", wire_words(&claim.severity)),
                     format!(
                         "categories: {}",
                         claim
                             .categories
                             .iter()
-                            .map(|category| format!("{category:?}"))
+                            .map(wire_words)
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -2693,7 +2917,7 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
                         }
                     ),
                     format!("fixed: {fixed}"),
-                    format!("statuses: {:?}", claim.statuses),
+                    format!("statuses: {}", wire_words(&claim.statuses)),
                 ],
             )
         }));
@@ -2776,6 +3000,70 @@ fn diff_row(record: &DiffRecord) -> ProductRecord {
         Some(record.label.as_str().to_owned()),
         tags,
     )
+}
+
+fn semantic_descriptor_row(
+    descriptor: &backend_library::SemanticVersionDescriptor,
+) -> ProductRecord {
+    let metadata = descriptor.metadata();
+    let mut tags = vec![
+        format!(
+            "generation {}",
+            KeyTag::from_key(&metadata.generation.to_bytes())
+        ),
+        format!("{} artifact(s)", metadata.artifacts),
+        format!("{} manifest byte(s)", metadata.semantic_bytes),
+        format!("captured version {}", metadata.coordinate.version()),
+    ];
+    if metadata.selected {
+        tags.push("selected".to_owned());
+    }
+    tags.push(
+        if metadata.complete {
+            "complete"
+        } else {
+            "partial"
+        }
+        .to_owned(),
+    );
+    tags.push(match metadata.freshness {
+        SemanticVersionFreshness::Current { .. } => "current source input".to_owned(),
+        SemanticVersionFreshness::Historical { .. } => "historical source input".to_owned(),
+        SemanticVersionFreshness::Unverified => "freshness unverified".to_owned(),
+    });
+    match descriptor.history() {
+        backend_library::SemanticSourceHistory::Published { proof, .. } => tags.push(format!(
+            "published complete history: {} image(s)",
+            proof.image_count
+        )),
+        state => tags.push(format!(
+            "derived history {}",
+            match state {
+                backend_library::SemanticSourceHistory::NotSelected => "not selected",
+                backend_library::SemanticSourceHistory::NotRequested { .. } => "not requested",
+                backend_library::SemanticSourceHistory::Pending { .. } => "pending",
+                backend_library::SemanticSourceHistory::Deferred { .. } => "deferred",
+                backend_library::SemanticSourceHistory::Refused { .. } => "refused",
+                backend_library::SemanticSourceHistory::Superseded { .. } => "superseded",
+                backend_library::SemanticSourceHistory::Published { .. } => "published",
+            }
+        )),
+    }
+    tags.push(
+        match descriptor {
+            backend_library::SemanticVersionDescriptor::Available { .. } => {
+                "exact source available via semantic-source"
+            }
+            _ => "exact source unavailable",
+        }
+        .to_owned(),
+    );
+    ProductRecord::new(
+        metadata.coordinate.as_str().to_owned(),
+        Some(encode_id(&metadata.generation.to_bytes())),
+        tags,
+    )
+    .with_compiler_profile(metadata.profile)
 }
 
 fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
@@ -3225,6 +3513,7 @@ mod tests {
         );
         let page = PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS,
             view_root: [9; 32],
             facts_witness: [10; 32],
             catalog_snapshot: None,

@@ -383,6 +383,87 @@ pub fn open_directory(directory: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Completes independent durability barriers with at most sixteen flushes in flight.
+///
+/// The caller must separate dependent barriers into successive calls: file contents must be
+/// flushed before the directory entries or records that make them reachable.
+pub fn flush_concurrently<T: Sync>(
+    items: &[T],
+    flush: impl Fn(&T) -> io::Result<()> + Sync,
+) -> io::Result<()> {
+    flush_concurrently_bounded(items, 16, flush)
+}
+
+/// Completes every independent barrier, returning the first error in input order.
+///
+/// `max_in_flight` is clamped to 1..=64. A failed thread allocation runs that barrier on the
+/// caller instead. All workers are joined even after failure; a worker panic fails the batch.
+/// No dependent publication may proceed unless this returns success.
+pub fn flush_concurrently_bounded<T: Sync>(
+    items: &[T],
+    max_in_flight: usize,
+    flush: impl Fn(&T) -> io::Result<()> + Sync,
+) -> io::Result<()> {
+    try_flush_concurrently_bounded(items, max_in_flight, flush).map_err(|error| match error {
+        BarrierError::Operation(error) => error,
+        BarrierError::WorkerPanicked => io::Error::other("durability barrier worker panicked"),
+    })
+}
+
+/// A typed failure from a bounded group of independent durability operations.
+#[derive(Debug)]
+pub enum BarrierError<E> {
+    /// An operation returned its domain-specific error.
+    Operation(E),
+    /// A worker panicked before returning an operation result.
+    WorkerPanicked,
+}
+
+/// Completes every independent barrier while preserving the caller's error type.
+///
+/// `max_in_flight` is clamped to 1..=64. A failed thread allocation runs that barrier on the
+/// caller instead. All workers are joined even after failure; the first operation or panic in
+/// input order is returned. No dependent publication may proceed unless this returns success.
+pub fn try_flush_concurrently_bounded<T: Sync, E: Send>(
+    items: &[T],
+    max_in_flight: usize,
+    flush: impl Fn(&T) -> Result<(), E> + Sync,
+) -> Result<(), BarrierError<E>> {
+    match items {
+        [] => return Ok(()),
+        [only] => return flush(only).map_err(BarrierError::Operation),
+        _ => {}
+    }
+    let mut first_error = None;
+    for batch in items.chunks(max_in_flight.clamp(1, 64)) {
+        std::thread::scope(|scope| {
+            let flush = &flush;
+            let started = batch
+                .iter()
+                .map(|item| {
+                    std::thread::Builder::new()
+                        .name("nudox-flush".to_owned())
+                        .spawn_scoped(scope, move || flush(item))
+                })
+                .collect::<Vec<_>>();
+            for (thread, item) in started.into_iter().zip(batch) {
+                let result = match thread {
+                    Ok(thread) => match thread.join() {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(BarrierError::Operation(error)),
+                        Err(_) => Err(BarrierError::WorkerPanicked),
+                    },
+                    Err(_) => flush(item).map_err(BarrierError::Operation),
+                };
+                if first_error.is_none() {
+                    first_error = result.err();
+                }
+            }
+        });
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -398,6 +479,87 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos());
         std::env::temp_dir().join(format!("bp-dirsync-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn bounded_barriers_cover_every_item_with_zero_or_small_limits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for limit in [0, 4] {
+            let active = AtomicUsize::new(0);
+            let maximum = AtomicUsize::new(0);
+            let completed = AtomicUsize::new(0);
+            super::flush_concurrently_bounded(&[0; 40], limit, |_| {
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(count, Ordering::SeqCst);
+                std::thread::yield_now();
+                active.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }).expect("bounded barriers");
+            assert!(maximum.load(Ordering::SeqCst) <= limit.max(1));
+            assert_eq!(completed.load(Ordering::SeqCst), 40);
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn failed_barriers_still_join_every_item_and_return_input_order_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let completed = AtomicUsize::new(0);
+        let items = (0..40).collect::<Vec<_>>();
+        let result = super::flush_concurrently_bounded(&items, 4, |item| {
+            completed.fetch_add(1, Ordering::SeqCst);
+            if matches!(*item, 3 | 7 | 39) {
+                Err(std::io::Error::other(format!("failed {item}")))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result.expect_err("barrier failed").to_string(), "failed 3");
+        assert_eq!(completed.load(Ordering::SeqCst), items.len());
+    }
+
+    #[test]
+    fn typed_barriers_preserve_domain_errors_and_join_every_item() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Eq, PartialEq)]
+        enum DomainError {
+            UnsafePath,
+            Corrupt,
+        }
+
+        let completed = AtomicUsize::new(0);
+        let items = (0..40).collect::<Vec<_>>();
+        let result = super::try_flush_concurrently_bounded(&items, 4, |item| {
+            completed.fetch_add(1, Ordering::SeqCst);
+            match *item {
+                3 => Err(DomainError::UnsafePath),
+                7 => Err(DomainError::Corrupt),
+                _ => Ok(()),
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(super::BarrierError::Operation(DomainError::UnsafePath))
+        ));
+        assert_eq!(completed.load(Ordering::SeqCst), items.len());
+    }
+
+    #[test]
+    fn panic_fails_the_batch_after_other_workers_finish() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let completed = AtomicUsize::new(0);
+        let result = super::flush_concurrently_bounded(&[0, 1, 2, 3], 2, |item| {
+            assert_ne!(*item, 0, "injected worker panic");
+            completed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(completed.load(Ordering::SeqCst), 3);
     }
 
     /// The whole barrier, in the order every call site performs it. The flush is the half that

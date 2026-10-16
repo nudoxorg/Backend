@@ -406,3 +406,21 @@ fn borrowed_rich_graph_matches_cloned_rows_without_filling_the_cache() {
          borrowed_median_ns={borrowed_median}"
     );
 }
+
+#[test]
+fn relation_confidence_is_preserved_without_entering_edge_identity() {
+    let provenance = GraphProvenance::semantic(
+        SemanticGenerationId::new([7; 32]), [8; 32], [9; 32], SemanticConfidence::Compiler,
+    );
+    let relation = GraphRelation::new(
+        RowId::Symbol(symbol_key("pkg::from")),
+        RowId::Symbol(symbol_key("pkg::to")),
+        SemanticLinkKind::Calls,
+    );
+    let identity = RichGraphEdge::from_relation(relation, provenance).id;
+    for confidence in [None, Some(SemanticConfidence::Syntactic), Some(SemanticConfidence::Compiler)] {
+        let actual = RichGraphEdge::from_relation(GraphRelation { confidence, ..relation }, provenance);
+        assert_eq!(actual.provenance.confidence, confidence);
+        assert_eq!(actual.id, identity);
+    }
+}

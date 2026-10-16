@@ -322,6 +322,12 @@ pub struct GcRootResolver<'a> {
 }
 
 impl<'a> GcRootResolver<'a> {
+    /// Native store whose exclusive collection scope owns this root resolver.
+    /// Root providers must belong to this same store before admitting closures.
+    #[must_use]
+    pub fn store_root(&self) -> &std::path::Path {
+        self.store.root()
+    }
     pub(super) const fn new(store: &'a FileStore) -> Self {
         Self {
             store,

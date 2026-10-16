@@ -534,10 +534,10 @@ impl DataStore {
         // the current answer is admitted; the notice still belongs to this
         // exact route and authority, even while covered.
         let owner_notice = self.notice.as_ref().filter(|current| {
-            current.retry.is_some()
+            (current.retry.is_some() || matches!(self.owner.phase(), OwnerPhase::Observing))
                 && current.visit == *self.snapshot.route()
                 && current.root.same_authority(self.snapshot.key())
-                && matches!(self.owner.phase(), OwnerPhase::Failed(_) | OwnerPhase::Starting)
+                && matches!(self.owner.phase(), OwnerPhase::Failed(_) | OwnerPhase::Starting | OwnerPhase::Observing)
         }).cloned();
         let notice = owner_notice.or(notice);
         if self.graph_focus != focus || self.notice != notice {
@@ -801,7 +801,7 @@ impl DataStore {
         }
         match self.owner.phase() {
             OwnerPhase::Serving => {}
-            OwnerPhase::Starting => {
+            OwnerPhase::Starting | OwnerPhase::Observing => {
                 self.owner.hold(key.clone());
                 return self.pages.stamp(&key);
             }
@@ -987,7 +987,7 @@ impl DataStore {
                 self.owner.retry(key);
                 return;
             }
-            OwnerPhase::Starting => {
+            OwnerPhase::Starting | OwnerPhase::Observing => {
                 self.owner.hold(key);
                 return;
             }
@@ -1192,6 +1192,9 @@ impl DataStore {
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.owner.phase(), OwnerPhase::Observing) {
+            self.set_notice(None, cx);
+        }
         let answer = self.owner.prepare_answer();
         let changed = answer.attachment_changed || !self.owner.is_serving();
         let retry_changed = self.owner.retry_publication_changed();
@@ -1210,8 +1213,8 @@ impl DataStore {
         }
     }
 
-    /// The owner could not start: every held page, and every page the route
-    /// shows, lands as a fault carrying the owner's words.
+    /// The owner or its publication subscription became unavailable. Loaded
+    /// predecessors stay visible without serving current reads or actions.
     pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
         // A serving attachment can fail while reads are running. Revoke all
         // of their generations before faulting visible pages: a late reply
@@ -1230,11 +1233,7 @@ impl DataStore {
         // it (R7). A page painted from the launch snapshot stays (it is the
         // page as it was left), and says it could not be brought up to date.
         let seeded = self.focused.iter().any(|key| self.pages.is_seeded(key));
-        let message = if seeded {
-            format!("The index could not start, so this is the page as you left it. {fault}")
-        } else {
-            format!("The index could not start. {fault}")
-        };
+        let message = owner_failure_message(fault, seeded);
         let notice = super::graph_focus::Notice {
             visit: self.snapshot.route().clone(),
             root: self.snapshot.key(),
@@ -1311,6 +1310,24 @@ impl DataStore {
         let changed = self.owner.starting();
         let retry_changed = self.owner.retry_publication_changed();
         self.revoke_owner_reads(cx);
+        if changed || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
+            cx.notify();
+        }
+    }
+
+    /// A live owner's publication is pending; elapsed time says nothing
+    /// about the outcome of any previously accepted index operation.
+    pub(crate) fn owner_observing(&mut self, cx: &mut Context<Self>) {
+        let changed = self.owner.observing();
+        let retry_changed = self.owner.retry_publication_changed();
+        self.revoke_owner_reads(cx);
+        self.set_notice(Some(super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from("Waiting for index updates. Previously read pages are kept while the subscription is checked."),
+            retry: None,
+        }), cx);
         if changed || retry_changed {
             self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
             cx.notify();
@@ -1530,8 +1547,19 @@ impl DataStore {
 fn owner_failure_value(fault: &OwnerFault) -> ErrorValue {
     ErrorValue::new(
         FaultCode::Transport,
-        format!("The index could not start. {fault}"),
+        owner_failure_message(fault, false),
     )
+}
+
+fn owner_failure_message(fault: &OwnerFault, seeded: bool) -> String {
+    match fault {
+        OwnerFault::Observation(_) => format!(
+            "Index updates are unavailable. Previously read pages are kept. {fault}"
+        ),
+        OwnerFault::Lost(_) => format!("The index connection is unavailable. {fault}"),
+        _ if seeded => format!("The index could not start, so this is the page as you left it. {fault}"),
+        _ => format!("The index could not start. {fault}"),
+    }
 }
 
 #[cfg(test)]

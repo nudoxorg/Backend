@@ -7,7 +7,7 @@ use super::{ImportingModuleKind, ModuleResolver, PackageType};
 use crate::config::ModuleResolutionKind;
 use std::path::Path;
 
-use crate::module_resolver_helpers::{PackageJson, cached_is_file};
+use crate::module_resolver_helpers::PackageJson;
 
 /// Parse `package.json#type` into a [`PackageType`], or `None` when the
 /// field is missing or an unknown value. Shared by both
@@ -23,7 +23,7 @@ fn parse_package_type_field(field: Option<&str>) -> Option<PackageType> {
     }
 }
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     /// Map the importer's [`ImportingModuleKind`] to the
     /// `Option<PackageType>` that should drive extension-priority choices
     /// for file probing in the importer's own package context (relative
@@ -95,7 +95,7 @@ impl ModuleResolver {
 
             // Check for package.json
             let package_json_path = current.join("package.json");
-            if cached_is_file(&package_json_path)
+            if self.is_file(&package_json_path)
                 && let Ok(pj) = self.read_package_json(&package_json_path)
             {
                 let package_type = parse_package_type_field(pj.package_type.as_deref());
@@ -108,6 +108,9 @@ impl ModuleResolver {
             }
 
             // Move to parent
+            if !self.may_walk_parent(&current) {
+                break;
+            }
             match current.parent() {
                 Some(parent) if parent != current => current = parent.to_path_buf(),
                 _ => break,
@@ -142,15 +145,22 @@ impl ModuleResolver {
             return cached.clone();
         }
         Self::increment_counter(&self.package_json_cache_misses);
-        let result = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))
+        let content = self.read_text_file(path);
+        let result = content
+            .as_deref()
+            .ok_or_else(|| format!("Failed to read {}: file unavailable", path.display()))
             .and_then(|content| {
-                serde_json::from_str::<PackageJson>(&content)
+                serde_json::from_str::<PackageJson>(content)
                     .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))
             });
-        self.package_json_cache
-            .borrow_mut()
-            .insert(path.to_path_buf(), result.clone());
+        // Provider errors are sticky and must never become cached negative
+        // package metadata. Ordinary missing files and malformed JSON retain
+        // the existing per-resolver negative cache behavior.
+        if self.file_system_error.borrow().is_none() {
+            self.package_json_cache
+                .borrow_mut()
+                .insert(path.to_path_buf(), result.clone());
+        }
         result
     }
 }

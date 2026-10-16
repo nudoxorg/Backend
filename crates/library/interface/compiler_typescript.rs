@@ -667,3 +667,144 @@ impl TypeScriptAuthorityFailureKind {
         )
     }
 }
+
+/// Closed computation boundary of one native TypeScript program, as observed when it stopped.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeScriptStopPhase {
+    /// Enumerating the admitted source frontier.
+    SourceFrontier,
+    /// Parsing and binding source files.
+    ParseBind,
+    /// Merging per-file binder results into one program.
+    Merge,
+    /// Applying the Compiler API's per-file module formats.
+    FileFormats,
+    /// Applying exact module-resolution outcomes.
+    ModuleOutcomes,
+    /// Planning the checker over the merged program.
+    CheckerPlan,
+    /// Building default-library views.
+    LibraryViews,
+    /// Building per-file binder views.
+    BinderViews,
+    /// Building the symbol ownership index.
+    OwnershipIndex,
+    /// Building program-wide checker indexes.
+    SharedCheckerIndexes,
+    /// Finding library interfaces that program code augments.
+    AffectedLibraries,
+    /// Priming module augmentation bodies.
+    AugmentationPrime,
+    /// Resetting file-local checker state.
+    FileReset,
+    /// Semantically checking one file.
+    FileCheck,
+    /// Collecting one file's diagnostics.
+    FilePostprocess,
+    /// Running semantic queries for one file after project checking.
+    FileQuery,
+    /// Preparing one file's statement walk.
+    SourcePreparation,
+    /// Walking one file's statements.
+    SourceStatements,
+    /// Running one file's post-statement checks.
+    SourcePostchecks,
+    /// Checking a default library for baseline diagnostics.
+    LibraryBaseline,
+    /// Checking a default library after program augmentations.
+    LibraryCheck,
+    /// Aggregating per-file results.
+    Aggregate,
+}
+
+impl TypeScriptStopPhase {
+    /// Stable lowercase tag for human and machine surfaces.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::SourceFrontier => "source_frontier",
+            Self::ParseBind => "parse_bind",
+            Self::Merge => "merge",
+            Self::FileFormats => "file_formats",
+            Self::ModuleOutcomes => "module_outcomes",
+            Self::CheckerPlan => "checker_plan",
+            Self::LibraryViews => "library_views",
+            Self::BinderViews => "binder_views",
+            Self::OwnershipIndex => "ownership_index",
+            Self::SharedCheckerIndexes => "shared_checker_indexes",
+            Self::AffectedLibraries => "affected_libraries",
+            Self::AugmentationPrime => "augmentation_prime",
+            Self::FileReset => "file_reset",
+            Self::FileCheck => "file_check",
+            Self::FilePostprocess => "file_postprocess",
+            Self::FileQuery => "file_query",
+            Self::SourcePreparation => "source_preparation",
+            Self::SourceStatements => "source_statements",
+            Self::SourcePostchecks => "source_postchecks",
+            Self::LibraryBaseline => "library_baseline",
+            Self::LibraryCheck => "library_check",
+            Self::Aggregate => "aggregate",
+        }
+    }
+}
+
+/// Where a native TypeScript program was, and how much work it had admitted, when it stopped.
+///
+/// The file is the exact program path the stopped worker was processing: a
+/// package source, a dependency declaration, or a virtual library. It is never
+/// the package source the compile happened to be requested from.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypeScriptStopSite {
+    /// Innermost boundary of the observing worker, when it was inside one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<TypeScriptStopPhase>,
+    /// Exact program path of that boundary's file, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Work units the program had admitted when the stop was observed.
+    pub work_charged: u64,
+    /// The program's whole work allowance.
+    pub work_allowance: u64,
+}
+
+impl TypeScriptStopSite {
+    /// Largest retained program path.
+    pub const MAX_FILE_BYTES: usize = 512;
+
+    /// Builds a site. A path that is not a bounded, canonical, relative program
+    /// path is dropped rather than retained, so no unsafe text can reach a surface.
+    #[must_use]
+    pub fn new(
+        phase: Option<TypeScriptStopPhase>,
+        file: Option<&str>,
+        work_charged: u64,
+        work_allowance: u64,
+    ) -> Self {
+        Self {
+            phase,
+            file: file.filter(|path| Self::is_valid_file(path)).map(str::to_owned),
+            work_charged,
+            work_allowance,
+        }
+    }
+
+    /// Whether every retained field is within its published bound.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.file.as_deref().is_none_or(Self::is_valid_file) && self.work_charged <= self.work_allowance
+    }
+
+    fn is_valid_file(path: &str) -> bool {
+        !path.is_empty()
+            && path.len() <= Self::MAX_FILE_BYTES
+            && !path.starts_with('/')
+            && !path.contains('\\')
+            && !path.contains(':')
+            && !path.chars().any(char::is_control)
+            && path
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != "..")
+    }
+}

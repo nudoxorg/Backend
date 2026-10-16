@@ -51,6 +51,13 @@ pub use ra_ap_syntax;
 /// compiler authority identities even when the tool executables are unchanged.
 pub const RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "rust-package-child-environment.v1";
 
+/// Versioned identity of the analyzer configuration that decides which
+/// declarations enter the module tree (currently: `cfg(test)` is set, so test
+/// modules and `#[test]` functions are analyzed). Changing it invalidates
+/// existing compiler authority identities, so images built under the previous
+/// configuration are rebuilt rather than reused.
+pub const RUST_ANALYSIS_CONFIG_POLICY_ID_V1: &str = "rust-analysis-config.v1+cfg-test";
+
 /// Native compiler identity, Cargo cache roots, and sysroot accepted for one
 /// Rust authority transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]

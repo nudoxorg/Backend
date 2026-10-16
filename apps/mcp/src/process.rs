@@ -220,7 +220,10 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
         }
         if matches!(argument.as_str(), "--help" | "-h") {
             println!(
-                "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]"
+                "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]\n\n\
+                 Default transport: newline-delimited JSON-RPC over stdio. The MCP host launches this process; the local owner starts on the first owner-backed tool call.\n\n\
+                 Claude Code setup:\n  claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${{CLAUDE_PROJECT_DIR:-.}}'\n\n\
+                 HTTP setup: run backend-mcp --project /absolute/project --http 127.0.0.1:41449, then connect the host to http://127.0.0.1:41449/mcp. Keep that server process running. Use Bearer authentication from BACKEND_MCP_TOKEN (16-256 visible ASCII bytes) or the private token file identified by the startup message."
             );
             std::process::exit(0);
         }
@@ -524,7 +527,7 @@ mod tests {
         assert_eq!(replies[1]["id"], 2);
         assert_eq!(
             replies[1]["result"]["tools"].as_array().map(Vec::len),
-            Some(17)
+            Some(18)
         );
         assert_eq!(
             fs::read(&fixture.data).expect("original unavailable state"),

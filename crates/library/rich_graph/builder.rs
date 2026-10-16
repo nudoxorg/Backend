@@ -100,8 +100,12 @@ impl RichGraphBuilder {
         {
             return Err(RichGraphError::EdgeShape);
         }
-        if self.edges.contains_key(&edge.id) {
-            return Err(RichGraphError::Duplicate);
+        if let Some(previous) = self.edges.get(&edge.id) {
+            return Err(if previous == &edge {
+                RichGraphError::Duplicate
+            } else {
+                RichGraphError::IdentityCollision
+            });
         }
         self.edges.insert(edge.id, edge);
         Ok(())

@@ -10,7 +10,7 @@ use crate::config::ModuleResolutionKind;
 use crate::module_resolver_helpers::*;
 use std::path::{Path, PathBuf};
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     // =========================================================================
     // File probing methods
     // =========================================================================
@@ -65,7 +65,9 @@ impl ModuleResolver {
         {
             // Always probe for .d.*.ts declaration files regardless of allowArbitraryExtensions.
             // When the flag is off, the caller (lookup) emits TS6263 for the resolved file.
-            if let Some(resolved) = try_arbitrary_extension_declaration(path, extension) {
+            if let Some(resolved) = try_arbitrary_extension_declaration_with(path, extension, |p| {
+                self.is_file(p)
+            }) {
                 return Some(resolved);
             }
             return None;
@@ -83,7 +85,9 @@ impl ModuleResolver {
             // pinned `typescript@7.0.2`: both flag states resolve to the
             // declaration, and only the diagnostic differs).
             if extension == "json"
-                && let Some(resolved) = try_arbitrary_extension_declaration(path, extension)
+                && let Some(resolved) = try_arbitrary_extension_declaration_with(path, extension, |p| {
+                    self.is_file(p)
+                })
             {
                 return Some(resolved);
             }
@@ -92,7 +96,9 @@ impl ModuleResolver {
             // TypeScript resolves `.js` imports to `.ts` sources in all modes.
             if let Some(rewritten) = node16_extension_substitution(path, extension) {
                 for candidate in &rewritten {
-                    if let Some(resolved) = try_file_with_suffixes(candidate, suffixes) {
+                    if let Some(resolved) = try_file_with_suffixes_with(candidate, suffixes, |p| {
+                        self.is_file(p)
+                    }) {
                         return Some(resolved);
                     }
                 }
@@ -104,14 +110,20 @@ impl ModuleResolver {
                 && let Some(decl_ext) = ts_extension_to_declaration(extension)
             {
                 let candidate = base.with_extension(decl_ext);
-                if let Some(resolved) = try_file_with_suffixes(&candidate, suffixes) {
+                if let Some(resolved) = try_file_with_suffixes_with(&candidate, suffixes, |p| {
+                    self.is_file(p)
+                }) {
                     return Some(resolved);
                 }
             }
 
             // Fall back to the original extension (e.g., literal .js file)
-            if let Some(resolved) = try_file_with_suffixes_and_extension(&base, extension, suffixes)
-            {
+            if let Some(resolved) = try_file_with_suffixes_and_extension_with(
+                &base,
+                extension,
+                suffixes,
+                |p| self.is_file(p),
+            ) {
                 return Some(resolved);
             }
 
@@ -139,7 +151,9 @@ impl ModuleResolver {
             if let Some(fallback_extensions) = ts_impl_fallback {
                 for ext in fallback_extensions {
                     if let Some(resolved) =
-                        try_file_with_suffixes_and_extension(&base, ext, suffixes)
+                        try_file_with_suffixes_and_extension_with(&base, ext, suffixes, |p| {
+                            self.is_file(p)
+                        })
                     {
                         return Some(resolved);
                     }
@@ -151,7 +165,9 @@ impl ModuleResolver {
 
         let extensions = self.extension_candidates_for_package_type(package_type);
         for ext in extensions {
-            if let Some(resolved) = try_file_with_suffixes_and_extension(path, ext, suffixes) {
+            if let Some(resolved) =
+                try_file_with_suffixes_and_extension_with(path, ext, suffixes, |p| self.is_file(p))
+            {
                 return Some(resolved);
             }
         }
@@ -159,8 +175,12 @@ impl ModuleResolver {
         if try_index {
             let index = path.join("index");
             for ext in extensions {
-                if let Some(resolved) = try_file_with_suffixes_and_extension(&index, ext, suffixes)
-                {
+                if let Some(resolved) = try_file_with_suffixes_and_extension_with(
+                    &index,
+                    ext,
+                    suffixes,
+                    |p| self.is_file(p),
+                ) {
                     return Some(resolved);
                 }
             }
@@ -224,12 +244,12 @@ impl ModuleResolver {
         // returned `PathBuf` is canonical (e.g. typesVersions `../` joins
         // produce `ts3.1/../ts3.1/..` otherwise).
         let path = &normalize_path_segments(path);
-        if !cached_is_dir(path) {
+        if !self.is_dir(path) {
             return None;
         }
 
         let package_json_path = path.join("package.json");
-        if cached_is_file(&package_json_path)
+        if self.is_file(&package_json_path)
             && let Ok(pj) = self.read_package_json(&package_json_path)
         {
             // The directory's own `package.json#type` determines the
@@ -310,21 +330,25 @@ impl ModuleResolver {
                 if let Some(rewritten) = node16_extension_substitution(path, extension) {
                     for candidate in &rewritten {
                         if let Some(resolved) =
-                            try_file_with_suffixes(candidate, &self.module_suffixes)
+                            try_file_with_suffixes_with(candidate, &self.module_suffixes, |p| {
+                                self.is_file(p)
+                            })
                         {
                             return Some(resolved);
                         }
                     }
                 }
                 // Fall back to the original file if no declaration substitute exists
-                if cached_is_file(path) {
+                if self.is_file(path) {
                     return Some(path.to_path_buf());
                 }
                 return None;
             }
             // Always probe for .d.*.ts declaration files regardless of allowArbitraryExtensions.
             // When the flag is off, the caller (lookup) emits TS6263 for the resolved file.
-            if let Some(resolved) = try_arbitrary_extension_declaration(path, extension) {
+            if let Some(resolved) = try_arbitrary_extension_declaration_with(path, extension, |p| {
+                self.is_file(p)
+            }) {
                 return Some(resolved);
             }
             return None;
@@ -361,7 +385,7 @@ impl ModuleResolver {
         if let Some(resolved) = self.try_file(path, package_type) {
             return Some(resolved);
         }
-        if cached_is_dir(path) {
+        if self.is_dir(path) {
             let index = path.join("index");
             return self.try_file(&index, package_type);
         }
@@ -374,15 +398,18 @@ impl ModuleResolver {
         package_type: Option<PackageType>,
     ) -> Option<PathBuf> {
         let path = &normalize_path_segments(path);
-        if let Some(resolved) = resolve_explicit_unknown_extension(path) {
+        if let Some(resolved) = resolve_explicit_unknown_extension_with(path, |p| self.is_file(p)) {
             return Some(resolved);
         }
 
         if let Some((base, extension)) = split_path_extension(path) {
             if let Some(rewritten) = node16_extension_substitution(path, extension) {
                 for candidate in &rewritten {
-                    if let Some(resolved) = try_file_with_suffixes(candidate, &self.module_suffixes)
-                    {
+                    if let Some(resolved) = try_file_with_suffixes_with(
+                        candidate,
+                        &self.module_suffixes,
+                        |p| self.is_file(p),
+                    ) {
                         return Some(resolved);
                     }
                 }
@@ -399,10 +426,11 @@ impl ModuleResolver {
                     | ModuleExtension::Mts
                     | ModuleExtension::Cts
             ) {
-                return try_file_with_suffixes_and_extension(
+                return try_file_with_suffixes_and_extension_with(
                     &base,
                     extension,
                     &self.module_suffixes,
+                    |p| self.is_file(p),
                 );
             }
 

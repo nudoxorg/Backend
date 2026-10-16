@@ -59,6 +59,7 @@ pub fn answer_with_detail(
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail), theme),
         Answer::Records(value) => records_with_cursor(value, None, theme, cursor, target),
+        Answer::Product(view) => product_projection(view, theme, detail),
         _ => answer(value, theme),
     }
 }
@@ -428,14 +429,19 @@ pub fn shelf(shelf: &Shelf, theme: Theme) -> String {
     for entry in shelf.entries() {
         push_shelf_entry(&mut lines, entry, theme);
     }
-    lines.push(theme.paint(
-        Style::Dim,
-        &format!(
-            "{} project(s) · revision {}",
-            shelf.entries().len(),
-            shelf.revision()
-        ),
-    ));
+    let mut footer = format!(
+        "{} project(s) · revision {}",
+        shelf.entries().len(),
+        shelf.revision()
+    );
+    let statement = shelf.lane_statement();
+    if let Some((words, _)) = &statement {
+        let _ = write!(footer, " · {words}");
+    }
+    lines.push(theme.paint(Style::Dim, &footer));
+    if let Some((_, line)) = statement {
+        lines.push(coverage(line, theme));
+    }
     lines.finish()
 }
 
@@ -451,14 +457,7 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
         theme.paint(Style::Name, entry.identity().name())
     );
     let mut tags = vec![entry.readiness().name().to_owned()];
-    if let Readiness::Indexing { rows } = entry.readiness() {
-        tags.push(format!("{} row(s)", rows.get()));
-    }
-    match entry.declarations() {
-        Some(count) if count.get() > 0 => tags.push(format!("{} declaration(s)", count.get())),
-        Some(_) => {}
-        None => tags.push("declaration count unavailable".to_owned()),
-    }
+    tags.extend(entry.count_tags());
     for language in entry.languages() {
         tags.push(format!(
             "{} {}",
@@ -532,7 +531,7 @@ pub fn status(status: &Status, theme: Theme) -> String {
     let mut lines = Lines::new();
     let readiness = status.readiness();
     let style = match readiness {
-        "ready" => Style::Ready,
+        "ready" | "partial" => Style::Ready,
         "unavailable" => Style::Fault,
         _ => Style::Working,
     };
@@ -567,6 +566,10 @@ pub fn status(status: &Status, theme: Theme) -> String {
 /// Renders one durable product answer: a heading, then one record per row.
 #[must_use]
 pub fn product(view: &ProductView, theme: Theme) -> String {
+    product_projection(view, theme, Detail::Standard)
+}
+
+fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> String {
     let mut lines = Lines::new();
     lines.push(theme.paint(Style::Heading, view.heading()));
     if let Some(reason) = view.fault() {
@@ -590,7 +593,8 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         index_job_footer(view, &mut lines, theme);
         return lines.finish();
     }
-    for record in view.records() {
+    let readable_records = view.readable_records();
+    for record in readable_records.as_ref() {
         let mut head = format!(
             "{} {}",
             theme.paint(Style::Ready, "●"),
@@ -615,13 +619,16 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         }
     }
     lines.push(theme.paint(Style::Dim, &format!("{} row(s)", view.records().len())));
+    if let Some(command) = view.package_graph_cli_continuation(detail) {
+        lines.push(format!("Continue: {command}"));
+    }
     index_search_page_footer(view, &mut lines);
     index_job_footer(view, &mut lines, theme);
     lines.finish()
 }
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
-    if let Some(next) = view.index_poll_affordance().and_then(|step| step.shell()) {
+    if let Some(next) = crate::IndexPollDto::new(view).and_then(|poll| poll.shell) {
         if let Some(job @ IndexJobProjection::Cancellation(_)) = view.index_job()
             && let Some(ticket) = job.ticket_json()
         {

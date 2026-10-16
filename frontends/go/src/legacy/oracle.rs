@@ -26,6 +26,7 @@ use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+mod authority_session;
 mod authority_witness;
 mod capture_digest;
 mod dependency_witness;
@@ -36,6 +37,7 @@ fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> R
         Ok(())
     }
 }
+pub use self::authority_session::GoPackageAuthoritySession;
 pub use self::dependency_witness::GoDependencyClosureFailure;
 pub use self::authority_witness::{
     GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,
@@ -1024,6 +1026,8 @@ pub struct GoOracleChildEnvironment {
     cgo: GoCgoPolicy,
     path: String,
     toolchain_identity: [u8; 32],
+    /// What the last complete content hash of the toolchain saw, shared by every clone.
+    toolchain_memo: ToolchainMemo,
 }
 
 /// Explicit cgo execution policy. `Disabled` means the authority uses the
@@ -1085,8 +1089,9 @@ impl GoOracleChildEnvironment {
             })?
             .to_string_lossy()
             .into_owned();
+        let toolchain_memo = ToolchainMemo::default();
         let toolchain_identity =
-            hash_toolchain_identity(&go_executable, &goroot).map_err(|source| {
+            toolchain_memo.identity(&go_executable, &goroot).map_err(|source| {
                 GoOracleConfigurationError::ToolchainIdentity {
                     path: goroot.clone(),
                     source,
@@ -1100,6 +1105,7 @@ impl GoOracleChildEnvironment {
             cgo: GoCgoPolicy::Disabled,
             path,
             toolchain_identity,
+            toolchain_memo,
         })
     }
 
@@ -1135,9 +1141,13 @@ impl GoOracleChildEnvironment {
 
     /// Revalidates the full bounded Go executable and GOROOT closure once at
     /// the package boundary before helper preparation or package dispatch.
+    ///
+    /// Every entry is walked each time; file contents are re-read only when a
+    /// file's identity, size or timestamps differ from the last complete hash
+    /// (see [`ToolchainMemo`]).
     fn revalidate_toolchain(&self) -> Result<(), OracleError> {
         let observed =
-            hash_toolchain_identity(&self.go_executable, &self.goroot).map_err(|source| {
+            self.toolchain_memo.identity(&self.go_executable, &self.goroot).map_err(|source| {
                 OracleError::ToolingUnavailable {
                     tool: "Go toolchain identity",
                     source,
@@ -2592,12 +2602,76 @@ fn helper_source_identity() -> [u8; 32] {
     digest.finalize().into()
 }
 
+/// The result of walking the Go executable and GOROOT once.
+struct ToolchainWalk {
+    /// Content identity. Meaningful only when the walk read file contents.
+    identity: [u8; 32],
+    /// Digest of every entry's name, type, identity, size, mode and timestamps.
+    stamp: [u8; 32],
+    /// Whether no file changed so recently that an unchanged stamp could hide an edit.
+    stamp_is_trustworthy: bool,
+}
+
+/// Content identity of the Go executable and its complete GOROOT.
 fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
+    Ok(walk_toolchain(executable, goroot, true)?.identity)
+}
+
+/// Remembers the last complete content hash of one toolchain together with the
+/// metadata stamp it was computed under.
+///
+/// Re-reading all of GOROOT (hundreds of megabytes) at every package boundary
+/// dominated indexing time. A later check still opens and inspects every entry,
+/// but re-reads contents only when the metadata stamp changed, as a version
+/// control index does: a file written after the hash changes its change time,
+/// and a stamp taken within [`TOOLCHAIN_STAMP_SETTLE_SECONDS`] of a file's last
+/// change is never trusted.
+#[derive(Clone, Debug, Default)]
+struct ToolchainMemo(std::sync::Arc<std::sync::Mutex<Option<([u8; 32], [u8; 32])>>>);
+
+impl PartialEq for ToolchainMemo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ToolchainMemo {}
+
+/// A stamp is trusted only when every timestamp is at least this old at the hash.
+const TOOLCHAIN_STAMP_SETTLE_SECONDS: i64 = 2;
+
+impl ToolchainMemo {
+    fn identity(&self, executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
+        let mut remembered = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((identity, stamp)) = *remembered {
+            if walk_toolchain(executable, goroot, false)?.stamp == stamp {
+                return Ok(identity);
+            }
+        }
+        let walk = walk_toolchain(executable, goroot, true)?;
+        let after = walk_toolchain(executable, goroot, false)?;
+        if after.stamp != walk.stamp {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "the Go toolchain changed during its content read"));
+        }
+        *remembered = (walk.stamp_is_trustworthy && after.stamp_is_trustworthy)
+            .then_some((walk.identity, walk.stamp));
+        Ok(walk.identity)
+    }
+}
+
+fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std::io::Result<ToolchainWalk> {
     use std::io::ErrorKind;
 
     struct WalkBudget {
         entries: usize,
         bytes: u64,
+        read_contents: bool,
+        stamp: Sha256,
+        newest_change: i64,
     }
 
     fn path_bytes(path: &Path) -> std::io::Result<&[u8]> {
@@ -2697,10 +2771,33 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         digest.update(metadata.len().to_be_bytes());
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
             digest.update(metadata.permissions().mode().to_be_bytes());
+            budget.stamp.update(b"file\0");
+            budget.stamp.update((path.len() as u64).to_be_bytes());
+            budget.stamp.update(path);
+            for fact in [
+                metadata.dev() as i64,
+                metadata.ino() as i64,
+                metadata.len() as i64,
+                i64::from(metadata.mode()),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ] {
+                budget.stamp.update(fact.to_be_bytes());
+            }
+            budget.newest_change = budget.newest_change.max(metadata.mtime()).max(metadata.ctime());
         }
-        hash_regular_file_handle(file, maximum, role, digest)?;
+        // Without a change time there is no stamp to trust: never skip a read.
+        #[cfg(not(unix))]
+        {
+            budget.newest_change = i64::MAX;
+        }
+        if budget.read_contents {
+            hash_regular_file_handle(file, maximum, role, digest)?;
+        }
         Ok(())
     }
 
@@ -2726,6 +2823,9 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         digest.update(b"directory\0");
         digest.update((logical_bytes.len() as u64).to_be_bytes());
         digest.update(logical_bytes);
+        budget.stamp.update(b"directory\0");
+        budget.stamp.update((logical_bytes.len() as u64).to_be_bytes());
+        budget.stamp.update(logical_bytes);
         let entries = directory.entries(MAX_GO_TOOLCHAIN_ENTRIES)?;
         for entry in entries {
             budget.entries = budget
@@ -2746,6 +2846,9 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
             })?;
             let child_logical = logical.join(name);
             let child_bytes = path_bytes(&child_logical)?;
+            budget.stamp.update(b"entry\0");
+            budget.stamp.update((child_bytes.len() as u64).to_be_bytes());
+            budget.stamp.update(child_bytes);
             match entry.kind {
                 EntryKind::Directory => {
                     let child = directory.open_dir(name)?;
@@ -2844,6 +2947,9 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
                     digest.update((child_bytes.len() as u64).to_be_bytes());
                     digest.update(child_bytes);
                     let target_bytes = observed_target.as_os_str().as_encoded_bytes();
+                    budget.stamp.update(b"link\0");
+                    budget.stamp.update((target_bytes.len() as u64).to_be_bytes());
+                    budget.stamp.update(target_bytes);
                     digest.update((target_bytes.len() as u64).to_be_bytes());
                     digest.update(target_bytes);
                 }
@@ -2887,7 +2993,14 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
     let mut budget = WalkBudget {
         entries: 0,
         bytes: 0,
+        read_contents,
+        stamp: Sha256::new(),
+        newest_change: i64::MIN,
     };
+    let walk_started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
     add_open_file(
         &mut executable_file,
         Path::new("selected-go-executable"),
@@ -2908,7 +3021,12 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         &mut budget,
         &mut digest,
     )?;
-    Ok(digest.finalize().into())
+    Ok(ToolchainWalk {
+        identity: digest.finalize().into(),
+        stamp: budget.stamp.finalize().into(),
+        stamp_is_trustworthy: walk_started
+            .is_some_and(|started| budget.newest_change <= started - TOOLCHAIN_STAMP_SETTLE_SECONDS),
+    })
 }
 
 fn digest_hex(bytes: &[u8]) -> String {
@@ -3505,6 +3623,47 @@ mod read_tests {
             std::os::unix::fs::symlink(&target, &manifest)?;
             assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn toolchain_memo_skips_unchanged_files_and_still_sees_a_forged_timestamp_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{TOOLCHAIN_STAMP_SETTLE_SECONDS, ToolchainMemo};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir()?;
+        let executable = root.path().join("bin/go");
+        let goroot = root.path().join("goroot");
+        std::fs::create_dir_all(executable.parent().expect("bin parent"))?;
+        std::fs::create_dir_all(goroot.join("src"))?;
+        std::fs::write(&executable, b"selected go executable")?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        let version = goroot.join("VERSION");
+        std::fs::write(&version, "go1.27.1\n")?;
+        std::fs::write(goroot.join("src/a.go"), "package a\n")?;
+        let full = hash_toolchain_identity(&executable, &goroot)?;
+
+        let memo = ToolchainMemo::default();
+        // Freshly written files are within the settle window: no stamp is trusted yet.
+        assert_eq!(memo.identity(&executable, &goroot)?, full);
+        assert!(memo.0.lock().expect("memo").is_none());
+        std::thread::sleep(std::time::Duration::from_secs(
+            u64::try_from(TOOLCHAIN_STAMP_SETTLE_SECONDS)? + 1,
+        ));
+        assert_eq!(memo.identity(&executable, &goroot)?, full);
+        assert!(memo.0.lock().expect("memo").is_some(), "settled files give a trusted stamp");
+        assert_eq!(memo.identity(&executable, &goroot)?, full, "unchanged tree answers from the stamp");
+
+        // A same-size edit with its modification time restored still moves the
+        // change time, which user space cannot set back.
+        let modified = std::fs::metadata(&version)?.modified()?;
+        std::fs::write(&version, "go1.27.2\n")?;
+        std::fs::File::options().write(true).open(&version)?.set_modified(modified)?;
+        let edited = memo.identity(&executable, &goroot)?;
+        assert_ne!(edited, full);
+        assert_eq!(edited, hash_toolchain_identity(&executable, &goroot)?);
         Ok(())
     }
 

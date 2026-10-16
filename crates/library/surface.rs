@@ -1110,6 +1110,19 @@ pub enum IndexOperationSemanticCoverage {
     },
 }
 
+impl core::fmt::Display for IndexOperationSemanticCoverage {
+    /// Reads as the phrase a status line uses after "with": `complete
+    /// coverage`, `partial coverage (12 of 13 files)`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Complete => formatter.write_str("complete coverage"),
+            Self::Partial { completed, total } => {
+                write!(formatter, "partial coverage ({completed} of {total} files)")
+            }
+        }
+    }
+}
+
 /// Coherent old generation retained while a new source capture is pending or
 /// failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1134,6 +1147,18 @@ pub enum IndexOperationSemanticUnavailableReason {
     Cancelled,
     /// Source or compiler admission refused the refresh.
     Rejected,
+}
+
+impl core::fmt::Display for IndexOperationSemanticUnavailableReason {
+    /// Reads as the sentence fragment that says why no generation was selected.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Toolchain => "the compiler toolchain is unavailable",
+            Self::ProjectAuthority => "the project authority is missing",
+            Self::Cancelled => "the refresh was cancelled",
+            Self::Rejected => "the compiler input was rejected",
+        })
+    }
 }
 
 /// Independent semantic outcome for one captured profile.
@@ -1979,7 +2004,9 @@ impl PackageCompilerFailure {
     }
 
     /// Package-relative request source bound into the compiler terminal. For a
-    /// complete TypeScript program refusal, this is request context, not a hot file.
+    /// complete TypeScript program refusal, this is request context, not a hot file;
+    /// the file and phase that actually stopped, when observed, are
+    /// [`Self::typescript_stop_site`].
     #[must_use]
     pub fn relative_path(&self) -> &str {
         self.relative_path.as_str()
@@ -1994,6 +2021,24 @@ impl PackageCompilerFailure {
             PackageCompilerFailureCause::Authority { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. }
             | PackageCompilerFailureCause::AuthorityAdmission { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. } => kind.is_program_execution_failure(),
             _ => false,
+        }
+    }
+
+    /// Where a native TypeScript program stopped, when this refusal was a program
+    /// execution stop that observed a boundary. Unlike [`Self::relative_path`], this
+    /// is the file and phase that actually consumed the budget or deadline.
+    #[must_use]
+    pub fn typescript_stop_site(&self) -> Option<&crate::interface::TypeScriptStopSite> {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
+            } => facts.typescript_stop_site.as_ref(),
+            _ => None,
         }
     }
 
@@ -2169,21 +2214,14 @@ impl PackageCompilerFailure {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
         }
         if let PackageCompilerFailureCause::Authority {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         }
         | PackageCompilerFailureCause::AuthorityAdmission {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         } = &self.cause
+            && (facts.typescript_admission.is_some() || facts.typescript_cause.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2569,6 +2607,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
@@ -2578,14 +2617,18 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
     } = cause
     {
-        return match typescript_admission {
-            Some(detail) => sanitize_package_compiler_detail(&detail.detail(), false),
-            None => sanitize_package_compiler_detail(failure.detail(), false),
+        return match (typescript_admission, typescript_cause) {
+            (Some(detail), _) => sanitize_package_compiler_detail(&detail.detail(), false),
+            (None, Some(cause)) => {
+                sanitize_package_compiler_detail(&cause.detail_for(*failure), false)
+            }
+            (None, None) => sanitize_package_compiler_detail(failure.detail(), false),
         };
     }
     let prefix = match cause {
@@ -2722,11 +2765,23 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         && facts.typescript_admission.as_ref().is_none_or(|detail| {
             facts.typescript_failure == Some(detail.failure_kind())
         })
+        && (facts.typescript_cause.is_none()
+            || (facts.typescript_failure.is_some() && facts.typescript_admission.is_none()))
+        && facts.typescript_stop_site.as_ref().is_none_or(|site| {
+            site.is_valid()
+                && facts.typescript_failure.is_some_and(
+                    crate::interface::TypeScriptAuthorityFailureKind::is_program_execution_failure,
+                )
+        })
 }
 
 #[cfg(test)]
 #[path = "surface/typescript_admission_tests.rs"]
 mod typescript_admission_tests;
+
+#[cfg(test)]
+#[path = "surface/typescript_cause_tests.rs"]
+mod typescript_cause_tests;
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
     !value.is_empty()
@@ -3200,6 +3255,8 @@ impl IndexJobObservation {
     }
 }
 
+fn default_semantic_versions_limit() -> u16 { 1 }
+
 /// Exact request for one daemon-owned product operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
@@ -3288,6 +3345,17 @@ pub enum SurfaceCommand {
     SemanticVersions {
         /// Exact product package reference.
         package: PackageReference,
+        /// Requested native descriptor bound, within the shared query limit.
+        #[serde(default = "default_semantic_versions_limit")]
+        limit: u16,
+        /// Owner-bound continuation for the same exact source/compiler roots.
+        #[serde(default)]
+        cursor: Option<crate::SemanticVersionsCursor>,
+    },
+    /// Read a byte range of one complete captured semantic-source operand.
+    SemanticSource {
+        /// Exact owner reference and native byte range.
+        request: crate::SemanticSourceRequest,
     },
     /// Read compiler-owned member/type shapes for exact selected keys.
     SemanticShapes {
@@ -3481,6 +3549,7 @@ impl SurfaceCommand {
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::SemanticSource { .. } => CommandId::SemanticSource,
             Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
@@ -3523,10 +3592,15 @@ impl SurfaceCommand {
             Self::Read { locators } if locators.len() > MAX_PRODUCT_ROWS => {
                 Err(ProductAdmissionError::RowBound)
             }
-            Self::Explore { limit, .. } | Self::IndexSearch { limit, .. }
+            Self::Explore { limit, .. } | Self::IndexSearch { limit, .. } | Self::SemanticVersions { limit, .. }
                 if *limit == 0 || usize::from(*limit) > MAX_PRODUCT_ROWS =>
             {
                 Err(ProductAdmissionError::RowBound)
+            }
+            Self::SemanticSource { request } if request.range.max_bytes == 0
+                || usize::from(request.range.max_bytes) > MAX_PRODUCT_TEXT_BYTES
+                || request.range.offset >= request.reference.source.total_bytes => {
+                Err(ProductAdmissionError::SemanticVersionShape)
             }
             Self::SelectSemanticVersion {
                 coordinate,
@@ -4248,6 +4322,19 @@ pub enum IndexSearchResultCount {
     AtLeast(u32),
     /// The search projection could not establish a count.
     Unknown,
+}
+
+impl core::fmt::Display for IndexSearchResultCount {
+    /// Reads as the phrase a page footer states: `5 results`, `at least 5
+    /// results`, `result count unknown`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Exact(1) => formatter.write_str("1 result"),
+            Self::Exact(count) => write!(formatter, "{count} results"),
+            Self::AtLeast(count) => write!(formatter, "at least {count} results"),
+            Self::Unknown => formatter.write_str("result count unknown"),
+        }
+    }
 }
 
 /// One page from the stable selected index snapshot.
@@ -5006,6 +5093,10 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Bounded immutable compiler identities with native source references.
+    SemanticVersionsPage(crate::SemanticVersionsPage),
+    /// Exact range of a captured complete semantic-source object.
+    SemanticSource(crate::SemanticSourceChunk),
     /// Egress view exported after direct shape certificate admission.
     SemanticShapes(crate::SemanticShapeExport),
     /// One bounded page of exact selected Project source membership.
@@ -5101,7 +5192,8 @@ impl SurfaceReply {
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
-            Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => CommandId::SemanticVersions,
+            Self::SemanticSource(_) => CommandId::SemanticSource,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
@@ -5193,6 +5285,14 @@ impl SurfaceReply {
                 page.admit()
                     .map_err(|_| ProductAdmissionError::PackageGraphPage)?;
                 page.rows.len()
+            }
+            Self::SemanticSource(chunk) => {
+                chunk.admit().map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
+                1
+            }
+            Self::SemanticVersionsPage(page) => {
+                page.admit()?;
+                page.entries.len()
             }
             Self::SemanticVersions(records) => {
                 let mut selected_targets = BTreeSet::new();
@@ -5495,6 +5595,8 @@ impl SurfaceReply {
                         ),
                     )
                 })),
+            Self::SemanticSource(chunk) => chunk.base64url.len().saturating_add(512),
+            Self::SemanticVersionsPage(page) => serialized_json_size(page),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
                     .saturating_add(fixed_record_bound())
@@ -6659,6 +6761,88 @@ mod tests {
     }
 
     #[test]
+    fn typescript_stop_site_names_the_stopped_file_and_phase_not_the_request_source() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+            TypeScriptAuthorityFailureKind as F, TypeScriptStopPhase, TypeScriptStopSite,
+        };
+        let terminal = |kind: F, site: TypeScriptStopSite| CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        b"export const x = 1",
+                    ),
+                    byte_len: 18,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"native", 6, false).map(|value| {
+                    value
+                        .with_typescript_failure(kind)
+                        .with_typescript_stop_site(site)
+                }),
+            },
+        };
+        let site = TypeScriptStopSite::new(
+            Some(TypeScriptStopPhase::FileCheck),
+            Some("node_modules/@angular/common/types/chunk.d.ts"),
+            248_342_005,
+            248_342_016,
+        );
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "playwright.config.ts",
+            &terminal(F::NativeProjectCheckWorkBudgetExhausted, site.clone()),
+        )
+        .expect("closed projection")
+        .expect("authority refusal");
+        assert!(failure.is_typescript_program_execution_failure());
+        assert_eq!(failure.relative_path(), "playwright.config.ts");
+        assert_eq!(failure.typescript_stop_site(), Some(&site));
+        let encoded = failure.encode_bounded_json().expect("bounded wire form");
+        let reopened =
+            PackageCompilerFailure::decode_bounded_json(&encoded).expect("strict cold reader");
+        assert_eq!(reopened.typescript_stop_site(), Some(&site));
+        assert_eq!(reopened, failure);
+
+        // A stop site on a failure that is not a program execution stop is not retained.
+        let unrelated = PackageCompilerFailure::from_package_terminal(
+            "eslint.config.mjs",
+            &terminal(F::CheckerExit, site.clone()),
+        )
+        .expect("closed projection")
+        .expect("authority refusal");
+        assert_eq!(unrelated.typescript_stop_site(), None);
+
+        // A forged, unsafe, or contradictory site is refused at the cold boundary.
+        let mut json: serde_json::Value = serde_json::from_slice(&encoded).expect("control JSON");
+        for forged in [
+            serde_json::json!({"file": "/etc/passwd", "work_charged": 1, "work_allowance": 2}),
+            serde_json::json!({"file": "a/../b.ts", "work_charged": 1, "work_allowance": 2}),
+            serde_json::json!({"work_charged": 3, "work_allowance": 2}),
+            serde_json::json!({"work_charged": 1, "work_allowance": 2, "invented": true}),
+        ] {
+            json["cause"]["fault"]["diagnostic"]["typescript_stop_site"] = forged;
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err()
+            );
+        }
+        // Unsafe retained paths are dropped when the site is built.
+        for unsafe_path in ["/abs/x.ts", "a\\b.ts", "a/../b.ts", "a//b.ts", "tab\t.ts", ""] {
+            let site = TypeScriptStopSite::new(None, Some(unsafe_path), 1, 2);
+            assert_eq!(site.file, None, "{unsafe_path:?}");
+        }
+        let long = "a/".repeat(TypeScriptStopSite::MAX_FILE_BYTES);
+        assert_eq!(TypeScriptStopSite::new(None, Some(&long), 1, 2).file, None);
+    }
+
+    #[test]
     fn go_authority_failures_round_trip_and_refuse_contradictory_markers() {
         use crate::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt,
             CompilerCause, CompilerDiagnostic, CompilerTerminal, GoAuthorityFailureKind as G,
@@ -7351,7 +7535,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            28,
+            31,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
@@ -7371,7 +7555,7 @@ mod tests {
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23, 24, 25, 26, 27] {
+        for old_version in 21..crate::DTO_VERSION {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");

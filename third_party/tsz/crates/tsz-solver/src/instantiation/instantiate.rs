@@ -827,6 +827,10 @@ impl<'a> TypeInstantiator<'a> {
             return type_id;
         }
 
+        if !tsz_common::ambient_poll() {
+            self.mark_depth_exceeded();
+            return self.bail_value(type_id);
+        }
         if matches!(
             self.walk_state.enter_frame(),
             InstantiationFrameState::DepthExceeded

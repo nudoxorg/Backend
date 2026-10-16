@@ -840,6 +840,74 @@ fn close_interrupts_the_blocked_exchange_before_the_owner_releases_it() {
 }
 
 #[test]
+fn successful_renewals_cannot_keep_stale_reads_or_actions_admitted() {
+    let mut case = start_blocked_case_with_timing(ObservationTiming {
+        poll: Duration::from_millis(10),
+        io_tick: Duration::from_millis(10),
+        dial: Duration::from_millis(300),
+        freshness: Duration::from_millis(120),
+        ordinary_recovery: Duration::from_secs(2),
+        first_root: Duration::from_secs(2),
+        renew: Duration::ZERO,
+        max_reconnects: 2,
+    });
+    let held = case.entered.recv_timeout(Duration::from_secs(2)).expect("freshness forced a producer Resume");
+    assert!(held > 3, "successful Renew control exchanges preceded the freshness fence");
+    assert_eq!(case.gate.ready_epoch(), None);
+    assert!(!case.gate.serves_attachment(Some(case.old)));
+    assert!(case.gate.mutation_generation(Some(case.old)).is_none());
+    assert_eq!(case.resumes.load(Ordering::Acquire), 1);
+    case.running.close();
+}
+
+#[test]
+fn exhausted_slow_publication_waits_for_explicit_retry_without_discarding_its_root() {
+    let mut case = start_blocked_case_with_timing(ObservationTiming {
+        poll: Duration::from_millis(10),
+        io_tick: Duration::from_millis(10),
+        dial: Duration::from_millis(300),
+        freshness: Duration::from_millis(50),
+        ordinary_recovery: Duration::from_millis(180),
+        first_root: Duration::from_secs(2),
+        renew: Duration::from_secs(10),
+        max_reconnects: 2,
+    });
+    assert_eq!(case.entered.recv_timeout(Duration::from_secs(2)).expect("held Resume"), 2);
+    let until = Instant::now() + Duration::from_secs(2);
+    while !matches!(case.gate.state(), crate::runtime::owner::OwnerState::Failed(_)) {
+        assert!(Instant::now() < until, "active work must remain bounded");
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(matches!(case.gate.state(), crate::runtime::owner::OwnerState::Failed(
+        crate::runtime::owner::OwnerFault::Observation(ObservationFailure::BudgetExpired {
+            kind: PublicationBudgetKind::Ordinary, ..
+        })
+    )));
+    assert_eq!(case.resumes.load(Ordering::Acquire), 1, "exhaustion cannot blindly replay Resume");
+    assert!(case.gate.restart(), "explicit Retry authorizes a new observation operation");
+    assert!(case.running.observer.take().expect("first observer").join().expect("observer joined"));
+    let (attachment, suspended) = case.gate.observation_attachment().expect("retained host scope");
+    assert!(suspended);
+    assert!(case.gate.publication(attachment).is_some());
+    assert!(case.gate.ready_epoch().is_none(), "retention has no serving authority");
+    let (lock, wake) = &*case.running.release;
+    *lock.lock().expect("release old producer work") = true;
+    wake.notify_all();
+    let gate = case.gate.clone();
+    let endpoint = case.running.path.clone();
+    case.running.observer = Some(thread::spawn(move || {
+        serve_with_timing(&gate, &endpoint, ObservationTiming::CANDIDATE, |_| {})
+    }));
+    let until = Instant::now() + Duration::from_secs(2);
+    while case.gate.ready_epoch().is_none() {
+        assert!(Instant::now() < until, "fresh Open must recertify the retained exact cursor");
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(case.gate.ready_epoch(), Some(attachment));
+    case.running.close();
+}
+
+#[test]
 fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root() {
     assert_rejected_lease_recovery(PublicationOperation::Resume, false);
 }

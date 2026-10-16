@@ -5,7 +5,6 @@
 
 use super::{ModuleExtension, ModuleResolver, ResolvedModule};
 use crate::config::ModuleResolutionKind;
-use crate::module_resolver_helpers::cached_is_file;
 use crate::span::Span;
 use std::path::Path;
 use tsz_common::module_resolution::TargetMatch;
@@ -22,7 +21,7 @@ pub(super) enum SelfReferenceResultV2 {
     AmbiguousRoot,
 }
 
-impl ModuleResolver {
+impl<'fs> ModuleResolver<'fs> {
     /// Try to resolve a self-reference (package importing itself by name)
     /// This version properly distinguishes between:
     /// 1. Self-reference that successfully resolved
@@ -54,7 +53,7 @@ impl ModuleResolver {
         loop {
             let package_json_path = current.join("package.json");
 
-            if cached_is_file(&package_json_path)
+            if self.is_file(&package_json_path)
                 && let Ok(package_json) = self.read_package_json(&package_json_path)
             {
                 // Check if the package name matches - this is REQUIRED for a self-reference
@@ -129,6 +128,9 @@ impl ModuleResolver {
             }
 
             // Move to parent directory
+            if !self.may_walk_parent(&current) {
+                break;
+            }
             match current.parent() {
                 Some(parent) if parent != current => current = parent.to_path_buf(),
                 _ => break,

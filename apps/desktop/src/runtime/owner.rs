@@ -203,6 +203,11 @@ impl From<String> for OwnerFault {
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Epoch(u64);
 
+/// Capability for the host published by one exact starter invocation. Read
+/// attachment rotation and publication Retry cannot replace its source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerHostLifetime(Epoch);
+
 impl Epoch {
     const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
@@ -273,12 +278,17 @@ struct Inner {
     epoch: Epoch,
     /// Stable attachment identity; root publications only bump `epoch`.
     attachment: Epoch,
+    /// Changes only when a host state is explicitly published/replaced.
+    host_epoch: Epoch,
     /// Freshness recovery rotates read attachments but retains this lifetime.
     /// Exhaustion permanently disables new mutation capabilities.
     mutation_generation: Option<MutationGeneration>,
     mutation_cancel: super::actor::CancellationToken,
     /// One latest complete admitted worker root, shared with the actor.
     publication: Option<(Arc<backend_library::ViewRoot>, backend_library::Cursor)>,
+    /// Exact live host authority retained only for an explicit publication
+    /// reconnect. Startup/source replacement clears this capability.
+    observation_retry: Option<(VersionedRoot, ServiceMode)>,
     observation_cancel: super::actor::CancellationToken,
     observation_suspended: bool,
     /// Set only by fresh certified admission for this serving attachment.
@@ -322,9 +332,11 @@ impl OwnerGate {
                 state,
                 epoch,
                 attachment: epoch,
+                host_epoch: epoch,
                 mutation_generation: Some(MutationGeneration(0)),
                 mutation_cancel: super::actor::CancellationToken::new(),
                 publication: None,
+                observation_retry: None,
                 observation_cancel: super::actor::CancellationToken::new(),
                 observation_suspended: false,
                 fresh_publication: None,
@@ -446,6 +458,7 @@ impl OwnerGate {
                 .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
             let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
             inner.publication = None;
+            inner.observation_retry = None;
             let cancel = inner.observation_cancel.clone();
             (inner.waker.take(), cancel, mutation_cancel)
         };
@@ -460,10 +473,19 @@ impl OwnerGate {
 
     /// Publishes a new state: wakes every waiting worker and the UI.
     pub fn publish(&self, state: OwnerState) {
-        let (waker, cancel, mutation_cancel) = {
+        let _ = self.publish_state(state);
+    }
+
+    /// Atomically publishes this starter's source and captures its lifetime.
+    pub(crate) fn publish_host(&self, key: VersionedRoot, mode: ServiceMode) -> Option<OwnerHostLifetime> {
+        self.publish_state(OwnerState::Ready { key, mode }).map(OwnerHostLifetime)
+    }
+
+    fn publish_state(&self, state: OwnerState) -> Option<Epoch> {
+        let (waker, cancel, mutation_cancel, host_epoch) = {
             let mut inner = self.lock();
             if inner.closed {
-                return;
+                return None;
             }
             match &state {
                 OwnerState::Ready { .. } => crate::runtime::trace::mark("owner.ready", "gate"),
@@ -473,16 +495,18 @@ impl OwnerGate {
             let cancel = inner.observation_cancel.clone();
             inner.observation_cancel = super::actor::CancellationToken::new();
             inner.publication = None;
+            inner.observation_retry = None;
             inner.observation_suspended = false;
             inner.fresh_publication = None;
             inner.state = state;
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
+            inner.host_epoch = inner.epoch;
             inner.mutation_generation = inner.mutation_generation
                 .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
             let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
-            (inner.waker.take(), cancel, mutation_cancel)
+            (inner.waker.take(), cancel, mutation_cancel, inner.host_epoch)
         };
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
@@ -491,6 +515,7 @@ impl OwnerGate {
         if let Some(waker) = waker {
             waker.wake();
         }
+        Some(host_epoch)
     }
 
     fn event_is_current(&self, event: Epoch) -> bool {
@@ -531,6 +556,46 @@ impl OwnerGate {
             && !inner.observation_suspended
             && matches!(inner.state, OwnerState::Ready { .. }))
         .then_some(inner.attachment)
+    }
+
+    /// Worker entry may reconnect a retained publication while read/action
+    /// admission remains suspended until a new complete proof arrives.
+    #[cfg(test)]
+    pub(crate) fn observation_attachment(&self) -> Option<(Epoch, bool)> {
+        let inner = self.lock();
+        (!inner.closed && matches!(inner.state, OwnerState::Ready { .. }))
+            .then_some((inner.attachment, inner.observation_suspended))
+    }
+
+    pub(crate) fn observation_attachment_for(&self, host: OwnerHostLifetime) -> Option<(Epoch, bool)> {
+        let inner = self.lock();
+        (!inner.closed && inner.host_epoch == host.0 && matches!(inner.state, OwnerState::Ready { .. }))
+            .then_some((inner.attachment, inner.observation_suspended))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observation_host(&self) -> OwnerHostLifetime {
+        OwnerHostLifetime(self.lock().host_epoch)
+    }
+
+    /// A UI event for pending publication work is never a serving receipt.
+    fn observation_pending_at(&self, event: Epoch) -> bool {
+        let inner = self.lock();
+        !inner.closed && inner.epoch == event && inner.observation_suspended
+            && matches!(inner.state, OwnerState::Ready { .. })
+    }
+
+    /// The worker may retain its exact host only after a publication Retry.
+    pub(crate) fn publication_retry_pending(&self) -> bool {
+        let inner = self.lock();
+        !inner.closed && inner.observation_suspended && inner.publication.is_some()
+            && matches!(inner.state, OwnerState::Ready { .. })
+    }
+
+    pub(crate) fn publication_retry_for(&self, host: OwnerHostLifetime) -> bool {
+        let inner = self.lock();
+        !inner.closed && inner.host_epoch == host.0 && inner.observation_suspended
+            && inner.publication.is_some() && matches!(inner.state, OwnerState::Ready { .. })
     }
 
     /// Configuration export belongs to this process's live embedded owner.
@@ -707,6 +772,7 @@ impl OwnerGate {
                 return false;
             }
             inner.observation_suspended = false;
+            inner.observation_retry = None;
             // Preserve the proof just checked above for the exact UI wake.
             // Suspension/replacement clears it before any later admission.
             inner.epoch = inner.epoch.next();
@@ -760,9 +826,13 @@ impl OwnerGate {
             {
                 return false;
             }
+            let OwnerState::Ready { key, mode } = inner.state else { return false; };
+            inner.observation_retry = inner.publication.as_ref().map(|_| (key, mode));
             inner.state = OwnerState::Failed(OwnerFault::Observation(reason));
             let cancel = inner.observation_cancel.clone();
-            inner.publication = None;
+            // Keep the complete root for an explicitly requested reconnect;
+            // state and attachment fences prevent any read/action admission.
+            inner.fresh_publication = None;
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
             inner.mutation_generation = inner.mutation_generation
@@ -862,13 +932,13 @@ impl OwnerGate {
         self.restart_current(Some(expected))
     }
 
-    /// Asks a failed owner to try again. Returns whether it was asked: a
-    /// starting or answering owner is left alone.
+    /// Retries an exact failed publication against its retained host/root;
+    /// other failures restart the host. Serving or pending work is left alone.
     #[must_use]
     pub fn restart(&self) -> bool { self.restart_current(None) }
 
     fn restart_current(&self, expected: Option<RetryGeneration>) -> bool {
-        let (cancel, waker, mutation_cancel) = {
+        let (cancel, waker, mutation_cancel, publication_retry) = {
             let mut inner = self.lock();
             if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_))
                 || expected.is_some_and(|expected| expected.0 != inner.epoch) {
@@ -878,22 +948,33 @@ impl OwnerGate {
             // handle cannot disable the producer between checking and publish.
             inner.restart = true;
             let cancel = std::mem::replace(&mut inner.observation_cancel, super::actor::CancellationToken::new());
-            inner.publication = None;
-            inner.observation_suspended = false;
-            inner.state = OwnerState::Starting;
+            let retained = inner.observation_retry.take();
+            if let Some((key, mode)) = retained {
+                inner.observation_suspended = true;
+                inner.state = OwnerState::Ready { key, mode };
+            } else {
+                inner.publication = None;
+                inner.observation_suspended = false;
+                inner.state = OwnerState::Starting;
+            }
+            inner.fresh_publication = None;
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
             inner.mutation_generation = inner.mutation_generation
                 .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
             let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
-            (cancel, inner.waker.take(), mutation_cancel)
+            (cancel, inner.waker.take(), mutation_cancel, retained.is_some())
         };
         // Cancellation may synchronously call back into this same gate.
         // Keep the atomic admission above, then release the lock first.
         cancel.cancel();
         mutation_cancel.cancel();
-        crate::runtime::trace::mark("owner.starting", "retry");
+        if publication_retry {
+            crate::runtime::trace::mark("observation.reconnecting", "explicit-retry");
+        } else {
+            crate::runtime::trace::mark("owner.starting", "retry");
+        }
         self.0.changed.notify_all();
         if let Some(waker) = waker { waker.wake(); }
         true
@@ -940,6 +1021,7 @@ impl OwnerGate {
             inner.closed = true;
             let cancel = inner.observation_cancel.clone();
             inner.publication = None;
+            inner.observation_retry = None;
             inner.state = OwnerState::Failed(OwnerFault::Closed);
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
@@ -1038,6 +1120,12 @@ pub(crate) fn watch(
                     }
                     OwnerState::Ready { key, mode } => {
                         let Some(attachment) = gate.ready_at(epoch, key) else {
+                            if gate.observation_pending_at(epoch) {
+                                recovery_requires_proof = true;
+                                resources_serving = None;
+                                root.update(cx, |root, cx| root.owner_unavailable(cx));
+                                store.update(cx, super::store::DataStore::owner_observing);
+                            }
                             return true;
                         };
                         if serving.is_some() {
@@ -1535,6 +1623,66 @@ pub(crate) mod publication_tests {
         assert!(gate.publication(suspended).is_none());
         assert_eq!(gate.publish_view(suspended, root, cursor), PublicationAdmission::Withdrawn);
         assert!(!gate.complete_observation(suspended));
+    }
+
+    #[test]
+    fn publication_retry_retains_the_exact_root_but_requires_fresh_proof_and_new_actions() {
+        let root = view();
+        let (gate, old, cursor) = attached(&root);
+        let host = OwnerHostLifetime(gate.lock().host_epoch);
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
+        let (mutation, mutation_cancel) = gate.mutation_generation(Some(old)).expect("old action scope");
+        assert!(gate.observation_failed(old, ObservationFailure::RecoveryExpired(Duration::from_secs(30))));
+        let retry = gate.retry_generation().expect("exact failure retry");
+        assert!(mutation_cancel.is_cancelled());
+        assert!(gate.restart_at(retry));
+        assert!(!gate.restart_at(retry), "one rendered Retry cannot reconnect twice");
+        assert!(gate.publication_retry_pending());
+        assert!(gate.publication_retry_for(host));
+        let (pending, suspended) = gate.observation_attachment().expect("retained live host");
+        assert!(suspended);
+        assert_ne!(pending, old);
+        assert_eq!(gate.ready_epoch(), None);
+        let (retained, retained_cursor) = gate.publication(pending).expect("complete predecessor");
+        assert!(Arc::ptr_eq(&retained, &root));
+        assert_eq!(retained_cursor, cursor);
+        assert!(!gate.complete_observation(pending), "retaining bytes cannot certify freshness");
+        assert!(gate.mutation_generation(Some(pending)).is_none());
+        assert!(matches!(gate.admit_mutation(mutation), MutationAdmission::Replaced));
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Withdrawn);
+        assert_eq!(gate.publish_view(pending, root, cursor), PublicationAdmission::Admitted);
+        assert!(gate.complete_observation(pending));
+        assert_eq!(gate.ready_epoch(), Some(pending));
+        assert!(matches!(gate.admit_mutation(mutation), MutationAdmission::Replaced),
+            "even same-root recovery cannot revive an old mutation capability");
+    }
+
+    #[test]
+    fn source_replacement_retires_a_pending_publication_retry_and_its_retained_root() {
+        let root = view();
+        let (gate, old, cursor) = attached(&root);
+        let host = OwnerHostLifetime(gate.lock().host_epoch);
+        assert_eq!(gate.publish_view(old, Arc::clone(&root), cursor), PublicationAdmission::Admitted);
+        assert!(gate.observation_failed(old, ObservationFailure::RecoveryExpired(Duration::from_secs(30))));
+        assert!(gate.restart());
+        let (pending, _) = gate.observation_attachment().expect("pending old host");
+        let cancel = gate.observation_scope(pending).expect("pending socket lifetime");
+        gate.publish(OwnerState::Ready {
+            key: VersionedRoot::from_revision(2, cursor, 0),
+            mode: ServiceMode::Attached,
+        });
+        assert!(cancel.is_cancelled());
+        assert!(gate.observation_attachment_for(host).is_none());
+        assert!(!gate.publication_retry_pending());
+        assert!(gate.publication(pending).is_none());
+        assert!(!gate.complete_observation(pending));
+        assert_eq!(gate.publish_view(pending, Arc::clone(&root), cursor), PublicationAdmission::Withdrawn);
+        assert!(!gate.observation_failed(pending, ObservationFailure::RecoveryExpired(Duration::from_secs(30))));
+        let replacement = gate.ready_epoch().expect("replacement source");
+        assert_eq!(gate.publish_view(replacement, root, cursor), PublicationAdmission::Admitted);
+        assert!(gate.suspend_observation(replacement).is_some());
+        assert!(gate.publication_retry_pending());
+        assert!(!gate.publication_retry_for(host), "another suspended source cannot reuse the old host");
     }
 
     #[test]

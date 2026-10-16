@@ -3,7 +3,7 @@
 use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
-use crate::surface::SemanticLinkKind;
+use crate::surface::{SemanticConfidence, SemanticLinkKind};
 use backend_compile::{
     DeclarationFacts, DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation,
 };
@@ -281,7 +281,8 @@ pub enum Reason {
 pub enum Coverage {
     /// The lane covers its declared source scope.
     Complete,
-    /// The lane completed only a bounded portion of its scope.
+    /// The lane completed only a bounded portion of its scope and is still
+    /// moving: the counts advance as shards finish, so a reader may wait.
     Partial {
         /// Lane whose bounded result is represented.
         lane: Lane,
@@ -289,6 +290,15 @@ pub enum Coverage {
         completed: u16,
         /// Number of declared shards/lanes.
         total: u16,
+    },
+    /// The lane finished every task its authority could run and published
+    /// readable rows, while explicit source-scope gaps remain: sources the
+    /// configured compiler program excludes, or a profile that was refused
+    /// while another published. Unlike [`Self::Partial`] this is a settled
+    /// result: waiting changes nothing until the sources or configuration do.
+    Gapped {
+        /// Lane whose published result has explicit gaps.
+        lane: Lane,
     },
     /// The lane could not produce an authoritative result.
     Unavailable {
@@ -300,27 +310,14 @@ pub enum Coverage {
 }
 
 impl Reason {
-    /// Returns whether this lane was never part of the declared scope.
+    /// Returns whether this reason proves a lane was outside declared scope.
     ///
-    /// `Unconfigured` is the one reason that is a fact about the *deployment*
-    /// rather than about this revision's work: no timer, retry, or further
-    /// indexing will change it, and nothing was left undone. Every other
-    /// reason describes work that could have produced rows for this revision
-    /// and did not.
-    ///
-    /// A surface needs this distinction to answer "is this project ready" with
-    /// one word. Treating an unconfigured lane as a failure makes an owner
-    /// that has completed every lane it has report a fault forever, which is
-    /// the same fabricated state as reporting a partial fraction that can
-    /// never advance — it just fails in the other direction. The lane itself
-    /// must still be *shown* as unavailable with its reason; it simply must
-    /// not hold the summary word hostage.
+    /// No lane reason proves that: `Unconfigured` can describe a missing
+    /// compiler for requested source. Optional vector setup is represented by
+    /// `SemanticSearchStatus` and must not certify compiler completeness.
     #[must_use]
     pub const fn is_outside_declared_scope(self) -> bool {
-        match self {
-            Self::Unconfigured => true,
-            Self::NoIndex | Self::Offline | Self::Cancelled | Self::Incomplete => false,
-        }
+        false
     }
 }
 
@@ -333,19 +330,19 @@ impl Coverage {
 
     /// Returns whether this lane failed work it was asked to do.
     ///
-    /// A lane the deployment never configured is unavailable but not failed;
-    /// see [`Reason::is_outside_declared_scope`].
+    /// Every unavailable compiler lane represents unmet declared coverage.
+    /// Optional vector setup is reported separately by `SemanticSearchStatus`.
     #[must_use]
     pub const fn is_failed_lane(self) -> bool {
         match self {
             Self::Unavailable { reason, .. } => !reason.is_outside_declared_scope(),
-            Self::Complete | Self::Partial { .. } => false,
+            Self::Complete | Self::Partial { .. } | Self::Gapped { .. } => false,
         }
     }
 
     pub(super) fn is_valid(self) -> bool {
         match self {
-            Self::Complete | Self::Unavailable { .. } => true,
+            Self::Complete | Self::Gapped { .. } | Self::Unavailable { .. } => true,
             Self::Partial {
                 completed, total, ..
             } => completed <= total,
@@ -768,13 +765,23 @@ pub struct GraphRelation {
     pub to: RowId,
     /// Compiler-defined semantic relation kind.
     pub relation: SemanticLinkKind,
+    /// Observed evidence strength; `None` retains unobserved legacy confidence.
+    pub confidence: Option<SemanticConfidence>,
 }
 
 impl GraphRelation {
-    /// Creates one typed graph relation.
+    /// Creates a relation supplied by an explicit compiler or oracle producer.
+    /// Syntactic and other observed producers must set their actual confidence.
     #[must_use]
     pub const fn new(from: RowId, to: RowId, relation: SemanticLinkKind) -> Self {
-        Self { from, to, relation }
+        Self { from, to, relation, confidence: Some(SemanticConfidence::Compiler) }
+    }
+
+    /// Carries the producer's observed evidence strength without changing edge identity.
+    #[must_use]
+    pub const fn with_confidence(mut self, confidence: SemanticConfidence) -> Self {
+        self.confidence = Some(confidence);
+        self
     }
 }
 

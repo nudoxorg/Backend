@@ -28,8 +28,20 @@ pub struct StartupRecoverySelection<'a> {
     pub endpoint: &'a Path,
     /// Selected authority-file operand, including an environment override.
     pub authority_secret: &'a Path,
+    /// Whether the selected credential is derived from this workspace's default.
+    /// A shell hint can reproduce this selection without disclosing a file path.
+    pub workspace_authority: bool,
     /// Explicit versus platform-default directory selection.
     pub workspace: StartupWorkspaceSelection<'a>,
+}
+
+impl StartupRecoverySelection<'_> {
+    /// Returns whether ordinary discovery can retain this credential selection
+    /// without printing its private path in a recovery command.
+    #[must_use]
+    pub fn uses_default_authority(&self) -> bool {
+        self.authority_secret == self.data.join(super::AUTHORITY_FILE)
+    }
 }
 
 impl WorkspacePaths {
@@ -56,6 +68,7 @@ impl WorkspacePaths {
             data: &self.data,
             endpoint: &self.endpoint,
             authority_secret: &self.authority_secret,
+            workspace_authority: self.authority_secret == self.data.join(super::AUTHORITY_FILE),
             workspace,
         })
     }

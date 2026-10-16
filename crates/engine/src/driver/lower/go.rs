@@ -44,7 +44,7 @@
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
-//! oracle-confidence type-reference occurrences owned by the satisfying
+//! oracle-confidence implements occurrences owned by the satisfying
 //! type's fact, resolving in-package targets to local ordinals and
 //! cross-package targets to foreign `go` lineage keys. The oracle records no
 //! written relation for a satisfaction edge, so each occurrence anchors on
@@ -1105,7 +1105,7 @@ pub(crate) fn collect<'source>(
     go.docs()?;
     // Pass five: resolved call occurrences.
     go.occurrences()?;
-    // Pass six: interface-satisfaction edges as type-reference occurrences.
+    // Pass six: interface-satisfaction edges as implements occurrences.
     go.satisfactions()?;
     Ok(())
 }
@@ -2658,7 +2658,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         Ok(())
     }
 
-    /// Pass six: one oracle-confidence type-reference occurrence per
+    /// Pass six: one oracle-confidence implements occurrence per
     /// interface-satisfaction edge, owned by the satisfying type's fact.
     /// In-package targets resolve to their local nominal ordinals;
     /// cross-package targets fold to foreign `go` lineage keys. Go never
@@ -2760,7 +2760,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     subject,
                     Occurrence {
                         target,
-                        kind: ReferenceKind::TypeReference,
+                        kind: ReferenceKind::Implements,
                         confidence: OccurrenceConfidence::Oracle,
                         span,
                     },
@@ -6877,7 +6877,7 @@ mod tests {
     }
 
     #[test]
-    fn satisfactions_project_local_and_foreign_type_reference_occurrences() -> Result<(), TestError>
+    fn satisfactions_project_local_and_foreign_implements_occurrences() -> Result<(), TestError>
     {
         let mut fix = Fixture::new();
         let client = fix.declaration(KIND_TYPE, b"Client", None);
@@ -6896,7 +6896,7 @@ mod tests {
             .ok_or(TestError::Missing("local satisfaction"))??;
         if local.owner.raw != 0
             || local.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
-            || local.occurrence.kind != ReferenceKind::TypeReference
+            || local.occurrence.kind != ReferenceKind::Implements
             || local.occurrence.confidence != OccurrenceConfidence::Oracle
             || local.occurrence.span.start != 0
             || local.occurrence.span.end != 0
@@ -6915,7 +6915,7 @@ mod tests {
         if lineage.ecosystem != ECOSYSTEM
             || lineage.name != "example.com/demo/sub"
             || key.path != "Service"
-            || foreign.occurrence.kind != ReferenceKind::TypeReference
+            || foreign.occurrence.kind != ReferenceKind::Implements
         {
             return Err(TestError::Missing("foreign satisfaction key"));
         }

@@ -5,9 +5,9 @@ use crate::arrangement::ArrangementPage;
 use crate::{
     Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, GraphRelation,
     LibraryError, NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey,
-    PageRequest, PageTerminal, ProjectionPage, Query, QueryLimit, RankedSearchSnapshot,
-    ReadManifest, Row, RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot,
-    ViewStateRoot, view_identity_bytes,
+    PageRequest, PageTerminal, ProjectionPage, Query, QueryLimit, QueryWindow,
+    RankedSearchSnapshot, ReadManifest, Row, RowId, SymbolKey, ViewRecipeId, ViewRevision,
+    ViewRoot, ViewSnapshot, ViewStateRoot, view_identity_bytes,
 };
 use crate::{ReferenceFact, ReferenceRecord};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,8 +33,9 @@ pub(crate) fn query_page_preimage(kind: QueryPageKind, text: &str, limit: QueryL
 /// Canonical witness for a bounded catalog page's continuation contract.
 ///
 /// Producers, certificate builders, and consumers use the same canonical
-/// encoding. Names/search bind text, credit and optional read manifest; graph
-/// retains its address/root recipe and validates credit against the predecessor.
+/// encoding. Names/search bind text, credit and optional read manifest. Windowed
+/// graph pages bind their address/root and issued credit; legacy graph recipes
+/// retain their exact historical address/root encoding.
 /// Private fields keep the identity paired with its exact preimage.
 #[derive(Debug)]
 pub struct QueryPageRecipe {
@@ -49,7 +50,7 @@ impl QueryPageRecipe {
         Self::new(
             QueryPageKind::Names,
             query.text(),
-            query.limit(),
+            query.window(),
             root,
             query.read_manifest(),
         )
@@ -61,10 +62,56 @@ impl QueryPageRecipe {
         Self::new(
             QueryPageKind::Search,
             query.text(),
-            query.limit(),
+            query.window(),
             root,
             query.read_manifest(),
         )
+    }
+
+    /// Borrows the original request while authenticating its exact predecessor recipe.
+    #[must_use]
+    pub fn names_predecessor(root: ViewStateRoot, query: &NameQuery) -> Option<Self> {
+        let window = Self::predecessor_window(query.window(), query.cursor())?;
+        Some(Self::new(
+            QueryPageKind::Names,
+            query.text(),
+            window,
+            root,
+            query.read_manifest(),
+        ))
+    }
+
+    /// Borrows the original request while authenticating its exact predecessor recipe.
+    #[must_use]
+    pub fn search_predecessor(root: ViewStateRoot, query: &Query) -> Option<Self> {
+        let window = Self::predecessor_window(query.window(), query.cursor())?;
+        Some(Self::new(
+            QueryPageKind::Search,
+            query.text(),
+            window,
+            root,
+            query.read_manifest(),
+        ))
+    }
+
+    /// Authenticates legacy predecessors before issuing a new windowed graph recipe.
+    #[must_use]
+    pub fn graph_predecessor(
+        root: ViewStateRoot,
+        address: crate::SymbolAddress,
+        page: PageRequest,
+    ) -> Option<Self> {
+        let window = Self::predecessor_window(
+            page.window(),
+            page.continuation().map(crate::PageContinuation::cursor),
+        )?;
+        Some(Self::graph_window(root, address, window))
+    }
+
+    fn predecessor_window(window: QueryWindow, cursor: Option<Cursor>) -> Option<QueryWindow> {
+        cursor.map_or(Some(window), |cursor| {
+            window.predecessor(cursor.query_position())
+        })
     }
 
     /// Binds a plain graph page to its exact source root and original address.
@@ -73,23 +120,58 @@ impl QueryPageRecipe {
     /// carried by the continued command and checked against its predecessor.
     #[must_use]
     pub fn graph(root: ViewStateRoot, address: crate::SymbolAddress) -> Self {
-        let mut recipe = b"graph-page".to_vec();
-        recipe.extend_from_slice(&address.claimed_bytes());
+        Self::graph_window(root, address, QueryWindow::fixed(QueryLimit::default()))
+    }
+
+    /// Windowed graph credit is bound natively, independently of delivery width.
+    #[must_use]
+    pub fn graph_window(
+        root: ViewStateRoot,
+        address: crate::SymbolAddress,
+        window: QueryWindow,
+    ) -> Self {
+        let recipe = graph_page_recipe(address, window);
         let preimage =
             crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
                 .into_boxed_slice();
-        let identity = ViewRecipeId::from_value(&preimage);
-        Self { identity, preimage }
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
+    /// Binds a fixed outline page to its package, source root and exact credit.
+    #[must_use]
+    pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit) -> Self {
+        let recipe = outline_page_recipe(package, limit);
+        let preimage =
+            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
+                .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
     }
 
     fn new(
         kind: QueryPageKind,
         text: &str,
-        limit: QueryLimit,
+        window: QueryWindow,
         root: ViewStateRoot,
         manifest: Option<&ReadManifest>,
     ) -> Self {
-        let recipe = query_page_preimage(kind, text, limit);
+        let recipe = if window.is_windowed() {
+            let mut bytes = b"catalog-query-window-v1\0".to_vec();
+            bytes.push(match kind {
+                QueryPageKind::Names => 0,
+                QueryPageKind::Search => 1,
+            });
+            bytes.extend_from_slice(&window.issued().get().to_be_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+            bytes
+        } else {
+            query_page_preimage(kind, text, window.issued())
+        };
         let manifest = manifest_preimage(manifest);
         let preimage = crate::canonical::view_identity_preimage(&[
             b"query",
@@ -98,8 +180,10 @@ impl QueryPageRecipe {
             &manifest,
         ])
         .into_boxed_slice();
-        let identity = ViewRecipeId::from_value(&preimage);
-        Self { identity, preimage }
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
     }
 
     /// The identity admitted by this canonical witness.
@@ -113,6 +197,26 @@ impl QueryPageRecipe {
     pub fn canonical_preimage(&self) -> &[u8] {
         &self.preimage
     }
+}
+
+pub(crate) fn outline_page_recipe(package: PackageKey, limit: QueryLimit) -> Vec<u8> {
+    let mut bytes = b"outline-page-v3\0".to_vec();
+    bytes.extend_from_slice(package.as_bytes());
+    bytes.extend_from_slice(&limit.get().to_be_bytes());
+    bytes
+}
+
+fn graph_page_recipe(address: crate::SymbolAddress, window: QueryWindow) -> Vec<u8> {
+    let mut bytes = if window.is_windowed() {
+        b"graph-page-window-v1\0".to_vec()
+    } else {
+        b"graph-page".to_vec()
+    };
+    if window.is_windowed() {
+        bytes.extend_from_slice(&window.issued().get().to_be_bytes());
+    }
+    bytes.extend_from_slice(&address.claimed_bytes());
+    bytes
 }
 
 fn manifest_preimage(manifest: Option<&ReadManifest>) -> Vec<u8> {
@@ -150,12 +254,21 @@ impl Library {
     /// [`LibraryError::View`] when the bounded snapshot cannot be built.
     pub fn packages_page(&self, page: PageRequest) -> Result<ProjectionPage, LibraryError> {
         self.check_basis(page.basis())?;
+        if page.window().is_windowed()
+            || page
+                .continuation()
+                .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+        {
+            return Err(LibraryError::InvalidQuery(
+                "this projection requires a legacy fixed page and position".to_owned(),
+            ));
+        }
         let recipe_bytes = b"packages-page";
         let recipe = self.query_recipe(recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.arrangement.packages_page_from(offset, limit)
+        let start = self.check_query_cursor(cursor, recipe, limit, |offset, count| {
+            self.arrangement.packages_page_from(offset, count)
         })?;
         let result = self.arrangement.packages_page_from(start, limit);
         self.projection_page(recipe_bytes, &result, start, limit)
@@ -175,19 +288,27 @@ impl Library {
         page: PageRequest,
     ) -> Result<ProjectionPage, LibraryError> {
         self.check_basis(page.basis())?;
+        if page.window().is_windowed()
+            || page
+                .continuation()
+                .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+        {
+            return Err(LibraryError::InvalidQuery(
+                "this projection requires a legacy fixed page and position".to_owned(),
+            ));
+        }
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);
         }
-        let mut recipe_bytes = b"outline-page-v2".to_vec();
-        recipe_bytes.extend_from_slice(package.as_bytes());
+        let recipe_bytes = outline_page_recipe(package, page.limit());
         let recipe = self.query_recipe(&recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
+        let start = self.check_query_cursor(cursor, recipe, limit, |offset, count| {
             self.arrangement.outline_page(
                 package,
                 offset,
-                limit,
+                count,
                 |id| self.view.row_ref(id),
                 &self.work,
             )
@@ -247,12 +368,17 @@ impl Library {
         self.check_basis(query.basis)?;
         let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
         self.work.record_seek();
-        let limit = usize::from(query.limit.get());
-        let fetch = |offset| {
+        let window = query.window();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
+        let previous_recipe = QueryPageRecipe::names_predecessor(self.revision_root(), query)
+            .ok_or(LibraryError::CursorMismatch)?
+            .identity();
+        let fetch = |offset, count| {
             self.arrangement.names_page(
                 query.selection(),
                 offset,
-                limit,
+                count,
                 |id| self.view.row_ref(id),
                 |id, address| {
                     self.view
@@ -270,9 +396,14 @@ impl Library {
             row.score = Some(u32::MAX.checked_sub(u32::try_from(rank).ok()?)?);
             Some(row)
         };
-        let start =
-            self.check_query_cursor_with_rows(query.cursor, recipe, limit, fetch, ranked_row)?;
-        let page = fetch(start);
+        let start = self.check_query_cursor_with_rows(
+            query.cursor,
+            previous_recipe,
+            limit,
+            fetch,
+            ranked_row,
+        )?;
+        let page = fetch(start, delivery);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
@@ -283,7 +414,7 @@ impl Library {
             .filter_map(|(at, &id)| ranked_row(id, start + at))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        self.snapshot_with_recipe(
+        self.snapshot_with_window(
             recipe,
             rows,
             if page.has_more {
@@ -291,7 +422,8 @@ impl Library {
             } else {
                 None
             },
-            Some(start.saturating_add(limit)),
+            start,
+            window,
         )
     }
 
@@ -507,20 +639,26 @@ impl Library {
         }
         let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
         self.work.record_seek();
-        let limit = usize::from(query.limit.get());
-        let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
-            self.arrangement.search_page(
-                query.text(),
-                offset,
-                limit,
-                |id| self.view.row_ref(id),
-                &self.work,
-            )
-        })?;
+        let window = query.window();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
+        let previous_recipe = QueryPageRecipe::search_predecessor(self.revision_root(), query)
+            .ok_or(LibraryError::CursorMismatch)?
+            .identity();
+        let start =
+            self.check_query_cursor(query.cursor, previous_recipe, limit, |offset, count| {
+                self.arrangement.search_page(
+                    query.text(),
+                    offset,
+                    count,
+                    |id| self.view.row_ref(id),
+                    &self.work,
+                )
+            })?;
         let page = self.arrangement.search_page(
             query.text(),
             start,
-            limit,
+            delivery,
             |id| self.view.row_ref(id),
             &self.work,
         );
@@ -533,7 +671,7 @@ impl Library {
             .filter_map(|&id| self.view.row(id))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        let snapshot = self.snapshot_with_recipe(
+        let snapshot = self.snapshot_with_window(
             recipe,
             rows,
             if page.has_more {
@@ -541,7 +679,8 @@ impl Library {
             } else {
                 None
             },
-            Some(start.saturating_add(limit)),
+            start,
+            window,
         )?;
         Ok(RankedSearchSnapshot {
             snapshot,
@@ -584,16 +723,21 @@ impl Library {
             ));
         }
         let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
-        let limit = usize::from(query.limit.get());
-        let ranked_page = |start: usize| {
+        let window = query.window();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
+        let previous_recipe = QueryPageRecipe::search_predecessor(self.revision_root(), query)
+            .ok_or(LibraryError::CursorMismatch)?
+            .identity();
+        let ranked_page = |start: usize, count: usize| {
             let mut ids = ranked_ids
                 .iter()
                 .copied()
                 .skip(start)
-                .take(limit.saturating_add(1))
+                .take(count.saturating_add(1))
                 .collect::<Vec<_>>();
-            let has_more = ids.len() > limit;
-            ids.truncate(limit);
+            let has_more = ids.len() > count;
+            ids.truncate(count);
             ArrangementPage { ids, has_more }
         };
         // Scores encode absolute rank, independent of prefix length. The
@@ -610,12 +754,12 @@ impl Library {
         }
         let start = self.check_query_cursor_with_rows(
             query.cursor,
-            recipe,
+            previous_recipe,
             limit,
             ranked_page,
             ranked_row,
         )?;
-        let page = ranked_page(start);
+        let page = ranked_page(start, delivery);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
@@ -629,11 +773,12 @@ impl Library {
             .collect::<Vec<_>>();
         self.work.record_seek();
         self.work.record_output(rows.len());
-        self.snapshot_with_recipe(
+        self.snapshot_with_window(
             recipe,
             rows,
             page.has_more.then_some(self.cursor),
-            page.has_more.then_some(start.saturating_add(limit)),
+            start,
+            window,
         )
     }
 
@@ -760,7 +905,7 @@ impl Library {
         let mut ids = BTreeSet::from([source]);
         let mut unique = BTreeSet::new();
         for relation in relations {
-            if !unique.insert(*relation) {
+            if !unique.insert((relation.from, relation.to, relation.relation)) {
                 return Err(LibraryError::InvalidQuery(
                     "semantic graph contains a duplicate typed relation".to_owned(),
                 ));
@@ -957,17 +1102,21 @@ impl Library {
             .view
             .row_ref(RowId::Symbol(symbol))
             .ok_or(LibraryError::NotFound)?;
-        let mut recipe_bytes = b"graph-page".to_vec();
-        recipe_bytes.extend_from_slice(&address.claimed_bytes());
-        let recipe = self.query_recipe(&recipe_bytes, None);
-        let limit = usize::from(page.limit().get());
+        let window = page.window();
+        let recipe_bytes = graph_page_recipe(address, window);
+        let previous_recipe =
+            QueryPageRecipe::graph_predecessor(self.revision_root(), address, page)
+                .ok_or(LibraryError::CursorMismatch)?
+                .identity();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.graph_page_ids(root, symbol, offset, limit)
+        let start = self.check_query_cursor(cursor, previous_recipe, limit, |offset, count| {
+            self.graph_page_ids(root, symbol, offset, count)
         })?;
         self.check_graph_address(symbol, address)?;
-        let result = self.graph_page_ids(root, symbol, start, limit);
-        self.projection_page(&recipe_bytes, &result, start, limit)
+        let result = self.graph_page_ids(root, symbol, start, delivery);
+        self.projection_window_page(&recipe_bytes, &result, start, window)
     }
 
     /// Pages compiler-selected graph identities from this exact immutable view.
@@ -994,22 +1143,26 @@ impl Library {
         if ids.iter().any(|id| self.view.row_ref(*id).is_none()) {
             return Err(LibraryError::NotFound);
         }
-        let mut recipe_bytes = b"graph-page".to_vec();
-        recipe_bytes.extend_from_slice(&address.claimed_bytes());
-        let recipe = self.query_recipe(&recipe_bytes, None);
-        let limit = usize::from(page.limit().get());
-        let select = |offset: usize| ArrangementPage {
-            ids: ids.iter().skip(offset).take(limit).copied().collect(),
-            has_more: offset.saturating_add(limit) < ids.len(),
+        let window = page.window();
+        let recipe_bytes = graph_page_recipe(address, window);
+        let previous_recipe =
+            QueryPageRecipe::graph_predecessor(self.revision_root(), address, page)
+                .ok_or(LibraryError::CursorMismatch)?
+                .identity();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
+        let select = |offset: usize, count: usize| ArrangementPage {
+            ids: ids.iter().skip(offset).take(count).copied().collect(),
+            has_more: offset.saturating_add(count) < ids.len(),
         };
         let start = self.check_query_cursor(
             page.continuation().map(crate::PageContinuation::cursor),
-            recipe,
+            previous_recipe,
             limit,
             select,
         )?;
         self.check_graph_address(symbol, address)?;
-        self.projection_page(&recipe_bytes, &select(start), start, limit)
+        self.projection_window_page(&recipe_bytes, &select(start, delivery), start, window)
     }
 
     fn graph_page_ids(
@@ -1049,6 +1202,31 @@ impl Library {
         let has_more = children_have_more || ids.len() > limit;
         ids.truncate(limit);
         ArrangementPage { ids, has_more }
+    }
+
+    fn projection_window_page(
+        &self,
+        recipe: &[u8],
+        page: &ArrangementPage,
+        start: usize,
+        window: QueryWindow,
+    ) -> Result<ProjectionPage, LibraryError> {
+        let rows = page
+            .ids
+            .iter()
+            .map(|&id| self.view.row(id).ok_or(LibraryError::NotFound))
+            .collect::<Result<Vec<_>, _>>()?;
+        let snapshot = self.snapshot_with_window(
+            self.query_recipe(recipe, None),
+            rows,
+            page.has_more.then_some(self.cursor),
+            start,
+            window,
+        )?;
+        let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+            PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
+        });
+        Ok(ProjectionPage { snapshot, terminal })
     }
 
     fn projection_page(
@@ -1109,6 +1287,48 @@ impl Library {
         )
     }
 
+    fn snapshot_with_window(
+        &self,
+        id: ViewRecipeId,
+        rows: Vec<Row>,
+        next: Option<Cursor>,
+        start: usize,
+        window: QueryWindow,
+    ) -> Result<ViewSnapshot, LibraryError> {
+        let count = rows.len();
+        if count > usize::from(window.delivery().get())
+            || (window.is_windowed() && start > 0 && count == 0)
+            || (next.is_some() && count != usize::from(window.delivery().get()))
+        {
+            return Err(LibraryError::CursorMismatch);
+        }
+        let offset = start
+            .checked_add(count)
+            .ok_or(LibraryError::CursorMismatch)?;
+        let mut snapshot = self.snapshot_with_recipe(id, rows, next, next.map(|_| offset))?;
+        if snapshot.root.row_count() != count as u64 {
+            return Err(LibraryError::CursorMismatch);
+        }
+        if window.is_windowed()
+            && let Some(cursor) = snapshot.next
+        {
+            let actual = QueryLimit::new(
+                u16::try_from(snapshot.root.row_count())
+                    .map_err(|_| LibraryError::CursorMismatch)?,
+            )
+            .ok_or(LibraryError::CursorMismatch)?;
+            let span =
+                QueryWindow::new(window.issued(), actual).ok_or(LibraryError::CursorMismatch)?;
+            let position = crate::QueryPosition::windowed(
+                u64::try_from(offset).map_err(|_| LibraryError::CursorMismatch)?,
+                span,
+            )
+            .ok_or(LibraryError::CursorMismatch)?;
+            snapshot.next = Some(cursor.with_query_position(position));
+        }
+        Ok(snapshot)
+    }
+
     fn snapshot_with_recipe(
         &self,
         id: ViewRecipeId,
@@ -1161,7 +1381,7 @@ impl Library {
         cursor: Option<Cursor>,
         recipe: ViewRecipeId,
         limit: usize,
-        fetch: impl Fn(usize) -> ArrangementPage,
+        fetch: impl Fn(usize, usize) -> ArrangementPage,
     ) -> Result<usize, LibraryError> {
         self.check_query_cursor_with_rows(cursor, recipe, limit, fetch, |id, _| self.view.row(id))
     }
@@ -1171,7 +1391,7 @@ impl Library {
         cursor: Option<Cursor>,
         recipe: ViewRecipeId,
         limit: usize,
-        fetch: impl Fn(usize) -> ArrangementPage,
+        fetch: impl Fn(usize, usize) -> ArrangementPage,
         row_at: impl Fn(RowId, usize) -> Option<Row>,
     ) -> Result<usize, LibraryError> {
         let Some(cursor) = cursor else {
@@ -1190,12 +1410,18 @@ impl Library {
         if offset == 0 && cursor.version() == self.view.version && cursor.root() == self.view.root {
             return Ok(0);
         }
-        let page_size = limit;
+        let page_size = cursor
+            .query_position()
+            .predecessor_rows(
+                QueryLimit::new(u16::try_from(limit).map_err(|_| LibraryError::CursorMismatch)?)
+                    .ok_or(LibraryError::CursorMismatch)?,
+            )
+            .ok_or(LibraryError::CursorMismatch)?;
         if offset < page_size {
             return Err(LibraryError::CursorMismatch);
         }
         let previous_start = offset - page_size;
-        let previous_page = fetch(previous_start);
+        let previous_page = fetch(previous_start, page_size);
         if previous_page.ids.len() != page_size {
             return Err(LibraryError::CursorMismatch);
         }

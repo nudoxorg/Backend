@@ -14,7 +14,8 @@ use std::{
 
 use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
-    CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, ExternalToolchain, NotExternalToolchain, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection,
 };
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
@@ -47,8 +48,8 @@ use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource
 use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
-use super::typescript_host::TypeScriptProjectHost;
 use super::runtime::LocalRuntimeRustToolchainSelection;
+use super::typescript_host::TypeScriptProjectHost;
 
 /// Bounded, explicit package-authority adapters selected by the application
 /// owner.  Every optional field names one independently configured producer;
@@ -126,17 +127,23 @@ impl RustPackageAuthorityConfiguration<'_> {
         profile: LanguageProfile,
         control: CompileControl<'_>,
     ) -> Result<&RustToolchain, PackageAuthorityError> {
-        self.toolchain.resolve(control).map_err(|cause| match cause {
-            super::LocalRuntimeRustAuthorityFailure::Cancelled => PackageAuthorityError::Cancelled {
-                profile,
-                stage: PackageAuthorityStage::RustProject,
-            },
-            super::LocalRuntimeRustAuthorityFailure::Deadline => PackageAuthorityError::Deadline {
-                profile,
-                stage: PackageAuthorityStage::RustProject,
-            },
-            cause => PackageAuthorityError::RustToolchainAdmission { profile, cause },
-        })
+        self.toolchain
+            .resolve(control)
+            .map_err(|cause| match cause {
+                super::LocalRuntimeRustAuthorityFailure::Cancelled => {
+                    PackageAuthorityError::Cancelled {
+                        profile,
+                        stage: PackageAuthorityStage::RustProject,
+                    }
+                }
+                super::LocalRuntimeRustAuthorityFailure::Deadline => {
+                    PackageAuthorityError::Deadline {
+                        profile,
+                        stage: PackageAuthorityStage::RustProject,
+                    }
+                }
+                cause => PackageAuthorityError::RustToolchainAdmission { profile, cause },
+            })
     }
 }
 
@@ -313,12 +320,133 @@ pub fn enter_package_authority<'request, 'config>(
     enter_package_authority_with_go_authority_witness(request, None)
 }
 
+/// Go authority shared by every source of one package request.
+///
+/// One session admits the package once (toolchain, workspace and dependency
+/// closure proofs plus the oracle helper), runs a single oracle child for each
+/// bounded batch of same-directory sources, and re-proves the same inputs once
+/// in [`Self::finish`]. Entering authority per source repeated all of that for
+/// every file, so a Go package's indexing time grew with its file count times the
+/// cost of re-hashing the Go installation and re-listing its dependency graph.
+pub(crate) struct GoPackageAuthority<'run> {
+    session: backend_frontend_go::legacy::oracle::GoPackageAuthoritySession<'run>,
+    profile: LanguageProfile,
+    package_root: std::path::PathBuf,
+    control: CompileControl<'run>,
+    maximum_image_bytes: usize,
+}
+
+impl<'run> GoPackageAuthority<'run> {
+    /// Admits the package of `first` (any one of its sources) and plans the
+    /// oracle runs for `sources`, the files whose images will be requested.
+    pub(crate) fn begin(
+        first: PackageAuthorityRequest<'run, 'run>,
+        captured: Option<&'run GoPackageAuthorityWitness>,
+        sources: &[std::path::PathBuf],
+    ) -> Result<Self, PackageAuthorityError> {
+        checkpoint(
+            first.control,
+            first.profile,
+            PackageAuthorityStage::Admission,
+        )?;
+        if first.unit_key != &CompilationUnitKeyV2::PackageRoot {
+            return Err(PackageAuthorityError::CompilationUnitMismatch {
+                profile: first.profile,
+            });
+        }
+        require_resolved_toolchain(first.toolchain, first.profile)?;
+        let oracle = match first.configuration.go {
+            Some(oracle) => oracle,
+            None => {
+                if let Some(cause) = first.configuration.go_unavailable {
+                    return Err(PackageAuthorityError::GoAuthorityUnavailable {
+                        profile: first.profile,
+                        cause,
+                    });
+                }
+                return Err(PackageAuthorityError::AdapterUnavailable {
+                    profile: first.profile,
+                    stage: PackageAuthorityStage::GoOracle,
+                });
+            }
+        };
+        let witness = match captured {
+            Some(witness) => std::borrow::Cow::Borrowed(witness),
+            None => std::borrow::Cow::Owned(oracle.package_authority_witness_cancellable(
+                first.package_root,
+                Some(first.control.cancelled),
+            )?),
+        };
+        checkpoint(
+            first.control,
+            first.profile,
+            PackageAuthorityStage::GoOracle,
+        )?;
+        let session = oracle
+            .begin_package_authority(
+                first.package_root,
+                witness,
+                sources,
+                Some(first.control.cancelled),
+            )
+            .map_err(PackageAuthorityError::GoOracle)?;
+        Ok(Self {
+            session,
+            profile: first.profile,
+            package_root: first.package_root.to_path_buf(),
+            control: first.control,
+            maximum_image_bytes: first.configuration.maximum_image_bytes,
+        })
+    }
+
+    /// Returns the retained authority of one source of the package.
+    ///
+    /// A refusal here is that source's own: its siblings keep their images.
+    pub(crate) fn owner(
+        &mut self,
+        source_path: &Path,
+    ) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
+        checkpoint(self.control, self.profile, PackageAuthorityStage::GoOracle)?;
+        if source_path.strip_prefix(&self.package_root).is_err() {
+            return Err(PackageAuthorityError::SourceOutsidePackage {
+                profile: self.profile,
+                package_root: self.package_root.clone().into_boxed_path(),
+                source_path: source_path.to_path_buf().into_boxed_path(),
+            });
+        }
+        let image = self
+            .session
+            .image(source_path)
+            .map_err(PackageAuthorityError::GoOracle)?;
+        let image = retain_image(
+            image,
+            self.maximum_image_bytes,
+            self.profile,
+            PackageAuthorityStage::GoOracle,
+        )?;
+        checkpoint(self.control, self.profile, PackageAuthorityStage::GoOracle)?;
+        Ok(PackageAuthorityOwner::Go {
+            profile: self.profile,
+            image,
+        })
+    }
+
+    /// Proves the admitted inputs did not change while the oracle ran. No
+    /// image of this package may be published when this fails.
+    pub(crate) fn finish(self) -> Result<(), PackageAuthorityError> {
+        self.session
+            .finish()
+            .map_err(PackageAuthorityError::GoOracle)
+    }
+}
+
 /// Admits one native Python project session through the same closed package
 /// authority guards used by the per-module entry point.
 pub(crate) fn enter_python_project_authority(
     request: PackageAuthorityRequest<'_, '_>,
     package_name: &str,
     sources: &[PythonProjectBytesSource<'_>],
+    environment: Option<&backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 ) -> Result<PythonProjectReport, PackageAuthorityError> {
     checkpoint(
         request.control,
@@ -358,11 +486,20 @@ pub(crate) fn enter_python_project_authority(
         });
     };
     require_native_python_toolchain(authority, resolved.identity)?;
+    let environment = environment
+        .ok_or_else(|| {
+            PackageAuthorityError::PythonPyrefly(
+                backend_frontend_python::legacy::checker::CheckerError::EnvironmentCaptureMissing,
+            )
+        })?
+        .captured()
+        .map_err(PackageAuthorityError::PythonPyrefly)?;
     let report = authority
-        .analyze_project_bytes(
+        .analyze_project_bytes_with_environment(
             request.package_root,
             package_name,
             sources,
+            Some(environment),
             profile,
             PythonProjectControl {
                 cancelled: request.control.cancelled,
@@ -697,11 +834,18 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 let go_authority = match captured_go_authority {
                     Some(witness) => witness,
                     None => {
-                        owned_witness = oracle.package_authority_witness_cancellable(request.package_root, Some(request.control.cancelled))?;
+                        owned_witness = oracle.package_authority_witness_cancellable(
+                            request.package_root,
+                            Some(request.control.cancelled),
+                        )?;
                         &owned_witness
                     }
                 };
-                checkpoint(request.control, request.profile, PackageAuthorityStage::GoOracle)?;
+                checkpoint(
+                    request.control,
+                    request.profile,
+                    PackageAuthorityStage::GoOracle,
+                )?;
                 // Scoped to exactly the package that owns `source_path`:
                 // sibling packages are import context only and are never
                 // serialized, so a module whose subpackages share a
@@ -859,9 +1003,11 @@ fn checkpoint(
 fn require_resolved_toolchain<'toolchain>(
     selection: ToolchainSelection<'toolchain>,
     profile: LanguageProfile,
-) -> Result<ResolvedToolchain<'toolchain>, PackageAuthorityError> {
+) -> Result<ExternalToolchain<'toolchain>, PackageAuthorityError> {
     match selection {
-        ToolchainSelection::ResolvedNative(resolved) => Ok(resolved),
+        ToolchainSelection::ResolvedNative(resolved) => resolved
+            .external()
+            .map_err(|source| PackageAuthorityError::ExternalToolchainRequired { profile, source }),
         ToolchainSelection::ExplicitlyUnavailable { tool } => {
             Err(PackageAuthorityError::ToolchainUnavailable { profile, tool })
         }
@@ -943,11 +1089,71 @@ pub enum PackageAuthorityStage {
     JavaHarness,
 }
 
+/// Human spelling of a language profile in authority failure text.
+struct ProfileName<'a>(&'a LanguageProfile);
+
+impl std::fmt::Display for ProfileName<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use backend_semantic::vocabulary::Language;
+        formatter.write_str(match self.0.language() {
+            Language::Rust => "Rust",
+            Language::TypeScript => "TypeScript",
+            Language::Python => "Python",
+            Language::Go => "Go",
+            Language::Java => "Java",
+            Language::CSharp => "C#",
+            Language::Clang => "C/C++",
+        })
+    }
+}
+
+/// Human spelling of a native tool in authority failure text.
+struct ToolName<'a>(&'a NativeTool);
+
+impl std::fmt::Display for ToolName<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self.0 {
+            NativeTool::Rustc => "rustc",
+            NativeTool::Clang => "clang",
+            NativeTool::Python => "python",
+            NativeTool::TypeScriptCompiler => "tsc",
+            NativeTool::GoCompiler => "go",
+            NativeTool::JavaCompiler => "javac",
+            NativeTool::CSharpCompiler => "dotnet",
+        })
+    }
+}
+
+impl std::fmt::Display for PackageAuthorityStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Admission => "admitting the request",
+            Self::ClangProject => "opening the C/C++ project",
+            Self::TypeScriptChecker => "checking the TypeScript project",
+            Self::PythonSyntax => "reading Python syntax",
+            Self::PythonPyrefly => "running the Python checker",
+            Self::RustProject => "loading the Cargo project",
+            Self::GoOracle => "loading the Go package",
+            Self::CSharpRoslyn => "running the C# compiler",
+            Self::JavaHarness => "running the Java compiler",
+        })
+    }
+}
+
 /// Exact package-authority admission terminal.
 #[derive(Debug, Error)]
 pub enum PackageAuthorityError {
+    /// This adapter requires a child-process authority rather than a linked checker.
+    #[error("external compiler invocation required for {profile:?}: {source}")]
+    ExternalToolchainRequired {
+        /// Requested language profile.
+        profile: LanguageProfile,
+        /// Linked authority has no executable capability.
+        #[source]
+        source: NotExternalToolchain,
+    },
     /// The caller's native tool selection was explicitly unavailable.
-    #[error("package authority for {profile:?} cannot enter because {tool:?} is unavailable")]
+    #[error("{} package authority cannot enter because {} is not available", ProfileName(.profile), ToolName(.tool))]
     ToolchainUnavailable {
         /// Requested profile.
         profile: LanguageProfile,
@@ -955,7 +1161,7 @@ pub enum PackageAuthorityError {
         tool: NativeTool,
     },
     /// Cancellation was observed at an exact package authority checkpoint.
-    #[error("package authority for {profile:?} was cancelled during {stage:?}")]
+    #[error("{} package authority was cancelled while {}", ProfileName(.profile), .stage)]
     Cancelled {
         /// Requested profile.
         profile: LanguageProfile,
@@ -963,7 +1169,7 @@ pub enum PackageAuthorityError {
         stage: PackageAuthorityStage,
     },
     /// Deadline was observed at an exact package authority checkpoint.
-    #[error("package authority for {profile:?} reached its deadline during {stage:?}")]
+    #[error("{} package authority reached its deadline while {}", ProfileName(.profile), .stage)]
     Deadline {
         /// Requested profile.
         profile: LanguageProfile,
@@ -971,7 +1177,7 @@ pub enum PackageAuthorityError {
         stage: PackageAuthorityStage,
     },
     /// The selected profile requires a producer absent from explicit config.
-    #[error("package authority adapter for {profile:?} is unavailable during {stage:?}")]
+    #[error("no {} package authority is configured for {}", ProfileName(.profile), .stage)]
     AdapterUnavailable {
         /// Requested profile.
         profile: LanguageProfile,
@@ -979,7 +1185,7 @@ pub enum PackageAuthorityError {
         stage: PackageAuthorityStage,
     },
     /// A specifically named native or auxiliary producer is missing or failed its version probe.
-    #[error("required tool {issue:?} for {profile:?} is not admitted during {stage:?}")]
+    #[error("{} is required for {} but {}; set {}", .issue.executable(), ProfileName(.profile), match .issue.failure { CompilerToolFailure::Missing => "is not configured", CompilerToolFailure::ProbeFailed => "failed its version probe" }, .issue.configuration_variable())]
     RequiredTool {
         /// Requested profile.
         profile: LanguageProfile,
@@ -990,7 +1196,7 @@ pub enum PackageAuthorityError {
     },
     /// The selected source path was not beneath the explicitly selected root.
     #[error(
-        "package authority source {source_path:?} is outside root {package_root:?} for {profile:?}"
+        "{} source {} is outside the package root {}", ProfileName(.profile), .source_path.display(), .package_root.display()
     )]
     SourceOutsidePackage {
         /// Requested profile.
@@ -1001,26 +1207,26 @@ pub enum PackageAuthorityError {
         source_path: Box<Path>,
     },
     /// A witnessed Go manifest, workspace, or local target changed after dispatch.
-    #[error("Go package authority inputs changed before admission for {profile:?}")]
+    #[error("the Go module, workspace or dependency files changed while indexing {}; retry", ProfileName(.profile))]
     GoAuthorityInputsChanged {
         /// Requested profile.
         profile: LanguageProfile,
     },
     /// The exact unit key is not implemented for this language authority.
-    #[error("compilation unit is incompatible with package authority for {profile:?}")]
+    #[error("the compilation unit is incompatible with {} package authority", ProfileName(.profile))]
     CompilationUnitMismatch {
         /// Requested profile.
         profile: LanguageProfile,
     },
     /// A Rust crate key selected a source other than its exact crate root.
-    #[error("Rust source does not match the exact crate root for {profile:?}")]
+    #[error("the {} source is not its crate root", ProfileName(.profile))]
     CompilationUnitSourceMismatch {
         /// Requested Rust profile.
         profile: LanguageProfile,
     },
     /// The selected TypeScript grammar does not match the exact source path.
     #[error(
-        "TypeScript source path {source_relative:?} is unsafe or incompatible with profile {profile:?}"
+        "TypeScript source path {} is unsafe or incompatible with its grammar ({})", .source_relative.display(), match .profile { TypeScriptSource::TypeScript => "TypeScript", TypeScriptSource::Tsx => "TSX" }
     )]
     TypeScriptSourcePath {
         /// Requested TypeScript grammar profile.
@@ -1030,7 +1236,7 @@ pub enum PackageAuthorityError {
     },
     /// An externally produced authority image exceeded the owner's retained bound.
     #[error(
-        "package authority {stage:?} for {profile:?} produced {actual} bytes; maximum is {maximum}"
+        "{} {} produced {} bytes; the retained maximum is {}", ProfileName(.profile), .stage, .actual, .maximum
     )]
     ImageTooLarge {
         /// Requested profile.
@@ -1045,7 +1251,7 @@ pub enum PackageAuthorityError {
     /// The retained rust-analyzer project was configured for a compiler other
     /// than the exact caller-resolved compiler that will lower the same source.
     #[error(
-        "Rust authority toolchain {configured:?} does not match resolved compiler {resolved:?} for {profile:?}"
+        "the Rust analyzer toolchain {} does not match the resolved compiler {} for {}", .configured.display(), .resolved.display(), ProfileName(.profile)
     )]
     RustToolchainExecutableMismatch {
         /// Requested Rust profile.
@@ -1056,7 +1262,7 @@ pub enum PackageAuthorityError {
         resolved: Box<Path>,
     },
     /// A selected deferred Rust authority failed only when a Rust package requested it.
-    #[error("Rust toolchain admission for {profile:?} failed: {cause:?}")]
+    #[error("Rust toolchain admission for {} failed: {}", ProfileName(.profile), .cause.explanation())]
     RustToolchainAdmission {
         /// Requested Rust profile.
         profile: LanguageProfile,
@@ -1064,13 +1270,13 @@ pub enum PackageAuthorityError {
         cause: super::LocalRuntimeRustAuthorityFailure,
     },
     /// The fresh Rust workspace could not retain its exact Cargo resolution witness.
-    #[error("Rust workspace authority for {profile:?} has no complete Cargo witness")]
+    #[error("the {} workspace has no complete Cargo resolution witness", ProfileName(.profile))]
     RustWorkspaceWitnessUnavailable {
         /// Requested Rust profile.
         profile: LanguageProfile,
     },
     /// The selected Clang driver differs from the executable bound by the driver.
-    #[error("Clang authority driver differs from the resolved compiler for {profile:?}")]
+    #[error("the {} authority driver differs from the resolved compiler", ProfileName(.profile))]
     ClangToolchainExecutableMismatch {
         /// Requested C-family profile.
         profile: LanguageProfile,
@@ -1113,7 +1319,7 @@ pub enum PackageAuthorityError {
     #[error(transparent)]
     GoAuthorityWitness(#[from] GoPackageAuthorityWitnessError),
     /// A Go installation was selected but failed admission; unrelated language owners remain usable.
-    #[error("Go package authority is unavailable after host admission: {cause:?}")]
+    #[error("Go package authority is unavailable: {}", .cause.explanation())]
     GoAuthorityUnavailable {
         /// Requested Go profile.
         profile: LanguageProfile,

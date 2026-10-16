@@ -218,6 +218,9 @@ pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod module_resolver;
 mod resolution;
+pub use resolution::filesystem::{
+    ResolutionDirEntry, ResolutionFileKind, ResolutionFileSystem, StdResolutionFileSystem,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use module_resolver::{
     ModuleExtension, ModuleLookupError, ModuleLookupOutcome, ModuleLookupRequest,
