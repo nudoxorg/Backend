@@ -15,6 +15,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -636,15 +637,16 @@ def require_published_source_tag(source, tag, source_sha, github):
         raise ValueError("release tag or source revision is invalid")
 
     source = Path(source)
-    origin = subprocess.check_output(
-        ["git", "-C", str(source), "remote", "get-url", "origin"], text=True
-    ).strip()
-    parsed = urllib.parse.urlparse(origin)
-    if not (
-        parsed.scheme in {"ssh", "https"}
-        and parsed.hostname == "dev.nudox.org"
-        and parsed.path.rstrip("/").removesuffix(".git").casefold() == "/nudox/backend"
-    ):
+    try:
+        origin = subprocess.check_output(
+            ["git", "-C", str(source), "remote", "get-url", "origin"],
+            text=True,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise ValueError("could not verify the canonical Forgejo source remote; git failed or exceeded 30 seconds") from error
+    if not _is_canonical_forgejo_origin(origin):
         raise ValueError("release source origin is not the canonical Forgejo Backend repository")
     try:
         refs = subprocess.check_output(
@@ -652,23 +654,42 @@ def require_published_source_tag(source, tag, source_sha, github):
              f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
             text=True,
             stderr=subprocess.PIPE,
+            timeout=30,
         )
-    except subprocess.CalledProcessError as error:
-        raise ValueError("canonical Forgejo release tag is absent or unreadable") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("canonical Forgejo tag lookup exceeded 30 seconds; release publication refused") from error
+    except (OSError, subprocess.CalledProcessError) as error:
+        if isinstance(error, subprocess.CalledProcessError) and error.returncode == 2:
+            command = (
+                f"git -C {shlex.quote(str(source))} tag {tag} {source_sha} && "
+                f"git -C {shlex.quote(str(source))} push origin refs/tags/{tag}"
+            )
+            raise ValueError(
+                f"canonical Forgejo tag {tag} is absent. After verifying the exact source, "
+                f"create and push it explicitly with: {command}"
+            ) from error
+        raise ValueError("could not read the canonical Forgejo tag; release publication refused") from error
     forgejo_objects = {}
     for line in refs.splitlines():
         fields = line.split("\t", 1)
-        if len(fields) == 2 and fields[1] in {f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"}:
-            forgejo_objects[fields[1]] = fields[0]
-    forgejo_sha = forgejo_objects.get(f"refs/tags/{tag}^{{}}", forgejo_objects.get(f"refs/tags/{tag}"))
+        if len(fields) != 2 or fields[1] not in {f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"}:
+            raise ValueError("canonical Forgejo tag lookup returned malformed or unexpected refs")
+        if not re.fullmatch(r"[a-f0-9]{40}", fields[0]) or fields[1] in forgejo_objects:
+            raise ValueError("canonical Forgejo tag lookup returned malformed or duplicate refs")
+        forgejo_objects[fields[1]] = fields[0]
+    if f"refs/tags/{tag}" not in forgejo_objects:
+        raise ValueError("canonical Forgejo tag lookup omitted the requested base ref")
+    forgejo_sha = forgejo_objects.get(f"refs/tags/{tag}^{{}}", forgejo_objects[f"refs/tags/{tag}"])
     if forgejo_sha != source_sha:
         raise ValueError("canonical Forgejo release tag does not resolve to the candidate source revision")
 
     reference = github.api("/git/ref/tags/" + urllib.parse.quote(tag, safe=""))
-    if reference.get("ref") != f"refs/tags/{tag}":
+    if not isinstance(reference, dict) or reference.get("ref") != f"refs/tags/{tag}":
         raise ValueError("GitHub distribution tag reference is missing or does not match")
     target = reference.get("object", {})
     for _ in range(8):
+        if not isinstance(target, dict):
+            raise ValueError("GitHub distribution tag has a malformed target")
         object_type = target.get("type")
         object_sha = target.get("sha")
         if not isinstance(object_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", object_sha):
@@ -680,8 +701,38 @@ def require_published_source_tag(source, tag, source_sha, github):
         if object_type != "tag":
             raise ValueError("GitHub distribution tag does not resolve to a commit")
         annotated = github.api("/git/tags/" + object_sha)
+        if not isinstance(annotated, dict):
+            raise ValueError("GitHub annotated tag response is malformed")
         target = annotated.get("object", {})
     raise ValueError("GitHub distribution tag has too many annotated-tag layers")
+
+
+def _is_canonical_forgejo_origin(origin):
+    """Accept only the canonical web clone URL and configured Forgejo SSH URL."""
+    if re.fullmatch(r"forgejo@dev\.nudox\.org:Nudox/Backend\.git", origin):
+        return True
+    try:
+        parsed = urllib.parse.urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if "?" in origin or "#" in origin or parsed.query or parsed.fragment or parsed.password is not None:
+        return False
+    if parsed.scheme == "https":
+        return (
+            parsed.hostname == "dev.nudox.org"
+            and parsed.username is None
+            and port in {None, 443}
+            and parsed.path == "/git/Nudox/Backend.git"
+        )
+    if parsed.scheme == "ssh":
+        return (
+            parsed.hostname == "dev.nudox.org"
+            and parsed.username == "forgejo"
+            and port == 2222
+            and parsed.path == "/Nudox/Backend.git"
+        )
+    return False
 
 
 def check_fast(revision, platform="macos"):

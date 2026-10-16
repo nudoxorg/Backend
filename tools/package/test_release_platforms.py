@@ -42,6 +42,9 @@ def native_candidate(directory, platform):
     (root / "release-manifest.json").write_text(json.dumps(manifest))
     (root / "native-qa.json").write_text(json.dumps(qa))
     (root / (archive.name + ".sha256")).write_text(f'{manifest["sha256"]}  {archive.name}\n')
+    if platform == "linux-x64":
+        (root / "install-linux-x64.py").write_bytes(b"pinned Linux installer fixture")
+        (root / "install-linux-x64-channel.py").write_bytes(b"channel Linux installer fixture")
     return manifest
 
 
@@ -115,8 +118,8 @@ class PlatformReleaseTests(unittest.TestCase):
                     path.rename(Path(directory) / f"{kind}-{platform}.json")
                 self.assertEqual(release.validate(directory, platform=platform)["platform"], platform)
                 github.publish(directory, "v0.2.0", True, platform)
-        self.assertEqual(len(github.uploaded), 16)
-        self.assertEqual(len({asset["name"] for asset in github.release["assets"]}), 16)
+        self.assertEqual(len(github.uploaded), 17)
+        self.assertEqual(len({asset["name"] for asset in github.release["assets"]}), 17)
 
     def test_same_version_cannot_mix_source_revisions(self):
         github = FakeGitHub()

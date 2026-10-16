@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import plistlib
+import sys
 import subprocess
 import tarfile
 import tempfile
@@ -219,9 +220,20 @@ class CandidateTests(unittest.TestCase):
             "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
             subprocess.CalledProcessError(2, ["git", "ls-remote"]),
         ]):
-            with self.assertRaisesRegex(ValueError, "canonical Forgejo release tag is absent"):
+            with self.assertRaisesRegex(ValueError, "canonical Forgejo tag checkpoint-test is absent"):
                 release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, absent)
         self.assertEqual(absent.calls, [], "missing canonical refs must be refused before GitHub is queried")
+
+        absent_error = None
+        with patch.object(release.subprocess, "check_output", side_effect=[
+            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
+            subprocess.CalledProcessError(2, ["git", "ls-remote"]),
+        ]):
+            with self.assertRaises(ValueError) as caught:
+                release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, absent)
+            absent_error = str(caught.exception)
+        self.assertIn("git -C /fixture/source tag checkpoint-test " + "a" * 40, absent_error)
+        self.assertIn("git -C /fixture/source push origin refs/tags/checkpoint-test", absent_error)
 
         foreign_forgejo = FakeGitHub()
         with self.assertRaisesRegex(ValueError, "Forgejo release tag does not resolve"):
@@ -254,6 +266,11 @@ class CandidateTests(unittest.TestCase):
                 )
         self.assertEqual([call[0] for call in absent_github.calls], ["/git/ref/tags/checkpoint-test"])
 
+        malformed_github = FakeGitHub()
+        malformed_github.tag_reference = {"ref": "refs/tags/checkpoint-test", "object": None}
+        with self.assertRaisesRegex(ValueError, "malformed target"):
+            self.verify_tag_pair(malformed_github)
+
         correct = FakeGitHub()
         self.verify_tag_pair(correct)
         self.assertEqual([call[0] for call in correct.calls], ["/git/ref/tags/checkpoint-test"])
@@ -271,13 +288,111 @@ class CandidateTests(unittest.TestCase):
             raise AssertionError(f"unexpected GitHub tag API request: {path}")
 
         with patch.object(github, "api", side_effect=api), patch.object(release.subprocess, "check_output", side_effect=[
-            "https://dev.nudox.org/Nudox/Backend.git\n",
-            "a" * 40 + "\trefs/tags/checkpoint-test^{}\n",
+            "https://dev.nudox.org/git/Nudox/Backend.git\n",
+            (
+                "b" * 40 + "\trefs/tags/checkpoint-test\n" +
+                "a" * 40 + "\trefs/tags/checkpoint-test^{}\n"
+            ),
         ]):
             release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, github)
         self.assertEqual([call[0] for call in github.calls], [
             "/git/ref/tags/checkpoint-test", "/git/tags/" + "b" * 40,
         ])
+
+    def test_release_tag_preflight_rejects_noncanonical_origins_and_duplicates(self):
+        github = FakeGitHub()
+        for origin in (
+            "https://dev.nudox.org/Nudox/Backend.git",
+            "https://dev.nudox.org/git/SomeoneElse/Backend.git",
+            "https://dev.nudox.org/git/Nudox/Backend.git?redirect=https://github.com/",
+            "https://dev.nudox.org/git/Nudox/Backend.git#fragment",
+            "https://user@dev.nudox.org/git/Nudox/Backend.git",
+            "https://dev.nudox.org.attacker.invalid/git/Nudox/Backend.git",
+            "ssh://forgejo@dev.nudox.org:22/Nudox/Backend.git",
+        ):
+            with self.subTest(origin=origin), patch.object(
+                release.subprocess, "check_output", return_value=origin + "\n"
+            ):
+                with self.assertRaisesRegex(ValueError, "origin is not the canonical"):
+                    release.require_published_source_tag(
+                        Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                    )
+        self.assertEqual(github.calls, [])
+
+    def test_canonical_forgejo_origin_parser_accepts_only_known_clone_forms(self):
+        for origin in (
+            "https://dev.nudox.org/git/Nudox/Backend.git",
+            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git",
+            "forgejo@dev.nudox.org:Nudox/Backend.git",
+        ):
+            with self.subTest(origin=origin):
+                self.assertTrue(release._is_canonical_forgejo_origin(origin))
+        for origin in (
+            "https://dev.nudox.org/git/Nudox/Backend.git?",
+            "https://dev.nudox.org/git/Nudox/Backend.git#",
+            "git@dev.nudox.org:Nudox/Backend.git",
+        ):
+            with self.subTest(origin=origin):
+                self.assertFalse(release._is_canonical_forgejo_origin(origin))
+
+        github = FakeGitHub()
+        duplicated = ("a" * 40 + "\trefs/tags/checkpoint-test\n") * 2
+        with patch.object(release.subprocess, "check_output", side_effect=[
+            "https://dev.nudox.org/git/Nudox/Backend.git\n", duplicated,
+        ]):
+            with self.assertRaisesRegex(ValueError, "duplicate refs"):
+                release.require_published_source_tag(
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                )
+        self.assertEqual(github.calls, [])
+
+    def test_release_tag_preflight_bounds_git_remote_lookup(self):
+        github = FakeGitHub()
+        with patch.object(
+            release.subprocess,
+            "check_output",
+            side_effect=subprocess.TimeoutExpired(["git", "remote"], 30),
+        ) as check_output:
+            with self.assertRaisesRegex(ValueError, "failed or exceeded 30 seconds"):
+                release.require_published_source_tag(
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                )
+        self.assertEqual(check_output.call_args.kwargs["timeout"], 30)
+        self.assertEqual(github.calls, [])
+
+        with patch.object(release.subprocess, "check_output", side_effect=[
+            "https://dev.nudox.org/git/Nudox/Backend.git\n",
+            subprocess.TimeoutExpired(["git", "ls-remote"], 30),
+        ]) as check_output:
+            with self.assertRaisesRegex(ValueError, "tag lookup exceeded 30 seconds"):
+                release.require_published_source_tag(
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                )
+        self.assertEqual(check_output.call_args.kwargs["timeout"], 30)
+        self.assertEqual(github.calls, [])
+
+    def test_preflight_failure_does_not_mutate_existing_release(self):
+        github = FakeGitHub(existing={
+            "id": 99,
+            "tag_name": "v0.2.0-rc.1-macos",
+            "assets": [{"name": "existing-asset", "id": 1}],
+            "draft": True,
+            "prerelease": True,
+            "body": "existing draft",
+        })
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            release, "validate", return_value={"version": "0.2.0", "source_sha": "a" * 40, "sha256": "b" * 64, "platform": "macos"}
+        ), patch.object(release, "check_fast"), patch.object(
+            release, "GitHub", return_value=github
+        ), patch.object(
+            release, "require_published_source_tag", side_effect=ValueError("tag preflight refused")
+        ), patch.object(sys, "argv", [
+            "release_contract.py", "candidate", "--candidate", directory,
+            "--source", "/fixture/source", "--candidate-tag", "v0.2.0-rc.1-macos",
+        ]):
+            with self.assertRaisesRegex(ValueError, "tag preflight refused"):
+                release.main()
+        self.assertEqual(github.calls, [], "failed tag preflight must precede release lookup, POST, and PATCH")
 
     def test_diagnostic_linux_validation_checks_package_without_claiming_native_qa(self):
         with tempfile.TemporaryDirectory() as directory:
