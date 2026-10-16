@@ -29,6 +29,8 @@ thread_local! {
 mod baseline;
 pub(super) use baseline::CapturedBaselines;
 pub(super) use baseline::EnvironmentReadSession;
+#[cfg(test)]
+pub(super) use baseline::WorkMeasurement;
 
 /// Reopens an explanatory config read under the existing captured-input bounds.
 pub(super) fn read_configuration_input(
@@ -339,6 +341,51 @@ pub struct PythonProjectControl<'control> {
     pub cancelled: &'control AtomicBool,
     /// Absolute deadline for snapshotting, checking, and decoding together.
     pub deadline: Instant,
+}
+
+/// Private-driver observation of the operation that exhausted the project deadline.
+/// This does not alter the admitted deadline or certify a source-file stop site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PythonProjectPhase {
+    /// Reopening the selected original environment and its complete witness.
+    EnvironmentValidation,
+    /// Writing captured dependency bytes into the confined native mirror.
+    EnvironmentMaterialization,
+    /// Hashing and admitting the actual native producer image.
+    ProducerValidation,
+    /// Capturing selected source/configuration bytes before the native State.
+    SourceCapture,
+    /// Preparing, running and projecting the genuine native project State.
+    NativeAnalysis,
+    /// Joining native results, digests and source status into the returned report.
+    ReportProjection,
+    /// Reopening all original and private witnesses after native analysis.
+    FinalValidation,
+}
+
+impl core::fmt::Display for PythonProjectPhase {
+    fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        output.write_str(match self {
+            Self::EnvironmentValidation => "environment validation",
+            Self::EnvironmentMaterialization => "environment materialization",
+            Self::ProducerValidation => "producer validation",
+            Self::SourceCapture => "source capture",
+            Self::NativeAnalysis => "native analysis",
+            Self::ReportProjection => "report projection",
+            Self::FinalValidation => "final witness validation",
+        })
+    }
+}
+
+fn project_phase<T>(
+    phase: PythonProjectPhase,
+    operation: impl FnOnce() -> Result<T, CheckerError>,
+) -> Result<T, CheckerError> {
+    operation().map_err(|error| match error {
+        CheckerError::Deadline { phase: "project" } => CheckerError::ProjectDeadline { phase },
+        // An inner typed boundary, cancellation or I/O failure owns its cause.
+        other => other,
+    })
 }
 
 /// Finite native type decoding refusal; never substituted with `Any`.
@@ -1297,6 +1344,27 @@ impl NativePythonProjectAuthority {
         profile: PythonVersion,
         control: PythonProjectControl<'_>,
     ) -> Result<PythonProjectReport, CheckerError> {
+        project_phase(PythonProjectPhase::SourceCapture, || {
+            self.analyze_captured_project(
+                package_root,
+                package_name,
+                raw_sources,
+                environment,
+                profile,
+                control,
+            )
+        })
+    }
+
+    fn analyze_captured_project(
+        &self,
+        package_root: &Path,
+        package_name: &str,
+        raw_sources: &[PythonProjectBytesSource<'_>],
+        environment: Option<&super::PythonEnvironmentCapture>,
+        profile: PythonVersion,
+        control: PythonProjectControl<'_>,
+    ) -> Result<PythonProjectReport, CheckerError> {
         let control = PythonProjectControl {
             deadline: control.deadline.min(
                 Instant::now()
@@ -1324,8 +1392,13 @@ impl NativePythonProjectAuthority {
         let mut layout = CapturedProjectLayout::new(&workspace.path, package_root, raw_sources)?;
         if let Some(environment) = environment {
             environment.validate_profile(profile)?;
-            environment.validate_current(control)?;
-            layout.environment = Some(environment.materialize(&workspace.path, control)?);
+            project_phase(PythonProjectPhase::EnvironmentValidation, || {
+                environment.validate_current(control)
+            })?;
+            layout.environment = Some(project_phase(
+                PythonProjectPhase::EnvironmentMaterialization,
+                || environment.materialize(&workspace.path, control),
+            )?);
         }
         let mirror = layout.source_root();
         std::fs::create_dir_all(&mirror).map_err(workspace_error)?;
@@ -1335,7 +1408,10 @@ impl NativePythonProjectAuthority {
         let mut rejected = BTreeMap::new();
         let mut source_statuses = BTreeMap::new();
         let mut sources = Vec::new();
-        let (current_producer, host_witness) = native_producer_capture_controlled(Some(control))?;
+        let (current_producer, host_witness) =
+            project_phase(PythonProjectPhase::ProducerValidation, || {
+                native_producer_capture_controlled(Some(control))
+            })?;
         if current_producer != self.producer {
             return Err(CheckerError::NativeProducerIdentity {
                 expected: self.producer.as_bytes(),
@@ -1536,120 +1612,126 @@ impl NativePythonProjectAuthority {
                 }
             }
         }
-        let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::project_native::analyze(
-                &layout,
-                package_root,
-                package_name,
-                &sources,
-                raw_sources,
-                &facts,
-                &rejected,
-                &witness.baselines,
-                &source_context,
-                profile,
-                control,
-            )
-        }))
-        .map_err(|_| CheckerError::ProjectPanic)??;
-        let mut identity = blake3::Hasher::new();
-        identity.update(b"compiler.python.captured-project.v1\0");
-        identity.update(&self.producer.as_bytes());
-        identity.update(&native.configuration_fingerprint);
-        layout.fingerprint(&mut identity);
-        witness.baselines.fingerprint(&mut identity);
-        hash_field(&mut identity, package_name.as_bytes());
-        hash_field(&mut identity, super::profile_tag(profile).as_bytes());
-        let mut selected = raw_sources.iter().collect::<Vec<_>>();
-        selected.sort_by_key(|source| source.relative_path);
-        for source in selected {
-            identity.update(b"selected-source\0");
-            hash_field(&mut identity, source.relative_path.as_bytes());
-            hash_field(&mut identity, source.source);
-        }
-        let mut probes = witness.files.iter().collect::<Vec<_>>();
-        probes.sort_by_key(|file| &file.path);
-        for file in probes {
-            identity.update(b"original-file-probe\0");
-            hash_field(&mut identity, file.path.as_os_str().as_encoded_bytes());
-            match file.digest {
-                Some((digest, size)) => {
-                    identity.update(&[1]);
-                    identity.update(digest.as_bytes());
-                    identity.update(&size.to_be_bytes());
-                }
-                None => {
-                    identity.update(&[0]);
+        let native = project_phase(PythonProjectPhase::NativeAnalysis, || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::project_native::analyze(
+                    &layout,
+                    package_root,
+                    package_name,
+                    &sources,
+                    raw_sources,
+                    &facts,
+                    &rejected,
+                    &witness.baselines,
+                    &source_context,
+                    profile,
+                    control,
+                )
+            }))
+            .map_err(|_| CheckerError::ProjectPanic)?
+        })?;
+        project_phase(PythonProjectPhase::ReportProjection, || {
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"compiler.python.captured-project.v1\0");
+            identity.update(&self.producer.as_bytes());
+            identity.update(&native.configuration_fingerprint);
+            layout.fingerprint(&mut identity);
+            witness.baselines.fingerprint(&mut identity);
+            hash_field(&mut identity, package_name.as_bytes());
+            hash_field(&mut identity, super::profile_tag(profile).as_bytes());
+            let mut selected = raw_sources.iter().collect::<Vec<_>>();
+            selected.sort_by_key(|source| source.relative_path);
+            for source in selected {
+                identity.update(b"selected-source\0");
+                hash_field(&mut identity, source.relative_path.as_bytes());
+                hash_field(&mut identity, source.source);
+            }
+            let mut probes = witness.files.iter().collect::<Vec<_>>();
+            probes.sort_by_key(|file| &file.path);
+            for file in probes {
+                identity.update(b"original-file-probe\0");
+                hash_field(&mut identity, file.path.as_os_str().as_encoded_bytes());
+                match file.digest {
+                    Some((digest, size)) => {
+                        identity.update(&[1]);
+                        identity.update(digest.as_bytes());
+                        identity.update(&size.to_be_bytes());
+                    }
+                    None => {
+                        identity.update(&[0]);
+                    }
                 }
             }
-        }
-        witness.candidates = native.candidates;
-        for candidate in &witness.candidates {
-            identity.update(b"internal-candidate-membership\0");
-            candidate.fingerprint(&mut identity);
-        }
-        witness.frontier = native.frontier;
-        for directory in &witness.frontier {
-            identity.update(b"configured-source-directory-membership\0");
-            directory.fingerprint(&mut identity);
-        }
-        witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
-        witness.validate_current(control)?;
-        if let Some(environment) = &layout.environment {
-            environment.validate_current(control)?;
-        }
-        for directory in native.mirror_tree {
-            checkpoint(control)?;
-            directory.validate_current()?;
-        }
-        for file in mirror_witness {
-            checkpoint(control)?;
-            file.validate_current()?;
-        }
-        checkpoint(control)?;
-        let mut unavailable_dependencies = native.unavailable_dependencies;
-        for (path, imports) in native.compiled_imports {
-            checkpoint(control)?;
-            let dependencies = unavailable_dependencies.remove(&path).unwrap_or_default();
-            source_statuses.insert(
-                path,
-                PythonProjectSourceStatus::UnavailableCompiledImport {
-                    imports,
-                    dependencies,
-                },
-            );
-        }
-        for (path, dependencies) in unavailable_dependencies {
-            checkpoint(control)?;
-            source_statuses.insert(
-                path,
-                PythonProjectSourceStatus::UnavailableDependency { dependencies },
-            );
-        }
-        let mut modules = native.modules;
-        let mut coverage_gaps = native.coverage_gaps;
-        for source in raw_sources {
-            if matches!(
-                source_statuses[source.relative_path],
-                PythonProjectSourceStatus::UnavailableEncoding(_)
-            ) {
-                modules.insert(source.relative_path.into(), CheckerReport::default());
-                coverage_gaps.push(PythonProjectCoverageGap {
-                    relative_path: source.relative_path.into(),
-                    span: Span {
-                        start: 0,
-                        end: source.source.len() as u32,
+            witness.candidates = native.candidates;
+            for candidate in &witness.candidates {
+                identity.update(b"internal-candidate-membership\0");
+                candidate.fingerprint(&mut identity);
+            }
+            witness.frontier = native.frontier;
+            for directory in &witness.frontier {
+                identity.update(b"configured-source-directory-membership\0");
+                directory.fingerprint(&mut identity);
+            }
+            witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
+            project_phase(PythonProjectPhase::FinalValidation, || {
+                witness.validate_current(control)?;
+                if let Some(environment) = &layout.environment {
+                    environment.validate_current(control)?;
+                }
+                for directory in native.mirror_tree {
+                    checkpoint(control)?;
+                    directory.validate_current()?;
+                }
+                for file in mirror_witness {
+                    checkpoint(control)?;
+                    file.validate_current()?;
+                }
+                checkpoint(control)
+            })?;
+            let mut unavailable_dependencies = native.unavailable_dependencies;
+            for (path, imports) in native.compiled_imports {
+                checkpoint(control)?;
+                let dependencies = unavailable_dependencies.remove(&path).unwrap_or_default();
+                source_statuses.insert(
+                    path,
+                    PythonProjectSourceStatus::UnavailableCompiledImport {
+                        imports,
+                        dependencies,
                     },
-                    kind: PythonProjectCoverageGapKind::UnavailableEncoding,
-                });
+                );
             }
-        }
-        Ok(PythonProjectReport {
-            modules,
-            diagnostics: native.diagnostics.into_boxed_slice(),
-            coverage_gaps: coverage_gaps.into_boxed_slice(),
-            source_statuses,
-            witness: std::sync::Arc::new(witness),
+            for (path, dependencies) in unavailable_dependencies {
+                checkpoint(control)?;
+                source_statuses.insert(
+                    path,
+                    PythonProjectSourceStatus::UnavailableDependency { dependencies },
+                );
+            }
+            let mut modules = native.modules;
+            let mut coverage_gaps = native.coverage_gaps;
+            for source in raw_sources {
+                if matches!(
+                    source_statuses[source.relative_path],
+                    PythonProjectSourceStatus::UnavailableEncoding(_)
+                ) {
+                    modules.insert(source.relative_path.into(), CheckerReport::default());
+                    coverage_gaps.push(PythonProjectCoverageGap {
+                        relative_path: source.relative_path.into(),
+                        span: Span {
+                            start: 0,
+                            end: source.source.len() as u32,
+                        },
+                        kind: PythonProjectCoverageGapKind::UnavailableEncoding,
+                    });
+                }
+            }
+            Ok(PythonProjectReport {
+                modules,
+                diagnostics: native.diagnostics.into_boxed_slice(),
+                coverage_gaps: coverage_gaps.into_boxed_slice(),
+                source_statuses,
+                witness: std::sync::Arc::new(witness),
+            })
         })
     }
 }
@@ -1683,6 +1765,58 @@ fn hash_field(identity: &mut blake3::Hasher, bytes: &[u8]) {
 #[cfg(test)]
 mod capture_layout_tests {
     use super::*;
+
+    #[test]
+    fn project_phase_records_deadlines_without_rewriting_other_causes_or_inner_boundaries() {
+        let cancelled = AtomicBool::new(false);
+        let expired = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now(),
+        };
+        for phase in [
+            PythonProjectPhase::EnvironmentValidation,
+            PythonProjectPhase::EnvironmentMaterialization,
+            PythonProjectPhase::ProducerValidation,
+            PythonProjectPhase::SourceCapture,
+            PythonProjectPhase::NativeAnalysis,
+            PythonProjectPhase::ReportProjection,
+            PythonProjectPhase::FinalValidation,
+        ] {
+            assert!(matches!(project_phase(phase, || checkpoint(expired)),
+                Err(CheckerError::ProjectDeadline { phase: observed }) if observed == phase));
+        }
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            project_phase(PythonProjectPhase::EnvironmentMaterialization, || {
+                checkpoint(expired)
+            }),
+            Err(CheckerError::Cancelled { phase: "project" })
+        ));
+        let io = project_phase::<()>(PythonProjectPhase::EnvironmentMaterialization, || {
+            Err(workspace_error(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )))
+        });
+        assert!(matches!(io, Err(CheckerError::Workspace { source })
+            if source.kind() == std::io::ErrorKind::PermissionDenied));
+        let nested = project_phase::<()>(PythonProjectPhase::SourceCapture, || {
+            Err(CheckerError::ProjectDeadline {
+                phase: PythonProjectPhase::FinalValidation,
+            })
+        });
+        assert!(matches!(
+            nested,
+            Err(CheckerError::ProjectDeadline {
+                phase: PythonProjectPhase::FinalValidation
+            })
+        ));
+        assert!(matches!(
+            project_phase::<()>(PythonProjectPhase::NativeAnalysis, || {
+                Err(CheckerError::ProjectPanic)
+            }),
+            Err(CheckerError::ProjectPanic)
+        ));
+    }
 
     #[test]
     fn named_package_capture_maps_only_its_finite_source_anchor() {

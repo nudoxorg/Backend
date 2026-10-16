@@ -5719,12 +5719,12 @@ pub(crate) fn python_authority_failure_kind(
         E::EnvironmentCaptureMissing => PythonAuthorityFailureKind::EnvironmentInputMissing,
         E::EnvironmentCapture { source } => match source.as_ref() {
             E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
-            E::Deadline { .. } => PythonAuthorityFailureKind::Deadline,
+            E::Deadline { .. } | E::ProjectDeadline { .. } => PythonAuthorityFailureKind::Deadline,
             _ => PythonAuthorityFailureKind::EnvironmentCaptureRefused,
         },
         E::ProjectPanic => PythonAuthorityFailureKind::ProjectPanic,
         E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
-        E::Deadline { .. } => PythonAuthorityFailureKind::Deadline,
+        E::Deadline { .. } | E::ProjectDeadline { .. } => PythonAuthorityFailureKind::Deadline,
         E::ProjectSyntax { .. } => PythonAuthorityFailureKind::SyntaxRejected,
         E::UncapturedDependency { .. } => PythonAuthorityFailureKind::DependencyOutsideCapture,
         E::NativeProducerIdentity { .. } => PythonAuthorityFailureKind::ProducerIdentityMismatch,
@@ -6079,6 +6079,12 @@ fn package_authority_projection(
         PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectConfiguration {
             ..
         }) => (Phase::Parse, Class::Authority),
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectDeadline { phase }) => {
+            python_project_deadline_projection(*phase)
+        }
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::EnvironmentCapture { .. }) => {
+            (Phase::Open, Class::Authority)
+        }
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::RustProject(_)
         | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
@@ -7364,6 +7370,99 @@ mod tests {
             .err(),
             Some(PackageSourceSetError::CompilationUnitMismatch)
         );
+    }
+}
+
+fn python_project_deadline_projection(
+    phase: backend_frontend_python::legacy::checker::PythonProjectPhase,
+) -> (
+    backend_semantic::vocabulary::AuthorityPhase,
+    AuthorityDiagnosticClass,
+) {
+    use backend_frontend_python::legacy::checker::PythonProjectPhase as P;
+    use backend_semantic::vocabulary::AuthorityPhase;
+    let phase = match phase {
+        P::EnvironmentValidation
+        | P::EnvironmentMaterialization
+        | P::ProducerValidation
+        | P::SourceCapture => AuthorityPhase::Open,
+        P::NativeAnalysis => AuthorityPhase::TypeCheck,
+        P::ReportProjection => AuthorityPhase::Project,
+        P::FinalValidation => AuthorityPhase::Resolve,
+    };
+    (phase, AuthorityDiagnosticClass::Authority)
+}
+
+
+#[cfg(test)]
+mod python_project_phase_tests {
+    use super::*;
+    use backend_frontend_python::legacy::checker::PythonProjectPhase as P;
+    use backend_library::interface::PythonAuthorityFailureKind as F;
+    use backend_semantic::vocabulary::AuthorityPhase;
+
+    #[test]
+    fn typed_project_deadlines_keep_the_closed_public_kind_and_truthful_authority_phase() {
+        for (phase, expected) in [
+            (P::EnvironmentValidation, AuthorityPhase::Open),
+            (P::EnvironmentMaterialization, AuthorityPhase::Open),
+            (P::ProducerValidation, AuthorityPhase::Open),
+            (P::SourceCapture, AuthorityPhase::Open),
+            (P::NativeAnalysis, AuthorityPhase::TypeCheck),
+            (P::ReportProjection, AuthorityPhase::Project),
+            (P::FinalValidation, AuthorityPhase::Resolve),
+        ] {
+            let error = PythonCheckerError::ProjectDeadline { phase };
+            let kind = python_authority_failure_kind(&error);
+            assert_eq!(kind, F::Deadline);
+            assert_eq!(kind.kind_tag(), "python_deadline");
+            let cause = PackageAuthorityError::PythonPyrefly(error);
+            assert_eq!(
+                package_authority_projection(&cause),
+                (expected, AuthorityDiagnosticClass::Authority)
+            );
+            let message = bounded_error_chain(&cause);
+            assert!(message.text.contains(&phase.to_string()));
+            assert!(!message.truncated);
+        }
+    }
+
+    #[test]
+    fn unavailable_environment_inputs_keep_their_envelope_and_existing_public_kind() {
+        for (source, expected) in [
+            (
+                PythonCheckerError::Deadline { phase: "project" },
+                F::Deadline,
+            ),
+            (
+                PythonCheckerError::Cancelled { phase: "project" },
+                F::Cancelled,
+            ),
+            (
+                PythonCheckerError::Workspace {
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                },
+                F::EnvironmentCaptureRefused,
+            ),
+        ] {
+            let source = std::sync::Arc::new(source);
+            let error = PythonCheckerError::EnvironmentCapture {
+                source: std::sync::Arc::clone(&source),
+            };
+            assert_eq!(python_authority_failure_kind(&error), expected);
+            let cause = PackageAuthorityError::PythonPyrefly(error);
+            assert_eq!(
+                package_authority_projection(&cause),
+                (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority)
+            );
+            let PackageAuthorityError::PythonPyrefly(PythonCheckerError::EnvironmentCapture {
+                source: retained,
+            }) = cause
+            else {
+                panic!("environment input envelope must remain intact")
+            };
+            assert!(std::sync::Arc::ptr_eq(&retained, &source));
+        }
     }
 }
 

@@ -337,6 +337,52 @@ struct RootWitness {
 }
 
 impl RootWitness {
+    fn matches_capture(
+        &self,
+        root: &Root,
+        control: PythonProjectControl<'_>,
+    ) -> Result<bool, CheckerError> {
+        self.matches_capture_with(root, || checkpoint(control))
+    }
+
+    fn matches_capture_with(
+        &self,
+        root: &Root,
+        mut check: impl FnMut() -> Result<(), CheckerError>,
+    ) -> Result<bool, CheckerError> {
+        check()?;
+        if self.kind != root.kind
+            || self.original != root.original
+            || self.directories != root.directories
+            || self.members.len() != root.members.len()
+        {
+            return Ok(false);
+        }
+        for ((path, digest, length, compiled), member) in self.members.iter().zip(&root.members) {
+            check()?;
+            if path != &member.path {
+                return Ok(false);
+            }
+            let expected = match &member.payload {
+                MemberPayload::Source(bytes) => {
+                    let mut hasher = blake3::Hasher::new();
+                    for block in bytes.chunks(64 * 1024) {
+                        check()?;
+                        hasher.update(block);
+                    }
+                    (*hasher.finalize().as_bytes(), bytes.len() as u64, false)
+                }
+                MemberPayload::Compiled { digest, length } => (*digest, *length, true),
+            };
+            check()?;
+            if (*digest, *length, *compiled) != expected {
+                return Ok(false);
+            }
+        }
+        check()?;
+        Ok(true)
+    }
+
     fn from_root(root: &Root) -> Self {
         Self {
             kind: root.kind,
@@ -375,8 +421,7 @@ impl PythonEnvironmentWitness {
             control,
         )?;
         for root in &self.roots {
-            let current = capture_root(&root.original, root.kind, control)?;
-            if RootWitness::from_root(&current) != *root {
+            if capture_root_witness(&root.original, root.kind, control)? != *root {
                 return Err(project_error(
                     "",
                     "installed dependency content or membership changed",
@@ -1145,8 +1190,9 @@ impl PythonEnvironmentCapture {
             control,
         )?;
         for root in &self.environment.roots {
-            let current = capture_root(&root.original, root.kind, control)?;
-            if &current != root {
+            if !capture_root_witness(&root.original, root.kind, control)?
+                .matches_capture(root, control)?
+            {
                 return Err(project_error(
                     "",
                     "installed dependency content or membership changed",
@@ -1575,6 +1621,92 @@ fn capture_root_with_budget(
     control: PythonProjectControl<'_>,
     budget: &mut EnvironmentScanBudget,
 ) -> Result<Root, CheckerError> {
+    let scan = scan_root_with_budget(root, kind, control, budget, |child, file_kind, maximum| {
+        if file_kind == DependencyFileKind::Compiled {
+            let (length, digest) =
+                super::project::digest_environment_input(root, child, control, maximum)?
+                    .ok_or_else(|| {
+                        project_error("", "compiled dependency disappeared during capture")
+                    })?;
+            Ok((length, MemberPayload::Compiled { length, digest }))
+        } else {
+            let bytes = super::project::read_environment_input(root, child, control, maximum)?
+                .ok_or_else(|| project_error("", "dependency disappeared during capture"))?;
+            Ok((bytes.len() as u64, MemberPayload::Source(bytes)))
+        }
+    })?;
+    Ok(Root {
+        kind,
+        original: root.into(),
+        directories: scan.directories,
+        members: scan
+            .members
+            .into_iter()
+            .map(|(path, payload)| Member { path, payload })
+            .collect(),
+    })
+}
+
+/// Revalidation owns metadata and digests, never a second dependency payload.
+/// The shared scanner still enumerates every bounded directory entry, including
+/// entries that are not source members, before exact frontier comparison.
+fn capture_root_witness(
+    root: &Path,
+    kind: PythonDependencyRootKind,
+    control: PythonProjectControl<'_>,
+) -> Result<RootWitness, CheckerError> {
+    let mut session = super::project::EnvironmentReadSession::open(root, control)?;
+    let scan = scan_root_with_budget(
+        root,
+        kind,
+        control,
+        &mut EnvironmentScanBudget::default(),
+        |child, file_kind, maximum| {
+            let compiled = file_kind == DependencyFileKind::Compiled;
+            let observed = if compiled {
+                // Preserve the compiled-resource error vocabulary and bound.
+                super::project::digest_environment_input(root, child, control, maximum)?
+            } else {
+                session.digest(child, control, maximum)?
+            };
+            let (length, digest) = observed.ok_or_else(|| {
+                project_error(
+                    "",
+                    if compiled {
+                        "compiled dependency disappeared during capture"
+                    } else {
+                        "dependency disappeared during capture"
+                    },
+                )
+            })?;
+            Ok((length, (digest, length, compiled)))
+        },
+    )?;
+    session.finish(control)?;
+    Ok(RootWitness {
+        kind,
+        original: root.into(),
+        directories: scan.directories,
+        members: scan
+            .members
+            .into_iter()
+            .map(|(path, (digest, length, compiled))| (path, digest, length, compiled))
+            .collect(),
+    })
+}
+
+struct ScannedRoot<T> {
+    directories: Vec<String>,
+    members: Vec<(String, T)>,
+}
+
+fn scan_root_with_budget<T>(
+    root: &Path,
+    kind: PythonDependencyRootKind,
+    control: PythonProjectControl<'_>,
+    budget: &mut EnvironmentScanBudget,
+    mut read_member: impl FnMut(&Path, DependencyFileKind, u64) -> Result<(u64, T), CheckerError>,
+) -> Result<ScannedRoot<T>, CheckerError> {
     normal_absolute(root)?;
     let mut pending = vec![PathBuf::new()];
     let mut directories = Vec::new();
@@ -1618,32 +1750,24 @@ fn capture_root_with_budget(
                 let Some(file_kind) = dependency_file_kind(&child, cfg!(windows)) else {
                     continue;
                 };
-                let payload = if file_kind == DependencyFileKind::Compiled {
-                    let (length, digest) = super::project::digest_environment_input(
-                        root,
-                        &child,
-                        control,
-                        MAX_COMPILED_SCAN_BYTES.saturating_sub(budget.compiled),
-                    )?
-                    .ok_or_else(|| {
-                        project_error("", "compiled dependency disappeared during capture")
-                    })?;
+                let maximum = if file_kind == DependencyFileKind::Compiled {
+                    MAX_COMPILED_SCAN_BYTES.saturating_sub(budget.compiled)
+                } else {
+                    MAX_FILE_BYTES.min(MAX_PAYLOAD_BYTES.saturating_sub(budget.payload)) as u64
+                };
+                let (length, payload) = read_member(&child, file_kind, maximum)?;
+                if file_kind == DependencyFileKind::Compiled {
                     budget.compiled = budget
                         .compiled
                         .checked_add(length)
                         .ok_or_else(|| project_error("", "compiled dependency scan overflow"))?;
-                    MemberPayload::Compiled { length, digest }
                 } else {
-                    let bytes = super::project::read_environment_input(
-                        root,
-                        &child,
-                        control,
-                        MAX_FILE_BYTES.min(MAX_PAYLOAD_BYTES.saturating_sub(budget.payload)) as u64,
-                    )?
-                    .ok_or_else(|| project_error("", "dependency disappeared during capture"))?;
                     budget.payload = budget
                         .payload
-                        .checked_add(bytes.len())
+                        .checked_add(
+                            usize::try_from(length)
+                                .map_err(|_| project_error("", "dependency bytes overflow"))?,
+                        )
                         .ok_or_else(|| project_error("", "dependency bytes overflow"))?;
                     if budget.payload > MAX_PAYLOAD_BYTES {
                         return Err(project_error(
@@ -1651,20 +1775,14 @@ fn capture_root_with_budget(
                             "dependency root exceeds capture byte budget",
                         ));
                     }
-                    MemberPayload::Source(bytes)
-                };
-                members.push(Member {
-                    path: spelling,
-                    payload,
-                });
+                }
+                members.push((spelling, payload));
             }
         }
     }
     directories.sort();
-    members.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(Root {
-        kind,
-        original: root.into(),
+    members.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(ScannedRoot {
         directories,
         members,
     })
@@ -2377,6 +2495,199 @@ mod tests {
         let mut workspace = super::super::Workspace::create()?;
         workspace.path = workspace.path.canonicalize().map_err(io_error)?;
         Ok(workspace)
+    }
+
+    #[test]
+    fn original_environment_streaming_witness_matches_capture_without_payload_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = fixture()?;
+        let root = &workspace.path;
+        std::fs::create_dir(root.join("unicode_λ"))?;
+        for index in 0..32 {
+            std::fs::write(
+                root.join(format!("unicode_λ/member_{index:02}.pyi")),
+                vec![index as u8; 65537],
+            )?;
+        }
+        let cancelled = AtomicBool::new(false);
+        let measure = super::super::project::WorkMeasurement::start();
+        let old = capture_root(
+            root,
+            PythonDependencyRootKind::SitePackages,
+            control(&cancelled),
+        )?;
+        let old_work = measure.take();
+        let current = capture_root_witness(
+            root,
+            PythonDependencyRootKind::SitePackages,
+            control(&cancelled),
+        )?;
+        let new_work = measure.take();
+        assert_eq!(current, RootWitness::from_root(&old));
+        assert!(current.matches_capture(&old, control(&cancelled))?);
+        let late_cancelled = AtomicBool::new(false);
+        let mut checks = 0;
+        let stopped = current.matches_capture_with(&old, || {
+            checks += 1;
+            if checks == 4 {
+                late_cancelled.store(true, Ordering::Release);
+            }
+            checkpoint(control(&late_cancelled))
+        });
+        assert!(matches!(stopped, Err(CheckerError::Cancelled { .. })));
+        assert_eq!(
+            checks, 4,
+            "stop before hashing the next captured source block"
+        );
+        assert!(old_work.payload_buffer_capacity >= 32 * 65537);
+        assert_eq!(new_work.payload_buffer_capacity, 0);
+        assert_eq!(old_work.root_walks, 32);
+        assert_eq!(new_work.root_walks, 2);
+        eprintln!("original_environment_revalidation old={old_work:?} streaming={new_work:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn original_environment_streaming_witness_keeps_full_frontier_and_compiled_membership()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = fixture()?;
+        let root = &workspace.path;
+        std::fs::create_dir(root.join("package"))?;
+        std::fs::write(root.join("package/__init__.py"), b"value = 1\n")?;
+        std::fs::write(root.join("native.so"), b"compiled-provenance-not-executed")?;
+        let cancelled = AtomicBool::new(false);
+        let capture = |kind| capture_root(root, kind, control(&cancelled));
+        let stream = |kind| capture_root_witness(root, kind, control(&cancelled));
+        let kind = PythonDependencyRootKind::SitePackages;
+        let expected = RootWitness::from_root(&capture(kind)?);
+        let original_capture = capture(kind)?;
+        assert_eq!(stream(kind)?, expected);
+        for (name, bytes) in [
+            ("package/__init__.py", b"value = 2\n".as_slice()),
+            ("native.so", b"different compiled provenance".as_slice()),
+        ] {
+            let path = root.join(name);
+            let original = std::fs::read(&path)?;
+            std::fs::write(&path, bytes)?;
+            assert_ne!(stream(kind)?, expected);
+            assert!(!stream(kind)?.matches_capture(&original_capture, control(&cancelled))?);
+            assert_eq!(stream(kind)?, RootWitness::from_root(&capture(kind)?));
+            std::fs::write(path, original)?;
+        }
+        std::fs::write(root.join("new.py"), b"new = True\n")?;
+        assert_ne!(stream(kind)?, expected);
+        std::fs::remove_file(root.join("new.py"))?;
+        std::fs::create_dir(root.join("new_empty_directory"))?;
+        assert_ne!(stream(kind)?, expected);
+        std::fs::remove_dir(root.join("new_empty_directory"))?;
+        std::fs::remove_file(root.join("package/__init__.py"))?;
+        assert_ne!(stream(kind)?, expected);
+        std::fs::write(root.join("package/__init__.py"), b"value = 1\n")?;
+        assert_eq!(stream(kind)?, expected);
+        std::fs::create_dir(root.join("site-packages"))?;
+        std::fs::write(root.join("site-packages/nested.py"), b"not_stdlib = True\n")?;
+        let standard = stream(PythonDependencyRootKind::StandardLibrary)?;
+        assert_eq!(
+            standard,
+            RootWitness::from_root(&capture(PythonDependencyRootKind::StandardLibrary)?)
+        );
+        assert!(
+            !standard
+                .members
+                .iter()
+                .any(|(path, ..)| path.starts_with("site-packages/"))
+        );
+        assert!(
+            stream(kind)?
+                .members
+                .iter()
+                .any(|(path, ..)| path == "site-packages/nested.py")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn original_environment_streaming_scan_keeps_stop_and_aggregate_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = fixture()?;
+        let root = &workspace.path;
+        std::fs::write(root.join("member.py"), b"member = True\n")?;
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            capture_root_witness(
+                root,
+                PythonDependencyRootKind::SitePackages,
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        let old = capture_root(
+            root,
+            PythonDependencyRootKind::SitePackages,
+            control(&AtomicBool::new(false)),
+        )?;
+        let expected = RootWitness::from_root(&old);
+        assert!(matches!(
+            expected.matches_capture(&old, control(&cancelled)),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        cancelled.store(false, Ordering::Release);
+        let expired = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now(),
+        };
+        assert!(matches!(
+            capture_root_witness(root, PythonDependencyRootKind::SitePackages, expired),
+            Err(CheckerError::Deadline { .. })
+        ));
+        assert!(matches!(
+            expected.matches_capture(&old, expired),
+            Err(CheckerError::Deadline { .. })
+        ));
+        for budget in [
+            EnvironmentScanBudget {
+                entries: MAX_FILES,
+                ..Default::default()
+            },
+            EnvironmentScanBudget {
+                metadata: MAX_METADATA_BYTES,
+                ..Default::default()
+            },
+        ] {
+            let mut budget = budget;
+            let result = scan_root_with_budget(
+                root,
+                PythonDependencyRootKind::SitePackages,
+                control(&cancelled),
+                &mut budget,
+                |_, _, _| -> Result<(u64, ()), CheckerError> {
+                    panic!("frontier refusal must precede payload reads")
+                },
+            );
+            assert!(result.is_err());
+        }
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(root.join("member.py"))?;
+            std::os::unix::fs::symlink("missing.py", root.join("member.py"))?;
+            assert!(
+                capture_root(
+                    root,
+                    PythonDependencyRootKind::SitePackages,
+                    control(&cancelled)
+                )
+                .is_err()
+            );
+            assert!(
+                capture_root_witness(
+                    root,
+                    PythonDependencyRootKind::SitePackages,
+                    control(&cancelled)
+                )
+                .is_err()
+            );
+        }
+        Ok(())
     }
 
     fn transport_environment() -> Environment {
