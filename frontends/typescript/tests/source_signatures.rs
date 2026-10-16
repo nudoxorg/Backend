@@ -53,3 +53,38 @@ fn documentation_is_a_jsdoc_block_never_a_plain_comment() -> Result<(), SyntaxEr
     );
     Ok(())
 }
+
+#[test]
+fn import_bindings_retain_exact_statement_and_local_name_captures() -> Result<(), SyntaxError> {
+    use backend_compile::{DeclarationKind, SourceBindingIdentity};
+    let source = "// λ byte offsets\nimport Default, { ArticlesService, Other as Renamed } from './articles.service';\nimport * as Namespace from './other';\nimport { type Hidden } from './types';\n";
+    let analysis = analyze(source)?;
+    let imports = analysis
+        .declarations()
+        .iter()
+        .filter(|site| site.kind() == DeclarationKind::Import)
+        .collect::<Vec<_>>();
+    assert_eq!(imports.len(), 4);
+    let statement =
+        "import Default, { ArticlesService, Other as Renamed } from './articles.service';";
+    let start = source.find(statement).expect("statement") as u32;
+    for name in ["Default", "ArticlesService", "Renamed", "Namespace"] {
+        let site = imports
+            .iter()
+            .copied()
+            .find(|site| site.name() == name)
+            .expect("binding");
+        let SourceBindingIdentity::Exact(capture) = site.binding_identity() else {
+            panic!("exact import binding")
+        };
+        assert_eq!(
+            &source[capture.name().0 as usize..capture.name().1 as usize],
+            name
+        );
+        if name != "Namespace" {
+            assert_eq!(capture.owner(), (start, start + statement.len() as u32));
+        }
+    }
+    assert!(imports.iter().all(|site| site.name() != "Hidden"));
+    Ok(())
+}

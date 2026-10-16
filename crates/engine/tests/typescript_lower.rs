@@ -8395,20 +8395,50 @@ fn receiver_peel_plain_bang_stays_syntactic() -> TestResult<()> {
 #[test]
 fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<()> {
     use backend_compile::SourceBindingIdentity;
+    use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticReader as _};
     let source = b"// UTF-8 is covered by the projection fixture\nexport interface Workout { name: string; }\nexport namespace First { export function workout() {} }\nnamespace Nested { export function workout() {} }\nfunction workout(value: number): void;\nfunction workout(value: string): void;\nfunction workout(value: unknown) {}\n";
     let authority = report(source);
     let compiled = try_lower(source, Some(&authority))?;
     let syntax =
         backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("workout.ts"), source)?;
     let mut checked = 0;
+    let mut support = 0;
     for item in compiled.ir.items().filter(|item| {
         [b"Workout".as_slice(), b"workout".as_slice()]
             .into_iter()
             .any(|name| item.name() == name)
     }) {
-        let span = item
-            .source()
-            .ok_or_else(|| io::Error::other("written declaration lost its compiler extent"))?;
+        let entity = compiled
+            .ir
+            .entity(item.id())
+            .ok_or_else(|| io::Error::other("named canonical entity"))?;
+        let role = entity.authority.publication;
+        assert_ne!(
+            role,
+            Role::Unavailable,
+            "named fact {:?} {:?} {:?} has no publication role",
+            item.id(),
+            item.name(),
+            item.kind()
+        );
+        if role == Role::ReferenceOnly {
+            assert!(
+                item.source().is_none(),
+                "reference-only fact {:?} {:?} {:?} must not own a source extent",
+                item.id(),
+                item.name(),
+                item.kind()
+            );
+            support += 1;
+            continue;
+        }
+        assert_eq!(role, Role::PrimaryOwned);
+        let span = item.source().ok_or_else(|| {
+            io::Error::other(format!(
+                "written declaration lost its compiler extent: id={:?} name={:?} kind={:?} role={:?}",
+                item.id(), item.name(), item.kind(), role
+            ))
+        })?;
         assert!(
             syntax.declarations().iter().any(|site| {
                 item.name() == site.name().as_bytes()
@@ -8426,5 +8456,102 @@ fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<(
         checked >= 5,
         "fixture must include interface, shadowed functions and overload declarations"
     );
+    assert!(
+        support > 0,
+        "fixture must retain named canonical type-expression support"
+    );
+    Ok(())
+}
+
+#[test]
+fn authored_parameter_properties_and_anonymous_callables_own_rows_but_type_carriers_do_not()
+-> TestResult<()> {
+    use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticReader as _};
+    let source = b"import { ArticlesService, Other as Renamed } from './service';\ntype Mixed = string | number; export class Screen { constructor(private readonly articleService: ArticlesService) {} method(input: { nested: string }) { return () => input; } }\nconst callback = () => 1;\n";
+    let authority = report(source);
+    let compiled = try_lower(source, Some(&authority))?;
+    let syntax =
+        backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("fixture.ts"), source)?;
+    let mut imports = 0;
+    let mut parameters = 0;
+    let mut fields = 0;
+    let mut support = 0;
+    for item in compiled.ir.items() {
+        let entity = compiled
+            .ir
+            .entity(item.id())
+            .ok_or_else(|| io::Error::other("entity"))?;
+        if [b"ArticlesService".as_slice(), b"Renamed".as_slice()]
+            .iter()
+            .any(|name| item.name() == *name)
+            && item.kind() == ItemKind::Reexport
+        {
+            let span = item
+                .source()
+                .ok_or_else(|| io::Error::other("import source"))?;
+            let site = syntax
+                .declarations()
+                .iter()
+                .find(|site| {
+                    item.name() == site.name().as_bytes()
+                        && site.kind() == backend_compile::DeclarationKind::Import
+                })
+                .ok_or_else(|| io::Error::other("import syntax"))?;
+            let backend_compile::SourceBindingIdentity::Exact(capture) = site.binding_identity()
+            else {
+                return Err(io::Error::other("exact import capture").into());
+            };
+            assert_eq!(capture.owner(), (span.start(), span.end()));
+            assert_eq!(entity.authority.publication, Role::PrimaryOwned);
+            imports += 1;
+        }
+        if item.name() == b"articleService" {
+            assert_eq!(entity.authority.publication, Role::PrimaryOwned);
+            let span = item
+                .source()
+                .ok_or_else(|| io::Error::other("authored parameter/field source"))?;
+            assert!(
+                source[span.start() as usize..span.end() as usize]
+                    .windows(b"articleService".len())
+                    .any(|w| w == b"articleService")
+            );
+            if item.kind() == ItemKind::Parameter {
+                parameters += 1;
+            }
+            if item.kind() == ItemKind::Field {
+                fields += 1;
+            }
+        }
+        if entity.authority.publication == Role::ReferenceOnly {
+            support += 1;
+            assert!(
+                item.source().is_none(),
+                "registered authored source owns a row"
+            );
+        }
+        assert_ne!(entity.authority.publication, Role::Unavailable);
+    }
+    assert_eq!((parameters, fields, imports), (1, 1, 2));
+    assert!(
+        support > 0,
+        "fixture must retain canonical type-expression support"
+    );
+    let mut bytes = vec![0; backend_semantic::ir::full_semantic_image_len(&compiled.ir)?];
+    backend_semantic::ir::encode_full_semantic_image(&compiled.ir, &mut bytes)?;
+    let reopened = backend_semantic::ir::SemanticImageView::reopen(&bytes)?;
+    let session = backend_engine::application::DocumentationSession::new(&reopened);
+    assert!(
+        session.canonical_entities().count() > session.publication_entities().count(),
+        "cold type support remains canonical without owning search rows"
+    );
+    assert!(
+        session.publication_entities().all(|entity| entity
+            .expect("entity")
+            .entity
+            .authority
+            .publication
+            == Role::PrimaryOwned)
+    );
+
     Ok(())
 }

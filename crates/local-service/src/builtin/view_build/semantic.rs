@@ -775,9 +775,9 @@ fn semantic_rows(
                 // project-wide fact hydration.
                 let owned_site_declarations = if stale {
                     Vec::new()
-                } else if !matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::Go(_)) {
+                } else if !matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::Go(_) | backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
                     // Other languages retain their established display-site
-                    // fallback. Only Go mints exact cross-lane identities.
+                    // fallback. Go and TypeScript require exact source identity.
                     sites.declarations(key.package_key().as_bytes(), &path)?
                 } else {
                     match decision.compiled.get(&path) {
@@ -1136,6 +1136,15 @@ pub(super) struct EntityKinds<'site> {
 }
 
 impl EntityKinds<'_> {
+    /// A singular compiler/syntax extent proves this source location even if
+    /// the bounded excerpt cannot recover a larger enclosing source window.
+    pub(super) fn exact_location(&self, profile: backend_semantic::vocabulary::LanguageProfile, identity: DeclarationIdentity, path: &str) -> Option<backend_compile::SourceLocation> {
+        if !matches!(profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) { return None; }
+        self.exact.get(&identity)?;
+        let site = self.sites.get(&identity)?;
+        backend_compile::SourceLocation::new(path, site.line()).ok()
+    }
+
     /// Returns the kind one entity is shown as.
     pub(super) fn kind_of(
         &self,
@@ -1296,6 +1305,7 @@ pub(super) fn project_image_rows(
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
+    let locations = super::retained_locations::RetainedLocations::for_entities(profile, image, &session, site_declarations, &kinds.exact).map_err(BuiltinModelError)?;
     let canonical_identities = session
         .publication_entities()
         .map(|entity| {
@@ -1312,7 +1322,13 @@ pub(super) fn project_image_rows(
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let name = super::semantic_display_name(entity.name)?;
         let identity = entity.entity.version.identity();
-        let coordinate = semantic_coordinate(&project.label, identity, name);
+        let placement = locations.place(image, &entity.entity);
+        let location = placement.as_ref().map(|placement| placement.location.clone())
+            .or_else(|| kinds.exact_location(profile, identity, path));
+        let coordinate = match &location {
+            Some(location) => super::identity::declaration_coordinate(&project.label, location.path(), location.start_line(), name),
+            None => semantic_coordinate(&project.label, identity, name),
+        };
         let symbol = semantic_symbol(project.package, identity);
         let content =
             semantic_row_content(profile, image, &entity, project.package, image_identity)?;
@@ -1362,7 +1378,7 @@ pub(super) fn project_image_rows(
             .with_facts(facts);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
-            charges.push(Charge::Sub(excerpt_bytes));
+            if placement.is_none() { charges.push(Charge::Sub(excerpt_bytes)); }
             let location =
                 backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
                     BuiltinModelError(format!("semantic declaration source site: {error}"))
@@ -1370,6 +1386,10 @@ pub(super) fn project_image_rows(
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
+        }
+        if let Some(placement) = placement {
+            charges.push(Charge::Sub(placement.excerpt.text().map_or(0, str::len)));
+            row = row.with_source(placement.location).with_excerpt(placement.excerpt);
         }
         // A reader's signature is the declaration as written. The semantic
         // type renders as canonical IR text (`function(parameters=[element(

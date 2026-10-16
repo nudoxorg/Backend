@@ -1,0 +1,36 @@
+{
+  "source_commit": "dd99ed2cf39c805d719f943c5d7061a5683d98a8",
+  "source_tree": "82b24c8e0da619783643e733e2442ac538878ffd",
+  "files": [
+    {
+      "path": "src/app/features/article/components/article-list.component.ts",
+      "fixture": "article-list.component.ts",
+      "bytes": 3982,
+      "sha256": "2f2a88381da6e2acae2aac9f4a930218f2962191bac20b9d01cecbcf9d157436"
+    },
+    {
+      "path": "src/app/features/article/components/favorite-button.component.ts",
+      "fixture": "favorite-button.component.ts",
+      "bytes": 2099,
+      "sha256": "61287b0659ea244306967c4fea19ec6b3e9c630fed621620e78684459dbf22d1"
+    },
+    {
+      "path": "src/app/features/article/services/articles.service.ts",
+      "fixture": "articles.service.ts",
+      "bytes": 1858,
+      "sha256": "9763a1b5b64f014f9e52e4ddda35f77ff44cdf0c927f24c40948d3ea9c1ed061"
+    },
+    {
+      "path": "src/app/features/article/pages/article/article.component.ts",
+      "fixture": "article.component.ts",
+      "bytes": 5506,
+      "sha256": "cadd19d28e8280abc862c7ae92bfc5ae1b18b4283645e16624465b6210d289dd"
+    },
+    {
+      "path": "src/app/features/article/pages/editor/editor.component.ts",
+      "fixture": "editor.component.ts",
+      "bytes": 3295,
+      "sha256": "57b9990ad60ddfba0eaea9c576c1011ea1dfeac4f35dca5014757638329c4b25"
+    }
+  ]
+}

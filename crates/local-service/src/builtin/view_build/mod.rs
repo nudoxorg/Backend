@@ -28,6 +28,7 @@ mod py_static_field_join;
 #[cfg(test)]
 mod python_import_binding_tests;
 mod query;
+mod retained_locations;
 #[cfg(test)]
 mod search_ranking_native;
 mod semantic;

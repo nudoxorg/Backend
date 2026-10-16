@@ -876,6 +876,7 @@ impl SyntaxFrontend {
                     "",
                 )?
                 .with_source_excerpt(SourceExcerpt::capture_bounded(&import.excerpt))
+                .with_binding_identity(import.binding_identity)
                 .with_container(Container::Module),
             );
             if declarations.len() > MAX_DECLARATIONS {
@@ -2038,10 +2039,21 @@ fn xml_prose(body: &str) -> String {
 }
 
 struct ExtractedImport {
+    binding_identity: SourceBindingIdentity,
     name: String,
     line: u32,
     signature: String,
     excerpt: String,
+}
+
+impl ExtractedImport {
+    fn with_binding(mut self, owner: Node<'_>, name: Node<'_>) -> Self {
+        self.binding_identity = SourceBindingCapture::new(
+            owner.start_byte() as u32, owner.end_byte() as u32,
+            name.start_byte() as u32, name.end_byte() as u32,
+        ).map_or(SourceBindingIdentity::Legacy, SourceBindingIdentity::Exact);
+        self
+    }
 }
 
 fn node_line(node: Node<'_>) -> u32 {
@@ -2097,11 +2109,12 @@ fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<Extracte
                         "identifier" => {
                             let local = node_text(clause_child, text);
                             if !local.is_empty() {
-                                imports.push(value_import(local, line, &specifier, local, excerpt));
+                                imports.push(value_import(local, line, &specifier, local, excerpt).with_binding(node, clause_child));
                             }
                         }
                         "named_imports" => {
                             push_typescript_named_imports(
+                                node,
                                 clause_child,
                                 text,
                                 line,
@@ -2118,7 +2131,7 @@ fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<Extracte
                                     if !local.is_empty() {
                                         imports.push(qualifier_import(
                                             local, line, &specifier, excerpt,
-                                        ));
+                                        ).with_binding(node, ns_child));
                                     }
                                 }
                             }
@@ -2133,6 +2146,7 @@ fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<Extracte
 }
 
 fn push_typescript_named_imports(
+    owner: Node<'_>,
     node: Node<'_>,
     text: &str,
     line: u32,
@@ -2152,12 +2166,9 @@ fn push_typescript_named_imports(
         let Some(exported) = exported else {
             continue;
         };
-        let local = child
-            .child_by_field_name("alias")
-            .map(|alias| node_text(alias, text))
-            .filter(|alias| !alias.is_empty())
-            .unwrap_or(exported);
-        imports.push(value_import(local, line, specifier, &exported, excerpt));
+        let Some(binding) = child.child_by_field_name("alias").or_else(|| child.child_by_field_name("name")) else { continue; };
+        let local = node_text(binding, text);
+        imports.push(value_import(local, line, specifier, &exported, excerpt).with_binding(owner, binding));
     }
 }
 
@@ -2454,6 +2465,7 @@ fn value_import(
 ) -> ExtractedImport {
     let local = local.into();
     ExtractedImport {
+        binding_identity: SourceBindingIdentity::Legacy,
         name: bounded(&local),
         line,
         signature: format!("value\n{specifier}\n{exported}"),
@@ -2469,6 +2481,7 @@ fn qualifier_import(
 ) -> ExtractedImport {
     let local = local.into();
     ExtractedImport {
+        binding_identity: SourceBindingIdentity::Legacy,
         name: bounded(&local),
         line,
         signature: format!("qualifier\n{specifier}"),

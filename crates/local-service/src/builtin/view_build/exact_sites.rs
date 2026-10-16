@@ -3,7 +3,8 @@
 //! A display coordinate, signature, name or source order never proves a twin.
 //! Callers supply syntax captures from the image's exact SourceFactDomain
 //! bytes. Equal, nonempty compiler/syntax declaration extents must then be
-//! singular in both lanes. Missing or conflicting evidence leaves both rows.
+//! singular per extent/name slot in both lanes. Distinct named bindings may
+//! share an import statement; conflicting same-name evidence leaves both rows.
 
 use super::super::BuiltinModelError;
 use backend_compile::{SourceBinding, SourceBindingIdentity, SourceDeclaration};
@@ -78,10 +79,11 @@ fn pair_extents(
     let mut paired = BTreeMap::new();
     for (extent, candidates) in compiled {
         let Some(sites) = written.get(extent) else { continue; };
-        if let ([(identity, name)], [(binding, written_name)]) = (candidates.as_slice(), sites.as_slice())
-            && name == written_name
-        {
-            paired.insert(*identity, *binding);
+        for (identity, name) in candidates {
+            if candidates.iter().filter(|(_, other)| other == name).count() != 1 { continue; }
+            let mut matches = sites.iter().filter(|(_, written_name)| written_name == name);
+            let Some((binding, _)) = matches.next() else { continue; };
+            if matches.next().is_none() { paired.insert(*identity, *binding); }
         }
     }
     paired
@@ -116,6 +118,18 @@ mod tests {
         duplicate_syntax.get_mut(&(40, 60)).expect("extent").push((b, b"Shared"));
         assert!(!pair_extents(&duplicate_syntax, &compiled).contains_key(&identity(2)));
         assert!(pair_extents(&BTreeMap::from([((11, 30), vec![(a, b"Shared".as_slice())])]), &compiled).is_empty(), "overlap does not prove equality");
+    }
+
+    #[test]
+    fn one_import_extent_pairs_distinct_bindings_without_coalescing_ambiguous_same_names() {
+        let first = SourceBinding::new(9, 14).expect("first binding");
+        let second = SourceBinding::new(16, 22).expect("second binding");
+        let written = BTreeMap::from([((0, 48), vec![(first, b"First".as_slice()), (second, b"Second".as_slice())])]);
+        let compiled = BTreeMap::from([((0, 48), vec![(identity(1), b"First".as_slice()), (identity(2), b"Second".as_slice())])]);
+        let paired = pair_extents(&written, &compiled);
+        assert_eq!(paired, BTreeMap::from([(identity(1), first), (identity(2), second)]));
+        let ambiguous = BTreeMap::from([((0, 48), vec![(identity(1), b"First".as_slice()), (identity(3), b"First".as_slice()), (identity(2), b"Second".as_slice())])]);
+        assert_eq!(pair_extents(&written, &ambiguous), BTreeMap::from([(identity(2), second)]));
     }
 
     #[test]

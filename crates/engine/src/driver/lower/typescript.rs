@@ -577,6 +577,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         let index = usize::try_from(ordinal).map_err(|_| lane_rejection())?;
         let required = index.checked_add(1).ok_or_else(lane_rejection)?;
         self.ensure_fact_sidecars(required)?;
+        // Type-expression carriers remain canonical support. Only explicit
+        // source declaration capture below grants product-row ownership.
+        *self.facts.publication_roles.get_mut(index).ok_or_else(lane_rejection)? =
+            backend_semantic::ir::DeclarationPublicationRole::ReferenceOnly;
         *self
             .extension_type_parameters
             .get_mut(index)
@@ -693,6 +697,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         // Keep the original exact primary source observation immutable.
         // Additional legal merge parts receive a separate containment proof.
         self.facts.attach_source_span(fact, staged).map_err(fault)?;
+        *self.facts.publication_roles.get_mut(index).ok_or_else(lane_rejection)? =
+            backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned;
         *self.name_starts.get_mut(index).ok_or_else(lane_rejection)? = name.start;
         *self.name_ends.get_mut(index).ok_or_else(lane_rejection)? = name.end;
         *self.decl_starts.get_mut(index).ok_or_else(lane_rejection)? = declaration.start;
@@ -6183,6 +6189,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             self.facts
                 .attach_source_span(ordinal, staged)
                 .map_err(fault)?;
+            *self.facts.publication_roles.get_mut(index).ok_or_else(lane_rejection)? =
+                backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned;
             *self.decl_starts.get_mut(index).ok_or_else(lane_rejection)? = callable.span.start;
             *self.decl_ends.get_mut(index).ok_or_else(lane_rejection)? = callable.span.end;
             *self.fact_kinds.get_mut(index).ok_or_else(lane_rejection)? = EntityKind::Function;
