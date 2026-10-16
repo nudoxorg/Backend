@@ -1,0 +1,958 @@
+{
+  "schema": 1,
+  "batch": "LOCAL-SERVICE-01",
+  "task": "W1.4",
+  "reviewed_source": "63c2adffa3e62e0717a87a7267b3bdd41513a48b",
+  "summary": {
+    "reviewed": 117,
+    "delete": 3,
+    "retained_or_rewrite_pending": 114
+  },
+  "scope": "Three complete ingest/view-build/publication files; only redundant smoke/literal/allocation tests removed. Pending rewrites remain intact.",
+  "runtime_status": "Fresh cab7cdf38-based candidate with exact compatibility prerequisites is pending required fast/T1, affected local-service T2, and local-service T3. No passing or flake-rate claim.",
+  "removed": [
+    {
+      "name": "unchanged_files_reuse_the_exact_declaration_allocation",
+      "disposition": "delete",
+      "reason": "The isolated one-file test checks source_version equality, declaration Arc pointer identity, and compiler_sources empty after unchanged rescan. This is useful allocation detail but the stronger retained `reused_scan_drops_compiler_text_until_a_sibling_edit` exercises the same unchanged-Arc and dropped compiler-text law with realistic two-file sizes, then proves sibling edit reprocesses only changed source, exact content identities reopen through the root capability, and TOCTOU edits are refused without echoing bytes. Keep the stronger test; the smaller one is redundant.",
+      "review_state": "substantive_review",
+      "replacement_test": "reused_scan_drops_compiler_text_until_a_sibling_edit",
+      "replacement_required": "crates/local-service/src/builtin/ingest.rs::reused_scan_drops_compiler_text_until_a_sibling_edit (existing stronger test; no new replacement needed)",
+      "path": "crates/local-service/src/builtin/ingest.rs",
+      "removed_body_sha256": "e225e9b042f4431fbc2c97a69c631518ce211d85eccf44dee6386bccf73cba07"
+    },
+    {
+      "name": "the_stale_note_is_stable",
+      "disposition": "delete",
+      "reason": "DELETE: Body only checks a shared constant contains one phrase, adding no distinct failure case; it can pass while stale behavior is wrong and fails if wording changes harmlessly. Existing `a_stale_image_answers_semantic_with_a_typed_stale_note` and `a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back` exercise the user-visible stale projection and typed lane, so no new replacement is needed.",
+      "review_state": "substantive_body_review",
+      "review_scope": "redundant_literal_check",
+      "replacement_required": "existing: a_stale_image_answers_semantic_with_a_typed_stale_note; a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back",
+      "path": "crates/local-service/src/builtin/view_build/mod.rs",
+      "removed_body_sha256": "dae4b68668b8832bbd0d121eb17b1d4f9b46e7ae8ca8b62aae0b0f80e8f54b1e"
+    },
+    {
+      "name": "structural_fixture_plans_the_workspace_and_one_package",
+      "disposition": "delete",
+      "reason": "DELETE: The body only checks that project_structural_plan returns Ok for a four-file workspace and a two-file package, without inspecting either plan or asserting a distinct result. Concrete structural output and retained parent/sibling behavior are exercised by `one_file_keeps_the_attached_parent_and_the_sibling_bytes`; package splice behavior is exercised by `splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id`. No additional replacement is needed.",
+      "review_state": "substantive_body_review",
+      "review_scope": "redundant_smoke_test",
+      "replacement_required": "existing: one_file_keeps_the_attached_parent_and_the_sibling_bytes; splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id",
+      "path": "crates/local-service/src/builtin/view_publish.rs",
+      "removed_body_sha256": "dec12796dfe448bb5fc326ff88e6d1455e3e4fee4c876873fceeba94ca263ff1"
+    }
+  ],
+  "files": [
+    {
+      "path": "crates/local-service/src/builtin/ingest.rs",
+      "test_count": 63,
+      "tests": [
+        "cancellable_project_scan_stops_before_opening_the_workspace",
+        "structural_frontend_inventory_has_exactly_one_parser_per_language",
+        "discovery_budget_is_checked_before_an_entry_is_retained",
+        "opened_project_root_rejects_symlink_substitution",
+        "every_language_lane_uses_its_grammar_tags",
+        "scanned_files_persist_the_semantic_source_content_identity",
+        "unchanged_files_reuse_the_exact_declaration_allocation",
+        "reused_scan_drops_compiler_text_until_a_sibling_edit",
+        "unavailable_bytes_are_not_reused_as_compiler_input",
+        "admit_rejects_a_path_present_in_both_lists",
+        "indexed_source_excerpt_recovers_only_exact_confined_bytes",
+        "admit_refuses_a_reused_file_replaced_by_a_symlink",
+        "git_frontier_warm_scan_reads_no_source_bytes_with_ignored_build_output",
+        "changed_source_quota_invalidates_warm_frontier_before_file_admission",
+        "complete_fact_pages_exceeding_the_project_quota_refuse_before_retention",
+        "warm_frontier_charges_unchanged_fact_pages_after_another_file_grows",
+        "many_small_files_85_mib_cold_and_warm_scans_obey_admission_and_memory_caps",
+        "one_valid_generated_tsx_over_512_kib_is_scanned_and_reopened",
+        "compiler_handoff_rejects_retargeted_root_alias_with_identical_source",
+        "compiler_workspace_rejects_retargeted_ancestor_alias_with_identical_files",
+        "compiler_handoff_rejects_root_replacement_with_identical_source",
+        "unchanged_tmp_alias_resolves_to_its_admitted_private_tmp_root",
+        "compiler_materialization_cancellation_stops_before_the_next_source_read",
+        "git_frontier_reads_only_an_edited_file_and_handles_rename_delete",
+        "git_frontier_falls_back_for_new_untracked_source_and_ignore_policy_change",
+        "git_frontier_witnesses_a_local_ignore_file_hidden_by_gitignore",
+        "git_frontier_falls_back_when_a_selected_path_is_a_symlink",
+        "git_frontier_detects_mutation_after_a_zero_read_reuse_attempt",
+        "cold_frontier_reopen_uses_the_full_source_read",
+        "raw_crlf_lf_change_with_the_same_git_blob_is_reread",
+        "benchmark_git_frontier_reads_large_fixture_once_then_reuses_all_rows",
+        "a_changed_language_does_not_reread_an_unchanged_one",
+        "a_deleted_language_does_not_reread_the_languages_that_remain",
+        "one_rust_edition_does_not_reread_another_crate",
+        "a_deleted_crate_retires_its_edition_after_the_manifest_is_gone",
+        "a_file_denser_than_one_row_is_indexed_rather_than_rejected",
+        "a_file_within_one_row_keeps_complete_retention_and_its_excerpts",
+        "shedding_is_a_pure_function_of_the_source",
+        "python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier",
+        "an_unreadable_file_is_reported_without_failing_the_project",
+        "a_binary_file_is_reported_as_not_text_without_failing_the_project",
+        "valid_non_ascii_source_keeps_exact_bytes_and_content_identity",
+        "an_oversized_file_is_reported_as_too_large_without_failing_the_project",
+        "gitignored_sources_are_excluded_while_negated_sources_are_admitted",
+        "a_symlink_cycle_is_skipped_and_the_project_still_indexes",
+        "a_unicode_path_is_indexed_under_its_exact_coordinate",
+        "a_file_removed_during_the_scan_leaves_the_project_indexable",
+        "an_unavailable_file_becomes_available_again_when_it_can_be_read",
+        "every_claimed_extension_resolves_to_its_own_language_profile",
+        "javascript_and_python_stub_extensions_carry_their_dialect",
+        "an_unprofiled_extension_is_unavailable_and_not_fatal",
+        "a_javascript_project_indexes_its_config_and_skips_framework_caches",
+        "discovery_skips_every_directory_the_csharp_oracle_skips",
+        "discovery_skips_framework_and_tool_caches",
+        "snapshot_captures_python_build_package_bytes_and_fences_package_marker_changes",
+        "snapshot_inventory_includes_root_config_zero_byte_files_and_fences_new_paths",
+        "snapshot_fence_detects_content_and_metadata_changes",
+        "snapshot_fence_detects_same_length_edit_after_last_write_is_restored",
+        "snapshot_rejects_junctions_and_hardlink_aliases",
+        "workspace_paths_must_be_utf8_nfc_and_portable",
+        "case_colliding_names_fail_portable_workspace_admission",
+        "snapshot_rejects_symlinks_instead_of_silently_omitting_them",
+        "snapshot_rejects_special_files_instead_of_admitting_them"
+      ],
+      "review_status": "substantively_reviewed",
+      "reviewed_tests": [
+        {
+          "name": "cancellable_project_scan_stops_before_opening_the_workspace",
+          "disposition": "keep",
+          "reason": "Pre-cancelled scan against a nonexistent path returns the fixed cancellation error, proving cancellation is checked before opening the root. Prevents unnecessary filesystem access after cancellation; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "structural_frontend_inventory_has_exactly_one_parser_per_language",
+          "disposition": "keep",
+          "reason": "Builds production frontend registry and requires every SourceLanguage has a parser with nonzero producer identity. Protects parser inventory/provenance; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "discovery_budget_is_checked_before_an_entry_is_retained",
+          "disposition": "keep",
+          "reason": "At MAX_DISCOVERY_ENTRIES and MAX_DIRECTORY_ENTRIES, admitting one more entry errors. Pins global and per-directory resource bounds before retention; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "opened_project_root_rejects_symlink_substitution",
+          "disposition": "keep",
+          "reason": "Opened root admits ordinary confined source but refuses a file symlink and a directory symlink substituted after root capability open. Protects source confinement against path substitution; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "every_language_lane_uses_its_grammar_tags",
+          "disposition": "keep",
+          "reason": "Seven representative Rust/Python/TS/Go/Java/C#/C++ snippets are routed to their language frontend and each expected declaration appears. Protects language-to-grammar routing; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "scanned_files_persist_the_semantic_source_content_identity",
+          "disposition": "keep",
+          "reason": "Scans exact Rust bytes and checks persisted source identity equals semantic SourceFactDomain digest and differs for altered bytes. Keeps view/file provenance comparable; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "unchanged_files_reuse_the_exact_declaration_allocation",
+          "disposition": "delete",
+          "reason": "The isolated one-file test checks source_version equality, declaration Arc pointer identity, and compiler_sources empty after unchanged rescan. This is useful allocation detail but the stronger retained `reused_scan_drops_compiler_text_until_a_sibling_edit` exercises the same unchanged-Arc and dropped compiler-text law with realistic two-file sizes, then proves sibling edit reprocesses only changed source, exact content identities reopen through the root capability, and TOCTOU edits are refused without echoing bytes. Keep the stronger test; the smaller one is redundant.",
+          "review_state": "substantive_review",
+          "replacement_test": "reused_scan_drops_compiler_text_until_a_sibling_edit",
+          "replacement_required": "crates/local-service/src/builtin/ingest.rs::reused_scan_drops_compiler_text_until_a_sibling_edit (existing stronger test; no new replacement needed)"
+        },
+        {
+          "name": "reused_scan_drops_compiler_text_until_a_sibling_edit",
+          "disposition": "keep",
+          "reason": "Cold scan holds compiler handles smaller than source text; warm scan drops all compiler text and reuses exact declaration allocations; one sibling edit emits only changed source and preserves the other Arc; admission reopens both exact bytes and rejects fresh/reused post-hash edits without echoing torn text. This is a distinct memory, incremental and handoff law; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "unavailable_bytes_are_not_reused_as_compiler_input",
+          "disposition": "keep",
+          "reason": "Invalid UTF-8 Rust bytes produce no fresh or reused compiler handle on both cold and warm scan. Prevents previously unavailable content being smuggled into a compiler as reusable input; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "admit_rejects_a_path_present_in_both_lists",
+          "disposition": "keep",
+          "reason": "Same relative path appears as fresh and reused with conflicting content; handoff rejects exact path as admitted twice. Prevents duplicate authority paths with ambiguous byte source; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "indexed_source_excerpt_recovers_only_exact_confined_bytes",
+          "disposition": "keep",
+          "reason": "Excerpt recovery succeeds only when source identity, line, declaration kind and root-confined path match; wrong line/kind, parent traversal, changed/deleted file and symlink all return none. Protects byte-exact snippet recovery; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "admit_refuses_a_reused_file_replaced_by_a_symlink",
+          "disposition": "keep",
+          "reason": "Warm reusable source path replaced with symlink to secret outside file is refused, naming path but not leaking content. Protects compiler handoff confinement and error confidentiality; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_warm_scan_reads_no_source_bytes_with_ignored_build_output",
+          "disposition": "keep",
+          "reason": "Cold Git scan reads only tracked Rust file, ignoring target output; warm frontier rereads zero source bytes and retains same version. Protects warm fast path and ignore boundary; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "changed_source_quota_invalidates_warm_frontier_before_file_admission",
+          "disposition": "keep",
+          "reason": "Changing admission policy identity/tightening max file size invalidates prior reusable compiler file; scanner reads no source but records TooLarge and emits no compiler handle. Prevents prior policy admitting data over new quota; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "complete_fact_pages_exceeding_the_project_quota_refuse_before_retention",
+          "disposition": "keep",
+          "reason": "Real TS parser emits multiple complete fact pages whose aggregate exceeds project record quota; scan refuses before retention, then retry under default policy succeeds identically. Protects complete-page aggregate budget and recoverability; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "warm_frontier_charges_unchanged_fact_pages_after_another_file_grows",
+          "disposition": "keep",
+          "reason": "Seeds warm cached pages for 1,000 declarations, proves unchanged refresh retains full page charges without reads, then growing only second file exceeds project quota only when unchanged cached charges are included. Prevents warm cache bypass of aggregate quotas; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "many_small_files_85_mib_cold_and_warm_scans_obey_admission_and_memory_caps",
+          "disposition": "keep",
+          "reason": "10,880 tracked 8 KiB files (>84 MiB) cold scan admits all under project/retained limits and checks in-flight worker buffers fit; materialization byte total is exact, warm scan reads zero bytes and retains all handles. Protects high-count memory/admission bounds; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "one_valid_generated_tsx_over_512_kib_is_scanned_and_reopened",
+          "disposition": "keep",
+          "reason": "Valid 768 KiB generated TSX below per-file limit gets TSX profile, exact input digest/source identity, then root-confined handoff reopens exact bytes. Protects realistic large-file acceptance across scan and compiler handoff; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "compiler_handoff_rejects_retargeted_root_alias_with_identical_source",
+          "disposition": "keep",
+          "reason": "Symlink alias initially points to admitted root then retargets to foreign root containing identical bytes; handoff refuses directory identity change. Content equality cannot substitute for root capability; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "compiler_workspace_rejects_retargeted_ancestor_alias_with_identical_files",
+          "disposition": "keep",
+          "reason": "Workspace snapshot anchored through aliased parent revalidates false after alias points to another parent with identical project files. Protects ancestor capability identity across delayed compilation; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "compiler_handoff_rejects_root_replacement_with_identical_source",
+          "disposition": "keep",
+          "reason": "Renames admitted project directory and creates replacement at same path with identical source; compiler handoff refuses changed root inode. Protects root identity rather than path/content-only checks; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "unchanged_tmp_alias_resolves_to_its_admitted_private_tmp_root",
+          "disposition": "keep",
+          "reason": "macOS /tmp alias legitimately canonicalizes under /private/tmp; scan/handoff and workspace snapshot accept stable alias and exact bytes. Keeps confinement compatible with documented platform alias; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "compiler_materialization_cancellation_stops_before_the_next_source_read",
+          "disposition": "keep",
+          "reason": "After first of two sorted source handles materializes, callback cancels; materializer returns fixed cancellation before reading changed second file. Protects cooperative cancellation and avoids unnecessary reads; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_reads_only_an_edited_file_and_handles_rename_delete",
+          "disposition": "keep",
+          "reason": "Warm Git frontier rereads only edited file; after rename it reads changed and renamed bytes, removes old path and admits new. Protects incremental correctness across tracked edits/rename; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_falls_back_for_new_untracked_source_and_ignore_policy_change",
+          "disposition": "keep",
+          "reason": "New untracked source causes safe full read; after removing it, changing .gitignore admits formerly hidden nested source and reads selected files. Prevents stale Git frontier when untracked paths/selection rules change; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_witnesses_a_local_ignore_file_hidden_by_gitignore",
+          "disposition": "keep",
+          "reason": "Root .gitignore hides local .ignore from ordinary selection, but its content is witnessed; editing it makes hidden source visible and forces correct full source reads. Protects selection policy inputs even when ignored; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_falls_back_when_a_selected_path_is_a_symlink",
+          "disposition": "keep",
+          "reason": "A selected project path becomes a symlink to external source; frontier falls back but only reads safe stable file and excludes symlink. Protects Git optimization from weakening confinement; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "git_frontier_detects_mutation_after_a_zero_read_reuse_attempt",
+          "disposition": "keep",
+          "reason": "Deterministic race mutates tracked source after zero-read frontier decision; fallback reads changed plus unchanged file and emits changed file's exact content digest. Protects mutation detection at optimization boundary; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "cold_frontier_reopen_uses_the_full_source_read",
+          "disposition": "keep",
+          "reason": "Clears process-local frontier state then warm data cannot justify no-read reuse; cold reopen rereads source and retains same version. Protects restart behavior independent of hot cache; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "raw_crlf_lf_change_with_the_same_git_blob_is_reread",
+          "disposition": "keep",
+          "reason": "Equal-length CRLF/LF swap leaves normalized Git blob/status unchanged but changes raw bytes; scanner rereads file and content version changes. Prevents Git normalization from hiding compiler-input changes; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "benchmark_git_frontier_reads_large_fixture_once_then_reuses_all_rows",
+          "disposition": "keep",
+          "reason": "Builds 1,024 generated tracked sources plus root file (~4 MiB), cold-scans, then warm-scans from prior rows; requires all 1,025 rows and zero warm source bytes, logging timings only. Keep as large-tree cold/warm scale characterization; timing is not a CI gate.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_changed_language_does_not_reread_an_unchanged_one",
+          "disposition": "keep",
+          "reason": "Two languages are cached; Rust changes, then Python changes after snapshot. Lost-profile selection remains empty but handoff admits only Rust captured bytes and does not reread/compile Python. Protects per-language delta isolation and fence detection; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_deleted_language_does_not_reread_the_languages_that_remain",
+          "disposition": "keep",
+          "reason": "Deletes Python file while Rust remains unchanged then mutates Rust post-scan; Python profile is lost, Rust is not, and handoff admits nothing rather than stale Rust. Protects deleted-language retirement and unchanged-lane safety; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "one_rust_edition_does_not_reread_another_crate",
+          "disposition": "keep",
+          "reason": "Edits Rust 2018 crate, leaves Rust 2021 crate unchanged but mutates it post-scan; only 2018 bytes are admitted and both manifests still resolve correct edition. Protects per-crate profile isolation; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_deleted_crate_retires_its_edition_after_the_manifest_is_gone",
+          "disposition": "keep",
+          "reason": "Two Rust editions and Python are live; deleting 2018 crate removes only that profile, keeps other profiles, and retirement selects 2018 while compile set remains subset of live profiles. Prevents stale edition authority after manifest deletion; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_file_denser_than_one_row_is_indexed_rather_than_rejected",
+          "disposition": "keep",
+          "reason": "140 declarations exceed row capacity; scan keeps record within cap with ExcerptsElided retention, first/last names and all signatures intact. Protects useful bounded shedding instead of whole-file rejection; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_file_within_one_row_keeps_complete_retention_and_its_excerpts",
+          "disposition": "keep",
+          "reason": "Small documented function remains Complete with captured excerpt. Pins no unnecessary degradation under capacity; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "shedding_is_a_pure_function_of_the_source",
+          "disposition": "keep",
+          "reason": "Two cold scans of same dense source yield identical source version and identical rows. Prevents content-addressed relation churn from nondeterministic shedding; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier",
+          "disposition": "keep",
+          "reason": "Valid Python and invalid stub/Latin-1 files each keep raw-source compiler handles and exact digests, while syntax decode failures are per-file Unparsed/NotText; valid sibling declaration survives and handoff preserves original bytes. Protects raw byte/compiler frontier distinction; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "an_unreadable_file_is_reported_without_failing_the_project",
+          "disposition": "keep",
+          "reason": "When mode bits make one file genuinely unreadable, it is retained as typed Unreadable while neighboring valid source is Complete and searchable; skips assertion if test user bypasses permissions. Protects per-file error isolation; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_binary_file_is_reported_as_not_text_without_failing_the_project",
+          "disposition": "keep",
+          "reason": "Binary invalid UTF-8 is charged by exact raw byte count and marked NotText; readable sibling still contributes declaration. Protects byte accounting and typed partial scan; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "valid_non_ascii_source_keeps_exact_bytes_and_content_identity",
+          "disposition": "keep",
+          "reason": "UTF-8 Rust source with café is read/hashed byte-exactly, persisted identity and compiler handle agree, declaration survives. Protects Unicode content fidelity; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "an_oversized_file_is_reported_as_too_large_without_failing_the_project",
+          "disposition": "keep",
+          "reason": "One file exceeds per-file limit and is retained TooLarge, while good neighbor remains indexed. Protects typed failure without workspace failure; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "gitignored_sources_are_excluded_while_negated_sources_are_admitted",
+          "disposition": "keep",
+          "reason": "Root ignore and nested src/* exclude files while explicit negation admits src/keep.rs and ordinary good file. Pins ignore precedence; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_symlink_cycle_is_skipped_and_the_project_still_indexes",
+          "disposition": "keep",
+          "reason": "Directory symlink cycle and file alias are skipped without recursion/duplicate admission; real file remains searchable. Protects safe traversal and project survivability; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_unicode_path_is_indexed_under_its_exact_coordinate",
+          "disposition": "keep",
+          "reason": "Unicode nested directory/file name round-trips as exact path and row remains Complete with declaration. Protects path portability/fidelity for Unicode; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_file_removed_during_the_scan_leaves_the_project_indexable",
+          "disposition": "keep",
+          "reason": "Confirms file was discovered then deletes it before scan_file; vanished path returns None and valid neighbor still indexes. Protects discovery/read race as absence rather than fatal error; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "an_unavailable_file_becomes_available_again_when_it_can_be_read",
+          "disposition": "keep",
+          "reason": "Invalid UTF-8 row is initially NotText; after replacing bytes with valid Rust, next cold scan becomes Complete, source version changes and declaration appears. Prevents cached unavailable status persisting after repair; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "every_claimed_extension_resolves_to_its_own_language_profile",
+          "disposition": "keep",
+          "reason": "Iterates every frontend-claimed extension, requires a profile in the same language and nonzero inventory size; catches discovery/profile table drift that can break whole projects. Keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "javascript_and_python_stub_extensions_carry_their_dialect",
+          "disposition": "keep",
+          "reason": "Pins JS module extensions to TS, JSX/TSX to TSX, Python py/pyw to Python, Objective-C .m to C, and .mm to C++; protects dialect selection; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "an_unprofiled_extension_is_unavailable_and_not_fatal",
+          "disposition": "keep",
+          "reason": "Unknown .qq produces typed Unparsed availability fault while known postcss.config.js is accepted. Prevents one unsupported extension aborting project scan; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "a_javascript_project_indexes_its_config_and_skips_framework_caches",
+          "disposition": "keep",
+          "reason": "Real root postcss config and TS app contribute declarations while oversized .angular and .next caches are never traversed. Protects useful config admission and cache exclusion; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "discovery_skips_every_directory_the_csharp_oracle_skips",
+          "disposition": "keep",
+          "reason": "Shared discovery hard-ignores obj/.git/.vs/node_modules matching C# oracle while leaves bin alone for other languages. Prevents frontend disagreement; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "discovery_skips_framework_and_tool_caches",
+          "disposition": "keep",
+          "reason": "Pins 23 tool/framework caches as ignored and src as ordinary source directory. Protects bounded discovery policy; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_captures_python_build_package_bytes_and_fences_package_marker_changes",
+          "disposition": "keep",
+          "reason": "Workspace snapshot includes nested Python build package source and binary data, excludes unrelated top-level build output, then detects package marker removal. Protects completeness and package topology fence; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_inventory_includes_root_config_zero_byte_files_and_fences_new_paths",
+          "disposition": "keep",
+          "reason": "Snapshot includes root config, zero-byte file, root entry and policy identity; excludes target output, supports bounded exact read/chunk stream, and invalidates on newly created path. Protects exact workspace inventory; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_fence_detects_content_and_metadata_changes",
+          "disposition": "keep",
+          "reason": "Changing file bytes invalidates captured workspace snapshot and subsequent read refuses stale content. Protects delayed compiler input fence; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_fence_detects_same_length_edit_after_last_write_is_restored",
+          "disposition": "keep",
+          "reason": "Windows-only test restores last-write time and preserves length/file ID after same-size edit but observes change-time difference; snapshot and reads refuse. Protects metadata-based fence against timestamp restoration; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_rejects_junctions_and_hardlink_aliases",
+          "disposition": "keep",
+          "reason": "Windows-only fixture adds junction to outside directory then hardlink to outside file; both cause snapshot admission refusal. Protects reparse/hardlink confinement; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "workspace_paths_must_be_utf8_nfc_and_portable",
+          "disposition": "keep",
+          "reason": "Accepts ordinary relative path, applies platform-correct backslash handling, rejects decomposed Unicode. Protects cross-platform canonical path identity; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "case_colliding_names_fail_portable_workspace_admission",
+          "disposition": "keep",
+          "reason": "On case-sensitive host, Foo/foo distinct files cause portable snapshot refusal; skips assertion where filesystem aliases them. Prevents ambiguous cross-platform paths; keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_rejects_symlinks_instead_of_silently_omitting_them",
+          "disposition": "keep",
+          "reason": "An external symlink inside workspace makes complete snapshot fail rather than silently omit authority-changing path. Keep internal.",
+          "review_state": "substantive_review"
+        },
+        {
+          "name": "snapshot_rejects_special_files_instead_of_admitting_them",
+          "disposition": "keep",
+          "reason": "Unix socket in project causes snapshot refusal, preventing nonregular special inputs from being treated as source files. Keep internal.",
+          "review_state": "substantive_review"
+        }
+      ],
+      "unreviewed_tests": [],
+      "reviewed_test_count": 63,
+      "reviewed_tests_count": 63
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/mod.rs",
+      "test_count": 38,
+      "tests": [
+        "a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs",
+        "a_go_interface_method_is_required_and_a_deprecated_paragraph_is_read",
+        "a_structural_row_carries_its_facts_and_no_invented_documentation",
+        "duplicate_structural_coordinates_keep_each_identity_and_close_parent_edges",
+        "frontend_duplicate_coordinates_are_retained_without_a_dangling_target",
+        "rust_impl_trait_duplicate_method_kinds_keep_preimages_and_parentage",
+        "cross_profile_attached_parent_falls_back_to_an_emitted_module",
+        "repeated_tag_coordinates_keep_distinct_checked_identity_preimages",
+        "declarations_are_parented_to_their_type_and_not_to_the_file",
+        "an_attached_method_row_keeps_the_type_symbol_as_its_parent",
+        "the_structural_fallback_answers_with_typed_provenance",
+        "the_semantic_lane_answers_fields_and_variants_the_baseline_cannot_see",
+        "a_stale_image_answers_semantic_with_a_typed_stale_note",
+        "a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back",
+        "an_in_place_edit_marks_only_the_edited_file_stale_and_suppresses_structure_for_both",
+        "an_unavailable_publication_types_the_structural_cause_with_its_reason",
+        "freshness_compares_compiled_paths_against_the_current_scan",
+        "an_in_place_edit_is_stale_without_a_path_set_change",
+        "records_without_identities_keep_the_path_set_fallback",
+        "complete_c_publication_does_not_suppress_cxx_fallback",
+        "the_stale_note_is_stable",
+        "cross_file_call_typescript_named_import",
+        "cross_file_call_typescript_alias_import",
+        "cross_file_call_typescript_imported_class_method",
+        "cross_file_call_typescript_ambiguous_imported_class_method",
+        "cross_file_call_typescript_property_name_does_not_matter",
+        "cross_file_call_typescript_type_only_import_skipped",
+        "cross_file_call_same_file_unchanged",
+        "cross_file_call_rust_use_path",
+        "cross_file_call_python_from_import",
+        "cross_file_call_typescript_namespace_qualifier",
+        "cross_file_call_earlier_punctuation_does_not_qualify",
+        "cross_file_call_namespace_not_poisoned_by_earlier_property",
+        "borrowed_call_graph_matches_cloned_rows_and_skips_sibling_bodies",
+        "duplicate_call_labels_keep_first_coordinate_and_last_graph_edge",
+        "semantic_coordinate_miss_uses_the_unique_captured_declaration",
+        "public_coordinate_resolution_binds_legacy_sites_to_package_rows",
+        "structural_excerpt_calls_matches_real_body_calls_only"
+      ],
+      "review_status": "substantively_reviewed",
+      "unreviewed_tests": [],
+      "reviewed_tests": [
+        {
+          "name": "a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs",
+          "disposition": "keep",
+          "reason": "Builds a Java semantic image with captured deprecated attribute and docs, an ordinary fresh item, and an unobserved attribute plane; projected rows distinguish since/note, absent, and unobserved states. Protects evidence availability and native deprecation extraction.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_go_interface_method_is_required_and_a_deprecated_paragraph_is_read",
+          "disposition": "keep",
+          "reason": "Builds Go interface/method and documented function rows from captured facts, requiring interface method Required obligation, ordinary function absent obligation, and exact Deprecated paragraph extraction. Covers Go native projection nuance.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_structural_row_carries_its_facts_and_no_invented_documentation",
+          "disposition": "keep",
+          "reason": "Runs actual Rust syntax frontend on deprecated documented and bare functions; structural projection preserves deprecation/doc text and leaves undocumented row document empty. Prevents invented docs on fallback rows.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "duplicate_structural_coordinates_keep_each_identity_and_close_parent_edges",
+          "disposition": "keep",
+          "reason": "Constructs C module, same-coordinate struct/type duplicates, and enclosing field; requires duplicate identities invariant to declaration order, retained identity preimages, and parent resolution to a deterministic symbol within duplicate set.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "frontend_duplicate_coordinates_are_retained_without_a_dangling_target",
+          "disposition": "keep",
+          "reason": "Runs actual C# frontend namespace fixture through structural planning, requiring retained duplicate namespace captures to have distinct identity IDs and valid per-row preimages rather than dangling/collapsed references.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "rust_impl_trait_duplicate_method_kinds_keep_preimages_and_parentage",
+          "disposition": "keep",
+          "reason": "Constructs Rust same-coordinate method/function declarations in a Worker impl, reverses input and requires stable distinct IDs and exact preimages plus Worker symbol parentage. Guards duplicate-kind tie-breaking and graph closure.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_profile_attached_parent_falls_back_to_an_emitted_module",
+          "disposition": "keep",
+          "reason": "Builds mixed C structural and Rust semantic source where C method attaches to a Rust type suppressed by complete semantic publication; requires method to remain emitted under C module fallback and validates all row/query-fact parent edges resolve. Protects cross-profile projection closure.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "repeated_tag_coordinates_keep_distinct_checked_identity_preimages",
+          "disposition": "keep",
+          "reason": "Creates method/function tag collision at one coordinate and proves deterministic distinct identity preimages independent of declaration order; unique TypeScript coordinate remains compact without extra preimage. Guards stable symbol IDs.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "declarations_are_parented_to_their_type_and_not_to_the_file",
+          "disposition": "keep",
+          "reason": "Checks a representative projected Rust hierarchy: type members parent to Worker/Event, top-level execute parents to module, and module has no parent. Protects public graph structure across methods, fields, enum variants and top-level functions.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "an_attached_method_row_keeps_the_type_symbol_as_its_parent",
+          "disposition": "keep",
+          "reason": "Checks the actual projected `run` row has Method kind and Worker symbol parent, preventing loss of source container attachment.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "the_structural_fallback_answers_with_typed_provenance",
+          "disposition": "keep",
+          "reason": "Requires fallback rows to contain no semantic coordinates and ledger to record Structural(NoCompletePublication), not semantic freshness, for exactly the fixture file.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "the_semantic_lane_answers_fields_and_variants_the_baseline_cannot_see",
+          "disposition": "keep",
+          "reason": "Verifies semantic image projection emits field and enum variant with semantic coordinates and parents them to Worker and Event; covers declarations unavailable in compact baseline parser rows.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_stale_image_answers_semantic_with_a_typed_stale_note",
+          "disposition": "keep",
+          "reason": "Compares fresh and stale semantic projections: stale preserves row count and semantic addressing while adding a typed stale note to each row; fresh rows remain unmarked. Prevents stale data from silently falling back to structural coordinates.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back",
+          "disposition": "keep",
+          "reason": "Runs real Rust frontend source through projection with that profile explicitly complete but file marked stale; requires Semantic(Stale) lane and forbids structural coordinates. Guards fail-closed freshness routing.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "an_in_place_edit_marks_only_the_edited_file_stale_and_suppresses_structure_for_both",
+          "disposition": "keep",
+          "reason": "Projects two real Rust source rows under complete publication with one path marked edited; edited lane is semantic stale, untouched lane semantic fresh, and neither falls back to structural address. Preserves per-file freshness precision.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "an_unavailable_publication_types_the_structural_cause_with_its_reason",
+          "disposition": "keep",
+          "reason": "Marks Rust publication unavailable for Toolchain, then verifies structural declarations remain answerable and ledger carries Structural(PublicationUnavailable(Toolchain)); unavailable is not confused with no publication or stale image.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "freshness_compares_compiled_paths_against_the_current_scan",
+          "disposition": "keep",
+          "reason": "Compares semantic image source path/content against exact, expanded, legacy-without-identity, and deleted current scans; requires only new file stale when identity is available, all paths stale for imprecise legacy mismatch, and changed path set detected on deletion.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "an_in_place_edit_is_stale_without_a_path_set_change",
+          "disposition": "keep",
+          "reason": "Keeps same path set but swaps source content identity, requiring that specific image stale; same compiled identity stays fresh. Catches path-set-only freshness blind spot.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "records_without_identities_keep_the_path_set_fallback",
+          "disposition": "keep",
+          "reason": "Exercises old persisted image with no source identity: unchanged path set stays fresh but added current path makes the whole current set stale, never claiming per-file evidence it lacks.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "complete_c_publication_does_not_suppress_cxx_fallback",
+          "disposition": "keep",
+          "reason": "Asserts profile completeness is extension/language specific: complete C23 publication suppresses `.c` structural fallback but not `.cpp` fallback.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "the_stale_note_is_stable",
+          "disposition": "delete",
+          "reason": "DELETE: Body only checks a shared constant contains one phrase, adding no distinct failure case; it can pass while stale behavior is wrong and fails if wording changes harmlessly. Existing `a_stale_image_answers_semantic_with_a_typed_stale_note` and `a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back` exercise the user-visible stale projection and typed lane, so no new replacement is needed.",
+          "review_state": "substantive_body_review",
+          "review_scope": "redundant_literal_check",
+          "replacement_required": "existing: a_stale_image_answers_semantic_with_a_typed_stale_note; a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back"
+        },
+        {
+          "name": "cross_file_call_typescript_named_import",
+          "disposition": "keep",
+          "reason": "Runs actual TypeScript parsing of named import and caller plus an unimported decoy; requires exact outgoing and incoming Calls edge for imported target and none for decoy.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_alias_import",
+          "disposition": "keep",
+          "reason": "Parses aliased named import and requires local alias invocation to resolve to original exported function, with no edge to sibling export.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_imported_class_method",
+          "disposition": "keep",
+          "reason": "Parses imported WorkoutService instance method call with another class exposing same method name; resolves only receiver-typed imported class target.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_ambiguous_imported_class_method",
+          "disposition": "keep",
+          "reason": "Imports two classes with identical method names but caller receiver type is ambiguous; requires no Calls edges to either candidate or elsewhere, avoiding guessed graph edges.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_property_name_does_not_matter",
+          "disposition": "keep",
+          "reason": "Changes instance property name from class name to `svc` while retaining WorkoutService type and requires call resolve to its class method, binding by declared receiver type rather than property spelling.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_type_only_import_skipped",
+          "disposition": "keep",
+          "reason": "Uses TypeScript `import type` for a class instance and requires member invocation to create no runtime Calls relation; prevents type-only edges from being treated as executable imports.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_same_file_unchanged",
+          "disposition": "keep",
+          "reason": "Confirms same-file Rust direct invocation produces Calls edge while string-literal decoy mentioning same call does not; regression fence for extraction behavior as cross-file parser evolves.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_rust_use_path",
+          "disposition": "keep",
+          "reason": "Parses Rust `use crate::apply::entries_from_items` and a caller in another file, requiring one exact source-qualified Calls target.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_python_from_import",
+          "disposition": "keep",
+          "reason": "Parses Python `from apply_set import entries_from_items` and function caller, requiring exact cross-file Calls target resolution.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_typescript_namespace_qualifier",
+          "disposition": "keep",
+          "reason": "Parses namespace import and qualified invocation as edge, while unqualified call without import remains unlinked; distinguishes module qualification from global same-name lookup.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_earlier_punctuation_does_not_qualify",
+          "disposition": "keep",
+          "reason": "Places nested property access, punctuation-like `::` string, and object property before a later imported call; requires later real call still resolve, guarding brittle prefix token parsing.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "cross_file_call_namespace_not_poisoned_by_earlier_property",
+          "disposition": "keep",
+          "reason": "Places object property named like import namespace before a bare call and valid qualified call; bare call has no edge and qualified call resolves correctly, preventing earlier property from poisoning namespace state.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "borrowed_call_graph_matches_cloned_rows_and_skips_sibling_bodies",
+          "disposition": "keep",
+          "reason": "Adds 4,096 large sibling-package rows; borrowed graph relations match clone-all reference and mapped route, correct incoming fact is retained, and nine-sample median requires borrowed path less than half cloned-row path. This is an internal perf regression law under synthetic row load as well as edge parity; it may be timing-sensitive but it exercises the borrowed-view optimization.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "duplicate_call_labels_keep_first_coordinate_and_last_graph_edge",
+          "disposition": "keep",
+          "reason": "Injects a second callee row and caller row with duplicate labels but later-sorting IDs, then verifies coordinate lookup/reference facts bind to first row while graph label map binds to last row; edge and incoming relation follow later row, never leak to first. Compares mapped-vs-borrowed route and tests ambiguous identity handling.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "semantic_coordinate_miss_uses_the_unique_captured_declaration",
+          "disposition": "keep",
+          "reason": "Builds a view where semantic declaration label differs from structural coordinate but captured source location uniquely matches; mapped call edge resolves that row. Adding a second semantic row at same coordinate makes resolution ambiguous and drops the edge.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "public_coordinate_resolution_binds_legacy_sites_to_package_rows",
+          "disposition": "keep",
+          "reason": "Exercises exact-label and legacy source-site address resolution across two packages; requires package row proof, rejects missing/foreign owner and absent package rows, reports duplicate site ambiguous, and still permits unique exact-label resolution.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "structural_excerpt_calls_matches_real_body_calls_only",
+          "disposition": "keep",
+          "reason": "Checks structural call recognizer accepts actual call expression but rejects function declaration, string literal, line comment, and block comment mentions; protects call graph from lexical false positives.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        }
+      ],
+      "reviewed_tests_count": 38
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_publish.rs",
+      "test_count": 16,
+      "tests": [
+        "matching_roots_reuse_and_a_foreign_file_hydrates",
+        "capture_only_transition_cannot_reuse_a_complete_publication_witness",
+        "structural_fixture_plans_the_workspace_and_one_package",
+        "genesis_manifest_roots_reuse_without_opening_a_relation",
+        "splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id",
+        "a_package_patch_matches_the_merged_view_and_leaves_the_sibling",
+        "package_row_changes_match_a_full_splice_and_skip_sibling_bodies",
+        "one_file_keeps_the_attached_parent_and_the_sibling_bytes",
+        "an_activated_file_keeps_the_other_files_semantic_row_and_marks_its_own_stale",
+        "a_semantic_owned_file_is_not_given_a_second_structural_answer",
+        "changed_files_require_a_proper_structural_subset",
+        "a_file_patch_matches_the_merged_view_and_leaves_the_sibling",
+        "borrowed_file_splice_matches_owned_rows_and_skips_sibling_bodies",
+        "a_second_file_patches_without_touching_the_stale_file",
+        "a_structural_file_patch_removes_only_the_changed_file",
+        "a_row_patch_over_the_budget_stays_on_the_full_merge"
+      ],
+      "review_status": "substantively_reviewed",
+      "unreviewed_tests": [],
+      "reviewed_tests": [
+        {
+          "name": "matching_roots_reuse_and_a_foreign_file_hydrates",
+          "disposition": "keep",
+          "reason": "Exercises publication planner decisions: matching selected roots reuse; missing prior witness hydrates; adjacent local package edit splices; foreign-file edit, missing edit, or stale prior roots force full hydration. Guards shortcut eligibility.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "capture_only_transition_cannot_reuse_a_complete_publication_witness",
+          "disposition": "keep",
+          "reason": "Changes capture companion root without source/semantic root changes and requires hydrate; exact matching capture root permits reuse, while changed or legacy-missing capture again hydrates. Prevents readiness witness reuse across capture-only transition.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "structural_fixture_plans_the_workspace_and_one_package",
+          "disposition": "delete",
+          "reason": "DELETE: The body only checks that project_structural_plan returns Ok for a four-file workspace and a two-file package, without inspecting either plan or asserting a distinct result. Concrete structural output and retained parent/sibling behavior are exercised by `one_file_keeps_the_attached_parent_and_the_sibling_bytes`; package splice behavior is exercised by `splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id`. No additional replacement is needed.",
+          "review_state": "substantive_body_review",
+          "review_scope": "redundant_smoke_test",
+          "replacement_required": "existing: one_file_keeps_the_attached_parent_and_the_sibling_bytes; splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id"
+        },
+        {
+          "name": "genesis_manifest_roots_reuse_without_opening_a_relation",
+          "disposition": "keep",
+          "reason": "Derives genesis transition roots from authenticated manifest and confirms unchanged source/semantic/capture roots reuse the existing view; checks genesis baseline fast path.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "splicing_one_package_keeps_the_sibling_bytes_and_rejects_a_stolen_id",
+          "disposition": "keep",
+          "reason": "Replaces alpha package rows while preserving beta row byte-for-byte, verifies delta only removes/upserts alpha, avoids compatibility materialization, and rejects replacement stealing sibling identity.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_package_patch_matches_the_merged_view_and_leaves_the_sibling",
+          "disposition": "keep",
+          "reason": "Builds package patch and full merged view, compares generated changes to canonical diff, verifies sibling row untouched and collision rejected, commits patch to exact target; also reports paired owned-vs-direct performance while enforcing stable patch-size bounds.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "package_row_changes_match_a_full_splice_and_skip_sibling_bodies",
+          "disposition": "keep",
+          "reason": "Adds 4,096 large sibling rows, applies patch and proves it equals full splice, changes only edited package, rejects stolen sibling row, and counts clones: full splice clones every outside row while patch clones exactly changed row.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "one_file_keeps_the_attached_parent_and_the_sibling_bytes",
+          "disposition": "keep",
+          "reason": "Reprojects only impl file and verifies its attached method uses retained Widget parent; detaching loses parent, resident symbols restore it. Splice removes old method, inserts paint and preserves Widget and foreign sibling exactly; stolen ID refuses.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "an_activated_file_keeps_the_other_files_semantic_row_and_marks_its_own_stale",
+          "disposition": "keep",
+          "reason": "Splices an activated impl file while retaining sibling semantic Widget row, marks only its own draw semantic row stale with source/excerpt cleared and one stale note, preserves stale state on repeated splice, and refuses unscoped semantic input.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_semantic_owned_file_is_not_given_a_second_structural_answer",
+          "disposition": "keep",
+          "reason": "For activated Rust profile, changed file is excluded from structural splice keys; row splice keeps semantic rows and marks edited one stale. With no activation or another profile, structural key remains eligible; prevents duplicate structural answer in semantic lane.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "changed_files_require_a_proper_structural_subset",
+          "disposition": "keep",
+          "reason": "Allows one changed file among two; rejects all files, deletion, unknown key, project relabel, and duplicate resident label, defining safe strict-subset preconditions for file-level splice.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_file_patch_matches_the_merged_view_and_leaves_the_sibling",
+          "disposition": "keep",
+          "reason": "Generates one upsert for changed semantic draw row, compares patch application with merged view and byte accounting, preserves Widget/sibling and source path of stale row, rejects stolen identity and unscoped semantic row, then repeated patch is empty.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "borrowed_file_splice_matches_owned_rows_and_skips_sibling_bodies",
+          "disposition": "keep",
+          "reason": "With 4,096 large sibling bodies, borrowed and owned patch routes produce identical one-row change and resident symbol map; clone instrumentation proves each route clones exactly one changed row, not sibling bodies.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_second_file_patches_without_touching_the_stale_file",
+          "disposition": "keep",
+          "reason": "First stales impl row, then patches widget path only; second patch contains only Widget upsert and leaves stale draw byte-identical. Patch bytes equal merged bytes and committing yields exact target.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_structural_file_patch_removes_only_the_changed_file",
+          "disposition": "keep",
+          "reason": "Changes attached structural impl declaration from draw to paint while retaining semantic rows; patch application equals full splice and byte accounting, inserts paint, removes only rows absent from target, and preserves widget sibling.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        },
+        {
+          "name": "a_row_patch_over_the_budget_stays_on_the_full_merge",
+          "disposition": "keep",
+          "reason": "Creates MAX_VIEW_PATCH_ROWS+1 semantic rows to remove, proves row-patch eligibility rejects over-bound and invalid zero sides but accepts 1→1; full merged result remains complete and byte accounting/diff agree.",
+          "review_state": "substantive_body_review",
+          "review_scope": "internal_invariant"
+        }
+      ],
+      "reviewed_tests_count": 16
+    }
+  ]
+}

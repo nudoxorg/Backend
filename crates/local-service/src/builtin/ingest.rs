@@ -3623,58 +3623,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn unchanged_files_reuse_the_exact_declaration_allocation() -> Result<(), String> {
-        struct Scratch(PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-
-        let unique = format!(
-            "backend-syntax-reuse-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| error.to_string())?
-                .as_nanos()
-        );
-        let scratch = Scratch(std::env::temp_dir().join(unique));
-        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
-        fs::write(scratch.0.join("lib.rs"), b"pub fn ferris() {}")
-            .map_err(|error| error.to_string())?;
-        let project = [7; 32];
-        let first = scan_project(
-            scratch.0.to_str().ok_or("non-UTF-8 scratch path")?,
-            project,
-            &BTreeMap::new(),
-        )?;
-        let reusable = first.files.iter().cloned().collect::<BTreeMap<_, _>>();
-        let second = scan_project(
-            scratch.0.to_str().ok_or("non-UTF-8 scratch path")?,
-            project,
-            &reusable,
-        )?;
-        let first_declarations = first.files[0]
-            .1
-            .file_fields()
-            .ok_or("expected first source file")?
-            .declarations;
-        let second_declarations = second.files[0]
-            .1
-            .file_fields()
-            .ok_or("expected second source file")?
-            .declarations;
-        assert_eq!(first.source_version, second.source_version);
-        assert!(Arc::ptr_eq(first_declarations, second_declarations));
-        assert!(
-            second.compiler_sources.is_empty(),
-            "an unchanged scan must drop compiler text"
-        );
-        assert_eq!(second.reused_compiler_files.len(), 1);
-        Ok(())
-    }
 
     fn retained_compiler_handle_bytes(scan: &IndexSnapshot) -> usize {
         scan.compiler_sources

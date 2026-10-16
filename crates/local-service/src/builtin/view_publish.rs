@@ -1335,14 +1335,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn structural_fixture_plans_the_workspace_and_one_package() {
-        let (workspace, one) = structural_fixtures(2, 2, 1);
-        assert_eq!(workspace.files.len(), 4);
-        assert_eq!(one.files.len(), 2);
-        super::super::view_build::project_structural_plan(&workspace).expect("workspace plan");
-        super::super::view_build::project_structural_plan(&one).expect("package plan");
-    }
 
     #[test]
     fn genesis_manifest_roots_reuse_without_opening_a_relation() {

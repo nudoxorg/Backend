@@ -2175,10 +2175,6 @@ pub fn execute() {}
         Ok(())
     }
 
-    #[test]
-    fn the_stale_note_is_stable() {
-        assert!(STALE_NOTE.contains("stale semantic image"));
-    }
 
     pub(super) fn analyze_source(
         language: backend_engine::SourceLanguage,
