@@ -606,6 +606,7 @@ fn profile_name(value: LanguageProfile) -> &'static str {
         [3, 1] => "go-1.23",
         [3, 2] => "go-1.24",
         [3, 3] => "go-1.25",
+        [3, 4] => "go-1.26",
         [4, 0] => "java-8",
         [4, 1] => "java-11",
         [4, 2] => "java-17",
