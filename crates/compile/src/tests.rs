@@ -1415,11 +1415,69 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
     let process_limits =
         limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
-    let process = command("/bin/sh", &["-c", "sleep 1 & wait"], process_limits)?;
+    // A resource-wrapper failure must never satisfy the refusal assertion.
+    // First prove the requested authority actually runs under the same bound.
+    let benign = command(
+        "/bin/sh",
+        &["-c", "printf authority-reached"],
+        process_limits,
+    )?
+    .run()?;
+    assert_eq!(benign.terminal(), ProcessTerminal::Success);
+    assert_eq!(benign.stdout(), b"authority-reached");
+    #[cfg(target_os = "linux")]
+    if rustix::process::getuid().is_root() {
+        // Linux exempts root from RLIMIT_NPROC enforcement. The exact ceiling
+        // and parent-isolation control below still runs for privileged callers.
+        return Ok(());
+    }
+    let process = command(
+        "/bin/sh",
+        &["-c", "set -e; printf authority-reached; sleep 1 & wait"],
+        limits(128, 128, Duration::from_secs(2), 256)?.with_process_count_limit(1)?,
+    )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
     assert_ne!(receipt.status(), Some(0));
+    assert!(receipt.stdout().starts_with(b"authority-reached"));
     assert!(receipt.reaped());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_child_resource_ceilings_are_exact_and_leave_parent_unchanged() -> Result<(), Box<dyn Error>>
+{
+    use rustix::process::{Resource, getrlimit};
+    let resources = [Resource::Cpu, Resource::As, Resource::Nproc];
+    let before = resources.map(getrlimit);
+    let process_limits = limits(4096, 1024, Duration::from_secs(5), 8192)?
+        .with_cpu_time_limit(Duration::from_millis(1500))?
+        .with_memory_bytes_limit(1024 * 1024 * 1024)?
+        .with_process_count_limit(4)?;
+    let receipt = command("/bin/cat", &["/proc/self/limits"], process_limits)?.run()?;
+    assert_eq!(receipt.terminal(), ProcessTerminal::Success);
+    assert_eq!(receipt.status(), Some(0));
+    assert!(receipt.reaped());
+    let text = std::str::from_utf8(receipt.stdout())?;
+    for (name, expected) in [
+        ("Max cpu time", "2"),
+        ("Max address space", "1073741824"),
+        ("Max processes", "4"),
+    ] {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(name))
+            .ok_or("child ceiling absent")?;
+        let mut fields = line[name.len()..].split_whitespace();
+        assert_eq!(fields.next(), Some(expected), "soft ceiling: {line}");
+        assert_eq!(fields.next(), Some(expected), "hard ceiling: {line}");
+    }
+    assert_eq!(
+        resources.map(getrlimit),
+        before,
+        "child admission changed parent ceilings"
+    );
     Ok(())
 }
 
@@ -1463,18 +1521,24 @@ fn linux_memory_ceiling_prevents_the_authority_from_succeeding() -> Result<(), B
     assert_eq!(unrestricted.status(), Some(0));
     assert!(unrestricted.reaped());
 
-    // Linux supports the address-space ceiling. One byte (rounded to the
-    // shell's minimum KiB) cannot load the same executable that succeeded
-    // above; treating the request as unsupported or ignoring it must fail.
+    // Linux supports an exact address-space ceiling. One byte cannot load
+    // the same executable that succeeded above. With pre-exec admission the
+    // kernel can refuse exec itself, before there is a running authority.
     let bounded = command(
         "/bin/true",
         &[],
         limits(1024, 1024, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?,
     )?
-    .run()?;
-    assert_eq!(bounded.terminal(), ProcessTerminal::Exit);
-    assert_ne!(bounded.status(), Some(0));
-    assert!(bounded.reaped());
+    .run();
+    match bounded {
+        Err(ProcessError::SpawnFailure) => {}
+        Ok(receipt) => {
+            assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
+            assert_ne!(receipt.status(), Some(0));
+            assert!(receipt.reaped());
+        }
+        other => panic!("address-space ceiling did not refuse bounded execution: {other:?}"),
+    }
     Ok(())
 }
 
