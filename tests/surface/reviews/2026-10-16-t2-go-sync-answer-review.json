@@ -26,20 +26,110 @@
     "source_tree": "/nix/store/dniqa4pjcl79nk7w203myq9sayhrmyis-nudox-surface-go-sync-0.11.0",
     "file_count": 22,
     "go_source_files": 16,
-    "source_tree_manifest_sha256": "26d903c31ee997da04bcbb0f476d7033d3331c12eec3ea44ad1f673f6b498ca0",
+    "source_tree_manifest_sha256": "74e9d2810124a774cdb627324c353b2f83b4cb46a329e6866976f8e61214dac7",
     "evidence": {
       "singleflight/singleflight.go": "3ab234a431a14594f1bc46e76d9d35928fa18d05947801e167df1015834719a8",
       "semaphore/semaphore.go": "c36737088c3a0f8404a813ebd113b472ac819090b241d57f121fe9b40ec2e2af",
       "syncmap/map.go": "b56b0d009241f7ac1d9482b62cfbfbac57cf931137715dd7a94ed1e870c7324b",
       "errgroup/errgroup.go": "900855c9b794934f2f0482340ec9939075425fea1a3adff2b18293f877e95101"
+    },
+    "archive_verification": {
+      "archive_url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.11.0.zip",
+      "archive_pin_sri": "sha256-CQaoAmIXpOMcMOpfwlFPGPwTSAxi/mv656V+fOAxPek=",
+      "archive_sha256_hex": "0906a8026217a4e31c30ea5fc2514f18fc13480c62fe6bfae7a57e7ce0313de9",
+      "archive_file_entries": 22,
+      "source_tree_file_entries": 22,
+      "archive_member_bytes_match_source_tree": 22,
+      "all_archive_files_match": true,
+      "source_tree_manifest_method": "SHA-256 over sorted relative path, NUL, lowercase per-file SHA-256 hex, newline; recomputed from all 22 extracted files."
     }
   },
   "answer_delta": {
     "outline_roots": "135 -> 108; prior struct/function/trait records shift to Go type/interface/method categories, and candidate adds source-path module roots. Declaration cap remains 200.",
     "search": "DoChan 3 -> 2; Weighted 25 -> 20.",
-    "source_support": "Bounded source inventory finds real Group and Result types, weighted and mapInterface interfaces, and receiver methods Group.Do/DoChan, Weighted.Acquire/TryAcquire/Release and Map methods. The pinned module has 16 Go source files across errgroup, semaphore, singleflight and syncmap; candidate module path roots correspond to those authored paths.",
+    "source_support": "Record-level review checked every one of the 200 capped outline nodes against the pinned Go source: 16 file/module roots resolve to actual files, and all remaining nodes match their source categories and names. All 13 path-and-line search records match exact source lines. The DoChan function-to-method shift is supported by its receiver declaration; Weighted interface/type/field records match the benchmark source.",
     "preserved": "Package identity, query set, answer category and declaration cap remain stable.",
-    "unresolved": "Search record reductions and exact module/root selection are not derivable from source counts; inspect record identities and path coverage before accepting every changed row."
+    "unresolved": "DoChan changed 3→2 rows and Weighted 25→20. Pathless/external identities and exact ranking are not source-verifiable. Preserve these only as captured runtime output; do not infer completeness from counts. Both outlines are truncated or paginated, so keep their page/cap metadata."
   },
-  "decision": "The changed declaration kinds and methods are supported by pinned Go source; root-count reduction is plausible under receiver/type-aware projection but not independently established by count. Consider answers only after captured identity/path review; retain old performance object and bands."
+  "decision": "Source review supports the authored records and declaration-kind changes in the candidate. Candidate answers are usable for snapshot composition only with the captured cap/page state preserved, the pathless-record limits made explicit, and the old golden performance object/bands retained exactly. No current-head T2 or performance pass is claimed.",
+  "capture_review": {
+    "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+    "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
+    "cli": {
+      "outline": {
+        "declarations": 200,
+        "root_entries": 108,
+        "extent": "truncated",
+        "budget_bytes": 35597,
+        "budget_estimated_tokens": 8900
+      },
+      "packages": {
+        "rows": 757,
+        "readiness": "ready"
+      },
+      "search_DoChan": {
+        "rows": 2,
+        "more": false,
+        "source_located_rows_checked": 1,
+        "pathless_rows": 1
+      },
+      "search_Weighted": {
+        "rows": 20,
+        "more": false,
+        "source_located_rows_checked": 12,
+        "pathless_rows": 8
+      }
+    },
+    "mcp": {
+      "outline": {
+        "page_limit": 100,
+        "declarations": 100,
+        "root_entries": 75,
+        "more": true,
+        "next_cursor_present": true,
+        "continuation_reply_captured": false
+      },
+      "search_DoChan": {
+        "page_limit": 3,
+        "rows": 2,
+        "more": false,
+        "matches_cli_result": true
+      },
+      "search_Weighted": {
+        "page_limit": 3,
+        "rows": 3,
+        "more": true,
+        "continuation_call_present": true,
+        "matches_cli_prefix": true
+      }
+    },
+    "source_checks": {
+      "outline_entries": 200,
+      "outline_kind_counts": {
+        "function": 61,
+        "field": 49,
+        "method": 42,
+        "module": 16,
+        "struct": 15,
+        "type": 5,
+        "constant": 5,
+        "variable": 5,
+        "interface": 2
+      },
+      "all_names_and_kinds_matched_pinned_source": true,
+      "module_file_paths_match_pinned_go_files": "16/16",
+      "source_located_search_identities_match_exact_file_line_name": "13/13",
+      "source_review_scope": "Validates source-supported names/kinds and authored source locations. It does not derive search rank or completeness of external/pathless records."
+    },
+    "pagination_and_scope_limits": [
+      "CLI outline is capped at 200 declarations and reports truncated; do not present the captured roots as the complete module outline.",
+      "MCP outline is page 1 of a 100-declaration page and reports more=true; its next cursor exists but no continuation response is captured.",
+      "CLI Weighted is the captured 20-row result; MCP Weighted is only its matching first 3 rows and has a continuation call.",
+      "Pathless search records and exact ranking/count changes are captured runtime observations, not source-derivable facts."
+    ],
+    "performance": {
+      "candidate_metrics_present": true,
+      "action": "Preserve the existing golden performance object and bands exactly; candidate measurements are a separate sample."
+    }
+  }
 }

@@ -32,14 +32,118 @@
     "evidence": {
       "src/lib.rs": "641903d385581e76f31ef8c991d83c2a5d7fbbc2879d93909c539037e4e1e3e2",
       "src/ascii_set.rs": "f75552e4f446ed240cef64c1367e848cf3ae65f77602085459566d835a1d8587"
+    },
+    "archive_verification": {
+      "archive_pin_sri": "sha256-m09ifLGyWRcZOiWeSb2tCPZx+Nlwis/V/gqMFFXYciA=",
+      "archive_sha256_hex": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
+      "archive_file_entries": 8,
+      "source_tree_file_entries": 9,
+      "archive_member_bytes_match_source_tree": 8,
+      "all_archive_files_match": true,
+      "source_tree_extra": "The Cargo registry source tree includes a local `.cargo-ok` marker in addition to the eight archive files; it is excluded from archive member equality."
     }
   },
   "answer_delta": {
     "outline": "declarations 125 -> 169 (complete extent both); candidate adds two `tests` module roots.",
     "search": "AsciiSet 8 -> 25; PercentEncode 4 -> 11.",
-    "source_support": "Pinned src/lib.rs and src/ascii_set.rs each contain `#[cfg(test)] mod tests` (lines 367-368 and 172-173). The selected APIs are real public declarations: PercentEncode/percent_encode/utf8_percent_encode in lib.rs and AsciiSet plus constants/const methods in ascii_set.rs. Thus test-module roots and broader test-cfg declarations have a direct source basis.",
+    "source_support": "Record-level review checked all 169 entries in the complete CLI outline and all 26 source-located search results against the pinned source. The two new tests module roots are declared under cfg(test) in src/lib.rs and src/ascii_set.rs; their added test declarations/constants are present in those blocks. Existing impl functions are reclassified as methods in the candidate, consistent with their receiver declarations.",
     "preserved": "Package identity, complete outline extent, query set, and root identity remain stable.",
-    "unresolved": "The exact +44 declaration count and added search records need captured identity/path review; the two module roots fit the source but do not prove every cfg-gated declaration was attributed to the right owning file."
+    "unresolved": "AsciiSet CLI and both MCP search queries are paginated; MCP outline is also paginated. Preserve more/cursor metadata and do not treat page counts as totals. Pathless type/external records and exact ranking are captured runtime output rather than source-derived. The pre-existing `crate` module node is unchanged from the golden."
   },
-  "decision": "Source supports test-cfg expansion and authored API records. Candidate answer changes may be reviewed for answer-only application after record-level validation; retain golden performance object and all existing bands."
+  "decision": "Source review supports the authored records and cfg(test)/method-category changes. The complete 169-declaration CLI outline is source-backed. Candidate answers are suitable for snapshot composition only with pagination state preserved for AsciiSet/MCP and the old golden performance object/bands retained exactly. No current-head T2 or performance pass is claimed.",
+  "capture_review": {
+    "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+    "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
+    "cli": {
+      "outline": {
+        "declarations": 169,
+        "root_entries": 40,
+        "extent": "complete",
+        "budget_bytes": 36612,
+        "budget_estimated_tokens": 9153
+      },
+      "packages": {
+        "rows": 307,
+        "readiness": "ready"
+      },
+      "search_AsciiSet": {
+        "rows": 25,
+        "more": true,
+        "next_cursor_present": true,
+        "source_located_rows_checked": 22,
+        "pathless_rows": 3
+      },
+      "search_PercentEncode": {
+        "rows": 11,
+        "more": false,
+        "source_located_rows_checked": 4,
+        "pathless_rows": 7
+      }
+    },
+    "mcp": {
+      "outline": {
+        "page_limit": 100,
+        "declarations": 100,
+        "root_entries": 34,
+        "more": true,
+        "next_cursor_present": true,
+        "continuation_reply_captured": false
+      },
+      "search_AsciiSet": {
+        "page_limit": 3,
+        "rows": 3,
+        "more": true,
+        "continuation_call_present": true,
+        "matches_cli_prefix": true
+      },
+      "search_PercentEncode": {
+        "page_limit": 3,
+        "rows": 3,
+        "more": true,
+        "continuation_call_present": true,
+        "matches_cli_prefix": true
+      }
+    },
+    "source_checks": {
+      "outline_entries": 169,
+      "outline_kind_counts": {
+        "variable": 86,
+        "function": 25,
+        "method": 18,
+        "type": 14,
+        "constant": 11,
+        "field": 4,
+        "module": 4,
+        "struct": 3,
+        "import": 3,
+        "macro": 1
+      },
+      "all_outline_names_match_pinned_src_files": true,
+      "all_source_located_search_identities_match_exact_file_line_name": "26/26",
+      "cfg_test_modules": [
+        "src/lib.rs:367-368",
+        "src/ascii_set.rs:172-173"
+      ],
+      "candidate_delta_from_golden": {
+        "declarations": "125→169 (net +44)",
+        "new_test_module_roots": 2,
+        "source_backed_test_only_additions": 42,
+        "function_to_method_kind_reclassifications": 16,
+        "method_entries_added": 18,
+        "old_function_kind_entries_removed": 16
+      },
+      "source_review_scope": "Checks every displayed outline name/kind and authored search location against pinned source. It does not derive exact search ranking or pathless/external results."
+    },
+    "pagination_and_scope_limits": [
+      "CLI outline extent is complete at 169 declarations.",
+      "CLI AsciiSet is a page with 25 rows and more=true; the next cursor is present, so 25 is not the complete result count.",
+      "MCP outline is page 1 of 100 declarations and reports more=true; no continuation response is captured.",
+      "MCP search captures only the first 3 rows for each query; both have more=true. Those pages match the CLI prefixes.",
+      "Pathless external/type-reference search rows do not carry a source path or line and are not independently source-attributed."
+    ],
+    "performance": {
+      "candidate_metrics_present": true,
+      "action": "Preserve the existing golden performance object and bands exactly; candidate measurements are a separate sample."
+    }
+  }
 }
