@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -301,8 +302,8 @@ def _thread_syscall_diagnostic(
         return "unavailable (unparseable)"
     machine = (machine or platform.machine()).casefold()
     sync_calls = {
-        "x86_64": {74: "fdatasync", 75: "fsync"},
-        "amd64": {74: "fdatasync", 75: "fsync"},
+        "x86_64": {74: "fsync", 75: "fdatasync"},
+        "amd64": {74: "fsync", 75: "fdatasync"},
         "aarch64": {82: "fsync", 83: "fdatasync"},
         "arm64": {82: "fsync", 83: "fdatasync"},
     }.get(machine, {})
@@ -354,17 +355,23 @@ def _lifecycle_trace(path: Path, byte_limit: int = 4 * 1024 * 1024) -> str:
                 ):
                     # Lifecycle event details may contain workspace data. Times
                     # and the event name are enough to establish ordering.
-                    event = {
-                        key: record[key]
-                        for key in ("t_ms", "start_ms", "dur_ms", "name")
-                        if key in record
-                    }
-                    events.append(json.dumps(event, sort_keys=True, separators=(",", ":")))
+                    fields = []
+                    for key in ("t_ms", "start_ms", "dur_ms"):
+                        value = record.get(key)
+                        if isinstance(value, (int, float)):
+                            numeric = float(value)
+                            if math.isfinite(numeric):
+                                fields.append(f"{key}={numeric:.3f}")
+                    fields.append(f"name={name[:64]}")
+                    events.append(" ".join(fields)[:256])
     except OSError as error:
         return f"unavailable ({error.__class__.__name__})"
     suffix = " (trace byte limit reached)" if consumed >= byte_limit else ""
     if not events:
         return "no boot/close lifecycle events" + suffix
+    if len(events) > 64:
+        omitted = len(events) - 63
+        events = [*events[:31], f"{omitted} lifecycle records omitted", *events[-32:]]
     return "\n".join(events) + suffix
 
 
@@ -386,10 +393,13 @@ def _startup_log(path: Path, byte_limit: int = 4 * 1024 * 1024) -> str:
                 consumed += len(line)
                 text = line.decode(errors="replace").rstrip()
                 if any(text.startswith(phase) for phase in phases):
-                    selected.append(text[:1024])
+                    selected.append(text[:256])
     except OSError as error:
         return f"unavailable ({error.__class__.__name__})"
     suffix = " (log byte limit reached)" if consumed >= byte_limit else ""
+    if len(selected) > 64:
+        omitted = len(selected) - 63
+        selected = [*selected[:31], f"{omitted} startup phase records omitted", *selected[-32:]]
     return ("\n".join(selected) if selected else "no owner/workspace phase lines") + suffix
 
 

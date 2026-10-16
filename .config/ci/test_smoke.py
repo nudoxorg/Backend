@@ -90,7 +90,7 @@ class SmokeContract(unittest.TestCase):
                 (thread / "children").write_text(thread_children.get(tid, ""))
                 (thread / "wchan").write_text("futex_wait_queue")
                 (thread / "stack").write_text("[<0>] schedule+0x1/0x2")
-                fsync_number = 82 if platform.machine().casefold() in ("aarch64", "arm64") else 75
+                fsync_number = 82 if platform.machine().casefold() in ("aarch64", "arm64") else 74
                 (thread / "syscall").write_text(f"{fsync_number} 7 0 0 0 0 0 0 0\n")
             (base / "fd").mkdir()
             (base / "fd" / "7").symlink_to(self.home / "workspace")
@@ -114,7 +114,7 @@ class SmokeContract(unittest.TestCase):
         proc_root = self.root / "proc"
         thread = proc_root / "81" / "task" / "82"
         thread.mkdir(parents=True)
-        (thread / "syscall").write_text("74 9 0 0 0 0 0 0 0\n")
+        (thread / "syscall").write_text("75 9 0 0 0 0 0 0 0\n")
         (proc_root / "81" / "fd").mkdir()
         (proc_root / "81" / "fd" / "9").symlink_to(self.home / "object.cas")
 
@@ -125,7 +125,7 @@ class SmokeContract(unittest.TestCase):
 
         self.assertEqual(
             sync,
-            f"syscall=74 name=fdatasync fd=9 path={str(self.home / 'object.cas')!r}",
+            f"syscall=75 name=fdatasync fd=9 path={str(self.home / 'object.cas')!r}",
         )
         self.assertEqual(other, "syscall=42 (not fsync/fdatasync)")
         self.assertNotIn("987654", other)
@@ -138,6 +138,10 @@ class SmokeContract(unittest.TestCase):
                 {"name": "frame_collection", "t_ms": index, "timings": []}
                 for index in range(300)
             ),
+            *(
+                {"name": f"boot.phase_{index}", "t_ms": index + 300}
+                for index in range(80)
+            ),
             {"name": "close.finish", "t_ms": 400, "detail": "private data"},
         ]
         trace.write_text("\n".join(json.dumps(record) for record in records))
@@ -147,6 +151,8 @@ class SmokeContract(unittest.TestCase):
         self.assertLess(lifecycle.index("boot.owner_host_start.begin"), lifecycle.index("close.finish"))
         self.assertNotIn("frame_collection", lifecycle)
         self.assertNotIn("private data", lifecycle)
+        self.assertLessEqual(len(lifecycle.splitlines()), 64)
+        self.assertLess(len(lifecycle.encode()), 16 * 1024)
 
     def test_shutdown_startup_log_keeps_only_workspace_phases(self):
         log = self.root / "desktop.log"
@@ -164,6 +170,19 @@ class SmokeContract(unittest.TestCase):
         self.assertIn("workspace genesis admitted", phases)
         self.assertNotIn("unrelated", phases)
         self.assertNotIn("secret", phases)
+
+    def test_shutdown_startup_log_summary_is_bounded(self):
+        log = self.root / "many-phases.log"
+        log.write_text("".join(
+            f"backend-engine: workspace open phase_{index} " + ("x" * 400) + "\n"
+            for index in range(100)
+        ))
+
+        phases = smoke._startup_log(log)
+
+        self.assertLessEqual(len(phases.splitlines()), 64)
+        self.assertLess(len(phases.encode()), 16 * 1024)
+        self.assertIn("startup phase records omitted", phases)
 
     def gui(self, visible=True, quit_code=0, ignore_quit=False):
         def executable(name, code):
