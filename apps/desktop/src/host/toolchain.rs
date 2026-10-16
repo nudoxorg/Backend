@@ -300,8 +300,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// Executes the real desktop environment composition against the standalone owner policy.
-    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink;
-    /// it must not set NUDOX_TSC/Node/module-root overrides for the default-environment gate.
+    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink.
     #[test]
     #[ignore = "requires a pinned actual installed Linux/npm or macOS application environment"]
     fn actual_default_launch_matches_standalone_installed_tool_selection() {
@@ -331,7 +330,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn desktop_and_locald_capture_the_same_global_npm_symlink_and_node() {
+    fn desktop_and_locald_capture_the_same_explicit_global_npm_symlink_and_node() {
         use std::os::unix::{fs::PermissionsExt as _, fs::symlink};
         let machine = machine("typescript-shared");
         let home = machine.root.join("home");
@@ -352,6 +351,7 @@ mod tests {
         let mut captured = BTreeMap::from([
             ("HOME", home.into_os_string()),
             ("PATH", bin.into_os_string()),
+            ("NUDOX_TSC", bin.join("tsc").into_os_string()),
         ]);
         let desktop = installed_snapshot(&captured).expect("desktop capture");
         let locald = LocalCompilerHost::new(
@@ -364,8 +364,13 @@ mod tests {
         .expect("locald capture");
         assert_eq!(&desktop, locald.snapshot());
         assert_eq!(
-            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
+            desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
             Some(compiler.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
+            None,
+            "an explicitly selected npm SDK does not masquerade as installed default policy"
         );
         assert_eq!(
             desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
@@ -417,6 +422,7 @@ mod tests {
         }
         let mut captured = BTreeMap::from([("HOME", home.into_os_string()),
             ("PATH", tsc.parent().unwrap().as_os_str().to_owned())]);
+        captured.insert("NUDOX_TSC", tsc.as_os_str().to_owned());
         for (name, cause) in [("NUDOX_GO", Failure::ExecutableUnavailable),
             ("NUDOX_GO_ROOT", Failure::GoRootUnavailable), ("NUDOX_GO_ORACLE", Failure::OracleUnavailable)] {
             for value in [OsString::new(), OsString::from("relative-object"), machine.root.join("missing-object").into_os_string()] {
@@ -428,7 +434,8 @@ mod tests {
                 let transported = ClosedLocalHostEnvironmentSnapshot::parse(&desktop.encode().unwrap()).unwrap();
                 let owner = LocalCompilerHostSelection::from_closed_snapshot(transported).unwrap();
                 assert_eq!(owner.go_authority_failure(), Some(cause));
-                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(tsc.as_path()));
+                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptCompiler), Some(tsc.as_path()));
+                assert!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_none());
                 assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(node.as_path()));
             }
             captured.remove(name);

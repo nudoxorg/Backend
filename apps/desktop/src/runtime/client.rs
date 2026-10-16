@@ -786,6 +786,7 @@ mod tests {
             });
             assert_eq!(bootstrap_transport_break(&error), retry);
             let diagnostic = error.to_string();
+            let converted_diagnostic = error.clone().into_client_error().to_string();
             let fault = client.bootstrap_fault(error);
             match (failure, fault) {
                 (LocalControlExchangeFailure::Cancelled, EngineFault::Cancelled) => {}
@@ -798,7 +799,14 @@ mod tests {
                             FaultCode::Protocol
                         }
                     );
-                    assert_eq!(value.message(), diagnostic);
+                    assert_eq!(
+                        value.message(),
+                        if retry {
+                            diagnostic.as_str()
+                        } else {
+                            converted_diagnostic.as_str()
+                        }
+                    );
                 }
                 other => panic!("unexpected bootstrap fault: {other:?}"),
             }
