@@ -376,6 +376,8 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
         SurfaceCase {
             command: SurfaceCommand::SemanticVersions {
                 package: package.clone(),
+                limit: 1,
+                cursor: None,
             },
             expectation: SurfaceExpectation::Result("semantic-versions"),
         },
