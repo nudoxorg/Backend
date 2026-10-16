@@ -1,0 +1,53 @@
+{
+  "task": "W1.3",
+  "review_date": "2026-10-16",
+  "base": "d9b2b1b9c1aaee3207e3d847a947225daf925101",
+  "review_branch": "rework/w1-engine-ts-golden-dedup",
+  "method": {
+    "scope": "crates/engine/tests/**/*.rs in the review checkout, excluding helper-only source and non-test targets",
+    "screen": "Search assertion comparisons with numeric thresholds, then inspect surrounding test functions and setup by hand. Treat only identical inputs/fixture construction and identical measured expression as candidates for lower/upper-bound implication. Preserve string/byte fixture literals; do not normalize them.",
+    "limitations": [
+      "This is a bounded source review, not a Rust parser or behavioral-equivalence proof.",
+      "It screens explicit numeric comparisons; it does not infer equivalent behavior from different assertions, helpers, fixtures, or outputs.",
+      "Distinct body hashes are evidence of distinct text only, not distinct behavior contracts."
+    ]
+  },
+  "findings": {
+    "explicit_comparison_sites_screened": 16,
+    "same_setup_same_measured_expression_threshold_dominance_candidates": 0,
+    "disposition": "No additional deletion was supported by this pass. The five TypeScript golden count smoke tests already removed in this branch are documented separately in typescript-lowering-01.json.",
+    "reviewed_groups": [
+      {
+        "file": "crates/engine/tests/clang_lane.rs",
+        "sites": ["database_argument_borrow_array_is_pointer_sized_and_stack_safe:34"],
+        "reason": "The size assertion accompanies an exact pointer-size equality in the same test; no same-input threshold variants."
+      },
+      {
+        "file": "crates/engine/tests/local_compiler/package_batch.rs",
+        "sites": ["649-676", "728-738"],
+        "reason": "Distinct stream/image metrics and named protocol ceilings; they are independent invariants in larger transaction/backpressure tests, not competing thresholds for one result."
+      },
+      {
+        "file": "crates/engine/tests/rust_computed.rs",
+        "sites": ["proven_let_and_call_types_are_computed_and_reexports_are_entities:116,125"],
+        "reason": "Same compiled fixture, but the two lower bounds measure different populations (reexports and computed type facts); neither implies the other."
+      },
+      {
+        "file": "crates/engine/tests/rust_shortcuts.rs",
+        "sites": ["log_compile_is_bounded:172,174", "computed_rows_split_by_owner:194"],
+        "reason": "Entity existence, elapsed-time bound, and owner count are different properties; owner assertions also include distinct-owner identity."
+      },
+      {
+        "file": "crates/engine/tests/typescript_authority.rs",
+        "sites": ["184", "325"],
+        "reason": "Different authority inputs and measured outputs; no same-fixture threshold variants."
+      },
+      {
+        "file": "crates/engine/tests/typescript_lower.rs",
+        "sites": ["shared_golden_transcript_lowering_emits_at_least_ten_entities:969", "computed_row_pool_bound_and_union_child_bound_are_typed_rejections:3800-3801", "wide_union_depth_controls:4664"],
+        "reason": "The >=10 shared-golden assertion is the retained strongest check for the exact fixture group documented in the existing ledger. Other sites use separate stress fixtures or different metrics; the 2048-row and max-depth bounds protect distinct rejection and structural properties."
+      }
+    ]
+  },
+  "claim_limit": "This review supports no further deletion from the inspected threshold patterns. It does not estimate total behavioral-contract count, prove other tests nonredundant, or imply any retirement target is unreachable."
+}
