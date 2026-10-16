@@ -1381,6 +1381,68 @@ fn admit_terminal_profile_partition(
         {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
+        refusal.admit_for(profile)?;
+    }
+    Ok(())
+}
+
+fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
+    let valid_prior = |prior: IndexOperationPriorSemantic| {
+        prior.generation.iter().any(|byte| *byte != 0)
+            && match prior.coverage {
+                IndexOperationSemanticCoverage::Complete => true,
+                IndexOperationSemanticCoverage::Partial { completed, total } => {
+                    completed > 0 && total > completed
+                }
+            }
+    };
+    match state {
+        IndexOperationSemanticProfileState::Pending { prior } => prior.is_none_or(valid_prior),
+        IndexOperationSemanticProfileState::Unavailable { .. } => true,
+        IndexOperationSemanticProfileState::Failed { prior, .. } => valid_prior(prior),
+        IndexOperationSemanticProfileState::Published {
+            generation,
+            coverage,
+        } => {
+            generation.iter().any(|byte| *byte != 0)
+                && match coverage {
+                    IndexOperationSemanticCoverage::Complete => true,
+                    IndexOperationSemanticCoverage::Partial { completed, total } => {
+                        completed > 0 && total > completed
+                    }
+                }
+        }
+    }
+}
+
+/// One unavailable profile retained in an exact partial publication receipt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationProfileRefusal {
+    /// Closed profile identity from the committed source capture.
+    pub profile: SemanticLanguageProfile,
+    /// Closed reason this profile did not publish a refreshed generation.
+    pub reason: IndexOperationSemanticUnavailableReason,
+    /// Source-bound compiler refusal when the compiler supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_failure: Option<PackageCompilerFailure>,
+}
+
+impl IndexOperationProfileRefusal {
+    /// Admits a source-bound compiler refusal for one exact profile tuple.
+    pub fn admit_for(
+        &self,
+        profile: &IndexOperationSourceProfile,
+    ) -> Result<(), ProductAdmissionError> {
+        let expected = match profile.state {
+            IndexOperationSemanticProfileState::Unavailable { reason }
+            | IndexOperationSemanticProfileState::Failed { reason, .. } => reason,
+            _ => return Err(ProductAdmissionError::IndexOperationShape),
+        };
+        if self.profile != profile.profile || self.reason != expected {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        let refusal = self;
         if let Some(failure) = &refusal.compiler_failure {
             if refusal.reason != IndexOperationSemanticUnavailableReason::Rejected {
                 return Err(ProductAdmissionError::IndexOperationShape);
@@ -1431,50 +1493,8 @@ fn admit_terminal_profile_partition(
                 return Err(ProductAdmissionError::IndexOperationShape);
             }
         }
+        Ok(())
     }
-    Ok(())
-}
-
-fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
-    let valid_prior = |prior: IndexOperationPriorSemantic| {
-        prior.generation.iter().any(|byte| *byte != 0)
-            && match prior.coverage {
-                IndexOperationSemanticCoverage::Complete => true,
-                IndexOperationSemanticCoverage::Partial { completed, total } => {
-                    completed > 0 && total > completed
-                }
-            }
-    };
-    match state {
-        IndexOperationSemanticProfileState::Pending { prior } => prior.is_none_or(valid_prior),
-        IndexOperationSemanticProfileState::Unavailable { .. } => true,
-        IndexOperationSemanticProfileState::Failed { prior, .. } => valid_prior(prior),
-        IndexOperationSemanticProfileState::Published {
-            generation,
-            coverage,
-        } => {
-            generation.iter().any(|byte| *byte != 0)
-                && match coverage {
-                    IndexOperationSemanticCoverage::Complete => true,
-                    IndexOperationSemanticCoverage::Partial { completed, total } => {
-                        completed > 0 && total > completed
-                    }
-                }
-        }
-    }
-}
-
-/// One unavailable profile retained in an exact partial publication receipt.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IndexOperationProfileRefusal {
-    /// Closed profile identity from the committed source capture.
-    pub profile: SemanticLanguageProfile,
-    /// Closed reason this profile did not publish a refreshed generation.
-    pub reason: IndexOperationSemanticUnavailableReason,
-    /// Source-bound compiler refusal when the compiler supplied one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compiler_failure: Option<PackageCompilerFailure>,
 }
 
 /// Durable state retained for one caller-owned index operation key.
@@ -1738,10 +1758,10 @@ pub fn index_operation_request_digest(
     *hasher.finalize().as_bytes()
 }
 
-mod hex_32 {
+pub(crate) mod hex_32 {
     use serde::{Deserialize, Deserializer, Serializer, de};
 
-    pub(super) fn serialize<S>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -1753,7 +1773,7 @@ mod hex_32 {
         serializer.serialize_str(&hex)
     }
 
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -3260,8 +3280,7 @@ fn default_semantic_versions_limit() -> u16 { 1 }
 /// Exact request for one daemon-owned product operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum SurfaceCommand {
-    /// Read the complete advisory decision for one exact package version.
+pub enum SurfaceCommand {    /// Read the complete advisory decision for one exact package version.
     Advisory {
         /// Package locator.
         package: PackageReference,
@@ -3382,6 +3401,9 @@ pub enum SurfaceCommand {
     PackageProfile {
         /// Package locator.
         package: PackageReference,
+        /// Exact source-bound selector returned by compiler outcome discovery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compiler_outcome: Option<crate::PackageCompilerOutcomeRead>,
     },
     /// Follow one package for releases.
     Subscribe {
@@ -3622,6 +3644,12 @@ impl SurfaceCommand {
             }
             Self::PackageSourceMembership { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::PackageSourceMembershipShape)
+            }
+            Self::PackageProfile { package, compiler_outcome: Some(selector) }
+                if !matches!(package, PackageReference::Local(_))
+                    || !selector.has_admissible_shape()
+ => {
+                Err(ProductAdmissionError::IndexOperationShape)
             }
             Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
@@ -5036,8 +5064,7 @@ pub struct TreeNodeRecord {
 /// Typed result algebra for durable product commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
-pub enum SurfaceReply {
-    /// Complete advisory facts and typed acquisition decision.
+pub enum SurfaceReply {    /// Complete advisory facts and typed acquisition decision.
     Advisory(AdvisoryPackageDto),
     /// Per-locator declaration results.
     Read(Box<[DeclarationRecord]>),
@@ -5128,7 +5155,13 @@ pub enum SurfaceReply {
         /// Source packaging declarations from the selected local project; no registry authority implied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_metadata: Option<crate::PythonProjectMetadata>,
+        /// Current local capture discovery or one complete selected diagnostic.
+        /// Registry-only answers and legacy unindexed views carry no capture facts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compiler_outcomes: Option<crate::PackageCompilerOutcomes>,
     },
+    /// Explicit current compiler-capture read, independent of packaging facts.
+    PackageCompilerOutcomes(crate::PackageCompilerOutcomes),
     /// Subscription after mutation.
     Subscribed(SubscriptionRecord),
     /// Whether a subscription was removed.
@@ -5203,7 +5236,7 @@ impl SurfaceReply {
             Self::IndexProgress(_) => CommandId::IndexProgress,
             Self::IndexCancellation(_) => CommandId::IndexCancel,
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
-            Self::PackageProfile { .. } => CommandId::PackageProfile,
+            Self::PackageProfile { .. } | Self::PackageCompilerOutcomes(_) => CommandId::PackageProfile,
             Self::Subscribed(_) => CommandId::Subscribe,
             Self::Unsubscribed(_) => CommandId::Unsubscribe,
             Self::Subscriptions(_) => CommandId::Subscriptions,
@@ -5323,6 +5356,7 @@ impl SurfaceReply {
                     .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
                 export.entry_count()
             }
+            Self::PackageCompilerOutcomes(outcomes) => { outcomes.admit()?; 1 },
             Self::PackageSourceMembershipPage(result) => {
                 if !result.has_admissible_shape() {
                     return Err(ProductAdmissionError::PackageSourceMembershipShape);
@@ -5494,6 +5528,7 @@ impl SurfaceReply {
                     latest,
                     candidate_authority,
                     source_metadata,
+                    compiler_outcomes,
                     ..
                 } => {
                     if let Some(row) = latest {
@@ -5502,6 +5537,7 @@ impl SurfaceReply {
                             return Err(ProductAdmissionError::RegistryAuthority);
                         }
                     }
+                    if let Some(outcomes) = compiler_outcomes { outcomes.admit()?; }
                     if let Some(metadata) = source_metadata {
                         metadata.admit()?;
                         if latest.as_ref().is_some_and(|row| {
@@ -5613,6 +5649,7 @@ impl SurfaceReply {
             Self::SemanticShapes(export) => export
                 .encode_bounded_json()
                 .map_or(usize::MAX, |bytes| bytes.len()),
+            Self::PackageCompilerOutcomes(outcomes) => serialized_json_size(outcomes),
             Self::PackageSourceMembershipPage(result) => {
                 serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
             }
@@ -5643,6 +5680,7 @@ impl SurfaceReply {
                 latest,
                 candidate_authority,
                 source_metadata,
+                compiler_outcomes,
                 ..
             } => latest
                 .as_ref()
@@ -5650,7 +5688,8 @@ impl SurfaceReply {
                 .saturating_add(
                     serde_json::to_vec(candidate_authority).map_or(0, |bytes| bytes.len()),
                 )
-                .saturating_add(serde_json::to_vec(source_metadata).map_or(0, |bytes| bytes.len())),
+                .saturating_add(serde_json::to_vec(source_metadata).map_or(0, |bytes| bytes.len()))
+                .saturating_add(serde_json::to_vec(compiler_outcomes).map_or(0, |bytes| bytes.len())),
             Self::Subscribed(record) => subscription_record_bound(record),
             Self::Unsubscribed(_) | Self::ProjectDeleted(_) | Self::TreeClosed(_) => 64,
             Self::Subscriptions(records) => records.iter().fold(0_usize, |bound, record| {
@@ -7538,7 +7577,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            32,
+            33,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(

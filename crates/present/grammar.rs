@@ -20,8 +20,7 @@ use core::fmt::Write as _;
 
 /// What one operand means, and therefore how each surface validates it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ArgumentKind {
-    /// An exact declaration coordinate returned by a previous result.
+pub enum ArgumentKind {    /// An exact declaration coordinate returned by a previous result.
     Coordinate,
     /// An absolute path to a project directory on this host.
     ProjectPath,
@@ -65,6 +64,8 @@ pub enum ArgumentKind {
     CargoPackageSourceRequest,
     /// Exact package source-membership page request JSON.
     PackageSourceMembershipRequest,
+    /// Exact current compiler-outcome selector returned by package-profile.
+    PackageCompilerOutcomeSelector,
     /// Exact source selection, full selected keys, and caller shape budgets.
     SemanticShapeRequest,
     /// Exact portable semantic-source guard and native byte-range request.
@@ -97,6 +98,7 @@ impl ArgumentKind {
             Self::CargoPackageReadmeOrigin => "ORIGIN_JSON",
             Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
             Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
+            Self::PackageCompilerOutcomeSelector => "COMPILER_OUTCOME_JSON",
             Self::SemanticShapeRequest => "SHAPE_REQUEST_JSON",
             Self::SemanticSourceRequest => "SOURCE_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
@@ -119,6 +121,7 @@ impl ArgumentKind {
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
             Self::PackageSourceMembershipRequest
+            | Self::PackageCompilerOutcomeSelector
             | Self::SemanticShapeRequest
             | Self::SemanticSourceRequest => "object",
             _ => "string",
@@ -1050,8 +1053,11 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ArgumentKind::PackageReference,
             "A pinned purl or an exact local package label.",
         )],
-        options: &[],
-        when: "Use for the one-call summary of a package: its newest version and how many exist.",
+        options: &[ArgumentSpec::optional_with_json_name(
+            "compiler-outcome", "compiler_outcome", ArgumentKind::PackageCompilerOutcomeSelector,
+            "Use {\"kind\":\"current\"} for capture-only discovery independent of packaging metadata, or copy a retained diagnostic's read object for one full failure under its exact source/capture roots.",
+        )],
+        when: "Read registry version/packaging facts and, for an indexed local project, every current compiler profile outcome. Use a returned compiler-outcome selector for each retained full diagnostic; stale selectors require fresh discovery.",
     },
     CommandGrammar {
         name: "subscribe",

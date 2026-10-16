@@ -3002,7 +3002,7 @@ impl CommandAdapter {
         }
         let refusal_outcome = prepared.profile_refusals.first().map(|_| {
             refused_index_outcome(
-                "available language profiles were published; other profiles were explicitly refused; inspect package-profile for the retained outcomes",
+                "available language profiles were published; other profiles were explicitly refused; read package-profile and each retained compiler-outcome selector for full diagnostics",
                 prepared.profile_refusals.iter().find_map(|profile| profile.compiler_failure.clone()),
             )
         });
@@ -3019,7 +3019,7 @@ impl CommandAdapter {
                 _ => None,
             };
             let outcome = refused_index_outcome(
-                "every language profile was refused; inspect package-profile for the retained outcomes",
+                "every language profile was refused; read package-profile and each retained compiler-outcome selector for full diagnostics",
                 failure,
             );
             return self
@@ -4983,7 +4983,7 @@ impl CommandAdapter {
             ));
         }
         if !profile_refusals.is_empty() {
-            let detail = "language profiles reached independent terminal outcomes; unavailable profiles were refused; inspect package-profile for the retained outcomes".to_owned();
+            let detail = "language profiles reached independent terminal outcomes; unavailable profiles were refused; read package-profile and each retained compiler-outcome selector for full diagnostics".to_owned();
             let failure = match profile_refusals
                 .iter()
                 .find_map(|profile| profile.compiler_failure.clone())
@@ -5754,6 +5754,12 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::PackageProfile { package,compiler_outcome:Some(read) } => {
+                super::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&self.index_operations,&package,Some(&read))
+                    .and_then(|outcomes| outcomes.ok_or_else(|| BuiltinModelError("compiler outcome reads require an exact local package".to_owned())))
+                    .map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |outcomes| CommandReply::Surface(backend_engine::SurfaceReply::PackageCompilerOutcomes(outcomes)))
+            },
             backend_engine::SurfaceCommand::Advisory {
                 package,
                 override_evidence,
@@ -6167,6 +6173,18 @@ impl CommandAdapter {
                         package: package.clone(), observation,
                     }),
                     _ => Err(error),
+                });
+                let reply = reply.and_then(|mut reply| {
+                    if let (
+                        backend_engine::SurfaceCommand::PackageProfile { package, compiler_outcome },
+                        backend_engine::SurfaceReply::PackageProfile { compiler_outcomes, .. },
+                    ) = (&surface, &mut reply) {
+                        *compiler_outcomes = super::package_profile::read(
+                            &daemon.engine().daemon().owner().snapshot(), &self.index_operations,
+                            package, compiler_outcome.as_ref(),
+                        ).map_err(|error| error.to_string())?;
+                    }
+                    Ok(reply)
                 });
                 reply.map_or_else(
                     |error| {
@@ -8267,6 +8285,7 @@ mod tests {
                     4,
                     S::PackageProfile {
                         package: local.clone(),
+                        compiler_outcome: None,
                     },
                 ),
                 (
@@ -8644,6 +8663,15 @@ mod tests {
             assert_eq!(partial.source_capture.producer_package.as_str(), label);
             assert_eq!(partial.source_capture.profiles.len(), 2);
             assert_eq!(partial.refused_profiles.len(), 1);
+            let package_ref=backend_library::PackageReference::parse(label.clone()).expect("local");
+            let discovered=super::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,None).expect("current unkeyed partial captures").expect("local");
+            let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };
+            assert_eq!(source_capture.profiles,partial.source_capture.profiles);
+            assert_eq!(refusals.len(),1,"published Python and refused TS remain separate");
+            let backend_library::PackageCompilerDiagnostic::Retained { read }=&refusals[0].diagnostic else { panic!("retained TS failure") };
+            let full=super::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,Some(read)).expect("exact full failure").expect("local");
+            let backend_library::PackageCompilerOutcomes::Diagnostic { refusal,.. }=full else { panic!("diagnostic") };
+            assert_eq!(refusal,partial.refused_profiles[0],"reuse the exact typed refused fact");
             assert_eq!(
                 partial.refused_profiles[0]
                     .profile
@@ -10527,6 +10555,147 @@ mod tests {
         all_profiles_refused_completion_control(false, true);
     }
 
+    #[test]
+    fn current_compiler_discovery_keeps_missing_legacy_capture_honest_after_cold_reopen() {
+        use backend_library::{
+            PackageCompilerOutcomeRead as Read, PackageCompilerOutcomes as Outcomes,
+            PackageCompilerOutcomesUnavailable as Unavailable,
+        };
+        let mut fixture = AdapterFixture::new();
+        let package = backend_library::PackageReference::parse(fixture.label.clone())
+            .expect("seeded local project");
+        for _ in 0..2 {
+            let (adapter, daemon) = fixture.parts();
+            let command = backend_library::SurfaceCommand::PackageProfile {
+                package: package.clone(),
+                compiler_outcome: Some(Read::Current),
+            };
+            let (reply, _) = adapter
+                .surface(daemon, command.clone(), 709)
+                .expect("capture-only dispatch");
+            let CommandReply::Surface(reply) = reply else {
+                panic!("explicit result")
+            };
+            backend_library::admit_surface_reply(&command, &reply).expect("strict current read");
+            assert!(
+                matches!(
+                    reply,
+                    backend_library::SurfaceReply::PackageCompilerOutcomes(Outcomes::Unavailable {
+                        reason: Unavailable::CaptureNotRecorded,
+                        ..
+                    })
+                ),
+                "legacy selected project has no compiler capture to invent"
+            );
+            let old = Read::Diagnostic(backend_library::PackageCompilerOutcomeSelector {
+                basis: [99; 32],
+                profile: backend_library::SemanticLanguageProfile::from_name("python")
+                    .expect("closed"),
+            });
+            assert!(
+                matches!(
+                    super::package_profile::read(
+                        &daemon.engine().daemon().owner().snapshot(),
+                        &adapter.index_operations,
+                        &package,
+                        Some(&old)
+                    )
+                    .expect("missing selected capture"),
+                    Some(Outcomes::Stale { .. })
+                ),
+                "missing capture never substitutes a prior diagnostic"
+            );
+            fixture = fixture.reopen();
+        }
+    }
+
+    fn assert_current_compiler_outcomes(
+        adapter: &CommandAdapter,
+        daemon: &ProductDaemon,
+        operation: backend_library::IndexOperationKey,
+    ) -> backend_library::PackageCompilerOutcomes {
+        use backend_library::{
+            PackageCompilerDiagnostic as Diagnostic, PackageCompilerOutcomes as Outcomes,
+        };
+        let Some(backend_library::IndexOperationObservation::Known(status)) = adapter
+            .index_operations
+            .observation(operation, None)
+            .expect("durable operation")
+        else {
+            panic!("retained status")
+        };
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let outcomes = super::package_profile::read(
+            &snapshot,
+            &adapter.index_operations,
+            &status.package,
+            None,
+        )
+        .expect("actual selected PSC2 producer")
+        .expect("local outcomes");
+        let Outcomes::Summary {
+            source_capture,
+            refusals,
+            ..
+        } = &outcomes
+        else {
+            panic!("complete refused capture: {outcomes:?}")
+        };
+        let expected = status.source_capture.as_ref().expect("source receipt");
+        assert_eq!(source_capture.profiles.len(), expected.profiles().len());
+        assert_eq!(&source_capture.commit_identity, expected.commit_identity());
+        assert_eq!(
+            refusals.len(),
+            source_capture.profiles.len(),
+            "all refused profiles remain visible"
+        );
+        let mut retained = 0;
+        for refused in refusals {
+            if let Diagnostic::Retained { read } = &refused.diagnostic {
+                let full = super::package_profile::read(
+                    &snapshot,
+                    &adapter.index_operations,
+                    &status.package,
+                    Some(read),
+                )
+                .expect("bounded full read")
+                .expect("local");
+                full.admit_request(&status.package, Some(read))
+                    .expect("typed exact reply");
+                let Outcomes::Diagnostic { refusal, .. } = full else {
+                    panic!("retained full diagnostic")
+                };
+                assert_eq!(refusal.profile, refused.profile);
+                assert!(refusal.compiler_failure.is_some());
+                let mut wrong = *read.selector().expect("retained selector");
+                wrong.basis[0] ^= 1;
+                let wrong = backend_library::PackageCompilerOutcomeRead::Diagnostic(wrong);
+                assert!(matches!(
+                    super::package_profile::read(
+                        &snapshot,
+                        &adapter.index_operations,
+                        &status.package,
+                        Some(&wrong)
+                    )
+                    .expect("stale read"),
+                    Some(Outcomes::Stale { .. })
+                ));
+                retained += 1;
+            }
+        }
+        assert!(retained > 0, "real compiler refusal remains retrievable");
+        let other = backend_library::PackageReference::parse("/wrong-package").expect("local");
+        assert!(matches!(
+            super::package_profile::read(&snapshot, &adapter.index_operations, &other, None)
+                .expect("wrong package"),
+            Some(Outcomes::Unavailable {
+                reason: backend_library::PackageCompilerOutcomesUnavailable::ProjectNotSelected,
+                ..
+            })
+        ));
+        outcomes
+    }
+
     fn all_profiles_refused_completion_control(journal_busy: bool, restart_before_receipt: bool) {
         use index_publication_worker::{Completion, Disposition, Head, TestHook, TestStage};
         let mut fixture = AdapterFixture::new();
@@ -10748,6 +10917,7 @@ mod tests {
                 backend_library::SurfaceReply::IndexOperationStatus(recovered)
                     .admit(backend_library::CommandId::IndexProgress)
                     .expect("strict cold terminal");
+                assert_current_compiler_outcomes(adapter,daemon,operation);
                 return;
             }
             adapter.journal_readiness.refresh();
@@ -10788,6 +10958,7 @@ mod tests {
         backend_library::SurfaceReply::IndexOperationStatus(observation)
             .admit(backend_library::CommandId::IndexProgress)
             .expect("strict terminal reply");
+        let outcomes = assert_current_compiler_outcomes(adapter, daemon, operation);
         let mut fixture = fixture.reopen();
         let (adapter, daemon) = fixture.parts();
         assert!(matches!(
@@ -10801,6 +10972,96 @@ mod tests {
                 }
             )
         ));
+        assert_eq!(
+            assert_current_compiler_outcomes(adapter, daemon, operation),
+            outcomes,
+            "cold reopen retains exact selected roots and every diagnostic selector"
+        );
+        if !journal_busy {
+            let backend_library::PackageCompilerOutcomes::Summary {
+                source_capture,
+                refusals,
+                ..
+            } = &outcomes
+            else {
+                panic!("summary")
+            };
+            let backend_library::PackageCompilerDiagnostic::Retained { read } =
+                &refusals[0].diagnostic
+            else {
+                panic!("retained")
+            };
+            let package = source_capture.producer_package.clone();
+            let manifest = Path::new(package.as_str()).join("pyproject.toml");
+            let original_manifest = fs::read(&manifest).expect("original source packaging");
+            fs::write(&manifest, "[project]\nname = ")
+                .expect("malformed current packaging metadata");
+            assert!(
+                crate::builtin::local_manifest::read_python_metadata(Path::new(package.as_str()))
+                    .is_err()
+            );
+            for query in [backend_library::PackageCompilerOutcomeRead::Current, *read] {
+                let command = backend_library::SurfaceCommand::PackageProfile {
+                    package: package.clone(),
+                    compiler_outcome: Some(query),
+                };
+                let (reply, _) = adapter
+                    .surface(daemon, command.clone(), 708)
+                    .expect("explicit read skips unrelated manifest/catalog refresh");
+                let CommandReply::Surface(reply) = reply else {
+                    panic!("captured facts remain readable")
+                };
+                backend_library::admit_surface_reply(&command, &reply)
+                    .expect("actual command/reply correlation");
+                assert!(
+                    matches!(
+                        reply,
+                        backend_library::SurfaceReply::PackageCompilerOutcomes(_)
+                    ),
+                    "explicit reads never fabricate empty packaging/history fields"
+                );
+            }
+            fs::write(&manifest, original_manifest)
+                .expect("restore fixture packaging before next capture");
+            fs::write(
+                Path::new(package.as_str()).join("source.py"),
+                "def changed_source():\n    return 8\n",
+            )
+            .expect("new source version");
+            let next = backend_library::IndexOperationKey::from_bytes([115; 32]).expect("next key");
+            adapter
+                .start_index_operation(
+                    daemon,
+                    next,
+                    package.clone(),
+                    CompileExecutionIntent::Interactive,
+                    707,
+                )
+                .expect("capture changed source");
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "bounded source transition"
+                );
+                adapter.poll_deferred(daemon);
+                std::thread::yield_now();
+            }
+            assert_current_compiler_outcomes(adapter, daemon, next);
+            assert!(
+                matches!(
+                    super::package_profile::read(
+                        &daemon.engine().daemon().owner().snapshot(),
+                        &adapter.index_operations,
+                        &package,
+                        Some(read)
+                    )
+                    .expect("old exact selector"),
+                    Some(backend_library::PackageCompilerOutcomes::Stale { .. })
+                ),
+                "current source/capture never substitutes an old diagnostic"
+            );
+        }
     }
     #[test]
     fn refused_capture_reconciles_resident_view_before_terminal_reply() {

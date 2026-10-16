@@ -391,6 +391,7 @@ pub struct ProductView {
     cli_context: Option<crate::StartupRecoveryContext>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    compiler_outcomes: Option<backend_library::PackageCompilerOutcomes>,
     package_graph_page: Option<backend_library::PackageGraphPage>,
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
@@ -767,6 +768,12 @@ impl ProductView {
         self.package_source_membership_page.as_ref()
     }
 
+    /// Exact current compiler outcomes or one complete selected diagnostic.
+    #[must_use]
+    pub fn compiler_outcomes(&self) -> Option<&backend_library::PackageCompilerOutcomes> {
+        self.compiler_outcomes.as_ref()
+    }
+
     /// Exact native graph page, including typed edges and its guarded cursor.
     #[must_use]
     pub fn package_graph_page(&self) -> Option<&backend_library::PackageGraphPage> {
@@ -931,7 +938,10 @@ impl ProductView {
                     compiler_failure,
                 } => {
                     let operand = Operand::Text(status.operation_key.to_hex());
-                    let affordance = fresh_index_attempt_affordance(status);
+                    let affordance = if status.source_capture.as_ref().is_some_and(|capture| capture.profiles().iter().any(|profile| matches!(profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Unavailable { .. } | backend_library::IndexOperationSemanticProfileState::Failed { .. }))) {
+                        crate::Affordance::ReadCompilerOutcomes { package:status.package.clone() }
+                    } else { fresh_index_attempt_affordance(status) };
                     self.fault = compiler_failure
                         .as_ref()
                         .map(|failure| {
@@ -999,6 +1009,7 @@ impl ProductView {
             cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            compiler_outcomes: None,
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
@@ -1022,6 +1033,7 @@ impl ProductView {
             cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            compiler_outcomes: None,
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
@@ -1043,6 +1055,7 @@ impl ProductView {
             cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            compiler_outcomes: None,
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
@@ -1064,6 +1077,7 @@ impl ProductView {
             cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            compiler_outcomes: None,
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
@@ -1085,6 +1099,7 @@ impl ProductView {
             cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            compiler_outcomes: None,
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
@@ -1457,7 +1472,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     ..
                 } => {
                     format!(
-                        "partially published; {} language profiles unavailable; inspect package-profile for toolchain guidance",
+                        "partially published; {} language profiles unavailable; read package-profile and each retained compiler-outcome selector for full diagnostics",
                         refused_profiles.len()
                     )
                 }
@@ -1992,15 +2007,57 @@ fn forge_discovery_row(candidate: &backend_library::ForgeDiscoveryCandidate) -> 
     )
 }
 
+fn compiler_outcome_rows(
+    outcomes: &backend_library::PackageCompilerOutcomes,
+) -> Vec<ProductRecord> {
+    use backend_library::{
+        IndexOperationSemanticProfileState as State, PackageCompilerDiagnostic as Diagnostic,
+        PackageCompilerOutcomes as Outcomes,
+    };
+    match outcomes {
+        Outcomes::Summary { source_capture, refusals, .. } => source_capture.profiles.iter().map(|profile| {
+            let state = match profile.state {
+                State::Pending { .. } => "pending".to_owned(),
+                State::Published { coverage, .. } => format!("published with {coverage}"),
+                State::Unavailable { reason } => format!("unavailable: {reason}"),
+                State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
+            };
+            let mut tags = vec![format!("{} captured source file(s)", profile.source_count)];
+            let operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {
+                Diagnostic::NotRecorded => { tags.push("no typed compiler diagnostic was recorded".to_owned()); None },
+                Diagnostic::Retained { read } => {
+                    tags.push("full compiler diagnostic retained; copy this selector into package-profile --compiler-outcome (MCP: compiler_outcome)".to_owned());
+                    serde_json::to_string(read).ok()
+                },
+            });
+            ProductRecord::new(format!("{}: {state}", profile.profile.name().unwrap_or("unknown profile")), operand, tags)
+        }).collect(),
+        Outcomes::Diagnostic { selector, refusal, .. } => {
+            let detail = refusal.compiler_failure.as_ref().map_or_else(|| "no typed compiler diagnostic was recorded".to_owned(),
+                |failure| Fault::compiler_refusal(failure, Operand::Whole).cause().sentence().to_owned());
+            vec![ProductRecord::new(format!("{}: {}", selector.profile.name().unwrap_or("unknown profile"), single_line(&detail)), None, Vec::new())]
+        },
+        Outcomes::Stale { .. } => vec![ProductRecord::new("compiler outcome selection changed; read package-profile again", None, Vec::new())],
+        Outcomes::Unavailable { reason, .. } => vec![ProductRecord::new(format!("current compiler outcomes unavailable: {}", wire_words(reason)), None, Vec::new())],
+    }
+}
+
 /// Subscription and project-folder answers.
 fn home_view(reply: &SurfaceReply) -> Option<ProductView> {
     Some(match reply {
+        SurfaceReply::PackageCompilerOutcomes(outcomes) => {
+            let mut view=ProductView::rows("package-profile",compiler_outcome_rows(outcomes));
+            view.compiler_outcomes=Some(outcomes.clone());
+            view
+        },
         SurfaceReply::PackageProfile {
             latest,
             versions,
             candidate_authority,
             source_metadata,
-        } => ProductView::rows(
+            compiler_outcomes,
+        } => {
+            let mut view = ProductView::rows(
             "package-profile",
             match latest {
                 Some(record) => {
@@ -2030,7 +2087,15 @@ fn home_view(reply: &SurfaceReply) -> Option<ProductView> {
                     .with_optional_source_metadata(source_metadata.as_ref()),
                 ],
             },
-        ),
+        );
+            if let Some(outcomes) = compiler_outcomes {
+                let mut rows = view.records.into_vec();
+                rows.extend(compiler_outcome_rows(outcomes));
+                view.records = rows.into_boxed_slice();
+                view.compiler_outcomes = Some(outcomes.clone());
+            }
+            view
+        },
         SurfaceReply::Subscribed(record) => {
             ProductView::rows("subscribe", vec![subscription_row(record)])
         }
@@ -3435,6 +3500,7 @@ mod tests {
             versions: 1,
             candidate_authority: None,
             source_metadata: Some(metadata.clone()),
+            compiler_outcomes: None,
         };
         reply
             .admit(backend_library::CommandId::PackageProfile)

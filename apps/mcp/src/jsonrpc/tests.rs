@@ -29,6 +29,8 @@ mod index_overlap;
 mod initial_owner;
 #[path = "tests/named_call.rs"]
 mod named_call;
+#[path = "tests/package_compiler_outcomes.rs"]
+mod package_compiler_outcomes;
 #[path = "tests/package_graph_budget.rs"]
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
