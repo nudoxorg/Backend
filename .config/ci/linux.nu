@@ -172,7 +172,7 @@ def main [
     cap-build-cache
     restore-source-mtimes
 
-    let flake_runner = ($env.FILE_PWD | path join "linux-flake-check.py")
+    let flake_runner = $env.FILE_PWD | path join "linux-flake-check.py"
     let flake = if $skip_flake_check {
         true
     } else {
