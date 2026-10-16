@@ -877,25 +877,28 @@ fn clang_export_macro_parse_source<'source>(
 }
 
 fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>) {
-    type Replacement = Vec<Vec<u8>>;
+    type Replacement = Vec<u8>;
     let mut definitions = BTreeMap::<Vec<u8>, Vec<Replacement>>::new();
     fn visit(node: Node<'_>, source: &[u8], definitions: &mut BTreeMap<Vec<u8>, Vec<Replacement>>) {
         if node.kind() == "preproc_def"
             && let Some(name) = node.child_by_field_name("name")
             && let Some(name) = source.get(name.byte_range())
         {
-            let aliases = node
+            let replacement = node
                 .child_by_field_name("value")
                 .and_then(|value| source.get(value.byte_range()))
                 .map(|value| {
                     value
-                        .split(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
-                        .filter(|token| !token.is_empty())
-                        .map(<[u8]>::to_vec)
+                        .iter()
+                        .copied()
+                        .filter(|byte| !byte.is_ascii_whitespace())
                         .collect()
                 })
                 .unwrap_or_default();
-            definitions.entry(name.to_vec()).or_default().push(aliases);
+            definitions
+                .entry(name.to_vec())
+                .or_default()
+                .push(replacement);
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -920,7 +923,7 @@ fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTree
         )
     };
     let syntax_name = |name: &[u8]| has_suffix(name, &[b"_OVERRIDE", b"_NOEXCEPT", b"_DEPRECATED"]);
-    let replacements_are = |name: &[u8], allowed: &[&[&[u8]]]| {
+    let replacements_are = |name: &[u8], allowed: &[&[u8]]| {
         definitions.get(name).is_some_and(|branches| {
             !branches.is_empty()
                 && branches.iter().all(|branch| {
@@ -931,19 +934,19 @@ fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTree
                 })
         })
     };
-    let export_forms: &[&[&[u8]]] = &[
-        &[b"__declspec", b"dllexport"],
-        &[b"__declspec", b"dllimport"],
-        &[b"__attribute__", b"visibility", b"default"],
-        &[b"__attribute__", b"visibility", b"hidden"],
-        &[b"__attribute__", b"dllexport"],
-        &[b"__attribute__", b"dllimport"],
+    let export_forms: &[&[u8]] = &[
+        b"__declspec(dllexport)",
+        b"__declspec(dllimport)",
+        b"__attribute__((visibility(\"default\")))",
+        b"__attribute__((visibility(\"hidden\")))",
+        b"__attribute__((dllexport))",
+        b"__attribute__((dllimport))",
     ];
-    let syntax_forms: &[&[&[u8]]] = &[
-        &[b"noexcept"],
-        &[b"override"],
-        &[b"__attribute__", b"deprecated"],
-        &[b"__declspec", b"deprecated"],
+    let syntax_forms: &[&[u8]] = &[
+        b"noexcept",
+        b"override",
+        b"__attribute__((deprecated))",
+        b"__declspec(deprecated)",
     ];
     let mut exports = definitions
         .keys()
@@ -964,7 +967,7 @@ fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTree
                     if branch.is_empty() {
                         return true;
                     }
-                    if branch.len() == 1 && roles.contains(&branch[0]) {
+                    if is_identifier(branch) && roles.contains(branch) {
                         saw_alias = true;
                         return true;
                     }
@@ -982,6 +985,14 @@ fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTree
     close_aliases(&mut exports);
     close_aliases(&mut syntax);
     (exports, syntax)
+}
+
+fn is_identifier(token: &[u8]) -> bool {
+    let mut bytes = token.iter();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
 }
 
 fn clang_macro_usage_masks(

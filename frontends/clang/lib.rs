@@ -635,6 +635,14 @@ struct PUGIXML_CLASS xml_parse_result { int status; };\n\
                 b"#define MISLEADING_NOEXCEPT int\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
             ),
             (
+                "misleading punctuation after noexcept",
+                b"#define MISLEADING_NOEXCEPT noexcept +\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
+            ),
+            (
+                "misleading punctuation after API marker",
+                b"#define MISLEADING_API ...\nclass MISLEADING_API xml_document { int value; };\n",
+            ),
+            (
                 "conflicting conditional API replacements",
                 b"#if defined(ONE)\n#define CONDITIONAL_API\n#else\n#define CONDITIONAL_API 123\n#endif\nclass CONDITIONAL_API xml_document { int value; };\n",
             ),
