@@ -34,17 +34,23 @@ impl ExactDeclarationSites {
 }
 
 /// Pairs equal authority extents after the caller has authenticated the source
-/// identity. Go v6 retains the primary extent in canonical IR, so cold image
-/// reopening needs no new field or wire interpretation. Older unbound rows and
+/// identity. Go and TypeScript retain the primary extent in canonical IR, so
+/// cold image reopening needs no new field or wire interpretation. Older
+/// unbound rows and
 /// syntax producers without exact captures intentionally contribute no proof.
-pub(super) fn go_sites<Reader: SemanticReader + ?Sized>(
+pub(super) fn declaration_sites<Reader: SemanticReader + ?Sized>(
     profile: LanguageProfile,
     reader: &Reader,
     session: &DocumentationSession<'_, Reader>,
     path: &str,
     declarations: &[&SourceDeclaration],
 ) -> Result<BTreeMap<DeclarationIdentity, SourceBinding>, BuiltinModelError> {
-    if !matches!(profile, LanguageProfile::Go(_)) { return Ok(BTreeMap::new()); }
+    if !matches!(
+        profile,
+        LanguageProfile::Go(_) | LanguageProfile::TypeScript(_)
+    ) {
+        return Ok(BTreeMap::new());
+    }
     let mut written = BTreeMap::<_, Vec<_>>::new();
     for declaration in declarations {
         if let SourceBindingIdentity::Exact(capture) = declaration.binding_identity() {
@@ -126,6 +132,335 @@ mod tests {
         exact.record(package, "a.go", binding, second);
         exact.record(package, "a.go", binding, first);
         assert_eq!(exact.get(package.to_bytes(), "a.go", binding), None);
+    }
+
+    #[test]
+    fn cold_typescript_partial_rows_unify_exact_sites_without_name_count_pairing()
+    -> Result<(), String> {
+        use super::super::super::{IndexedProject, IndexedSources, ProductSourceRecord};
+        use super::super::{image_rows, query, semantic, structural};
+        use backend_semantic::ir::{
+            BorrowedTree, CorePayloadHash, EntityAuthorityFacts, EntityVersion, IrBuilder,
+            ItemKind, SemanticImageView, SourceIdentity, SourceSpan, TreeItemInput, Visibility,
+            encode_full_semantic_image, full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{
+            CompileRecipeFact, NativeTool, PackageUrl, Stage, TypeScriptSource,
+        };
+        use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+        use std::{collections::BTreeSet, sync::Arc};
+
+        let path = "src/workout.service.ts";
+        let source = "// λ makes byte and character offsets differ\ninterface Workout { name: string; }\nnamespace First { function workout() {} }\nnamespace Nested { function workout() {} }\nfunction workout(value: number): void;\nfunction workout(value: string): void;\nfunction workout(value: unknown) {}\nfunction Fallback() {}\nfunction Unlowered() {}\n";
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|e| e.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let source_id = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+        let package = backend_engine::package_key("fixture");
+        let file_key = backend_engine::product_source_file_key(package.to_bytes(), path);
+        let record = ProductSourceRecord::file(
+            package.to_bytes(),
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            [1; 32],
+            [2; 32],
+            analysis.declarations().clone(),
+        )?
+        .with_source_identity(source_id)?;
+        let mut sources = IndexedSources {
+            projects: BTreeMap::from([(
+                package.to_bytes(),
+                IndexedProject {
+                    package,
+                    label: "fixture".to_owned(),
+                    files: Arc::from([file_key]),
+                },
+            )]),
+            files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
+        };
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(
+                SourceIdentity {
+                    identity: source_id,
+                    byte_len: source.len() as u32,
+                },
+                CompileRecipeFact::derive(
+                    profile,
+                    Stage::LowerIr,
+                    NativeTool::TypeScriptCompiler,
+                    source_id,
+                    ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture-toolchain"),
+                ),
+                &PackageUrl::parse("pkg:npm/fixture@1.0.0".to_owned())
+                    .map_err(|e| e.to_string())?,
+                path,
+            )
+            .map_err(|e| e.to_string())?;
+        let file = builder
+            .intern_atom(path.as_bytes())
+            .map_err(|e| e.to_string())?;
+        // Literal compiler declaration extents, independent of the syntax
+        // captures. The implementation is intentionally absent from this
+        // partial artifact: same-name cardinality is not an identity proof.
+        let definitions = [
+            (
+                "Workout",
+                "interface Workout { name: string; }",
+                ItemKind::Trait,
+            ),
+            ("workout", "function workout() {}", ItemKind::Function),
+            ("workout", "function workout() {}", ItemKind::Function),
+            (
+                "workout",
+                "function workout(value: number): void;",
+                ItemKind::Function,
+            ),
+            (
+                "workout",
+                "function workout(value: string): void;",
+                ItemKind::Function,
+            ),
+            ("Fallback", "function Fallback() {}", ItemKind::Function),
+        ];
+        let mut previous = 0;
+        let mut items = definitions
+            .iter()
+            .enumerate()
+            .map(|(index, (name, extent, kind))| {
+                let search_from = if index == 2 { previous + 1 } else { 0 };
+                let start = search_from
+                    + source[search_from..]
+                        .find(*extent)
+                        .expect("literal declaration");
+                previous = start;
+                let start = if *name == "Fallback" {
+                    start + 1
+                } else {
+                    start
+                };
+                TreeItemInput {
+                    name: name.as_bytes(),
+                    anonymous_callable_anchor: None,
+                    kind: *kind,
+                    visibility: Visibility::Public,
+                    authority: EntityAuthorityFacts {
+                        source: FactAvailability::Captured,
+                        source_file: FactAvailability::Captured,
+                        ..EntityAuthorityFacts::default()
+                    },
+                    parent: None,
+                    semantic_type: None,
+                    members: &[],
+                    docs: &[],
+                    attributes: &[],
+                    source: SourceSpan::new(file, start as u32, (start + extent.len()) as u32),
+                    extension: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        items.push(TreeItemInput {
+            name: b"parameter_only",
+            kind: ItemKind::Parameter,
+            authority: EntityAuthorityFacts::default(),
+            source: None,
+            ..items[0]
+        });
+        let versions = (1..=items.len() as u8)
+            .map(|byte| EntityVersion {
+                family: identity(byte).family,
+                variant: identity(byte).variant,
+                core_payload: CorePayloadHash::from_raw([byte; 16]),
+            })
+            .collect::<Vec<_>>();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .map_err(|e| e.to_string())?;
+        let ir = builder.finish().map_err(|e| e.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|e| e.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|e| e.to_string())?;
+        drop(ir);
+        let image = SemanticImageView::reopen(&bytes).map_err(|e| e.to_string())?;
+        let owned = semantic::StructuralSites::of(&sources)
+            .map_err(|e| e.to_string())?
+            .declarations_of_source(package.as_bytes(), path, source_id)
+            .map_err(|e| e.to_string())?;
+        let current = owned.iter().collect::<Vec<_>>();
+        let (initial, _) = super::super::super::initial_view().map_err(|e| e.to_string())?;
+        let project = sources.projects.get(package.as_bytes()).ok_or("project")?;
+        let projected = semantic::project_image_rows(
+            &image,
+            *blake3::hash(&bytes).as_bytes(),
+            project,
+            profile,
+            initial.basis(),
+            false,
+            path,
+            &current,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut exact = ExactDeclarationSites::default();
+        let mut rows = Vec::new();
+        let mut symbols = BTreeSet::new();
+        let mut budget = usize::MAX;
+        image_rows::apply_projected_image(
+            &projected,
+            &mut semantic::SemanticRowSink {
+                ownership_complete: &mut true,
+                initial: &initial,
+                symbols: &mut symbols,
+                rows: &mut rows,
+                capacity: 64,
+                remaining_bytes: &mut budget,
+                stale: false,
+                path,
+                site_declarations: &current,
+                exact_sites: &mut exact,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        assert_eq!(rows.len(), items.len());
+        for (index, item) in items.iter().enumerate() {
+            let id = RowId::Symbol(super::super::identity::semantic_symbol(
+                package,
+                identity(index as u8 + 1),
+            ));
+            let row = rows
+                .iter()
+                .find(|row| row.id == id)
+                .ok_or("compiler row identity")?;
+            if item.source.is_none() {
+                assert!(
+                    row.source.captured().is_none(),
+                    "unlocated compiler entities are preserved without an invented location"
+                );
+                continue;
+            }
+            let location = row
+                .source
+                .captured()
+                .ok_or("exact TypeScript row has no source")?;
+            assert_eq!(location.path(), path);
+            let start = item.source.ok_or("compiler span")?.start() as usize;
+            assert_eq!(
+                location.start_line(),
+                (source.as_bytes()[..start]
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count()
+                    + 1) as u32
+            );
+        }
+        let mut plan = structural::StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|e| e.to_string())?;
+        plan.unify_exact_sites(&sources, &exact)
+            .map_err(|e| e.to_string())?;
+        let mut facts = Vec::new();
+        query::append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.presentation().name == "Workout")
+                .count(),
+            0
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.presentation().name == "workout")
+                .count(),
+            1,
+            "only the unlowered implementation remains structural"
+        );
+        let targets = semantic::SemanticTargets::default();
+        let mut projection = semantic::SourceRowProjection::new(
+            &initial,
+            &sources,
+            64,
+            &targets,
+            &plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
+        projection
+            .append_file(
+                file_key,
+                &sources.files[0].1,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = projection.finish(rows).map_err(|e| e.to_string())?;
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.label.ends_with("::Workout"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.label.ends_with("::workout"))
+                .count(),
+            5,
+            "overloads, shadows and unlowered implementation survive"
+        );
+        assert!(rows.iter().any(|r| r.label.ends_with("::Unlowered")));
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.label.ends_with("::parameter_only"))
+                .count(),
+            1,
+            "valid compiler-only entities survive without a structural capture"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.label.ends_with("::Fallback"))
+                .count(),
+            2,
+            "metadata fallback never proves declaration identity or suppresses a structural row"
+        );
+        let session = DocumentationSession::new(&image);
+        let legacy = owned
+            .iter()
+            .cloned()
+            .map(|d| d.with_binding_identity(SourceBindingIdentity::Legacy))
+            .collect::<Vec<_>>();
+        assert!(
+            declaration_sites(
+                profile,
+                &image,
+                &session,
+                path,
+                &legacy.iter().collect::<Vec<_>>()
+            )
+            .map_err(|e| e.to_string())?
+            .is_empty()
+        );
+        assert!(
+            declaration_sites(profile, &image, &session, "other.ts", &current)
+                .map_err(|e| e.to_string())?
+                .is_empty()
+        );
+        sources.files[0].1 = sources.files[0].1.clone().with_source_identity(
+            ContentId::<SourceFactDomain>::from_canonical_bytes(b"edited"),
+        )?;
+        assert!(
+            semantic::StructuralSites::of(&sources)
+                .map_err(|e| e.to_string())?
+                .declarations_of_source(package.as_bytes(), path, source_id)
+                .map_err(|e| e.to_string())?
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]
@@ -413,13 +748,13 @@ mod tests {
             "empty legacy rows provide no complete-empty ownership witness"
         );
         let legacy = current.iter().map(|site| (**site).clone().with_binding_identity(SourceBindingIdentity::Legacy)).collect::<Vec<_>>();
-        assert!(go_sites(profile, &image, &DocumentationSession::new(&image), path, &legacy.iter().collect::<Vec<_>>()).map_err(|error| error.to_string())?.is_empty());
+        assert!(declaration_sites(profile, &image, &DocumentationSession::new(&image), path, &legacy.iter().collect::<Vec<_>>()).map_err(|error| error.to_string())?.is_empty());
         drop(current);
         sources.files[0].1 = sources.files[0].1.clone().with_source_identity(ContentId::<SourceFactDomain>::from_canonical_bytes(b"edited generation"))?;
         let stale = semantic::StructuralSites::of(&sources).map_err(|error| error.to_string())?
             .declarations_of_source(package.as_bytes(), path, source_id).map_err(|error| error.to_string())?;
         assert!(stale.is_empty(), "old image bytes cannot unify new source bindings");
-        assert!(go_sites(profile, &image, &DocumentationSession::new(&image), path, &[]).map_err(|error| error.to_string())?.is_empty());
+        assert!(declaration_sites(profile, &image, &DocumentationSession::new(&image), path, &[]).map_err(|error| error.to_string())?.is_empty());
         Ok(())
     }
 }
