@@ -194,6 +194,59 @@ def drew_a_frame(trace: Path) -> bool:
     return False
 
 
+def _proc_text(path: Path, limit: int = 1024) -> str:
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except OSError as error:
+        return f"unavailable ({error.__class__.__name__})"
+    truncated = len(data) > limit
+    text = data[:limit].decode(errors="replace").strip()
+    return text + ("…" if truncated else "")
+
+
+def _gui_process_diagnostics(pid: int) -> str:
+    """Read a small, secret-free /proc snapshot before failure cleanup."""
+    deadline = time.monotonic() + 0.5
+    proc = Path("/proc") / str(pid)
+    try:
+        child_text = _proc_text(proc / "task" / str(pid) / "children", 256)
+        child_pids = [int(value) for value in child_text.split() if value.isdecimal()]
+    except (OSError, ValueError):
+        child_pids = []
+    pids = [pid, *child_pids[:3]]
+    details = []
+    for child_pid in pids:
+        if time.monotonic() >= deadline:
+            details.append("process snapshot stopped at 0.5s bound")
+            break
+        child = Path("/proc") / str(child_pid)
+        comm = _proc_text(child / "comm", 128)
+        wchan = _proc_text(child / "wchan", 256)
+        try:
+            cwd = os.readlink(child / "cwd")[:512]
+        except OSError as error:
+            cwd = f"unavailable ({error.__class__.__name__})"
+        stack = _proc_text(child / "stack", 768)
+        details.append(
+            f"pid={child_pid} comm={comm!r} wchan={wchan!r} cwd={cwd!r}\nstack:\n{stack}"
+        )
+    return "\n".join(details)
+
+
+def _tail(path: Path, limit: int = 3000) -> str:
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - limit))
+            data = stream.read(limit)
+    except OSError as error:
+        return f"unavailable ({error.__class__.__name__})"
+    text = data.decode(errors="replace")
+    return ("…" if size > limit else "") + text
+
+
 def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     xvfb = shutil.which("Xvfb")
     xdotool = shutil.which("xdotool")
@@ -206,12 +259,13 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     trace = home / "trace.jsonl"
     env["NUDOX_TRACE"] = str(trace)
     log = open(home / "desktop.log", "w")
+    server_log = open(home / "xvfb.log", "w")
     server = subprocess.Popen(
         [xvfb, "-displayfd", str(write_fd), "-screen", "0", "1600x1000x24", "-nolisten", "tcp"],
         env=env,
         pass_fds=(write_fd,),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=server_log,
         start_new_session=True,
     )
     os.close(write_fd)
@@ -255,7 +309,18 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                 try:
                     code = app.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    return fail("desktop did not shut down within 10s after Quit")
+                    log.flush()
+                    server_log.flush()
+                    details = "\n".join(
+                        f"{name}:\n{_tail(home / name)}"
+                        for name in ("desktop.log", "xvfb.log", "trace.jsonl")
+                        if (home / name).is_file()
+                    )
+                    process_details = _gui_process_diagnostics(app.pid)
+                    return fail(
+                        "desktop did not shut down within 10s after Quit\n"
+                        f"{details}\nprocesses:\n{process_details}"
+                    )
                 if code != 0:
                     return fail(f"desktop quit with exit {code}")
                 print(f"gui: visible window and first frame after {first_frame:.1f}s; clean Quit")
@@ -273,6 +338,7 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
         stop(server)
         os.close(read_fd)
         log.close()
+        server_log.close()
 
 
 def main() -> int:
