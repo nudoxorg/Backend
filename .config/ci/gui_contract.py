@@ -146,9 +146,9 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         time.sleep(0.5)
         pixels()
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        # The numeric depth chord has a known Linux conflict (T3 quarantine).
-        # Use the supported page/code toggle on the committed declaration.
-        command('xdotool', 'key', '--clearmodifiers', 'ctrl+period')
+        # Ask has committed and dismissed. PeelSource uses the shell's plain
+        # `s` binding (shell/keys.rs), revealing this declaration's source.
+        command('xdotool', 'key', '--clearmodifiers', 's')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
         while time.monotonic() < deadline:
