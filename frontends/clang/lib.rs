@@ -643,6 +643,14 @@ struct PUGIXML_CLASS xml_parse_result { int status; };\n\
                 b"#define MISLEADING_API ...\nclass MISLEADING_API xml_document { int value; };\n",
             ),
             (
+                "separate keywords are not a noexcept marker",
+                b"#define MISLEADING_NOEXCEPT no except\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
+            ),
+            (
+                "separate identifiers are not a proven alias",
+                b"#define REAL_API\n#define MISLEADING_API REAL _API\nclass MISLEADING_API xml_document { int value; };\n",
+            ),
+            (
                 "conflicting conditional API replacements",
                 b"#if defined(ONE)\n#define CONDITIONAL_API\n#else\n#define CONDITIONAL_API 123\n#endif\nclass CONDITIONAL_API xml_document { int value; };\n",
             ),
