@@ -13,9 +13,10 @@
       "tag": "checkpoint-20261016-df93af4890-linux-x64",
       "known_failures": [
         "Requires Ubuntu 24.04 or newer with glibc 2.39 or newer; older glibc versions are unsupported.",
-        "Whole-application Angular indexing remains partial: 41 of 50 checks passed.",
+        "Angular semantic coverage is reported as partial (41/50).",
         "SearXNG TypeScript/JavaScript and Python indexing remain incomplete under current deadlines.",
-        "GUI acceptance, semantic vector setup, and upgrades from older releases have not been proven."
+        "Required local embeddings currently fail activation after setup; vector inference is not proven.",
+        "GUI acceptance and upgrades from older releases have not been proven."
       ],
       "installer": {
         "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/install-linux-x64.py",
