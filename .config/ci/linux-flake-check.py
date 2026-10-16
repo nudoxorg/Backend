@@ -102,10 +102,9 @@ def main() -> int:
 
     # Build every current-system check in one remote-store request. This keeps
     # their derivation graph and realized inputs together across host auto-GC.
-    print(
-        "Linux flake runner: building "
-        f"{len(installables)} current-system checks in one SSH store request"
-    )
+    check_names = ", ".join(item.rsplit(".", 1)[1] for item in installables)
+    print(f"Linux flake runner: current-system checks: {check_names}")
+    print("Linux flake runner: building all checks in one SSH store request")
     return run(
         [
             "nix",

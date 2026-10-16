@@ -2,10 +2,12 @@
 """Focused controls for Linux's direct remote-store flake runner."""
 
 import importlib.util
+import io
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,10 +70,14 @@ class LinuxFlakeCheckTests(unittest.TestCase):
 
     def test_remote_build_uses_full_inventory_in_one_bounded_request(self):
         calls = []
-        with patch.dict(os.environ, {"NIX_CONFIG": self.config}, clear=True), patch.object(
-            runner, "run", self.fake_run(calls)
+        output = io.StringIO()
+        with (
+            patch.dict(os.environ, {"NIX_CONFIG": self.config}, clear=True),
+            patch.object(runner, "run", self.fake_run(calls)),
+            redirect_stdout(output),
         ):
             self.assertEqual(runner.main(), 0)
+        self.assertIn("current-system checks: control-plane, formatting", output.getvalue())
         self.assertIn("--no-build", calls[0][0])
         self.assertEqual(len([call for call in calls if call[0][1:2] == ["build"]]), 1)
         build = calls[-1][0]

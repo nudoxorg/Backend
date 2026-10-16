@@ -172,11 +172,12 @@ def main [
     cap-build-cache
     restore-source-mtimes
 
+    let flake_runner = ($env.FILE_PWD | path join "linux-flake-check.py")
     let flake = if $skip_flake_check {
         true
     } else {
         ci-step "linux" "root flake check" {||
-            with-plain-tmp {|| run-bounded 45min "python3" ($env.FILE_PWD | path join ".config" "ci" "linux-flake-check.py") }
+            with-plain-tmp {|| run-bounded 45min "python3" $flake_runner }
         }
     }
 
