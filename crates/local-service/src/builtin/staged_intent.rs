@@ -896,7 +896,10 @@ mod tests {
     }
     impl std::fmt::Display for TestFailure {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(formatter, "{self:?}")
+            match self {
+                Self::Store(error) => write!(formatter, "store test failure: {error:?}"),
+                Self::Io(error) => write!(formatter, "I/O test failure: {error}"),
+            }
         }
     }
     impl std::error::Error for TestFailure {

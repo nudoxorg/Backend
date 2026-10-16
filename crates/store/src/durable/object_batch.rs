@@ -357,7 +357,10 @@ mod tests {
     }
     impl std::fmt::Display for TestFailure {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(formatter, "{self:?}")
+            match self {
+                Self::Store(error) => write!(formatter, "store test failure: {error:?}"),
+                Self::Io(error) => write!(formatter, "I/O test failure: {error}"),
+            }
         }
     }
     impl Error for TestFailure {
@@ -688,7 +691,7 @@ mod tests {
             .read(true)
             .write(true)
             .open(store.root().join("LOCK"))?;
-        probe.try_lock()?;
+        probe.try_lock().map_err(std::io::Error::from)?;
         assert_eq!(temporaries(&store)?, 0);
         Ok(())
     }
