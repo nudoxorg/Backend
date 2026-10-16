@@ -11520,6 +11520,70 @@ mod lane_tests {
         Ok(facts)
     }
 
+    #[test]
+    fn native_tsz_class_members_match_syntax_extents_without_coalescing_roles() -> Result<(), LaneError>
+    {
+        use backend_compile::SourceBindingIdentity;
+        // The two decorated forms are the actual Angular declarations that
+        // produced duplicate member rows; neighboring controls retain ASI,
+        // same-name declarations, and constructor parameter-property roles.
+        let source = "declare function Input(): any;\nclass ArticleListComponent {\n  @Input() currentPage = 1;\n  automatic = 2\n  constructor(private http: unknown) {}\n  same() {}\n}\nclass IfAuthenticatedDirective {\n  @Input() set ifAuthenticated(condition: boolean) {}\n  same() {}\n}\n";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native TSZ project"))?;
+        let facts = collect_native_tsz_file(project, "input.ts", source)?;
+        let syntax = backend_frontend_typescript::syntax_frontend()
+            .map_err(|_| LaneError::Missing("TypeScript syntax frontend"))?
+            .analyze(std::path::Path::new("input.ts"), source.as_bytes())
+            .map_err(|_| LaneError::Missing("TypeScript syntax analysis"))?;
+        for name in ["currentPage", "automatic", "ifAuthenticated", "same"] {
+            let written = syntax
+                .declarations()
+                .iter()
+                .filter(|row| row.name() == name)
+                .collect::<Vec<_>>();
+            let expected = if name == "same" { 2 } else { 1 };
+            assert_eq!(written.len(), expected, "written {name}");
+            assert_eq!(
+                (0..facts.len())
+                    .filter(|&index| facts.names[index] == name.as_bytes())
+                    .count(),
+                expected,
+                "native {name}"
+            );
+            for declaration in written {
+                let SourceBindingIdentity::Exact(capture) = declaration.binding_identity() else {
+                    panic!("exact native join capture");
+                };
+                assert_eq!(
+                    (0..facts.len())
+                        .filter(|&index| {
+                            facts.names[index] == name.as_bytes()
+                                && facts.provenance.source_spans()[index]
+                                    .is_some_and(|span| (span.start, span.end) == capture.owner())
+                        })
+                        .count(),
+                    1,
+                    "one exact native twin for {name}: {:?}",
+                    capture.owner()
+                );
+            }
+        }
+        let roles = (0..facts.len())
+            .filter(|&index| facts.names[index] == b"http")
+            .map(|index| facts.kinds[index])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles.len(),
+            2,
+            "parameter properties retain both declarations"
+        );
+        assert!(roles.contains(&EntityKind::Parameter));
+        assert!(roles.contains(&EntityKind::Field));
+        Ok(())
+    }
+
     fn staged_tsz_coordinates(
         facts: &FactSet<'_>,
     ) -> Result<Vec<(ReferenceKind, String, u32, u32, u32, u32)>, LaneError> {
