@@ -9,7 +9,7 @@
   "path": "crates/engine/tests/python_occurrence_receivers.rs",
   "source_file_sha256": "25e92c2fabc928b96b3ccbfb6165cf8f14826c659e0774fa5dd2ffd2c70ad74f",
   "scope": "First150 test declarations in source order; compiler-boundary deletion/retention review, not representative product coverage.",
-  "runtime_status": "Pending exact-head T1/T2/full Linux T3. No passing or flake-rate claim.",
+  "runtime_status": "Fresh cab7cdf38-based candidate is pending exact required fast/T1, Python T2 `python-blinker`, and Linux Python T3 target `python_occurrence_receivers` (634 tests). The Python T2 authority repair is in prerequisite PR #300 and is not included here. No passing or flake-rate claim.",
   "summary": {
     "considered": 150,
     "retained": 147,
