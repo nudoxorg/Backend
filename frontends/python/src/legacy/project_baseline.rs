@@ -244,7 +244,7 @@ pub(super) enum CapturedRootPolicy {
     CanonicalEnvironment,
 }
 
-/// A private mirror read transaction, never a cache of an original environment.
+/// One dependency-root read transaction, never a cross-validation cache.
 /// The root and at most one adjacent file parent remain held between reads.
 /// Closing a parent group reopens its spelling beneath the held root; finishing
 /// reopens the absolute root. Neither a renamed parent nor a substituted root
@@ -430,10 +430,10 @@ fn record_read_work(event: ReadWorkEvent) {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ReadWork {
-    root_walks: usize,
-    parent_opens: usize,
-    payload_buffer_capacity: usize,
+pub(in super::super) struct ReadWork {
+    pub(in super::super) root_walks: usize,
+    pub(in super::super) parent_opens: usize,
+    pub(in super::super) payload_buffer_capacity: usize,
 }
 #[cfg(test)]
 std::thread_local! {
@@ -451,6 +451,25 @@ fn record_read_work(event: ReadWorkEvent) {
             slot.set(Some(work));
         }
     });
+}
+
+#[cfg(test)]
+pub(in super::super) struct WorkMeasurement;
+#[cfg(test)]
+impl WorkMeasurement {
+    pub(in super::super) fn start() -> Self {
+        READ_WORK.with(|slot| slot.set(Some(ReadWork::default())));
+        Self
+    }
+    pub(in super::super) fn take(&self) -> ReadWork {
+        READ_WORK.with(|slot| slot.replace(Some(ReadWork::default())).unwrap_or_default())
+    }
+}
+#[cfg(test)]
+impl Drop for WorkMeasurement {
+    fn drop(&mut self) {
+        READ_WORK.with(|slot| slot.set(None));
+    }
 }
 
 pub(super) fn read_captured_input_bounded(
@@ -830,22 +849,6 @@ mod tests {
         PythonProjectControl {
             cancelled,
             deadline: Instant::now() + Duration::from_secs(30),
-        }
-    }
-
-    struct WorkMeasurement;
-    impl WorkMeasurement {
-        fn start() -> Self {
-            READ_WORK.with(|slot| slot.set(Some(ReadWork::default())));
-            Self
-        }
-        fn take(&self) -> ReadWork {
-            READ_WORK.with(|slot| slot.replace(Some(ReadWork::default())).unwrap_or_default())
-        }
-    }
-    impl Drop for WorkMeasurement {
-        fn drop(&mut self) {
-            READ_WORK.with(|slot| slot.set(None));
         }
     }
 

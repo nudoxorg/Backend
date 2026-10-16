@@ -29,6 +29,8 @@ thread_local! {
 mod baseline;
 pub(super) use baseline::CapturedBaselines;
 pub(super) use baseline::EnvironmentReadSession;
+#[cfg(test)]
+pub(super) use baseline::WorkMeasurement;
 
 /// Reopens an explanatory config read under the existing captured-input bounds.
 pub(super) fn read_configuration_input(
