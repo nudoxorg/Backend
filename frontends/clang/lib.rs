@@ -622,4 +622,35 @@ struct PUGIXML_CLASS xml_parse_result { int status; };\n\
                 .any(|declaration| declaration.name() == "xml_parse_result")
         );
     }
+
+    #[test]
+    fn misleading_or_conflicting_macro_definitions_are_not_masked() {
+        let cases: &[(&str, &[u8])] = &[
+            (
+                "misleading API replacement",
+                b"#define MISLEADING_API 123\nclass MISLEADING_API xml_document { int value; };\n",
+            ),
+            (
+                "misleading noexcept replacement",
+                b"#define MISLEADING_NOEXCEPT int\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
+            ),
+            (
+                "conflicting conditional API replacements",
+                b"#if defined(ONE)\n#define CONDITIONAL_API\n#else\n#define CONDITIONAL_API 123\n#endif\nclass CONDITIONAL_API xml_document { int value; };\n",
+            ),
+        ];
+
+        for (case, source) in cases {
+            let analysis = syntax_frontend()
+                .expect("syntax grammar")
+                .analyze(Path::new("pugixml.hpp"), source);
+            assert!(
+                analysis.is_err()
+                    || !analysis.unwrap().declarations().iter().any(|declaration| {
+                        declaration.name() == "xml_document" || declaration.name() == "Thing"
+                    }),
+                "{case} must not be treated as a proven syntax macro"
+            );
+        }
+    }
 }

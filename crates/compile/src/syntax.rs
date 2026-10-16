@@ -876,12 +876,10 @@ fn clang_export_macro_parse_source<'source>(
     Ok(Cow::Owned(parse_source))
 }
 
-fn clang_macro_roles(
-    root: Node<'_>,
-    source: &[u8],
-) -> (BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>) {
-    let mut definitions = BTreeMap::<Vec<u8>, BTreeSet<Vec<u8>>>::new();
-    fn visit(node: Node<'_>, source: &[u8], definitions: &mut BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>) {
+fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>) {
+    type Replacement = Vec<Vec<u8>>;
+    let mut definitions = BTreeMap::<Vec<u8>, Vec<Replacement>>::new();
+    fn visit(node: Node<'_>, source: &[u8], definitions: &mut BTreeMap<Vec<u8>, Vec<Replacement>>) {
         if node.kind() == "preproc_def"
             && let Some(name) = node.child_by_field_name("name")
             && let Some(name) = source.get(name.byte_range())
@@ -897,7 +895,7 @@ fn clang_macro_roles(
                         .collect()
                 })
                 .unwrap_or_default();
-            definitions.insert(name.to_vec(), aliases);
+            definitions.entry(name.to_vec()).or_default().push(aliases);
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -906,67 +904,83 @@ fn clang_macro_roles(
     }
     visit(root, source, &mut definitions);
 
-    let is_export_marker = |token: &[u8]| {
-        [b"_API".as_slice(), b"_EXPORT", b"_EXPORTS", b"_PUBLIC", b"_IMPORT", b"_IMPORTS"]
-            .iter()
-            .any(|suffix| token.ends_with(suffix))
-            || [
-                b"__declspec".as_slice(),
-                b"__attribute__",
-                b"dllexport",
-                b"dllimport",
-                b"visibility",
-            ]
-            .contains(&token)
+    let has_suffix =
+        |name: &[u8], suffixes: &[&[u8]]| suffixes.iter().any(|suffix| name.ends_with(suffix));
+    let export_name = |name: &[u8]| {
+        has_suffix(
+            name,
+            &[
+                b"_API",
+                b"_EXPORT",
+                b"_EXPORTS",
+                b"_PUBLIC",
+                b"_IMPORT",
+                b"_IMPORTS",
+            ],
+        )
     };
-    let mut exports = definitions
-        .iter()
-        .filter(|(name, aliases)| is_export_marker(name) || aliases.iter().any(|alias| is_export_marker(alias)))
-        .map(|(name, _)| name.clone())
-        .collect::<BTreeSet<_>>();
-    loop {
-        let before = exports.len();
-        for (name, aliases) in &definitions {
-            if aliases.iter().any(|alias| exports.contains(alias)) {
-                exports.insert(name.clone());
-            }
-        }
-        if exports.len() == before {
-            break;
-        }
-    }
-    let syntax_marker = |token: &[u8]| {
-        [
-            b"override".as_slice(),
-            b"noexcept",
-            b"__attribute__",
-            b"__declspec",
-            b"deprecated",
-        ]
-        .contains(&token)
-    };
-    let mut syntax = definitions
-        .iter()
-        .filter(|(name, aliases)| {
-            exports.contains(*name)
-                || [b"_OVERRIDE".as_slice(), b"_NOEXCEPT", b"_DEPRECATED"]
-                    .iter()
-                    .any(|suffix| name.ends_with(suffix))
-                || aliases.iter().any(|alias| syntax_marker(alias))
+    let syntax_name = |name: &[u8]| has_suffix(name, &[b"_OVERRIDE", b"_NOEXCEPT", b"_DEPRECATED"]);
+    let replacements_are = |name: &[u8], allowed: &[&[&[u8]]]| {
+        definitions.get(name).is_some_and(|branches| {
+            !branches.is_empty()
+                && branches.iter().all(|branch| {
+                    branch.is_empty()
+                        || allowed
+                            .iter()
+                            .any(|candidate| *candidate == branch.as_slice())
+                })
         })
-        .map(|(name, _)| name.clone())
+    };
+    let export_forms: &[&[&[u8]]] = &[
+        &[b"__declspec", b"dllexport"],
+        &[b"__declspec", b"dllimport"],
+        &[b"__attribute__", b"visibility", b"default"],
+        &[b"__attribute__", b"visibility", b"hidden"],
+        &[b"__attribute__", b"dllexport"],
+        &[b"__attribute__", b"dllimport"],
+    ];
+    let syntax_forms: &[&[&[u8]]] = &[
+        &[b"noexcept"],
+        &[b"override"],
+        &[b"__attribute__", b"deprecated"],
+        &[b"__declspec", b"deprecated"],
+    ];
+    let mut exports = definitions
+        .keys()
+        .filter(|name| export_name(name) && replacements_are(name, export_forms))
+        .cloned()
         .collect::<BTreeSet<_>>();
-    loop {
-        let before = syntax.len();
-        for (name, aliases) in &definitions {
-            if aliases.iter().any(|alias| syntax.contains(alias)) {
-                syntax.insert(name.clone());
+    let mut syntax = definitions
+        .keys()
+        .filter(|name| syntax_name(name) && replacements_are(name, syntax_forms))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let close_aliases = |roles: &mut BTreeSet<Vec<u8>>| {
+        loop {
+            let before = roles.len();
+            for (name, branches) in &definitions {
+                let mut saw_alias = false;
+                let all_branches_safe = branches.iter().all(|branch| {
+                    if branch.is_empty() {
+                        return true;
+                    }
+                    if branch.len() == 1 && roles.contains(&branch[0]) {
+                        saw_alias = true;
+                        return true;
+                    }
+                    false
+                });
+                if all_branches_safe && saw_alias {
+                    roles.insert(name.clone());
+                }
+            }
+            if roles.len() == before {
+                break;
             }
         }
-        if syntax.len() == before {
-            break;
-        }
-    }
+    };
+    close_aliases(&mut exports);
+    close_aliases(&mut syntax);
     (exports, syntax)
 }
 
@@ -980,8 +994,7 @@ fn clang_macro_usage_masks(
     if matches!(
         node.kind(),
         "identifier" | "type_identifier" | "field_identifier" | "namespace_identifier"
-    )
-        && let Some(token) = source.get(node.byte_range())
+    ) && let Some(token) = source.get(node.byte_range())
         && (syntax_macros.contains(token) || export_macros.contains(token))
         && !is_preprocessor_directive_token(node)
         && !is_clang_export_macro_site(node, source, export_macros)
@@ -1032,7 +1045,9 @@ fn is_preprocessor_directive_token(mut node: Node<'_>) -> bool {
             && ["name", "condition", "path"]
                 .iter()
                 .filter_map(|field| parent.child_by_field_name(field))
-                .any(|field| field.start_byte() <= node.start_byte() && field.end_byte() >= node.end_byte())
+                .any(|field| {
+                    field.start_byte() <= node.start_byte() && field.end_byte() >= node.end_byte()
+                })
         {
             return true;
         }
@@ -1289,30 +1304,31 @@ fn captured_definitions<'a>(
         };
         let owner_node = captured_owner_node(language, node, name);
         let name_node = name;
-        let binding_identity = if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
-            let extent = if language == SourceLanguage::Go {
-                go_declaration_extent(node, name_node)
-            } else {
-                owner_node
-            };
-            SourceBindingIdentity::Exact(
-                SourceBindingCapture::new(
-                    u32::try_from(extent.start_byte())
-                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
-                    u32::try_from(extent.end_byte())
-                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
-                    u32::try_from(name_node.start_byte())
-                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
-                    u32::try_from(name_node.end_byte())
-                        .map_err(|_| SyntaxError::TooManySourceBytes)?,
+        let binding_identity =
+            if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
+                let extent = if language == SourceLanguage::Go {
+                    go_declaration_extent(node, name_node)
+                } else {
+                    owner_node
+                };
+                SourceBindingIdentity::Exact(
+                    SourceBindingCapture::new(
+                        u32::try_from(extent.start_byte())
+                            .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                        u32::try_from(extent.end_byte())
+                            .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                        u32::try_from(name_node.start_byte())
+                            .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                        u32::try_from(name_node.end_byte())
+                            .map_err(|_| SyntaxError::TooManySourceBytes)?,
+                    )
+                    .ok_or_else(|| {
+                        SyntaxError::Declaration("captured name is outside its owner".to_owned())
+                    })?,
                 )
-                .ok_or_else(|| {
-                    SyntaxError::Declaration("captured name is outside its owner".to_owned())
-                })?,
-            )
-        } else {
-            SourceBindingIdentity::Legacy
-        };
+            } else {
+                SourceBindingIdentity::Legacy
+            };
         let name = node_text(name_node, text).trim();
         let line = NonZeroU32::new(
             u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX),
@@ -1410,27 +1426,43 @@ fn captured_owner_node<'a>(
 /// enters this producer proof. The syntax node used for containment is kept
 /// separately, so narrowing a value's identity does not invent containment.
 fn go_declaration_extent<'a>(definition: Node<'a>, name: Node<'a>) -> Node<'a> {
-    if !matches!(definition.kind(), "type_spec" | "type_alias" | "var_spec" | "const_spec") {
+    if !matches!(
+        definition.kind(),
+        "type_spec" | "type_alias" | "var_spec" | "const_spec"
+    ) {
         return definition;
     }
     if matches!(definition.kind(), "var_spec" | "const_spec") {
         let mut cursor = definition.walk();
-        if definition.children_by_field_name("name", &mut cursor).filter(|node| node.is_named()).count() > 1 {
+        if definition
+            .children_by_field_name("name", &mut cursor)
+            .filter(|node| node.is_named())
+            .count()
+            > 1
+        {
             return name;
         }
     }
     let mut parent = definition.parent();
     while let Some(node) = parent {
-        if matches!(node.kind(), "type_declaration" | "var_declaration" | "const_declaration") {
+        if matches!(
+            node.kind(),
+            "type_declaration" | "var_declaration" | "const_declaration"
+        ) {
             let mut cursor = node.walk();
             let mut specs = 0;
             for child in node.named_children(&mut cursor) {
-                if matches!(child.kind(), "type_spec" | "type_alias" | "var_spec" | "const_spec") {
+                if matches!(
+                    child.kind(),
+                    "type_spec" | "type_alias" | "var_spec" | "const_spec"
+                ) {
                     specs += 1;
                 } else if child.kind() == "var_spec_list" {
                     let mut nested = child.walk();
-                    specs += child.named_children(&mut nested)
-                        .filter(|spec| spec.kind() == "var_spec").count();
+                    specs += child
+                        .named_children(&mut nested)
+                        .filter(|spec| spec.kind() == "var_spec")
+                        .count();
                 }
             }
             return if specs == 1 { node } else { definition };
