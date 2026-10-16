@@ -763,7 +763,7 @@ fn worst_shelf_answer() -> Answer {
             ShelfEntry::new(
                 Identity::parse(&format!("/workspace/مرحبا/project_{index}/src/東京")),
                 Readiness::Indexing {
-                    rows: RowCount::new(index as u64 * 17),
+                    rows: Some(RowCount::new(index as u64 * 17)),
                 },
             )
         })

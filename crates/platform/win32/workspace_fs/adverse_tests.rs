@@ -1532,7 +1532,7 @@ fn forged_directory_buffer(records: &[(&str, [u8; 16])], capacity_words: usize) 
 
 fn decode(buffer: &[u64], maximum: usize) -> io::Result<Vec<EnumeratedEntry>> {
     let mut names = Vec::new();
-    decode_directory_records(buffer, &mut names, maximum)?;
+    decode_directory_records(buffer, &mut names, maximum, &mut || Ok(()))?;
     Ok(names)
 }
 
@@ -1671,7 +1671,7 @@ fn an_aligned_next_record_cannot_overlap_the_current_header_or_name() {
         buffer[0] = (buffer[0] & !u64::from(u32::MAX)) | u64::from(next);
         let mut names = Vec::new();
         assert_eq!(
-            decode_directory_records(&buffer, &mut names, 10)
+            decode_directory_records(&buffer, &mut names, 10, &mut || Ok(()))
                 .expect_err("aligned offsets inside this record are still malformed")
                 .kind(),
             io::ErrorKind::InvalidData

@@ -23,10 +23,24 @@ fn analyzed(
 
 /// Renders one declaration as `kind name`, with the declaration holding it
 /// (`in Holder`) or the type it attaches to (`on Type`) when there is one.
-fn rendered(declaration: &SourceDeclaration) -> String {
+fn rendered(declaration: &SourceDeclaration, declarations: &[SourceDeclaration]) -> String {
     let container = match declaration.container() {
         Container::Module => String::new(),
         Container::Enclosing { name, .. } => format!(" in {name}"),
+        Container::Binding { binding } => {
+            let mut parents = declarations.iter().filter(|candidate| matches!(
+                candidate.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(capture) if capture.binding() == *binding
+            ));
+            let parent = parents
+                .next()
+                .expect("captured parent binding is present in this source");
+            assert!(
+                parents.next().is_none(),
+                "captured parent binding is unique"
+            );
+            format!(" in {}", parent.name())
+        }
         Container::Attached { type_name } => format!(" on {type_name}"),
     };
     format!(
@@ -41,7 +55,10 @@ fn assert_rows(
     declarations: &[SourceDeclaration],
     expected: &[&str],
 ) -> Result<(), Box<dyn Error>> {
-    let rows = declarations.iter().map(rendered).collect::<Vec<_>>();
+    let rows = declarations
+        .iter()
+        .map(|declaration| rendered(declaration, declarations))
+        .collect::<Vec<_>>();
     let missing = expected
         .iter()
         .filter(|entry| !rows.iter().any(|row| row == *entry))
@@ -58,7 +75,10 @@ fn assert_absent(
     declarations: &[SourceDeclaration],
     forbidden: &[&str],
 ) -> Result<(), Box<dyn Error>> {
-    let rows = declarations.iter().map(rendered).collect::<Vec<_>>();
+    let rows = declarations
+        .iter()
+        .map(|declaration| rendered(declaration, declarations))
+        .collect::<Vec<_>>();
     let present = forbidden
         .iter()
         .filter(|entry| rows.iter().any(|row| row == *entry))
@@ -469,7 +489,10 @@ fn rust_macro_items_leave_ordinary_files_unchanged() -> Result<(), Box<dyn Error
         "src/lib.rs",
         "pub fn run() {\n    println!(\"hello\");\n}\n",
     )?;
-    let rows = plain.iter().map(rendered).collect::<Vec<_>>();
+    let rows = plain
+        .iter()
+        .map(|declaration| rendered(declaration, &plain))
+        .collect::<Vec<_>>();
     assert_eq!(rows, ["module lib", "function run"]);
     Ok(())
 }
