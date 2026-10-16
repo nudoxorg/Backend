@@ -6,16 +6,16 @@ use crate::listener::{ListenerConfig, ListenerShutdown, UnixListenerService};
 use crate::service::LocaldService;
 use backend_client::{LocalSubscriptionTransport, Session};
 use backend_engine::{
-    CursorRead, LocalSubscriptionResponse, SnapshotHydrator, SnapshotPageClaim,
-    WorkspaceViewProducerAdmission,
+    LocalSubscriptionResponse, SnapshotHydrator, SnapshotPageClaim, WorkspaceViewProducerAdmission,
 };
+use backend_library::CursorRead;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::Instant;
 
 /// Observation only: copied from the real daemon after actual public commands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ReadHeadIdentity {
-    workspace: [u8; 32],
+    workspace: backend_version::WorkspaceRoot,
     commit: [u8; 32],
     sequence: u64,
     view: [u8; 32],
@@ -26,7 +26,7 @@ impl ReadHeadIdentity {
         let owner = daemon.engine().daemon().owner();
         let library = daemon.engine().daemon().library();
         Self {
-            workspace: *owner.head().root().as_bytes(),
+            workspace: owner.head().root(),
             commit: *owner.head().commit().id().as_bytes(),
             sequence: owner.head().sequence(),
             view: *library.view().root().as_bytes(),
@@ -790,8 +790,8 @@ fn source_edit_after_durable_prepared_barrier_is_refused_before_final_grant() {
         .source_capture
         .expect("same independently captured source");
     assert_eq!(
-        capture.request_identity(),
-        original_capture.request_identity()
+        capture, original_capture,
+        "exact durable source capture is retained"
     );
     assert_eq!(capture.operation_key(), original_capture.operation_key());
     assert!(matches!(
@@ -998,7 +998,7 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
             .sql_projection
             .writer_mut()
             .expect("original projection writer returned");
-        let root = backend_version::WorkspaceRoot::from_bytes(first_head.workspace);
+        let root = first_head.workspace;
         let semantic = commands
             .semantic_authority
             .detach_index_writer(root)
@@ -1049,6 +1049,6 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
             panic!("actual next write uses original returned custody");
         };
         assert!(receipt.workspace_sequence() > first_head.sequence);
-        assert_ne!(receipt.workspace_root(), &first_head.workspace);
+        assert_ne!(receipt.workspace_root(), first_head.workspace.as_bytes());
     }
 }
