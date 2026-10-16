@@ -525,7 +525,6 @@ mod graph_admission_tests {
         // More cursor for the unreturned edge.
         let fixture = checked_graph_fixture(2);
         let request = graph_request(&fixture, 5);
-        let source = fixture.source.coordinate.clone();
         let command = SurfaceCommand::PackageGraphPage {
             request: request.clone(),
         };
@@ -595,8 +594,9 @@ mod graph_admission_tests {
                 ],
                 "the valid graph adapts at the published page-size sequence"
             );
-            let remaining =
-                checked_graph_page(&request.clone().with_cursor(cursor.clone()), &fixture);
+            let mut continuation = request.clone();
+            continuation.limit = cursor.limit;
+            let remaining = checked_graph_page(&continuation.with_cursor(cursor.clone()), &fixture);
             assert_eq!(remaining.rows.as_ref(), &fixture.rows[1..]);
             assert_eq!(remaining.terminal, PackageGraphPageTerminal::Complete);
             let restored = session.request_context().expect("restored original scope");
@@ -770,12 +770,39 @@ mod graph_admission_tests {
                     .shell()
                     .expect("observed CLI executable and attachment");
                 assert!(shell.contains(" --format json "));
-                assert!(shell.contains(&paths.project().to_string_lossy().to_string()));
-                assert!(shell.contains(&paths.data().to_string_lossy().to_string()));
-                assert!(shell.contains(&paths.endpoint().to_string_lossy().to_string()));
+                assert_eq!(
+                    shell.contains(" --passive "),
+                    mode == backend_present::StartupRecoveryMode::Existing
+                );
+                let command = shell
+                    .strip_prefix("(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; ")
+                    .and_then(|command| command.strip_suffix(')'))
+                    .expect("explicit-workspace shell context");
+                let parsed = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(format!("set -- {command}; printf '%s\\000' \"$@\""))
+                    .output()
+                    .expect("parse recovery argv without executing CLI");
+                assert!(parsed.status.success());
+                let words = parsed
+                    .stdout
+                    .split(|byte| *byte == 0)
+                    .filter(|word| !word.is_empty())
+                    .map(|word| String::from_utf8(word.to_vec()).expect("UTF-8 shell argv"))
+                    .collect::<Vec<_>>();
+                for (flag, expected) in [
+                    ("--project", paths.project().to_string_lossy().to_string()),
+                    ("--workspace", paths.data().to_string_lossy().to_string()),
+                    ("--endpoint", paths.endpoint().to_string_lossy().to_string()),
+                ] {
+                    assert!(words.windows(2).any(|pair| {
+                        pair[0] == flag && pair[1] == expected
+                    }));
+                }
                 assert!(shell.contains("unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE"));
                 assert!(!shell.contains("authority.secret"));
                 assert!(!shell.contains("not-displayed-graph-authority"));
+                assert!(fault.affordance().tool_call().is_none());
             }
         }
         assert!(
