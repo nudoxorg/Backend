@@ -244,17 +244,27 @@ class Owner:
             if self.process is None:
                 return
             if self.process.poll() is None:
+                log("owner stop: waiting for idle retirement")
                 try:
                     self.process.wait(timeout=20)
                 except subprocess.TimeoutExpired:
+                    log("owner stop: idle retirement timed out; sending SIGKILL")
                     os.killpg(self.process.pid, signal.SIGKILL)
+                    reap_started = time.monotonic()
+                    log("owner stop: waiting to reap SIGKILLed process")
                     self.process.wait()
+                    log(f"owner stop: reaped SIGKILLed process after {time.monotonic() - reap_started:.3f}s")
                     raise RuntimeError("backend-locald failed to retire through its idle timeout")
+                else:
+                    log("owner stop: idle retirement completed")
             if self.process.returncode != 0:
                 raise RuntimeError(f"backend-locald exited {self.process.returncode}")
         finally:
+            cleanup_started = time.monotonic()
+            log("owner stop: closing log and removing private state")
             self.log.close()
             self.state_directory.cleanup()
+            log(f"owner stop: private state cleanup completed after {time.monotonic() - cleanup_started:.3f}s")
 
 
 def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
@@ -282,15 +292,27 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
 
 def run_cli(owner: Owner, project: Path, args: list[str], timeout: float) -> tuple[dict, float]:
     started = time.monotonic()
-    result = subprocess.run(
-        [owner.bin_dir / "backend-cli", "--endpoint", str(owner.endpoint), "--project", str(project), "--json", *args],
-        env=owner.env,
-        cwd=project,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    operation = f"cli {args[0]}" if args else "cli"
+    log(f"{operation}: started (timeout={timeout:g}s)")
+    outcome = "completed"
+    try:
+        result = subprocess.run(
+            [owner.bin_dir / "backend-cli", "--endpoint", str(owner.endpoint), "--project", str(project), "--json", *args],
+            env=owner.env,
+            cwd=project,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        outcome = "timed out"
+        raise
+    except BaseException:
+        outcome = "raised"
+        raise
+    finally:
+        log(f"{operation}: {outcome} after {time.monotonic() - started:.3f}s")
     seconds = time.monotonic() - started
     try:
         body = json.loads(result.stdout) if result.stdout.strip() else None
@@ -345,6 +367,8 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
 
     started = time.monotonic()
     deadline = started + timeout
+    log(f"MCP interactive: started ({len(calls)} calls; timeout={timeout:g}s)")
+    outcome = "completed"
     answers = []
     pending = b""
     continuation_id = 10000
@@ -414,6 +438,9 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
             process.stdin.close()
             process.wait(timeout=max(0.01, deadline - time.monotonic()))
             return {"tools": tools, "calls": answers, "exit": process.returncode}, time.monotonic() - started
+        except BaseException:
+            outcome = "raised"
+            raise
         finally:
             selector.close()
             # Match subprocess.run(timeout=...) cleanup for this owned client.
@@ -423,6 +450,7 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
             process.stdout.close()
             if not process.stdin.closed:
                 process.stdin.close()
+            log(f"MCP interactive: {outcome} after {time.monotonic() - started:.3f}s")
 
 
 def require_cli_success(name: str, answer: dict) -> None:
