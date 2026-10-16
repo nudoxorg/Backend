@@ -8,9 +8,9 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 41397,
+          "bytes": 40971,
           "bytesPerToken": 4,
-          "estimatedTokens": 10350
+          "estimatedTokens": 10243
         },
         "declarations": 200,
         "detail": "summary",
@@ -32,67 +32,67 @@
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::76310327b38f938f1905bef9a1de98d45a4dc5543b5aebc757a8f49cd2c40257::unlink",
                     "key": "45388152",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "unlink"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8b8b57508adbc6c9fdd7e90d0dbb719395e47dac69f42bd9891756bc9fbc6386::__init__",
                     "key": "954ed6de",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__init__"
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5a3b2ee64106834162d0f48eecd7f9fc370f602979071bb5b0df75881dda9d99::_Link",
                 "key": "d5a96751",
-                "kind": "struct",
+                "kind": "class",
                 "name": "_Link"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0510f43534ebcb8ded74b815ddb6aeab5b56e16485fddcd8490accd4e65f33af::__init__",
                 "key": "2564f3ed",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::71891f6df171fe02e10729e3f8a49f0030b6c465d03ed3bedbf05f23bf7792e7::__setitem__",
                 "key": "4f114bfb",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5e4739eef01f4c2278de3f51a5eb0d82cb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "5f1593f1",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f0e1b5ffc6dca894e696ee142aea92fab1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "69b40be5",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0e795aafd95e83f64f8d3b08c34d5ff4509d4c1bf483ceb0f48e06b2d336fd23::__delitem__",
                 "key": "8fe58bc3",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ce3278be492004769a761a3ff121971d8c9fdb9a4e42bd7d53442614e03b209a::__touch",
                 "key": "a89a23b2",
-                "kind": "function",
+                "kind": "method",
                 "name": "__touch"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1fedae7c15f1e1bf33f1aa19ca834dfc85463dd99b90b08635bdeb7e02bca48::__getitem__",
                 "key": "af5bc63f",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6d15873e6f72d5bd5f0ee22c7c359df80eb0ef43389222f71a6ba35b9e9624ee::LFUCache",
             "key": "05ec253e",
-            "kind": "struct",
+            "kind": "class",
             "name": "LFUCache"
           },
           {
@@ -102,97 +102,97 @@
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5ef923c8e556dc7d628f6aeff90a729444682d6c588fd8e28330ae87caada1fe::__exit__",
                     "key": "058003fe",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__exit__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5603c68f794acc5f31f7cf88f39f56aa4d28d36563b503129ccee3b8d4a7b322::__init__",
                     "key": "2ce78bcd",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__init__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::dcfe5b566b6554f27a91bd0db967237a3aad56358352dd359b42ae6d998f498b::__call__",
                     "key": "465d5b5f",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__call__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7de54cead446aa596fe8aedaf7d8fd873807abc07243dcf8fc51a0c6c9a2dd34::__getattr__",
                     "key": "613c0f34",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__getattr__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5ed1087ad035036359ef5e3d8ddf881baf0faca3a489980e0831810f7057e7d5::__reduce__",
                     "key": "860ce99a",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__reduce__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e81d3548d4254089b9353c524009f345d29619341eb8682742677131aa279032::__enter__",
                     "key": "e7cff939",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__enter__"
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ffc0345b1a844a5d8c563d7f6b49a511030f8d4ada44ba9af0a258ecb5f196a9::_Timer",
                 "key": "174b21e8",
-                "kind": "struct",
+                "kind": "class",
                 "name": "_Timer"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5b8b1da503fc10e8660176c1dfff0cd89731f72d4b90199da5864cbf3bc1c67b::expire",
                 "key": "0ce369ff",
-                "kind": "function",
+                "kind": "method",
                 "name": "expire"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4b912177c3b8bf982b3e5faf8f0d94ff509d2d7a0b31b5c7d165567dab12cf4c::setdefault",
                 "key": "3ec1635b",
-                "kind": "function",
+                "kind": "method",
                 "name": "setdefault"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8c14108aa5dfb53ba992ade0801cc2ff2f60ebe58e19f9f9091fecaaf5036514::__init__",
                 "key": "49377141",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1510afec2139b7c9fb516b59c176ffc2f33a91f89d867de7bc7b1d8ef28e12f8::get",
                 "key": "61510edc",
-                "kind": "function",
+                "kind": "method",
                 "name": "get"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8efcdc15abd9bc5a87be0c721f5e3b38ca3272214e57a24b89fb4928633a2e8e::__len__",
                 "key": "68148995",
-                "kind": "function",
+                "kind": "method",
                 "name": "__len__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::30be9e83fa29cb902db8d9f425e29fe0b1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "ac82a68f",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::59d16810741741164030c5e3ddfcf190a96a739c179a27604b913a5bd28bf356::pop",
                 "key": "bbe5fab2",
-                "kind": "function",
+                "kind": "method",
                 "name": "pop"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5e750de136f9091b288bfd989d7df060b0efd7b2b650023512cd87b8cb40b1a4::__repr__",
                 "key": "d43693ed",
-                "kind": "function",
+                "kind": "method",
                 "name": "__repr__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f0471465851e75d4206fad296ca41d74d65723ad59f2c995de242ea197e34c14::_TimedCache",
             "key": "0f87fd2d",
-            "kind": "struct",
+            "kind": "class",
             "name": "_TimedCache"
           },
           {
@@ -200,49 +200,49 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1c8472a22af662fa6c4b2e81b0bd752232b3322c33fe824301c1bdf19bb82864::__init__",
                 "key": "1648f8ce",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fbc6d755b928df195d782606f7e6d4ddca601e0df4224ef297ff14432856d831::__touch",
                 "key": "1dede205",
-                "kind": "function",
+                "kind": "method",
                 "name": "__touch"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1f74d037c476e576e35cca35fb5792b356a7af6422a064d039ee2dbf372425a5::__setitem__",
                 "key": "75587f23",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::aa2f29b81edc6b473ba40cdb37ff08fc2dac12b73bd5d20f8716aca3be79c086::__delitem__",
                 "key": "b3ef69fd",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8207ccc804bde211a44cc8ed1de0c7dbb1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "b77eb895",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f8d0009c0146b701a329225e4a057b9ccb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "d6cff73d",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::cb0b6cf790df446664a03b57cf78c72a429aa2cbfa5cdda40a95a70a96ca9356::__getitem__",
                 "key": "eb293f90",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ab27c782025595169a8020e05302a9e5246b7e321651f41b86609be3daf922b7::LRUCache",
             "key": "160bd4a9",
-            "kind": "struct",
+            "kind": "class",
             "name": "LRUCache"
           },
           {
@@ -252,91 +252,91 @@
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c6baafbd5ac384a15c0568b83982dd09632f078944e6711d5ca6d714ab654938::__lt__",
                     "key": "0d475928",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__lt__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::869c84218a7003b12114d1a8fbc0616e14a90865e6607d6f7f34e5b56241132e::__init__",
                     "key": "1166b501",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__init__"
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4198560f9b623457579c7fb93b182b6a83e4b2b14048326f7927279542100df9::_Item",
                 "key": "5cd1f01b",
-                "kind": "struct",
+                "kind": "class",
                 "name": "_Item"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c57b31b3ce18ededefe3ec13d118e31db1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "18ddb6ef",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2b27df0442b717477a4cafe7941b759d88e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                 "key": "20d8ba8b",
-                "kind": "function",
+                "kind": "method",
                 "name": "__iter__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::268697dbf26d69fba68b512f486fe24556fd5c4f06eec64ce0502dd8d4165f74::__init__",
                 "key": "3535f7a7",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0461bd93c5c438109f8e74839ae5c587f3519b07549fa152755a71a0e0dcddda::__delitem",
                 "key": "3d7e9ff3",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::058c4bf9a6a1c0f848c68cfb409c0d904cda0d99b3a76929449d0100bbbd09ca::__delitem__",
                 "key": "4afd7b92",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5aaaa38ce52b40f00d5ac47735139effaebe14e98662b418df093a5d911ff0e3::__setitem__",
                 "key": "57aac914",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::242e621dbda0db2f91c028583c60b1bde65ab43c01029c83384cb78de30d7d90::__getitem__",
                 "key": "96a044e2",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::36db4b32c4446fd1833ef5d324a8ff37cb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "9ab5f2f3",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b8df1107cd145633f56d7fef83d150a1aa5d4ada9453c4b97a2e92c4092b9709::__contains__",
                 "key": "9b838041",
-                "kind": "function",
+                "kind": "method",
                 "name": "__contains__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::81678108977e43c0213277856454ed4ae331be572e7b4277e45b823b90ab1ac7::__getitem",
                 "key": "d2bdd5fe",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::9e0d3bbc8be99cd1db03cf2e0dcaea34c2c26f7ee2bb238f53501ac798db6366::expire",
                 "key": "fde7ffb6",
-                "kind": "function",
+                "kind": "method",
                 "name": "expire"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ea99dd3d0a0d27eacc4318ee0f93176baf49312d2ef03f06ec3ebb5aec3821a7::TLRUCache",
             "key": "4eda6ed9",
-            "kind": "struct",
+            "kind": "class",
             "name": "TLRUCache"
           },
           {
@@ -344,31 +344,31 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::92c1dc233d12de0fd285ed69f02237140ed8d49619545b64b3f8e0cfb0cf9792::__setitem__",
                 "key": "0c4bc5df",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6bfe51adaf3362585fc81f7ddd684c9db7b2fbd92694f04169e752c5450efb05::pop",
                 "key": "8db87b77",
-                "kind": "function",
+                "kind": "method",
                 "name": "pop"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b9bf0e2dc5c11c91fecc40b7d966676990f57cb8b535f8843a509f62e9a318d3::__getitem__",
                 "key": "bd36c31a",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a7fbcdfd28ca69c3da19513ef6719922b1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "c1aebb8a",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2b6f974ae98503a0bca67d73e752b40ed96b0d46ceb6afc728d961de616259d0::_DefaultSize",
             "key": "52c74b46",
-            "kind": "struct",
+            "kind": "class",
             "name": "_DefaultSize"
           },
           {
@@ -376,37 +376,37 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::9e25407849a86892c4d243d8cd91c64b3ec7379497a98e595a58c8b1bbe5c359::__setitem__",
                 "key": "1e7abc06",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::25002de7f7846c2e37edf2daef68324ecb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "43fb1247",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4e240c77cbdfc3ce5c09f39626260b5db1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "64d6d320",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::87296528ab77a8cb8bc97edeab255021a4eff460e45a22989da7cfd74b71729e::__init__",
                 "key": "b3b68684",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e41cfb334f8b39500d65308fb89a44033da87ac72c446b59da7bfd141645745d::__delitem__",
                 "key": "f1999961",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fe8eb7230f6bd1a154c01bfb07c5a6c529d1bdc41d485c2e5a86371dc38fbe2a::RRCache",
             "key": "5c31191f",
-            "kind": "struct",
+            "kind": "class",
             "name": "RRCache"
           },
           {
@@ -414,37 +414,37 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::385377aeb96f565feb983829025f5805f7e1580618b9791a3da7dd4fbf8cbdfd::__delitem__",
                 "key": "2210ab1e",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6cfd6397d7d97cf2a9a7932c138c6392cb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "a7d190a8",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::87e1b340b86a455f4d3c969ec5991559c6823d3fd9b6e9d9f6ed5537f286fbe6::__init__",
                 "key": "b970943a",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::66ad2b04d8e1b820af975077d183e6b3b1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "f26a0906",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::89a7871c6d591490eabed56cf9a073f0c17c7bf90457815260455199d7747b9f::__setitem__",
                 "key": "f9c96c36",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f387b5c9db30f195509565c6210cde81d88ab213ca674761cb2f6040f8cfc724::FIFOCache",
             "key": "719fcdac",
-            "kind": "struct",
+            "kind": "class",
             "name": "FIFOCache"
           },
           {
@@ -454,97 +454,97 @@
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1afda342b93229824fd9e407b32e2a4d70217c18817a3e1bcd88684618833633::__init__",
                     "key": "8474750f",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__init__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::75b2a0543dc824b257747ca830c543885a4dc5543b5aebc757a8f49cd2c40257::unlink",
                     "key": "88e07b3f",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "unlink"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::23047c327022c58d89645a681cd5c8bbaf0faca3a489980e0831810f7057e7d5::__reduce__",
                     "key": "b43206b7",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__reduce__"
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::d85ddc3f2dcfbef3da1146ff570c5b32805df1716a450789e0059e8b7e08d504::_Link",
                 "key": "8a6a16a3",
-                "kind": "struct",
+                "kind": "class",
                 "name": "_Link"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::52b88aa4be6aa84aa722c3fea1cf3b2188e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                 "key": "17fd3ccb",
-                "kind": "function",
+                "kind": "method",
                 "name": "__iter__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::30cbc86d1e1e9dc30f1965597045918106b60bb62d6578c17c20f942f1dc31da::__setstate__",
                 "key": "4f6893f7",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setstate__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5de025f39d0ff72d832058b184a6483c17c3b80260b6854eec72b386132accb0::__init__",
                 "key": "5304da1b",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0fbf6bd2bbf2e4c20fd5f85fbcef3a5c1903b2da3b168b628c3236a0ae80cdcc::__contains__",
                 "key": "53741150",
-                "kind": "function",
+                "kind": "method",
                 "name": "__contains__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::26f7f3c2e52ab8ac5c8bf8f0903f4ce0eb870faf22c4f420a56275454cb77d4d::__setitem__",
                 "key": "62b03762",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::28b907ecb2e32a2896bec8e12717866505ab94f5f13963f736f1974067e924ce::__getlink",
                 "key": "7c56c0e0",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getlink"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::304bb0359c9c2134b143f29db46da9b354e52f6c3e44089ec34755545e74c60f::__getitem__",
                 "key": "9608cd4c",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c369b5a02f0687631b9aa3d1e242565bcb9873f2f05ad0268aa8b29e6650e50e::popitem",
                 "key": "9a5f1d5c",
-                "kind": "function",
+                "kind": "method",
                 "name": "popitem"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::02476e75ed5ac2598b2d60a579201939b86751735ca35371760ceb5701b183b9::__delitem__",
                 "key": "aa953115",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::bf2b914f3b319316d690c7bcedbe19ddb1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "be00a1a2",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5123d5f5bebee0faca8131cf6811e4f66092357a48b81c4bd2efe55a90c4396c::expire",
                 "key": "efc1572a",
-                "kind": "function",
+                "kind": "method",
                 "name": "expire"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache",
             "key": "c449f490",
-            "kind": "struct",
+            "kind": "class",
             "name": "TTLCache"
           },
           {
@@ -552,103 +552,103 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::d9baca4d6cfe58a718f622448624ba0c29907a35dd68f30047ed76856c347fa5::getsizeof",
                 "key": "011e6fc8",
-                "kind": "function",
+                "kind": "method",
                 "name": "getsizeof"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::3a3b258df6e0ee2838a98e9aeb1d4effdc404561acb4af4090b87bb3b0533468::setdefault",
                 "key": "0170eb0a",
-                "kind": "function",
+                "kind": "method",
                 "name": "setdefault"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6196367a5c13f4185664e186347fc876ece52aa5b11ff7f56ab4a0bde98c8a17::__getitem__",
                 "key": "0b9d8a23",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e5b60000ab1927a10c3e9c3958d57f0288e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                 "key": "1f30aa75",
-                "kind": "function",
+                "kind": "method",
                 "name": "__iter__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::12c3642d7a47386aa5942a006285e5df3d2053676da86e5834392ebd0c5385b3::__repr__",
                 "key": "2856f07d",
-                "kind": "function",
+                "kind": "method",
                 "name": "__repr__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ca84540f49a56f135e90b803fa258ea802c69c9f196469613e67981519850291::get",
                 "key": "613184e8",
-                "kind": "function",
+                "kind": "method",
                 "name": "get"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::add4ac5701822e2d10f3ce125177f4b750345761762d3451ff5b16858f9a4cfd::__setitem__",
                 "key": "71aab9ba",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b4a3ab1fce76418d20f6cdcfbb5b8af7564b3c9afb2f437dc8e902489c39d3ce::__contains__",
                 "key": "72c988cf",
-                "kind": "function",
+                "kind": "method",
                 "name": "__contains__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b3f327806abf3b4cc001af51d56cc87fcf22453d50476d08adfec368d51fe6a6::pop",
                 "key": "85ee84a2",
-                "kind": "function",
+                "kind": "method",
                 "name": "pop"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::bc09e18cd10ffca584ec06f522d3cad7bc7bd0d072288e4899ae41d615dcd232::__init__",
                 "key": "8c0894dd",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6486f27a393d1efe16163dda4d4b6c2aae6c33cfe91697aa7f6af352412e3a6c::__missing__",
                 "key": "9352abed",
-                "kind": "function",
+                "kind": "method",
                 "name": "__missing__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b3f6c90025317639fbab49145be2013f2e560a12e6b6269ae178579a5115e4b4::__len__",
                 "key": "b7d55de6",
-                "kind": "function",
+                "kind": "method",
                 "name": "__len__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::64337cffb43bb0de9ba41309bdd9a379d0d4e147a10c9beaea5057f445c86650::__delitem__",
                 "key": "c7ea1e33",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c785d4be0ba3234724743faf55059723b1bf642b443b46f2eede1fa060a0d361::clear",
                 "key": "f69a2d21",
-                "kind": "function",
+                "kind": "method",
                 "name": "clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1fa18934fa5815cbee5c3c100630aff0cece98790e71f3537ecab71bc0dd48fb::Cache",
             "key": "db36a91e",
-            "kind": "struct",
+            "kind": "class",
             "name": "Cache"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::173f4461b10958852085ec8a3464e037246b7e321651f41b86609be3daf922b7::LRUCache",
             "key": "1795cc9f",
-            "kind": "struct",
+            "kind": "class",
             "name": "LRUCache"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::3c9e37441546efdac51c22e55d0fd3c60eb0ef43389222f71a6ba35b9e9624ee::LFUCache",
             "key": "7803257c",
-            "kind": "struct",
+            "kind": "class",
             "name": "LFUCache"
           },
           {
@@ -656,19 +656,19 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::88107129b12daea3558e13edfbdffe4047277b3dc81e5bb3a09f5f719803d7d0::__call__",
                 "key": "054ba56d",
-                "kind": "function",
+                "kind": "method",
                 "name": "__call__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::42c506e7baf0053843da88bad37930850855910cc69a5410f5e252a6f3bc6484::cache_clear",
                 "key": "c4efb65e",
-                "kind": "function",
+                "kind": "method",
                 "name": "cache_clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::aa44b5b6fbe938f8a0808367ded5047a0cb33339164d024873da3539cfff6e40::_cached_wrapper",
             "key": "8107fb6f",
-            "kind": "struct",
+            "kind": "class",
             "name": "_cached_wrapper"
           },
           {
@@ -676,25 +676,25 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4f521d6ab41241eb8fb263e156be74a6386709f2d5ba16f987fbc0ed7bbcd527::expire",
                 "key": "1e3b634d",
-                "kind": "function",
+                "kind": "method",
                 "name": "expire"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7b3a3d475512017d33c8eeca58a2a82e6b1e80514652321424d82c866b9d60e0::__init__",
                 "key": "30608c3f",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7b3a3d475512017d33c8eeca58a2a82e6e5e4bf9006ef8339bdb5d1c759f85f1::__init__",
                 "key": "c4786bbd",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::42a509c7e40b88c74af1a08a448fbfebaf49312d2ef03f06ec3ebb5aec3821a7::TLRUCache",
             "key": "88c7162e",
-            "kind": "struct",
+            "kind": "class",
             "name": "TLRUCache"
           },
           {
@@ -702,25 +702,25 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::660788e5732d0bf53a56c386605f55a5f2b813ec4e32fe4b31557901446b5858::__init__",
                 "key": "74a3e18a",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::10da215cbd8908a3dbeef415636ce4fbb5f51dd2f5b03c450d652828da5ba0df::expire",
                 "key": "7bfa3f5d",
-                "kind": "function",
+                "kind": "method",
                 "name": "expire"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::660788e5732d0bf53a56c386605f55a5ba637e53193965a91f7687c5718a2320::__init__",
                 "key": "c998b80d",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache",
             "key": "943a814f",
-            "kind": "struct",
+            "kind": "class",
             "name": "TTLCache"
           },
           {
@@ -728,73 +728,73 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4b4b67f6e3b7bf4bddf3a900049b8b1fa49c298524ed975ade2bfd4087c892b8::getsizeof",
                 "key": "090bfb6f",
-                "kind": "function",
+                "kind": "method",
                 "name": "getsizeof"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6598ee297207ca8c4c071a5ea77073afb567d23f8b67ef79b2568a4028d5f970::__setitem__",
                 "key": "2061c116",
-                "kind": "function",
+                "kind": "method",
                 "name": "__setitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6b385a878c0079069b358b76a5ca88a97ab036df787c396de62d16a030c9cdd5::pop",
                 "key": "39fe6e5e",
-                "kind": "function",
+                "kind": "method",
                 "name": "pop"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a49d6bcef713f6dc4ee217d08eade6dc5e44638081fc3c38ffc1cfc0bd758eb1::__init__",
                 "key": "74c0dc4f",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8a57427f03bc548d7810a7304b32dad60207e9f27ba92152b926b2a3e0cdc7e9::__len__",
                 "key": "7743bd09",
-                "kind": "function",
+                "kind": "method",
                 "name": "__len__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::9db8c030c8ae5ccc8ab934cd68cfbcb377fa75d3ff9631c08163e43822ec3b96::__missing__",
                 "key": "77be38bb",
-                "kind": "function",
+                "kind": "method",
                 "name": "__missing__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4960795fedc9a797f2e4e7bb6eabbe2db7c72784d1c8f9ac5fb1c6bb7e8bd0b2::__delitem__",
                 "key": "7f8afb6d",
-                "kind": "function",
+                "kind": "method",
                 "name": "__delitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6ba5fcd198395dfab2b3bd1547e8e18d77a31987b45a8009fabaf433784afc75::__getitem__",
                 "key": "85ae7874",
-                "kind": "function",
+                "kind": "method",
                 "name": "__getitem__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6b385a878c0079069b358b76a5ca88a95bbad13fd3ca149ff923904bc263e9e0::pop",
                 "key": "ab0ce9e6",
-                "kind": "function",
+                "kind": "method",
                 "name": "pop"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::39a90304a991dafe7bead928bf8244950e8c80551696569e2dfd23d9e59f3074::__iter__",
                 "key": "c615f9d8",
-                "kind": "function",
+                "kind": "method",
                 "name": "__iter__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::44f4933d664cc6c853660ec30fca9945fe7e7b5e3a72bf7987e46b926444114f::setdefault",
                 "key": "d133a0bb",
-                "kind": "function",
+                "kind": "method",
                 "name": "setdefault"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::41a3be0c8c411cfa7c7f828db95015a1cece98790e71f3537ecab71bc0dd48fb::Cache",
             "key": "9ff2da3d",
-            "kind": "struct",
+            "kind": "class",
             "name": "Cache"
           },
           {
@@ -804,49 +804,49 @@
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2a50afc7fa7912fa940e573a729f40f4c6dcf3da303c00129bb2f1ec06e3f021::__init__",
                     "key": "677e59cb",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__init__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::63812eb16b399585b04c2dbb003946df973fb5f87a281be1a03081a8d95b268d::__enter__",
                     "key": "f530b37b",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__enter__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::47fc1747a2697d7d2a722ec82ca30bde3d9621b0126c16048d48b59a9b1d03ef::__getattr__",
                     "key": "f8327ebb",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__getattr__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::76c457bd26caca68f7f404c351f58f9ba14f7dde1a19a9794f3a63576b005d20::__call__",
                     "key": "faa63f8c",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__call__"
                   },
                   {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e92808eebc1871c5e9a1c022e8e1458f90e4d4aca394688002315b766324740b::__exit__",
                     "key": "fc84684a",
-                    "kind": "function",
+                    "kind": "method",
                     "name": "__exit__"
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c6d193d02df7f63bd79d571c266c08a2030f8d4ada44ba9af0a258ecb5f196a9::_Timer",
                 "key": "1ddd25a3",
-                "kind": "struct",
+                "kind": "class",
                 "name": "_Timer"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::83b79023c4a84da270c1d394105abb91670bbc6f333011eb8d50983ec45caf0a::__init__",
                 "key": "e6462095",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::db87ced91e2d5e01e0a86cbb13b7b6f0d65723ad59f2c995de242ea197e34c14::_TimedCache",
             "key": "a26c21cf",
-            "kind": "struct",
+            "kind": "class",
             "name": "_TimedCache"
           },
           {
@@ -854,19 +854,19 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c2ce5726e829d5deed5b2daeb1c462febb85a32f5af8160f7bf5f7696cfa47d6::cache_info",
                 "key": "5ad63b3d",
-                "kind": "function",
+                "kind": "method",
                 "name": "cache_info"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6788037bbf9a0945fe14042416357b32c7b9107b2bd14126bea4b196818390b4::_cached_wrapper_info",
             "key": "a5845f7f",
-            "kind": "struct",
+            "kind": "class",
             "name": "_cached_wrapper_info"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::76a0068c15e286a5e793027aabbcc7aad88ab213ca674761cb2f6040f8cfc724::FIFOCache",
             "key": "b34fcd47",
-            "kind": "struct",
+            "kind": "class",
             "name": "FIFOCache"
           },
           {
@@ -874,25 +874,25 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a95f6f11b4768766205b2fcaee0e042ae4e4ba661d2f58271b28bf73e1bc057e::cache_info",
                 "key": "2aef1730",
-                "kind": "function",
+                "kind": "method",
                 "name": "cache_info"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::141876ff509106c50e235abb2ffcbcd6cc683efbce49311d856bfe1c3307f8ad::__get__",
                 "key": "4883cce7",
-                "kind": "function",
+                "kind": "method",
                 "name": "__get__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ab26e2716c1949b7d1f6c4b65369eed1a54517ac1709243011b1268b05532a62::_cachedmethod_wrapper_info",
             "key": "be58ec1e",
-            "kind": "struct",
+            "kind": "class",
             "name": "_cachedmethod_wrapper_info"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::eeef1aac1ab17ee0c3b28c674c0ec6f27deb99d01dcc28ef1016c5f36545482e::_CacheInfo",
             "key": "d0e257bf",
-            "kind": "struct",
+            "kind": "class",
             "name": "_CacheInfo"
           },
           {
@@ -900,31 +900,31 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2bac32b6d88375d6c88de7a855dceba4513fbb3285d4b5037a0565e91f4cf81b::wait_for",
                 "key": "4d43867a",
-                "kind": "function",
+                "kind": "method",
                 "name": "wait_for"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f058f031475b4e268d6caee3e42f36de6c52ed3be7766003557b47e75c7abb6a::notify_all",
                 "key": "6ea19043",
-                "kind": "function",
+                "kind": "method",
                 "name": "notify_all"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::08da8b221361092f75a05041be6a055e5284b0ba7874e87ea6ba57af8471361b::notify",
                 "key": "7c1e2a53",
-                "kind": "function",
+                "kind": "method",
                 "name": "notify"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ceeaff560fb171aa2c22013aaf2987dfa406a0fad22e7b5ba039f94a201384ef::wait",
                 "key": "b07f80d4",
-                "kind": "function",
+                "kind": "method",
                 "name": "wait"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a37aee171456db1020735580d2f77ec841c7abcd6a736e0872f6922b3a7a8041::_AbstractCondition",
             "key": "d18d2bfc",
-            "kind": "struct",
+            "kind": "class",
             "name": "_AbstractCondition"
           },
           {
@@ -932,13 +932,13 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::3a0ec636037609ecc22c882dae72ea6ced7337035644a03bb1d44df530d940fb::__init__",
                 "key": "9f95010e",
-                "kind": "function",
+                "kind": "method",
                 "name": "__init__"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8abc03e58ccec83a4326738edd59058c29d1bdc41d485c2e5a86371dc38fbe2a::RRCache",
             "key": "e334fbcd",
-            "kind": "struct",
+            "kind": "class",
             "name": "RRCache"
           },
           {
@@ -946,31 +946,31 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e179e996c3430374c6165a8107aca1d6f18cccc0b9d74b60edbd9efef062bafa::__get__",
                 "key": "4e696bfe",
-                "kind": "function",
+                "kind": "method",
                 "name": "__get__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ae18c701de6cf69e7c9c0d5dad87d3fd7ed6e4156194e2571d9b92c55506b064::__call__",
                 "key": "baafa38c",
-                "kind": "function",
+                "kind": "method",
                 "name": "__call__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::df72713224eed60f9c11ae65653f8e6f46285a92fe4d0108bacda66402a0eee0::__set_name__",
                 "key": "c6900413",
-                "kind": "function",
+                "kind": "method",
                 "name": "__set_name__"
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::21acf265e415a4ad4c20ff282048aaf58073dbc07dd7ec52c1910cc269343ea4::cache_clear",
                 "key": "ce7fde36",
-                "kind": "function",
+                "kind": "method",
                 "name": "cache_clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1acdf8e35af7850eb30888b17bc7391ed8ec41cb467bf97ad0dd00928a66428a::_cachedmethod_wrapper",
             "key": "fa9fc3c2",
-            "kind": "struct",
+            "kind": "class",
             "name": "_cachedmethod_wrapper"
           },
           {
@@ -978,13 +978,13 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ff9ad0296aa213fa7062f91d259f28294ad388d2524c5907d0f781457a25ef6e::Wrapper",
                 "key": "a3f4e622",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7b8508f8c734f76afa44668e00b0b51f377f29e062a54302060033b1581adfb7::Descriptor",
             "key": "113fe219",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
@@ -992,13 +992,13 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::847ba84bc52268a87057812616622170d1a17014db6ffc8d73b1d9d4ea7e81c5::Wrapper",
                 "key": "a220dacc",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2dd08cb353103204a3be9fab1d56191d7a89de334301968c1d81c4f882a52434::Descriptor",
             "key": "22708df5",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
@@ -1006,19 +1006,19 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::de9d02da35967f26b56556200ba0615d7b93e2142df308808f927a875c375d95::Wrapper",
                 "key": "c19eacf2",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::263834841cc1ac33d4eb6553b143768e7936d78629e0559cecf09790fb63ee4d::Descriptor",
             "key": "767aeaf4",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8037062f7744eb0ac0e208e35eeca0d451132004c8305bd106309ae690a2e65b::_DescriptorBase",
             "key": "7f20f87e",
-            "kind": "struct",
+            "kind": "class",
             "name": "_DescriptorBase"
           },
           {
@@ -1026,13 +1026,13 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::162b745d6908f57914ceb35240094aa635bed6a750ff40f046773f39bfdba7a4::Wrapper",
                 "key": "06dfd7a5",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::749cb077da386b480b8fa50afe1430d992bf0aa8b4408474b6487366fc4e28bf::Descriptor",
             "key": "a29556b8",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
@@ -1040,19 +1040,19 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::79bab44d7cb3d2d204fa27a38f25aa3895e6da1be344dd283ae94ed208790285::Wrapper",
                 "key": "8a5dcbc7",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::915b54fb76c1866d41300902b7d8fecf63e03f70ddc14a8de69ecd05bf016963::Descriptor",
             "key": "c8fe4110",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2e6605dee14fda9c2a8485c007c939127f044b4f38c4dd195542d70a1fe2d0c5::_WrapperBase",
             "key": "ca12121c",
-            "kind": "struct",
+            "kind": "class",
             "name": "_WrapperBase"
           },
           {
@@ -1060,42 +1060,50 @@
               {
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8e6c00e9587cfddfca57835b09c460c8c368bfc4679a93f81e70a0d94412f342::Wrapper",
                 "key": "6033cb2c",
-                "kind": "struct",
+                "kind": "class",
                 "name": "Wrapper"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b8318a54bbb1a5a952bd6193f9dea4b63beca1837bae571183ae0db1b31a92af::Descriptor",
             "key": "dbb2b13c",
-            "kind": "struct",
+            "kind": "class",
             "name": "Descriptor"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fdb01a53349559e11360b763564dfcccd4fcd83c0185df5259df418e1040bbb4::_DeprecatedDescriptorBase",
             "key": "e9388de0",
-            "kind": "struct",
+            "kind": "class",
             "name": "_DeprecatedDescriptorBase"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::337a48f18329f8c4d86f1fac5c9913ced847b7f31118606b5a5798df273fd0c3::_UnboundTTLCache",
             "key": "cd001ef5",
-            "kind": "struct",
+            "kind": "class",
             "name": "_UnboundTTLCache"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::45f56e027fe3aa27c8e101b55512eddb494f6f3bc1a934d534e493b182d96819::_cachetools_cache_wrapper",
             "key": "c536b1d0",
-            "kind": "struct",
+            "kind": "class",
             "name": "_cachetools_cache_wrapper"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6c9cd231499b0218d1f8881d53db21a8804de1110d0694e1a0972ed2b7dbc0b6::_HashedTuple",
             "key": "636274e9",
-            "kind": "struct",
+            "kind": "class",
             "name": "_HashedTuple"
           },
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8468661d2be7eeb7dea2c73658ebe058add96435c5958e625c3e42dccd703a1d::make_info",
+                    "key": "5c4ca73b",
+                    "kind": "function",
+                    "name": "make_info"
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f9718a559eee1fe38933d253518235f6eea57a222415d0bc4eedf88c1c654d35::decorator",
                 "key": "fbd55b59",
                 "kind": "function",
@@ -1110,6 +1118,14 @@
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a5d0cafbca2bdba9e4918bb548c72e8f6d8da64becc5aac7e4752408daa7b781::make_info",
+                    "key": "bedf360d",
+                    "kind": "function",
+                    "name": "make_info"
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2db443fa367f77ab190ad1d6acdcde49bee74ad2e60c09f7c4f22edb94585e71::decorator",
                 "key": "b98c8103",
                 "kind": "function",
@@ -1122,16 +1138,58 @@
             "name": "cachedmethod"
           },
           {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f3a18d9fc5c00ff0325e45c77fd370130b4786448db0c46a889189c8d306914d::_VT",
+            "key": "54e96588",
+            "kind": "constant",
+            "name": "_VT"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached",
             "key": "5960d130",
             "kind": "function",
             "name": "cached"
           },
           {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::51bffa88c7dc17998d74b051ea6af38789fa6a0d173f6c77c51bae6fd5c4388b::_T",
+            "key": "8be72dec",
+            "kind": "constant",
+            "name": "_T"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f6db4321c2d13412c3a632cc3b325d22645f958b10dfc540fd59893797f1c165::_KT",
+            "key": "8c58d1e5",
+            "kind": "constant",
+            "name": "_KT"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5896c7fb286f74377b0dcbcbbc63222aa28fc2650edc28c9d8503571e99bb1b2::cachedmethod",
             "key": "a1e452cd",
             "kind": "function",
             "name": "cachedmethod"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::73e51d4cddd4755bc1e720d7db377fec8ab9055614f5b4fe00b0a6bae3f46179::_KT2",
+            "key": "a49ce2c8",
+            "kind": "constant",
+            "name": "_KT2"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::26e6bf581cd358e72b58216548c141fcc2848dfb25c01749f587199846e5451c::_TT",
+            "key": "ca58ed05",
+            "kind": "constant",
+            "name": "_TT"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::224829ff403a0d5d517b331a95d1c7896165f01456c3caa23ad46e910e8f897f::_R",
+            "key": "cb7e75ea",
+            "kind": "constant",
+            "name": "_R"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ccbcf92a485dd4a792d33cb79d5905493e8c5b0d76bc25bc9a55dfda09c0a97d::_VT2",
+            "key": "d3fbce14",
+            "kind": "constant",
+            "name": "_VT2"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached",
@@ -1146,6 +1204,12 @@
             "name": "cachedmethod"
           },
           {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::826d883783d97b49e078b221751e9f277fbf43bc0c5555e84059d8a11f7fc20f::_P",
+            "key": "e7c40b11",
+            "kind": "constant",
+            "name": "_P"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08819d646b6a235a593ceec6f59bc8ecf62::cached",
             "key": "ecc95b6e",
             "kind": "function",
@@ -1158,18 +1222,28 @@
             "name": "cachedmethod"
           },
           {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::600b98f026cff4cd461abe3cf20a1b8d631e7e125691a62f7352bb8ec75a3fc7::wrapper",
-                "key": "5c28233a",
-                "kind": "function",
-                "name": "wrapper"
-              }
-            ],
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::001b3072b23e6485c2a63e5ce3fe85051ffdb25b52f3e0e5da917a244a65b18f::wrapper",
+            "key": "1d72c0bd",
+            "kind": "function",
+            "name": "wrapper"
+          },
+          {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::aa877ab73542dfd148c68885b8c994b59159dec4d7ad87f566d583d707f6e565::_uncached",
             "key": "1de17926",
             "kind": "function",
             "name": "_uncached"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::569e39297971b0c72235dde9ba7428f437960db00dc4548163b23adf0aa2bde1::cache_clear",
+            "key": "2134cf3f",
+            "kind": "function",
+            "name": "cache_clear"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5f67ec5615d01f03b43b7750c69641e237960db00dc4548163b23adf0aa2bde1::cache_clear",
+            "key": "2b54ec71",
+            "kind": "function",
+            "name": "cache_clear"
           },
           {
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8dc321a3d1cddb6198c74716eac848ba37960db00dc4548163b23adf0aa2bde1::cache_clear",
@@ -1178,14 +1252,6 @@
             "name": "cache_clear"
           },
           {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e8694a18eabec68369133c9972a7235b2a9c1d53b280b3cbe72ce413bb178b47::wrapper",
-                "key": "d003448c",
-                "kind": "function",
-                "name": "wrapper"
-              }
-            ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a4a929ac9d13d2b10b6bdfce205d98c75f1793dd94d2933e16d240e40deb9a66::_unlocked",
             "key": "30eedcbe",
             "kind": "function",
@@ -1210,18 +1276,6 @@
                 "key": "164cab36",
                 "kind": "function",
                 "name": "cache_info"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::172adc4a266030ed8764bcfd7cf5e0c15ad8e9424cb4d4b8f64542b9c9bc35cf::wrapper",
-                "key": "8a92462b",
-                "kind": "function",
-                "name": "wrapper"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::d5ec78ef66235f17870be2be4287539b37960db00dc4548163b23adf0aa2bde1::cache_clear",
-                "key": "bd5c912d",
-                "kind": "function",
-                "name": "cache_clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4144f991f1d0128e71885d8c7f7d7aea0f2c4aedd0e6d1065fd504beadcd9998::_locked_info",
@@ -1236,70 +1290,12 @@
                 "key": "48882259",
                 "kind": "function",
                 "name": "cache_info"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f725dcc56daa147a85460d34b7fce3186f06155c3f67af46250af510dec56a48::wrapper",
-                "key": "a37d9004",
-                "kind": "function",
-                "name": "wrapper"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::609e5bdf3d23ab875bf58104101691e537960db00dc4548163b23adf0aa2bde1::cache_clear",
-                "key": "b157e518",
-                "kind": "function",
-                "name": "cache_clear"
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6372869d7f2b215a53ec714bcdafc7128aeaed12d7c88aa9442dc29d3dab91f4::_unlocked_info",
             "key": "565e81e6",
             "kind": "function",
             "name": "_unlocked_info"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::001b3072b23e6485c2a63e5ce3fe85051ffdb25b52f3e0e5da917a244a65b18f::wrapper",
-                "key": "1d72c0bd",
-                "kind": "function",
-                "name": "wrapper"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::569e39297971b0c72235dde9ba7428f437960db00dc4548163b23adf0aa2bde1::cache_clear",
-                "key": "2134cf3f",
-                "kind": "function",
-                "name": "cache_clear"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::24cb2c28f2b59004414cf3980f51ee3ba18a73ab9d9f86e257272bd6fababb4b::cache_info",
-                "key": "c4fdf695",
-                "kind": "function",
-                "name": "cache_info"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e8e1b200fa70be81d96ed4b9b40baa9f52d41c13c1af8769afd6efc3969f686b::_condition_info",
-            "key": "5e1a5edb",
-            "kind": "function",
-            "name": "_condition_info"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5f67ec5615d01f03b43b7750c69641e237960db00dc4548163b23adf0aa2bde1::cache_clear",
-                "key": "2b54ec71",
-                "kind": "function",
-                "name": "cache_clear"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b18d40d79962c38e1c0d0d563742ab0f1169eecec76380edb2496acc1c6ebcd4::wrapper",
-                "key": "5d2c969f",
-                "kind": "function",
-                "name": "wrapper"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::bb10b26d258aa611ee964a2cce7816a01fb2bc18062819c3da8552730fd1aea3::_uncached_info",
-            "key": "9200c3e3",
-            "kind": "function",
-            "name": "_uncached_info"
           }
         ],
         "unnamed": 0
@@ -1310,9 +1306,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 390,
+          "bytes": 423,
           "bytesPerToken": 4,
-          "estimatedTokens": 98
+          "estimatedTokens": 106
         },
         "detail": "summary",
         "projects": [
@@ -1330,7 +1326,9 @@
             "readiness": "ready"
           }
         ],
-        "revision": "fa293232"
+        "readiness": "ready",
+        "revision": "f091812b",
+        "rows": 1863
       }
     },
     "cli search TTLCache": {
@@ -1338,9 +1336,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3699,
+          "bytes": 5309,
           "bytesPerToken": 4,
-          "estimatedTokens": 925
+          "estimatedTokens": 1328
         },
         "coverage": [
           {
@@ -1357,8 +1355,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -1413,9 +1410,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
+              "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967295,
             "state": "ready",
@@ -1468,9 +1465,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
+              "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967294,
             "state": "ready"
@@ -1478,7 +1475,9 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache",
+              "line": 4,
               "name": "TTLCache",
+              "path": "tests/test_ttl.py",
               "segments": [
                 "TTLCache"
               ],
@@ -1520,10 +1519,10 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › TTLCache"
+              "trail": "project \u203a tests/test_ttl.py:4 \u203a TTLCache"
             },
-            "kind": "type",
-            "language": "unknown",
+            "kind": "import",
+            "language": "python",
             "score": 4294967293,
             "state": "ready"
           },
@@ -1572,7 +1571,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › TTLCache"
+              "trail": "project \u203a TTLCache"
             },
             "kind": "type",
             "language": "unknown",
@@ -1626,16 +1625,123 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_ttl.py:28 › TTLCacheTest"
+              "trail": "project \u203a tests/test_ttl.py:28 \u203a TTLCacheTest"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967291,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:d4b6d764e490a1b623ba7b918974dc927026ae074ecbdef265507b417bd9e365::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b3e329d4a650c9a2d70d62ade1ed4cf8d7691a2b4017d811605ae4e0fe86377e::ttl",
+              "line": 540,
+              "name": "ttl",
+              "path": "src/cachetools/__init__.py",
+              "segments": [
+                "ttl"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  108,
+                  43,
+                  195,
+                  174,
+                  243,
+                  42,
+                  147,
+                  40,
+                  95,
+                  179,
+                  164,
+                  245,
+                  102,
+                  39,
+                  254,
+                  138,
+                  223,
+                  17,
+                  207,
+                  159,
+                  136,
+                  145,
+                  73,
+                  110,
+                  113,
+                  123,
+                  119,
+                  130,
+                  2,
+                  220,
+                  147,
+                  7
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/cachetools/__init__.py:540 \u203a ttl"
+            },
+            "kind": "property",
+            "language": "python",
+            "score": 4294967290,
+            "state": "ready",
+            "summary": "The time-to-live value of the cache's items."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::564afd559d002adf84f5166b178a149ecf565842902a31f4b6d6acac739e0e1a::self",
+              "name": "self",
+              "segments": [
+                "self"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  100,
+                  184,
+                  159,
+                  205,
+                  80,
+                  53,
+                  50,
+                  152,
+                  130,
+                  126,
+                  74,
+                  253,
+                  64,
+                  179,
+                  30,
+                  171,
+                  104,
+                  173,
+                  136,
+                  78,
+                  57,
+                  101,
+                  162,
+                  227,
+                  201,
+                  46,
+                  139,
+                  6,
+                  29,
+                  155,
+                  190,
+                  132
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a self"
+            },
+            "kind": "variable",
+            "language": "unknown",
+            "score": 4294967289,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:79c7026d6a29c2449c2e12526bc4843be00fdd131fee10cc48936fa7cd05dc4d::TTLCache",
               "name": "TTLCache",
               "segments": [
                 "TTLCache"
@@ -1643,45 +1749,96 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  212,
-                  182,
-                  215,
-                  100,
-                  228,
-                  144,
-                  161,
-                  182,
-                  35,
-                  186,
-                  123,
-                  145,
-                  137,
-                  116,
+                  121,
+                  199,
+                  2,
+                  109,
+                  106,
+                  41,
+                  194,
+                  68,
+                  156,
+                  46,
+                  18,
+                  82,
+                  107,
+                  196,
+                  132,
+                  59,
+                  224,
+                  15,
+                  221,
+                  19,
+                  31,
+                  238,
+                  16,
+                  204,
+                  72,
+                  147,
+                  111,
+                  167,
+                  205,
+                  5,
                   220,
-                  146,
-                  112,
-                  38,
-                  174,
-                  7,
-                  78,
-                  203,
-                  222,
-                  242,
-                  101,
-                  80,
-                  123,
-                  65,
-                  123,
-                  217,
-                  227,
-                  101
+                  77
                 ]
               },
               "shape": "external",
-              "trail": "project › TTLCache"
+              "trail": "project \u203a TTLCache"
             },
             "language": "unknown",
-            "score": 4294967290,
+            "score": 4294967288,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:f9534870248a04ad5d9076fae71ed828ad6b7c5913b3dba8ea8f1bfc962403f3::TTLCache",
+              "name": "TTLCache",
+              "segments": [
+                "TTLCache"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  249,
+                  83,
+                  72,
+                  112,
+                  36,
+                  138,
+                  4,
+                  173,
+                  93,
+                  144,
+                  118,
+                  250,
+                  231,
+                  30,
+                  216,
+                  40,
+                  173,
+                  107,
+                  124,
+                  89,
+                  19,
+                  179,
+                  219,
+                  168,
+                  234,
+                  143,
+                  27,
+                  252,
+                  150,
+                  36,
+                  3,
+                  243
+                ]
+              },
+              "shape": "external",
+              "trail": "project \u203a TTLCache"
+            },
+            "language": "unknown",
+            "score": 4294967287,
             "state": "ready"
           }
         ],
@@ -1696,9 +1853,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 15442,
+          "bytesExcludingCursor": 15397,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3861
+          "estimatedTokensExcludingCursor": 3850
         },
         "coverage": [
           {
@@ -1715,8 +1872,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -1772,7 +1928,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.py:738 › cached"
+              "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
             },
             "kind": "function",
             "language": "python",
@@ -1827,7 +1983,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:186 › cached"
+              "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
             },
             "kind": "function",
             "language": "python",
@@ -1881,7 +2037,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:177 › cached"
+              "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
             },
             "kind": "function",
             "language": "python",
@@ -1935,7 +2091,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:169 › cached"
+              "trail": "project \u203a src/cachetools/__init__.pyi:169 \u203a cached"
             },
             "kind": "function",
             "language": "python",
@@ -1945,7 +2101,9 @@
           {
             "identity": {
               "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b2ebfa22a71e877e0a9ae79e51abf00533c83cfdd3c49069e3be839222a386e7::cached",
+              "line": 6,
               "name": "cached",
+              "path": "tests/test_threading.py",
               "segments": [
                 "cached"
               ],
@@ -1987,10 +2145,10 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › cached"
+              "trail": "project \u203a tests/test_threading.py:6 \u203a cached"
             },
-            "kind": "type",
-            "language": "unknown",
+            "kind": "import",
+            "language": "python",
             "score": 4294967291,
             "state": "ready"
           },
@@ -2039,7 +2197,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › cached"
+              "trail": "project \u203a cached"
             },
             "kind": "type",
             "language": "unknown",
@@ -2093,9 +2251,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_cachedmethod.py:10 › Cached"
+              "trail": "project \u203a tests/test_cachedmethod.py:10 \u203a Cached"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967289,
             "state": "ready"
@@ -2147,9 +2305,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_classmethod.py:9 › Cached"
+              "trail": "project \u203a tests/test_classmethod.py:9 \u203a Cached"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967288,
             "state": "ready"
@@ -2201,9 +2359,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_cachedmethod.py:504 › Cached"
+              "trail": "project \u203a tests/test_cachedmethod.py:504 \u203a Cached"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967287,
             "state": "ready"
@@ -2255,9 +2413,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_cachedmethod.py:496 › Cached"
+              "trail": "project \u203a tests/test_cachedmethod.py:496 \u203a Cached"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967286,
             "state": "ready"
@@ -2309,9 +2467,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:153 › _cached_wrapper"
+              "trail": "project \u203a src/cachetools/__init__.pyi:153 \u203a _cached_wrapper"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967285,
             "state": "ready"
@@ -2363,9 +2521,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:165 › _cached_wrapper_info"
+              "trail": "project \u203a src/cachetools/__init__.pyi:165 \u203a _cached_wrapper_info"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967284,
             "state": "ready"
@@ -2417,9 +2575,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_classmethod.py:40 › CachedClassMethodTest"
+              "trail": "project \u203a tests/test_classmethod.py:40 \u203a CachedClassMethodTest"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967283,
             "state": "ready"
@@ -2471,9 +2629,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper"
+              "trail": "project \u203a src/cachetools/__init__.pyi:195 \u203a _cachedmethod_wrapper"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967282,
             "state": "ready"
@@ -2525,9 +2683,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info"
+              "trail": "project \u203a src/cachetools/__init__.pyi:211 \u203a _cachedmethod_wrapper_info"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "python",
             "score": 4294967281,
             "state": "ready"
@@ -2579,7 +2737,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/keys.py:64 › typedmethodkey"
+              "trail": "project \u203a src/cachetools/keys.py:64 \u203a typedmethodkey"
             },
             "kind": "function",
             "language": "python",
@@ -2634,7 +2792,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/keys.py:46 › methodkey"
+              "trail": "project \u203a src/cachetools/keys.py:46 \u203a methodkey"
             },
             "kind": "function",
             "language": "python",
@@ -2689,7 +2847,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:218 › cachedmethod"
+              "trail": "project \u203a src/cachetools/__init__.pyi:218 \u203a cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2743,7 +2901,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:237 › cachedmethod"
+              "trail": "project \u203a src/cachetools/__init__.pyi:237 \u203a cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2797,7 +2955,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.py:769 › cachedmethod"
+              "trail": "project \u203a src/cachetools/__init__.py:769 \u203a cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2852,7 +3010,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/cachetools/__init__.pyi:226 › cachedmethod"
+              "trail": "project \u203a src/cachetools/__init__.pyi:226 \u203a cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -2906,9 +3064,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_threading.py:86 › test_cached_locked"
+              "trail": "project \u203a tests/test_threading.py:86 \u203a test_cached_locked"
             },
-            "kind": "function",
+            "kind": "method",
             "language": "python",
             "score": 4294967274,
             "state": "ready"
@@ -2960,9 +3118,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_threading.py:54 › test_cached_stampede"
+              "trail": "project \u203a tests/test_threading.py:54 \u203a test_cached_stampede"
             },
-            "kind": "function",
+            "kind": "method",
             "language": "python",
             "score": 4294967273,
             "state": "ready"
@@ -3014,63 +3172,63 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_threading.py:104 › test_cachedmethod_locked"
+              "trail": "project \u203a tests/test_threading.py:104 \u203a test_cachedmethod_locked"
             },
-            "kind": "function",
+            "kind": "method",
             "language": "python",
             "score": 4294967272,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fd12c76417a75c2e32aef6adec106758c6b6fe025224c841b50eaca523571218::test_cachedmethod_stampede",
-              "line": 70,
-              "name": "test_cachedmethod_stampede",
-              "path": "tests/test_threading.py",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e179e996c3430374c6165a8107aca1d6f18cccc0b9d74b60edbd9efef062bafa::__get__",
+              "line": 204,
+              "name": "__get__",
+              "path": "src/cachetools/__init__.pyi",
               "segments": [
-                "test_cachedmethod_stampede"
+                "__get__"
               ],
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  106,
-                  44,
-                  101,
-                  225,
-                  177,
-                  89,
-                  81,
-                  171,
-                  162,
-                  189,
-                  72,
-                  211,
-                  132,
-                  144,
-                  58,
-                  242,
-                  134,
-                  180,
-                  109,
+                  78,
+                  105,
+                  107,
                   254,
-                  122,
-                  54,
-                  121,
-                  195,
-                  161,
-                  196,
-                  91,
-                  73,
-                  104,
-                  0,
-                  123,
-                  104
+                  229,
+                  86,
+                  26,
+                  2,
+                  115,
+                  102,
+                  238,
+                  18,
+                  59,
+                  49,
+                  109,
+                  228,
+                  22,
+                  9,
+                  150,
+                  30,
+                  94,
+                  158,
+                  133,
+                  49,
+                  2,
+                  213,
+                  72,
+                  132,
+                  191,
+                  251,
+                  131,
+                  35
                 ]
               },
               "shape": "semantic",
-              "trail": "project › tests/test_threading.py:70 › test_cachedmethod_stampede"
+              "trail": "project \u203a src/cachetools/__init__.pyi:204 \u203a __get__"
             },
-            "kind": "function",
+            "kind": "method",
             "language": "python",
             "score": 4294967271,
             "state": "ready"
@@ -3095,11 +3253,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
+                "bytes": 8188,
                 "bytesPerToken": 4,
+                "estimatedTokens": 2047,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 900,
-                "normalizedFrameBytesExcludingCounters": 3599,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3108,7 +3266,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `TTLCache` · struct · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · struct · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · type · unknown\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `TTLCache` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -3116,9 +3274,17 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2157,
+                "bytes": 6859,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 540
+                "estimatedTokens": 1715
+              },
+              "continuation_call": {
+                "arguments": {
+                  "cursor": "mcp2-1792131845-pc4-eJztWXuUHEXV79kk5HWMEk-IQKL1dQRmyexuvx-TDATCBiN5rMmyq66bSXVXdbbZnu6hu2fJhA1IzhcwkUeAxGgADRp5KYLRKEFEEaIBIiLyGfQc8qkI6ImocBAjmsRT_ZjpeYTdGPhDj_3H9KNu3br3d-_91e2e8z_SNZ9KUVTLU5fTQ9j1TMemszyXoV18aQl7ft5EdJbN0LpTKEAb0dnL6UGTnGkPQ1cfoDM0gj4kz3282qezdHf3ovlQH8B0hrbMgunTWT5DX2bayLmMSFUWYTO06XkljAIBhC1zCLtlOsuvzdAa9EyPztIGo7IKy2m8rPKQ43jE8AghFYmiqkAOIc7QkWjIgoJYThBZpBq6qMgsVBlVYASWpTO0XnI9xyUru1g3i5jO0ixGsgJVRsGsrEFGUqHEipwkKqIm6poisDonigyLeFVjIMNqWFNlQ-IMXtGwpECRzlS9oHXMygY2JKwKPKMiLCmGwCDJEHkJaxyHZEnSFU1GuiSJCicIoowwFGTREGVeVhiFztCaC219gM7SgiQyUEQc4hVdZGRd4lhNkyHCuirx0IC6rCFZYDRNV0SGkTVWRxKjQkk2NE5QOINA7qwiHnJQYDQWqkjReGgwKoc1VZQFURZVSdZZFYpIU3UoKBhhUeA4CXOKwam8xGJelhg6Q3v6AC7AIDau45DA8oYOecQh2ZAkXRUYA0MoGpwgSYwoGYwoYqyxSIGYNxQDGZBRWEPURJmVBYbXWZUoJUll65jOchn60hJ2y3nHMDwcJkn44LhSZS1JVIjyBWibBvZ8OmuXLGvt2rUpiqLGT75745kbpix65a61G4-yW4znxv_k-jl3Dr_5ffvK1q4zc7v2PDLS-GOvXPrycwdKR4zexcr-jeO_1rV_07nmu--7_655rb_qnTuYeumlJzdSxZl3nXXhkfGPTrr1quXbt83e-8iLE7Fy6---cv0V_RSVery3p4vtXbyAa6EoKkUtveXcfb-8Zd5X9s0b89yELz17xf49r9163c_KP7_h-d9__1Pjpl01zD-2Z9ycS-a0rNj7wg7-me0rljyx4pf3fueB-6YOzrno63-b-NHVc77x9d2nHPjHl97o-tyNN6yb7qrTrIduGv6_nZN3L77swtvMOyafs33zwyXn120f5l-b_cHznOWHHjaHb39uy5r16a9u_WkKUmNSIxlBUVTLVqolNcAX797b_j7zzkPXrJn6Qs-Om19es-6o9LGZ3_rtw687Z91x8VZqzJgrtm3pOtyzZ8mp9zzz-Ucye5--bcI3vwfg-Xsn_GLjpCe2pLdSFEX1zl_MtYyE1YzbFx2ij75irBS3ffwf4-7Zt_mPr7-0-hO7Hp8195SXpzw4_DuqepR6u5ZxLaPx5GoqlRqbuuncKd1_SJ2ya_dPvvPo7vHz_-fZz8z52g9Y464ibezd8WykFEz68VMTluU33Hnviz885er1t_7m2uGJ3lePbJi17kfD_deyf3pt_JQ_33jVbPnmL856Ovf8bRd_9ovPd_w47183tXPmF_Zcc9qmzWNPTo1f0PXlZ352bdewdvq37_3DZ7Jv_ui7_uSH1lOXz_j5xDuu3PmhDoqixhagaacmTN0x-bTbPp39800Ht_i9H1v1yLb-3U986JUXzz_zNze0Su-XV5L8tUzNhW65Zdz792_cdP30B0_aBpfh9bue_N8ZZ3TNVO_ffvrBrW90KA8PfJmiKDNyY1xQRdHNLB360HJWtQUP28LSahtiqRQ1Jubp2P2RnIvkUtS4k56afuSN38-feGDg9Xc5y-2dbUPWp9f-EK-7oPfAjtJfvNUTKCq1oWdhZ29P57LlC5cuicMGRuHG8ZgCRirfWG4UUQnkRozJmHdO4yh9bonlz30i13al8fi8I_fkP2iMc8atODhz4wuHDr854QN9vdPnzT21Eq6TpowsOuP8Hm7J0gs6qVRLKgVIPxAeM86uqInOEonr4s7u8ypB_W-wRgxWBc-zU_ElOEk9vHnuexf2XbSy7y-_3nDW7P07D7361MbO9236rTzmycM390UariN4L1vaSx3nxH-DuFDrOvxCscMuIWd1m1dyDajjjmLZH3DsNp0wk-84ltdRdJ1LsO5nsx4uQNs39WwWCrKmQRYyCs-Iis6wLGNgjsEaJ-mGpJMuTdd4DhqyqKuGITOyxEAWC1BgZFFVUDYbk1_q6NGjhyvQ3jD9C5ev2_nQtPVTj3aOvfruV8954AC3a_va_z-46Fct024c-4vY8EowTh2CVglPqlo7qaL45FjmZB97vtdBfvO-b7UXCTmPjUc_YLhOAVQVALNQdFwfVPTEWCkGK6uGrCmcxmk6KyoiyxmGIDKCIkHVYHmsKQjznCZCRkbIwJqgY4bhWFFlGQGpJ45aS7M03py9aumyv9_-8qU9--5_13255XuGly7veezVq_0L1-07uLV7Wig29sWGNB7dxP_oNEZYNGRNkHQs6ZwmS4LK8LoBDZYXBMRggZMUSZU5HguKpLMKi7EGoYohgySN0yBTm8ZH_vU0nq1b0PMqOZfOd5sFjILrvvxF3RmQ7yE_3d39rdlUJQ1O91y9I-FhPm_app_PtxfLpBlZEcm19B2H9kkAADDPGcKu5UAU3CFsgFh1OnhCDg9bRraik-jhAkVcBhiWA_3-TEW0AFd75hqcDQeqz33fanh2dvVyFfbJNMfIgvnQsqBm4b4-skJ_vAQYBkscG4NccApntoK2c4LbLGhvbz8ud0Zp8Xl2OQPALLBg4UcXd2ZBoeT5QMOAhggRG2ngOwTM6iSzgN2kD_0h2CN7etyOFl2niF2_XHHU9600cS0QPs8uV2XJKF5dNF0cCGQCM7PEsNrFgpmW6fl9fqloVROmvz_Q9TbS44lWY0uFFBP0-NjC1ze5N2Uelx982vjrmOtXTP7kgm8-gAZfy40duuYWupAPxaY-2kCPo5v4H02PMmYhwqysCwYr6KKicqwoYc7gIFRZRuWPjx6PHjc9Vra7eYuWXQwCRWR3tnAB2z70TccGl5n-AChit830cSFI4TbfaSOfJ0C6u3tRKwj6g0qWzjg2EyaJ9bRjEytFpR6Nusr3UG-lLSgymqZP1HSapicFusLF8otMezBUTo583rMc38vnQQ6k6bCePToD6EFcJiebfBLMALro4iG6NVTUQIJh_Q_ici5gl4gWvOAuciRJk-2DuAxyRL5xKJoKcrGS-iVdjEo6jhatU-5iv-TaFTzbA18zIB0vmqlZo86bkm2Z9mAztQQDkAvnkuuaQQJMPEiuGwaDKSAXaGlQG0wBuUAwNKcJsNFmkiFkHNKsmyO_7QXHdnzHNvVMdQeoBz2RU-3H1EtUJnS01uxq7fk8-X4IciA61eKbrkqT8dij4DpynVzXqyRgkzDrjmVhnSS0177URdjF6AJT9xNaowm-b4EcgSCJk-7YPjRtL5mECed9t1wbSrJqHK3Ihr5BXO4n27HtABc7xATTXlWZhVfruOiDi3C503Udt2nCLYCWh6szLA83FQtWDbBOt4K5gS1xLiZ9WoV9UtFJlzLh-0U8lIvDWREdvc-rsB_kOQFqdE6GJiKQG9HPqqTt-FHZNfe3urQZdxHo2Jjl8wXT80x7VT5fZ_exoK6BK5EaSZy9ZjgHnBnD7dXB7TWBO2DhqqcAemEjdCxqS5PRqgfkqFmswZjWdy6yjWWQi3XW1fgIqAehjQi0KpcMOClds4DB7EQ51womuKLqUw1zBGIJwoxZpoZ2k5Sb5CMyORl98h_EMaosGqqEvSKaCHuNZDLBmscmgLi96BRrkWyOm2mMXD91WQ9ND1eCHK6R3E187DbumG-BtF5y3SSHV7N9wLRwOGx6gZVEptaYWYA2XIzXkBcZEnLDcQGxAPqOC6CuY8-rkR9VBUW4BArnBgbEUDTKkaNsYguFcvV9RuRcMBY4V8sJng_9uL_IgOAuAVqEFjJ10s6Vigj6OB0KjQbYUe2QBLAgfUwbeI7rY5SuSaOAFrx0a9hyWbCgIQgc7ZIs-TlGhtSXWOPgSIU1YnHVQJR4M4xTOErJt3jHrJpM03T3AK5tagO3gWMAfwCH9XeWRxKr4AU9bvONo6ZfaHhdrW-WaJpehgvOEK5sZYF-EHziqywLoI3iZaAd5rZmxaYlqDdUsTKdIPOVoAhN12uv9p5J2-MMN73wxbwG_GAkSqsI0hOq5bgDS-ZWg_E50NffnPRADjQQZJ1ktP8mJCsNywiMEkAckGCTiq9L7cjUdlgsYhul03HR1zVNUdjj0dbWZptwLaFXZGskEbZC7Pri8SpC5Ijqo8ovNcuQpw2Mn4hTzYwoySIPq4lcdIoVM5umbyJDSdo2SUFgYej5wMU6tn2rDEoeRsAfgNXFB2AYD2iRP-jLFZybp-7b0Ac19DfkCN8VCSppUmg1TFgXwqjXWe47xYXBfmM6dqPCur2SPsMjiYcLRb9MgzOAXy6GDNHans_bsIDz-daw_klF1q7X0AclYhYiHr4WRtt-Yk_WLQzdtPc2fvw60W8tLanUPwHu72GY-950c1e7e2f778766e1de8d7db27b30e7",
+                  "limit": 3,
+                  "query": "TTLCache"
+                },
+                "name": "backend.search"
               },
               "coverage": [
                 {
@@ -3135,13 +3301,11 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
               "more": true,
-              "nextCursor": "mcp2-<live-validated>",
               "query": "TTLCache",
               "readiness": "ready",
               "records": [
@@ -3192,9 +3356,9 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
+                    "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
                   },
-                  "kind": "struct",
+                  "kind": "class",
                   "language": "python",
                   "score": 4294967295,
                   "state": "ready",
@@ -3247,9 +3411,9 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
+                    "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
                   },
-                  "kind": "struct",
+                  "kind": "class",
                   "language": "python",
                   "score": 4294967294,
                   "state": "ready"
@@ -3257,7 +3421,9 @@
                 {
                   "identity": {
                     "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache",
+                    "line": 4,
                     "name": "TTLCache",
+                    "path": "tests/test_ttl.py",
                     "segments": [
                       "TTLCache"
                     ],
@@ -3299,10 +3465,10 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › TTLCache"
+                    "trail": "project \u203a tests/test_ttl.py:4 \u203a TTLCache"
                   },
-                  "kind": "type",
-                  "language": "unknown",
+                  "kind": "import",
+                  "language": "python",
                   "score": 4294967293,
                   "state": "ready"
                 }
@@ -3325,11 +3491,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
+                "bytes": 6920,
                 "bytesPerToken": 4,
+                "estimatedTokens": 1730,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 914,
-                "normalizedFrameBytesExcludingCounters": 3653,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3338,7 +3504,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -3346,9 +3512,17 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2216,
+                "bytes": 5595,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 554
+                "estimatedTokens": 1399
+              },
+              "continuation_call": {
+                "arguments": {
+                  "cursor": "mcp2-1792131845-pc4-eJztWHtwFdUZ370hBJIRByxofc26tkhkc7Pvs7sxIiAiQiAiJqU0Xs6eczZZc-_udXcvSUiilRmwUBRfiEUQFFTwgVVLFfGFQomKL7Aa7UB9FBUBi4xDqaOks_dFENpAUacPzz9n9-x3vvP7ft_3_c6dO-LS6pEUTVGRTa3sNOL5tuuwhiRyrEeuShE_iNmYNQSORW4iAR3MGq1sox3OrE-ghxpYjsUwgOF6QJoD1mARRA0EsxwbtxN2wBoSxzbZDnabQpv8EQLH2r6fIjhtgEncnka8FtaQ2jnWhL7tswZr8bqgCaIpAV2CoihhXsIY61hRdA2KGIsWwooFZA0LoqwIWLeQogEB6rwu87IgsByLUp7veuHJHkF2krAGK0FCVKRjSIiOZKIDEQBgIt1SVVMGUAdQIBJSTSAqim7pCtQhgcjEvIl5bCKN5Q5GwfI6L1qEQIyV0AngeUnhFSQQQSWqpqgWkIGqqkA1NV3lZWJploxVRYeaCgCwCMuxpgcd1MAarKwqPFSwiCUNKTxAqiiYJoCYIF2VoAURMDGQedNEmsLzwBQQVnkdqsAyRVkTrZByt541WEGEMm8KUMeaKUGL10Vi6gqQFaDoKkCCDhVs6gjKGsFEkUVRJaJmibqkCkQCKs9yrI8aSAKmc-O5bphWxRRVHlu8ICPMA2iJvK6JmqoSLFmSBSVi8hIPiM6rioo1QVQEKAIVKrqFgCWSkDY_LCkHEdYQOfaqFPFaYq5l-SRTJJmFYyqV9rBMIY4loGNbxA9Yw0nF4-3t7TRFUUUlK-cMnt1v3O4V7XO6hPlWZ9FrN1Tc1_blc841pdWDK1dvWNfT9_W7r_q4c1vqgFVbpb09p2hV9ds3DrNPfPi3Ky4ofa_2vEb6o49enkMlz1hxzugDRS8UL7r2sqULh3as296XaIs-eeCGq-soin6xtqZaqK26SIxQFEVTE-4YtundOy54YNMFBZ19lr159dsb9i66fkvLW_O27njuV4UDr22T1m8orLiyInJFx4fLpc1Lrxj_0hXvPrT2iYcHNFaMfeTvfX_WXPHYI2sGbftq2b7q39w0b8bJnj4w_tTNbX98tGRNVdPoxfa9JecvvfWZlPt-2SXS3qE_Ge5etv8Zu-2uzvnTZw55cMEbNKQK6J5AUBQVWUBF6AYpubIjeop93_7rpg_4sGb5LR9Pn9GlTj7j93955gv3nHsvX0AVFFy9cH711zUbxv_4_s13ruM6Xl_c53fPMnBER5935hS_NH_IAoqiqNqRVWKkJ65Ov2vcfrZrtzVVWfjzrwrv33TrZ1981PyL1S-efd6gj_s92fYJdXCkaqsnipGjiWQWRdO96JuH9Zu0ix60es1ra19YUzTyrDdvq1j1vGCtSLJWx_I3s06Z4lde7TMxNvu-h7b_YdCsmYs-mNvW13_wwOyzZ2xsq5sr_HVvUb89N107FNxy99mvV25dfPntd28tfyUWXD9g1BlLNlx36o239upPF11Ufc_mLXOr28zTHn9o123GlxufDkqemkm1nv5W33uvefTicoqieiWg7dB9BiwvOXXxr409N--cH9ROrl-3sG7NSxfv3j5i8AfzStUzwdSwfuO26UGvJVJofBZfvGrH-h1eU-uL-xpHr5x-5nmN3uVL5q9c9eDTJa__qYOiqPpsGIXpLsq-nIVgAONufVl6sSzTWmXTBIqmCjIqnQu-p9CydjRV2Ltv5MCnW2tbN1JK4br3nYaav4226htnTx2__4u3Jq-obzpAUfTsmjGjamtGTbxszITxuaQxRxHEsUBhemrenN1R5CRt12NGCr47j0cZcyRnP2XwCXt-9ErRw8ztQ6zdw4Yt21lQtKN3TeeAS--eds-SjXtzzUJTvfv1bNr_8Rpx_IQLR1F0hKaZ8LdAZvRfkneTndUwr1WjJg3PJ_WHZPWYrDyf59K5R6ZkHTjzrv6F1NdjYIlzQuHs5hGfg6Envj-Lli5R1iYnj8uY9V4Y8j1xQi11jBv_C_JC_bI8SCTLnRR2m8v8lGdBRMqTLUGD65SlpSlw3bhfnvTcKwkKDMMnCegENjIMXdJ5nbd4BckygALgLSLyqg4knYdYFgQoS5aqYE2HUDZFoqsqQlBRTcLLgoKRbhgZ6aO7urq68sTOO3lJ64xHnxo4c0DXqF6zVn5-_hPbxNVL2_-8c9x7kYE39XonBzuPf_iFBLkeDFyPCVymyYNJBjJWykGB7TpMkx00MJBJkIRrT7edegbBeByaccIEDTBgfDiN-HlXJ3nET8UDn7EdBjJpdNEcsLGYWJklPCQ9cUwjaalsJC1-tAH6DY2khWPiLmqsHO86hGOQ62A7hJB9tx3LrbwIxn1SatAFOa-n-h4q70ZzLGY7dhCLRZMtFBX5IGtWMPdbPLyYYRiGZdnjpi3t6AiMFedOSM-W5yaYaCwDnrETSdcLmFh4XpJ4GdMwOJxDMyTEkEUZDttKoz-4kFv0bccPoINIjpGR4VRqZHx2H6H_BGwksdDRkAY78DkmYfs-8bud0314JEh5DhNLexzzzU1cNs4EbPbt6ST3ilKeF76XHgqAxI8IFrnxOElz7UehiaJVMJm0nfrvBX6mJuLEyYApPQyxT74PGDzH8N84OrclWx7pWsjym674TJF3q-9saedxlRYfGsVxOc-Cy-7LV2iud2dolgB0C5iaaIomEhRNEUTLkhVe1lSoW4JETA0TSTQVyAOMLWLKiPC8KCi6wMtYP34JjeRvsm532uSpb_AnTmu-5ZyKstsee5U7YdFgyty1_dMF9VVFrSeBPXdkzHolDrvTjm7j__SdRgRIeEvViKKZgGBVkQGWTICxrmiY1zQTWIKgAV1BpsALWMc8xiLGRNMRRhKE3e-0A8d8p-VSQffupvfpGkw_G0xVKghFOCsWU2JjJ3HMcKeljmnLNHXatpG0GMzIrF5PiUajHBMbO6ku8zEscYMZbvqBB1Ew0nXC_4qqoAPriTflMFf5VjCYWLc9mbVDLNMazYyzA-LB-JRJXorUccWlTNn5B5FMyT_FqjkmNrGujmOy90KuJ9M9nP_c7Z487Z_fkzZFUU_miCv-gbiQOCYajX6LMnW8XXFEmerss3nfY52FO9c-se3OZ_et3HLK-nfcyud37Sk_7eW6lovdLVmZWnaYTB3dxv9rmdI0XlKwgKCGiAiQiVURiAgogkwEXpVwd5n6-t-XqbO-g25jKsPiPTaxYiqPUbMO2XDuf4KCPZLj9Kc_cMr8a06_Z3HrqZciNP0P8fKDDA-30b0b2a9ae343bdf0777806991870d58",
+                  "limit": 3,
+                  "query": "cached"
+                },
+                "name": "backend.search"
               },
               "coverage": [
                 {
@@ -3365,13 +3539,11 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
               "more": true,
-              "nextCursor": "mcp2-<live-validated>",
               "query": "cached",
               "readiness": "ready",
               "records": [
@@ -3422,7 +3594,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.py:738 › cached"
+                    "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3477,7 +3649,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.pyi:186 › cached"
+                    "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3531,7 +3703,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/cachetools/__init__.pyi:177 › cached"
+                    "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -3557,8 +3729,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 7196,
-                "normalizedFrameBytesExcludingCounters": 28784,
+                "normalizedEstimatedTokensExcludingCounters": 7035,
+                "normalizedFrameBytesExcludingCounters": 28137,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3567,7 +3739,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n▣ LFUCache  `src/cachetools/__init__.py:203 › LFUCache`\n  ƒ __init__  `src/cachetools/__init__.py:219 › __init__`\n  ƒ __setitem__  `src/cachetools/__init__.py:231 › __setitem__`\n  ƒ popitem  `src/cachetools/__init__.py:253 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:262 › clear`\n  ƒ __delitem__  `src/cachetools/__init__.py:246 › __delitem__`\n  ▣ _Link  `src/cachetools/__init__.py:206 › _Link`\n    ƒ unlink  `src/cachetools/__init__.py:213 › unlink`\n    ƒ __init__  `src/cachetools/__init__.py:209 › __init__`\nƒ cached  `src/cachetools/__init__.py:738 › cached`\n▣ _TimedCache  `src/cachetools/__init__.py:373 › _TimedCache`\n  ƒ expire  `src/cachetools/__init__.py:447 › expire`\n  ▣ _Timer  `src/cachetools/__init__.py:376 › _Timer`\n    ƒ __exit__  `src/cachetools/__init__.py:395 › __exit__`\n    ƒ __init__  `src/cachetools/__init__.py:377 › __init__`\n    ƒ __call__  `src/cachetools/__init__.py:381 › __call__`\n    ƒ __getattr__  `src/cachetools/__init__.py:401 › __getattr__`\n    ƒ __reduce__  `src/cachetools/__init__.py:398 › __reduce__`\n  ƒ setdefault  `src/cachetools/__init__.py:437 › setdefault`\n  ƒ __init__  `src/cachetools/__init__.py:404 › __init__`\n  ƒ get  `src/cachetools/__init__.py:429 › get`\n  ƒ __len__  `src/cachetools/__init__.py:413 › __len__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:304 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:305 › Wrapper`\n▣ LRUCache  `src/cachetools/__init__.py:287 › LRUCache`\n  ƒ __init__  `src/cachetools/__init__.py:290 › __init__`\n  ƒ __touch  `src/cachetools/__init__.py:321 › __touch`\n  ƒ __setitem__  `src/cachetools/__init__.py:300 › __setitem__`\n▣ LRUCache  `src/cachetools/__init__.pyi:64 › LRUCache`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:344 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:345 › Wrapper`\n▣ TLRUCache  `src/cachetools/__init__.py:592 › TLRUCache`\n  ƒ clear  `src/cachetools/__init__.py:712 › clear`\n  ƒ __iter__  `src/cachetools/__init__.py:662 › __iter__`\n  ƒ __init__  `src/cachetools/__init__.py:609 › __init__`\n  ƒ __delitem  `src/cachetools/__init__.py:722 › __delitem`\n  ƒ __delitem__  `src/cachetools/__init__.py:653 › __delitem__`\n  ƒ __setitem__  `src/cachetools/__init__.py:635 › __setitem__`\n  ▣ _Item  `src/cachetools/__init__.py:598 › _Item`\n    ƒ __lt__  `src/cachetools/__init__.py:606 › __lt__`\n    ƒ __init__  `src/cachetools/__init__.py:601 › __init__`\n▣ _DefaultSize  `src/cachetools/__init__.py:27 › _DefaultSize`\n  ƒ __setitem__  `src/cachetools/__init__.py:35 › __setitem__`\n  ƒ pop  `src/cachetools/__init__.py:38 › pop`\n▣ RRCache  `src/cachetools/__init__.py:329 › RRCache`\n  ƒ __setitem__  `src/cachetools/__init__.py:343 › __setitem__`\n  ƒ popitem  `src/cachetools/__init__.py:358 › popitem`\n  ƒ clear  `src/cachetools/__init__.py:367 › clear`\n▣ _HashedTuple  `src/cachetools/keys.py:6 › _HashedTuple`\n▣ FIFOCache  `src/cachetools/__init__.py:171 › FIFOCache`\n  ƒ __delitem__  `src/cachetools/__init__.py:185 › __delitem__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:197 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:198 › Wrapper`\n▣ LFUCache  `src/cachetools/__init__.pyi:63 › LFUCache`\n▣ _DescriptorBase  `src/cachetools/_cachedmethod.py:66 › _DescriptorBase`\n▣ _cached_wrapper  `src/cachetools/__init__.pyi:153 › _cached_wrapper`\n▣ TLRUCache  `src/cachetools/__init__.pyi:115 › TLRUCache`\n▣ TTLCache  `src/cachetools/__init__.pyi:94 › TTLCache`\n▣ Cache  `src/cachetools/__init__.pyi:40 › Cache`\n▣ _TimedCache  `src/cachetools/__init__.pyi:76 › _TimedCache`\n  ▣ _Timer  `src/cachetools/__init__.pyi:84 › _Timer`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:378 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:379 › Wrapper`\n▣ _cached_wrapper_info  `src/cachetools/__init__.pyi:165 › _cached_wrapper_info`\n▣ FIFOCache  `src/cachetools/__init__.pyi:62 › FIFOCache`\n▣ _cachedmethod_wrapper_info  `src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info`\n▣ TTLCache  `src/cachetools/__init__.py:451 › TTLCache`\n  ƒ __iter__  `src/cachetools/__init__.py:519 › __iter__`\n  ƒ __setstate__  `src/cachetools/__init__.py:529 › __setstate__`\n  ƒ __init__  `src/cachetools/__init__.py:470 › __init__`\n  ƒ __contains__  `src/cachetools/__init__.py:477 › __contains__`\n  ƒ __setitem__  `src/cachetools/__init__.py:497 › __setitem__`\n  ƒ __getlink  `src/cachetools/__init__.py:586 › __getlink`\n  ▣ _Link  `src/cachetools/__init__.py:454 › _Link`\n    ƒ __init__  `src/cachetools/__init__.py:457 › __init__`\n    ƒ unlink  `src/cachetools/__init__.py:464 › unlink`\n▣ _cachetools_cache_wrapper  `src/cachetools/func.pyi:13 › _cachetools_cache_wrapper`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:237 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:238 › Wrapper`\n▣ _WrapperBase  `src/cachetools/_cachedmethod.py:30 › _WrapperBase`\n▣ _UnboundTTLCache  `src/cachetools/func.py:13 › _UnboundTTLCache`\n▣ _CacheInfo  `src/cachetools/__init__.pyi:136 › _CacheInfo`\n▣ _AbstractCondition  `src/cachetools/__init__.pyi:143 › _AbstractCondition`\n▣ Cache  `src/cachetools/__init__.py:45 › Cache`\n  ƒ getsizeof  `src/cachetools/__init__.py:166 › getsizeof`\n  ƒ setdefault  `src/cachetools/__init__.py:137 › setdefault`\n  ƒ __getitem__  `src/cachetools/__init__.py:71 › __getitem__`\n  ƒ __iter__  `src/cachetools/__init__.py:109 › __iter__`\n  ƒ __repr__  `src/cachetools/__init__.py:63 › __repr__`\n  ƒ get  `src/cachetools/__init__.py:121 › get`\n  ƒ __setitem__  `src/cachetools/__init__.py:77 › __setitem__`\n  ƒ __contains__  `src/cachetools/__init__.py:103 › __contains__`\n  ƒ pop  `src/cachetools/__init__.py:127 › pop`\n  ƒ __init__  `src/cachetools/__init__.py:52 › __init__`\n  ƒ __missing__  `src/cachetools/__init__.py:106 › __missing__`\n▣ Descriptor  `src/cachetools/_cachedmethod.py:149 › Descriptor`\n  ▣ Wrapper  `src/cachetools/_cachedmethod.py:150 › Wrapper`\n▣ RRCache  `src/cachetools/__init__.pyi:66 › RRCache`\n▣ _DeprecatedDescriptorBase  `src/cachetools/_cachedmethod.py:123 › _DeprecatedDescriptorBase`\n▣ _cachedmethod_wrapper  `src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper`\n100 declaration(s) · truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-cachetools/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-cachetools/project`\n\n\u25c6 LFUCache  `src/cachetools/__init__.py:203 \u203a LFUCache`\n  \u0192 __init__  `src/cachetools/__init__.py:219 \u203a __init__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:231 \u203a __setitem__`\n  \u0192 popitem  `src/cachetools/__init__.py:253 \u203a popitem`\n  \u0192 clear  `src/cachetools/__init__.py:262 \u203a clear`\n  \u0192 __delitem__  `src/cachetools/__init__.py:246 \u203a __delitem__`\n  \u25c6 _Link  `src/cachetools/__init__.py:206 \u203a _Link`\n    \u0192 unlink  `src/cachetools/__init__.py:213 \u203a unlink`\n\u0192 cached  `src/cachetools/__init__.py:738 \u203a cached`\n\u25c6 _TimedCache  `src/cachetools/__init__.py:373 \u203a _TimedCache`\n  \u0192 expire  `src/cachetools/__init__.py:447 \u203a expire`\n  \u25c6 _Timer  `src/cachetools/__init__.py:376 \u203a _Timer`\n    \u0192 __exit__  `src/cachetools/__init__.py:395 \u203a __exit__`\n    \u0192 __init__  `src/cachetools/__init__.py:377 \u203a __init__`\n    \u0192 __call__  `src/cachetools/__init__.py:381 \u203a __call__`\n    \u0192 __getattr__  `src/cachetools/__init__.py:401 \u203a __getattr__`\n    \u0192 __reduce__  `src/cachetools/__init__.py:398 \u203a __reduce__`\n  \u0192 setdefault  `src/cachetools/__init__.py:437 \u203a setdefault`\n  \u0192 __init__  `src/cachetools/__init__.py:404 \u203a __init__`\n  \u0192 get  `src/cachetools/__init__.py:429 \u203a get`\n  \u0192 __len__  `src/cachetools/__init__.py:413 \u203a __len__`\n\u25c6 Descriptor  `src/cachetools/_cachedmethod.py:304 \u203a Descriptor`\n  \u25c6 Wrapper  `src/cachetools/_cachedmethod.py:305 \u203a Wrapper`\n\u25c6 LRUCache  `src/cachetools/__init__.py:287 \u203a LRUCache`\n  \u0192 __init__  `src/cachetools/__init__.py:290 \u203a __init__`\n  \u0192 __touch  `src/cachetools/__init__.py:321 \u203a __touch`\n  \u0192 __setitem__  `src/cachetools/__init__.py:300 \u203a __setitem__`\n\u25c6 LRUCache  `src/cachetools/__init__.pyi:64 \u203a LRUCache`\n\u25c6 Descriptor  `src/cachetools/_cachedmethod.py:344 \u203a Descriptor`\n  \u25c6 Wrapper  `src/cachetools/_cachedmethod.py:345 \u203a Wrapper`\n\u25c6 TLRUCache  `src/cachetools/__init__.py:592 \u203a TLRUCache`\n  \u0192 clear  `src/cachetools/__init__.py:712 \u203a clear`\n  \u0192 __iter__  `src/cachetools/__init__.py:662 \u203a __iter__`\n  \u0192 __init__  `src/cachetools/__init__.py:609 \u203a __init__`\n  \u0192 __delitem  `src/cachetools/__init__.py:722 \u203a __delitem`\n  \u0192 __delitem__  `src/cachetools/__init__.py:653 \u203a __delitem__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:635 \u203a __setitem__`\n  \u25c6 _Item  `src/cachetools/__init__.py:598 \u203a _Item`\n    \u0192 __lt__  `src/cachetools/__init__.py:606 \u203a __lt__`\n    \u0192 __init__  `src/cachetools/__init__.py:601 \u203a __init__`\n\u25c6 _DefaultSize  `src/cachetools/__init__.py:27 \u203a _DefaultSize`\n  \u0192 __setitem__  `src/cachetools/__init__.py:35 \u203a __setitem__`\n  \u0192 pop  `src/cachetools/__init__.py:38 \u203a pop`\n\u25c6 RRCache  `src/cachetools/__init__.py:329 \u203a RRCache`\n  \u0192 __setitem__  `src/cachetools/__init__.py:343 \u203a __setitem__`\n  \u0192 popitem  `src/cachetools/__init__.py:358 \u203a popitem`\n  \u0192 clear  `src/cachetools/__init__.py:367 \u203a clear`\n\u0192 make_info  `src/cachetools/__init__.py:749 \u203a make_info`\n\u25c6 _HashedTuple  `src/cachetools/keys.py:6 \u203a _HashedTuple`\n\u25c6 FIFOCache  `src/cachetools/__init__.py:171 \u203a FIFOCache`\n  \u0192 __delitem__  `src/cachetools/__init__.py:185 \u203a __delitem__`\n\u25c6 Descriptor  `src/cachetools/_cachedmethod.py:197 \u203a Descriptor`\n  \u25c6 Wrapper  `src/cachetools/_cachedmethod.py:198 \u203a Wrapper`\n\u25c6 LFUCache  `src/cachetools/__init__.pyi:63 \u203a LFUCache`\n\u25c6 _DescriptorBase  `src/cachetools/_cachedmethod.py:66 \u203a _DescriptorBase`\n\u25c6 _cached_wrapper  `src/cachetools/__init__.pyi:153 \u203a _cached_wrapper`\n\u25c6 TLRUCache  `src/cachetools/__init__.pyi:115 \u203a TLRUCache`\n\u25c6 TTLCache  `src/cachetools/__init__.pyi:94 \u203a TTLCache`\n\u25c6 Cache  `src/cachetools/__init__.pyi:40 \u203a Cache`\n\u25c6 _TimedCache  `src/cachetools/__init__.pyi:76 \u203a _TimedCache`\n  \u25c6 _Timer  `src/cachetools/__init__.pyi:84 \u203a _Timer`\n\u25c6 Descriptor  `src/cachetools/_cachedmethod.py:378 \u203a Descriptor`\n  \u25c6 Wrapper  `src/cachetools/_cachedmethod.py:379 \u203a Wrapper`\n\u25c6 _cached_wrapper_info  `src/cachetools/__init__.pyi:165 \u203a _cached_wrapper_info`\n\u25c6 FIFOCache  `src/cachetools/__init__.pyi:62 \u203a FIFOCache`\n\u25c6 _cachedmethod_wrapper_info  `src/cachetools/__init__.pyi:211 \u203a _cachedmethod_wrapper_info`\n\u25c6 TTLCache  `src/cachetools/__init__.py:451 \u203a TTLCache`\n  \u0192 __iter__  `src/cachetools/__init__.py:519 \u203a __iter__`\n  \u0192 __setstate__  `src/cachetools/__init__.py:529 \u203a __setstate__`\n  \u0192 __init__  `src/cachetools/__init__.py:470 \u203a __init__`\n  \u0192 __contains__  `src/cachetools/__init__.py:477 \u203a __contains__`\n  \u0192 __setitem__  `src/cachetools/__init__.py:497 \u203a __setitem__`\n  \u0192 __getlink  `src/cachetools/__init__.py:586 \u203a __getlink`\n  \u25c6 _Link  `src/cachetools/__init__.py:454 \u203a _Link`\n    \u0192 __init__  `src/cachetools/__init__.py:457 \u203a __init__`\n    \u0192 unlink  `src/cachetools/__init__.py:464 \u203a unlink`\n\u25c6 _cachetools_cache_wrapper  `src/cachetools/func.pyi:13 \u203a _cachetools_cache_wrapper`\n\u25c6 Descriptor  `src/cachetools/_cachedmethod.py:237 \u203a Descriptor`\n  \u25c6 Wrapper  `src/cachetools/_cachedmethod.py:238 \u203a Wrapper`\n\u25c6 _WrapperBase  `src/cachetools/_cachedmethod.py:30 \u203a _WrapperBase`\n\u25c6 _UnboundTTLCache  `src/cachetools/func.py:13 \u203a _UnboundTTLCache`\n\u25c6 _CacheInfo  `src/cachetools/__init__.pyi:136 \u203a _CacheInfo`\n\u25c6 _AbstractCondition  `src/cachetools/__init__.pyi:143 \u203a _AbstractCondition`\n\u25c6 Cache  `src/cachetools/__init__.py:45 \u203a Cache`\n  \u0192 getsizeof  `src/cachetools/__init__.py:166 \u203a getsizeof`\n  \u0192 setdefault  `src/cachetools/__init__.py:137 \u203a setdefault`\n  \u0192 __getitem__  `src/cachetools/__init__.py:71 \u203a __getitem__`\n  \u0192 __iter__  `src/cachetools/__init__.py:109 \u203a __iter__`\n  \u0192 __repr__  `src/cachetools/__init__.py:63 \u203a __repr__`\n  \u0192 get  `src/cachetools/__init__.py:121 \u203a get`\n  \u0192 __setitem__  `src/cachetools/__init__.py:77 \u203a __setitem__`\n  \u0192 __contains__  `src/cachetools/__init__.py:103 \u203a __contains__`\n  \u0192 pop  `src/cachetools/__init__.py:127 \u203a pop`\n  \u0192 __init__  `src/cachetools/__init__.py:52 \u203a __init__`\n  \u0192 __missing__  `src/cache\n\n\u2026 readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.",
                 "type": "text"
               }
             ],
@@ -3575,9 +3747,9 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 21491,
+                "bytesExcludingCursor": 21316,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5373
+                "estimatedTokensExcludingCursor": 5329
               },
               "declarations": 100,
               "detail": "summary",
@@ -3609,8 +3781,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "reason": "unconfigured",
-                    "state": "unavailable"
+                    "state": "complete"
                   }
                 ],
                 "limit": 100,
@@ -3619,7 +3790,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "fa293232e9bb3257707813709b77129e029e1197e151e3c1df2c6b71194e9a8f"
+                "source_root": "f091812b3793a223d03ddd9d5598a2dd2fcd5f748d12451d9fc5871a90940411"
               },
               "roots": [
                 {
@@ -3627,31 +3798,31 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0510f43534ebcb8ded74b815ddb6aeab5b56e16485fddcd8490accd4e65f33af::__init__",
                       "key": "2564f3ed",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::71891f6df171fe02e10729e3f8a49f0030b6c465d03ed3bedbf05f23bf7792e7::__setitem__",
                       "key": "4f114bfb",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5e4739eef01f4c2278de3f51a5eb0d82cb9873f2f05ad0268aa8b29e6650e50e::popitem",
                       "key": "5f1593f1",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "popitem"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f0e1b5ffc6dca894e696ee142aea92fab1bf642b443b46f2eede1fa060a0d361::clear",
                       "key": "69b40be5",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "clear"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0e795aafd95e83f64f8d3b08c34d5ff4509d4c1bf483ceb0f48e06b2d336fd23::__delitem__",
                       "key": "8fe58bc3",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__delitem__"
                     },
                     {
@@ -3659,25 +3830,19 @@
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::76310327b38f938f1905bef9a1de98d45a4dc5543b5aebc757a8f49cd2c40257::unlink",
                           "key": "45388152",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "unlink"
-                        },
-                        {
-                          "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8b8b57508adbc6c9fdd7e90d0dbb719395e47dac69f42bd9891756bc9fbc6386::__init__",
-                          "key": "954ed6de",
-                          "kind": "function",
-                          "name": "__init__"
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5a3b2ee64106834162d0f48eecd7f9fc370f602979071bb5b0df75881dda9d99::_Link",
                       "key": "d5a96751",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "_Link"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6d15873e6f72d5bd5f0ee22c7c359df80eb0ef43389222f71a6ba35b9e9624ee::LFUCache",
                   "key": "05ec253e",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "LFUCache"
                 },
                 {
@@ -3691,7 +3856,7 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5b8b1da503fc10e8660176c1dfff0cd89731f72d4b90199da5864cbf3bc1c67b::expire",
                       "key": "0ce369ff",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "expire"
                     },
                     {
@@ -3699,67 +3864,67 @@
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5ef923c8e556dc7d628f6aeff90a729444682d6c588fd8e28330ae87caada1fe::__exit__",
                           "key": "058003fe",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__exit__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5603c68f794acc5f31f7cf88f39f56aa4d28d36563b503129ccee3b8d4a7b322::__init__",
                           "key": "2ce78bcd",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__init__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::dcfe5b566b6554f27a91bd0db967237a3aad56358352dd359b42ae6d998f498b::__call__",
                           "key": "465d5b5f",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__call__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7de54cead446aa596fe8aedaf7d8fd873807abc07243dcf8fc51a0c6c9a2dd34::__getattr__",
                           "key": "613c0f34",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__getattr__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5ed1087ad035036359ef5e3d8ddf881baf0faca3a489980e0831810f7057e7d5::__reduce__",
                           "key": "860ce99a",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__reduce__"
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ffc0345b1a844a5d8c563d7f6b49a511030f8d4ada44ba9af0a258ecb5f196a9::_Timer",
                       "key": "174b21e8",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "_Timer"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4b912177c3b8bf982b3e5faf8f0d94ff509d2d7a0b31b5c7d165567dab12cf4c::setdefault",
                       "key": "3ec1635b",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "setdefault"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8c14108aa5dfb53ba992ade0801cc2ff2f60ebe58e19f9f9091fecaaf5036514::__init__",
                       "key": "49377141",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1510afec2139b7c9fb516b59c176ffc2f33a91f89d867de7bc7b1d8ef28e12f8::get",
                       "key": "61510edc",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "get"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8efcdc15abd9bc5a87be0c721f5e3b38ca3272214e57a24b89fb4928633a2e8e::__len__",
                       "key": "68148995",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__len__"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f0471465851e75d4206fad296ca41d74d65723ad59f2c995de242ea197e34c14::_TimedCache",
                   "key": "0f87fd2d",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_TimedCache"
                 },
                 {
@@ -3767,13 +3932,13 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ff9ad0296aa213fa7062f91d259f28294ad388d2524c5907d0f781457a25ef6e::Wrapper",
                       "key": "a3f4e622",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7b8508f8c734f76afa44668e00b0b51f377f29e062a54302060033b1581adfb7::Descriptor",
                   "key": "113fe219",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
@@ -3781,31 +3946,31 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1c8472a22af662fa6c4b2e81b0bd752232b3322c33fe824301c1bdf19bb82864::__init__",
                       "key": "1648f8ce",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fbc6d755b928df195d782606f7e6d4ddca601e0df4224ef297ff14432856d831::__touch",
                       "key": "1dede205",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__touch"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1f74d037c476e576e35cca35fb5792b356a7af6422a064d039ee2dbf372425a5::__setitem__",
                       "key": "75587f23",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ab27c782025595169a8020e05302a9e5246b7e321651f41b86609be3daf922b7::LRUCache",
                   "key": "160bd4a9",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "LRUCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::173f4461b10958852085ec8a3464e037246b7e321651f41b86609be3daf922b7::LRUCache",
                   "key": "1795cc9f",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "LRUCache"
                 },
                 {
@@ -3813,13 +3978,13 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::847ba84bc52268a87057812616622170d1a17014db6ffc8d73b1d9d4ea7e81c5::Wrapper",
                       "key": "a220dacc",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2dd08cb353103204a3be9fab1d56191d7a89de334301968c1d81c4f882a52434::Descriptor",
                   "key": "22708df5",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
@@ -3827,37 +3992,37 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c57b31b3ce18ededefe3ec13d118e31db1bf642b443b46f2eede1fa060a0d361::clear",
                       "key": "18ddb6ef",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "clear"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2b27df0442b717477a4cafe7941b759d88e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                       "key": "20d8ba8b",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__iter__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::268697dbf26d69fba68b512f486fe24556fd5c4f06eec64ce0502dd8d4165f74::__init__",
                       "key": "3535f7a7",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0461bd93c5c438109f8e74839ae5c587f3519b07549fa152755a71a0e0dcddda::__delitem",
                       "key": "3d7e9ff3",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__delitem"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::058c4bf9a6a1c0f848c68cfb409c0d904cda0d99b3a76929449d0100bbbd09ca::__delitem__",
                       "key": "4afd7b92",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__delitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5aaaa38ce52b40f00d5ac47735139effaebe14e98662b418df093a5d911ff0e3::__setitem__",
                       "key": "57aac914",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
@@ -3865,25 +4030,25 @@
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c6baafbd5ac384a15c0568b83982dd09632f078944e6711d5ca6d714ab654938::__lt__",
                           "key": "0d475928",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__lt__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::869c84218a7003b12114d1a8fbc0616e14a90865e6607d6f7f34e5b56241132e::__init__",
                           "key": "1166b501",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__init__"
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4198560f9b623457579c7fb93b182b6a83e4b2b14048326f7927279542100df9::_Item",
                       "key": "5cd1f01b",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "_Item"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ea99dd3d0a0d27eacc4318ee0f93176baf49312d2ef03f06ec3ebb5aec3821a7::TLRUCache",
                   "key": "4eda6ed9",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "TLRUCache"
                 },
                 {
@@ -3891,19 +4056,19 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::92c1dc233d12de0fd285ed69f02237140ed8d49619545b64b3f8e0cfb0cf9792::__setitem__",
                       "key": "0c4bc5df",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6bfe51adaf3362585fc81f7ddd684c9db7b2fbd92694f04169e752c5450efb05::pop",
                       "key": "8db87b77",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "pop"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2b6f974ae98503a0bca67d73e752b40ed96b0d46ceb6afc728d961de616259d0::_DefaultSize",
                   "key": "52c74b46",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_DefaultSize"
                 },
                 {
@@ -3911,31 +4076,37 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::9e25407849a86892c4d243d8cd91c64b3ec7379497a98e595a58c8b1bbe5c359::__setitem__",
                       "key": "1e7abc06",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::25002de7f7846c2e37edf2daef68324ecb9873f2f05ad0268aa8b29e6650e50e::popitem",
                       "key": "43fb1247",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "popitem"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::4e240c77cbdfc3ce5c09f39626260b5db1bf642b443b46f2eede1fa060a0d361::clear",
                       "key": "64d6d320",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "clear"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fe8eb7230f6bd1a154c01bfb07c5a6c529d1bdc41d485c2e5a86371dc38fbe2a::RRCache",
                   "key": "5c31191f",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "RRCache"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8468661d2be7eeb7dea2c73658ebe058add96435c5958e625c3e42dccd703a1d::make_info",
+                  "key": "5c4ca73b",
+                  "kind": "function",
+                  "name": "make_info"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6c9cd231499b0218d1f8881d53db21a8804de1110d0694e1a0972ed2b7dbc0b6::_HashedTuple",
                   "key": "636274e9",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_HashedTuple"
                 },
                 {
@@ -3943,13 +4114,13 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::385377aeb96f565feb983829025f5805f7e1580618b9791a3da7dd4fbf8cbdfd::__delitem__",
                       "key": "2210ab1e",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__delitem__"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::f387b5c9db30f195509565c6210cde81d88ab213ca674761cb2f6040f8cfc724::FIFOCache",
                   "key": "719fcdac",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "FIFOCache"
                 },
                 {
@@ -3957,49 +4128,49 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::de9d02da35967f26b56556200ba0615d7b93e2142df308808f927a875c375d95::Wrapper",
                       "key": "c19eacf2",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::263834841cc1ac33d4eb6553b143768e7936d78629e0559cecf09790fb63ee4d::Descriptor",
                   "key": "767aeaf4",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::3c9e37441546efdac51c22e55d0fd3c60eb0ef43389222f71a6ba35b9e9624ee::LFUCache",
                   "key": "7803257c",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "LFUCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8037062f7744eb0ac0e208e35eeca0d451132004c8305bd106309ae690a2e65b::_DescriptorBase",
                   "key": "7f20f87e",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_DescriptorBase"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::aa44b5b6fbe938f8a0808367ded5047a0cb33339164d024873da3539cfff6e40::_cached_wrapper",
                   "key": "8107fb6f",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_cached_wrapper"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::42a509c7e40b88c74af1a08a448fbfebaf49312d2ef03f06ec3ebb5aec3821a7::TLRUCache",
                   "key": "88c7162e",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "TLRUCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache",
                   "key": "943a814f",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "TTLCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::41a3be0c8c411cfa7c7f828db95015a1cece98790e71f3537ecab71bc0dd48fb::Cache",
                   "key": "9ff2da3d",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Cache"
                 },
                 {
@@ -4007,13 +4178,13 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::c6d193d02df7f63bd79d571c266c08a2030f8d4ada44ba9af0a258ecb5f196a9::_Timer",
                       "key": "1ddd25a3",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "_Timer"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::db87ced91e2d5e01e0a86cbb13b7b6f0d65723ad59f2c995de242ea197e34c14::_TimedCache",
                   "key": "a26c21cf",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_TimedCache"
                 },
                 {
@@ -4021,31 +4192,31 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::162b745d6908f57914ceb35240094aa635bed6a750ff40f046773f39bfdba7a4::Wrapper",
                       "key": "06dfd7a5",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::749cb077da386b480b8fa50afe1430d992bf0aa8b4408474b6487366fc4e28bf::Descriptor",
                   "key": "a29556b8",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6788037bbf9a0945fe14042416357b32c7b9107b2bd14126bea4b196818390b4::_cached_wrapper_info",
                   "key": "a5845f7f",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_cached_wrapper_info"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::76a0068c15e286a5e793027aabbcc7aad88ab213ca674761cb2f6040f8cfc724::FIFOCache",
                   "key": "b34fcd47",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "FIFOCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ab26e2716c1949b7d1f6c4b65369eed1a54517ac1709243011b1268b05532a62::_cachedmethod_wrapper_info",
                   "key": "be58ec1e",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_cachedmethod_wrapper_info"
                 },
                 {
@@ -4053,37 +4224,37 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::52b88aa4be6aa84aa722c3fea1cf3b2188e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                       "key": "17fd3ccb",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__iter__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::30cbc86d1e1e9dc30f1965597045918106b60bb62d6578c17c20f942f1dc31da::__setstate__",
                       "key": "4f6893f7",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setstate__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::5de025f39d0ff72d832058b184a6483c17c3b80260b6854eec72b386132accb0::__init__",
                       "key": "5304da1b",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::0fbf6bd2bbf2e4c20fd5f85fbcef3a5c1903b2da3b168b628c3236a0ae80cdcc::__contains__",
                       "key": "53741150",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__contains__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::26f7f3c2e52ab8ac5c8bf8f0903f4ce0eb870faf22c4f420a56275454cb77d4d::__setitem__",
                       "key": "62b03762",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::28b907ecb2e32a2896bec8e12717866505ab94f5f13963f736f1974067e924ce::__getlink",
                       "key": "7c56c0e0",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__getlink"
                     },
                     {
@@ -4091,31 +4262,31 @@
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1afda342b93229824fd9e407b32e2a4d70217c18817a3e1bcd88684618833633::__init__",
                           "key": "8474750f",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "__init__"
                         },
                         {
                           "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::75b2a0543dc824b257747ca830c543885a4dc5543b5aebc757a8f49cd2c40257::unlink",
                           "key": "88e07b3f",
-                          "kind": "function",
+                          "kind": "method",
                           "name": "unlink"
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::d85ddc3f2dcfbef3da1146ff570c5b32805df1716a450789e0059e8b7e08d504::_Link",
                       "key": "8a6a16a3",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "_Link"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache",
                   "key": "c449f490",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "TTLCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::45f56e027fe3aa27c8e101b55512eddb494f6f3bc1a934d534e493b182d96819::_cachetools_cache_wrapper",
                   "key": "c536b1d0",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_cachetools_cache_wrapper"
                 },
                 {
@@ -4123,37 +4294,37 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::79bab44d7cb3d2d204fa27a38f25aa3895e6da1be344dd283ae94ed208790285::Wrapper",
                       "key": "8a5dcbc7",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::915b54fb76c1866d41300902b7d8fecf63e03f70ddc14a8de69ecd05bf016963::Descriptor",
                   "key": "c8fe4110",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::2e6605dee14fda9c2a8485c007c939127f044b4f38c4dd195542d70a1fe2d0c5::_WrapperBase",
                   "key": "ca12121c",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_WrapperBase"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::337a48f18329f8c4d86f1fac5c9913ced847b7f31118606b5a5798df273fd0c3::_UnboundTTLCache",
                   "key": "cd001ef5",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_UnboundTTLCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::eeef1aac1ab17ee0c3b28c674c0ec6f27deb99d01dcc28ef1016c5f36545482e::_CacheInfo",
                   "key": "d0e257bf",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_CacheInfo"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a37aee171456db1020735580d2f77ec841c7abcd6a736e0872f6922b3a7a8041::_AbstractCondition",
                   "key": "d18d2bfc",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_AbstractCondition"
                 },
                 {
@@ -4161,73 +4332,73 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::d9baca4d6cfe58a718f622448624ba0c29907a35dd68f30047ed76856c347fa5::getsizeof",
                       "key": "011e6fc8",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "getsizeof"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::3a3b258df6e0ee2838a98e9aeb1d4effdc404561acb4af4090b87bb3b0533468::setdefault",
                       "key": "0170eb0a",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "setdefault"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6196367a5c13f4185664e186347fc876ece52aa5b11ff7f56ab4a0bde98c8a17::__getitem__",
                       "key": "0b9d8a23",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__getitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::e5b60000ab1927a10c3e9c3958d57f0288e0e6d3bc8ef6c50f8ef3f73ec3cd0d::__iter__",
                       "key": "1f30aa75",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__iter__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::12c3642d7a47386aa5942a006285e5df3d2053676da86e5834392ebd0c5385b3::__repr__",
                       "key": "2856f07d",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__repr__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::ca84540f49a56f135e90b803fa258ea802c69c9f196469613e67981519850291::get",
                       "key": "613184e8",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "get"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::add4ac5701822e2d10f3ce125177f4b750345761762d3451ff5b16858f9a4cfd::__setitem__",
                       "key": "71aab9ba",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__setitem__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b4a3ab1fce76418d20f6cdcfbb5b8af7564b3c9afb2f437dc8e902489c39d3ce::__contains__",
                       "key": "72c988cf",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__contains__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b3f327806abf3b4cc001af51d56cc87fcf22453d50476d08adfec368d51fe6a6::pop",
                       "key": "85ee84a2",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "pop"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::bc09e18cd10ffca584ec06f522d3cad7bc7bd0d072288e4899ae41d615dcd232::__init__",
                       "key": "8c0894dd",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__init__"
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::6486f27a393d1efe16163dda4d4b6c2aae6c33cfe91697aa7f6af352412e3a6c::__missing__",
                       "key": "9352abed",
-                      "kind": "function",
+                      "kind": "method",
                       "name": "__missing__"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1fa18934fa5815cbee5c3c100630aff0cece98790e71f3537ecab71bc0dd48fb::Cache",
                   "key": "db36a91e",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Cache"
                 },
                 {
@@ -4235,31 +4406,31 @@
                     {
                       "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8e6c00e9587cfddfca57835b09c460c8c368bfc4679a93f81e70a0d94412f342::Wrapper",
                       "key": "6033cb2c",
-                      "kind": "struct",
+                      "kind": "class",
                       "name": "Wrapper"
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b8318a54bbb1a5a952bd6193f9dea4b63beca1837bae571183ae0db1b31a92af::Descriptor",
                   "key": "dbb2b13c",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "Descriptor"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::8abc03e58ccec83a4326738edd59058c29d1bdc41d485c2e5a86371dc38fbe2a::RRCache",
                   "key": "e334fbcd",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "RRCache"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::fdb01a53349559e11360b763564dfcccd4fcd83c0185df5259df418e1040bbb4::_DeprecatedDescriptorBase",
                   "key": "e9388de0",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_DeprecatedDescriptorBase"
                 },
                 {
                   "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::1acdf8e35af7850eb30888b17bc7391ed8ec41cb467bf97ad0dd00928a66428a::_cachedmethod_wrapper",
                   "key": "fa9fc3c2",
-                  "kind": "struct",
+                  "kind": "class",
                   "name": "_cachedmethod_wrapper"
                 }
               ],
@@ -4270,6 +4441,7 @@
       ],
       "exit": 0,
       "tools": [
+        "backend.call",
         "backend.document",
         "backend.graph",
         "backend.index",

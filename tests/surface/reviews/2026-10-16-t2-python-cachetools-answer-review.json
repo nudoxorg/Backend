@@ -36,7 +36,18 @@
     "search": "TTLCache records 6 -> 9; cached remains 25.",
     "source_support": "AST parsing finds production classes Cache/FIFOCache/LFUCache/LRUCache/RRCache/TTLCache/TLRUCache and descriptor/wrapper classes; methods are nested in class bodies. Top-level cached/cache methods and key helpers are actual functions. This supports correcting Python struct to class and distinguishing methods from functions.",
     "preserved": "Package root identity, query set, answer category, 200 declaration cap, and cached search record count remain stable.",
-    "unresolved": "Exact root total, the extra constant/function roots, search ranking and the three additional TTLCache records require candidate capture review; source alone does not establish their ordering or completeness."
+    "unresolved": "No unmatched source-backed entries remain in captured capped outline/search records; capped outlines and pathless symbols retain their original partial/source-less semantics."
   },
-  "decision": "Source supports Python class/method semantic reclassification. Suitable for answer-only consideration after runtime diff review; preserve golden performance object and bands."
+  "decision": "Accept answer-only snapshot correction after independent pinned-source AST and captured-record review. Preserve prior performance measurements/bands exactly; current-head T2 acceptance remains required.",
+  "record_review": {
+    "reviewer": "Codex parent, independently of Luna source-category review",
+    "candidate_sha256": "638c67b894526315ead5b6e900bfd1e7f1f320570c80a1d571a2b2f69c719929",
+    "outline_entries": 200,
+    "validation": "Every capped outline entry name and kind independently matched Python AST declarations/imports/bindings across the pinned .py/.pyi tree; methods require class ownership, properties require @property. No unmatched entries. Complete-result claim is not inferred from capped outline.",
+    "authored_search_locations_verified": 29,
+    "pathless_search_identities": 5,
+    "search_validation": "Every distinct authored CLI/MCP search path/line/name matches original source line. Pathless type/variable/external identities remain explicitly source-less; no excerpt is invented. Existing harness normalization/continuation checks passed before snapshot comparison.",
+    "ordering": "Recorded exact deterministic current product order; no relevance optimality claim. Declaration cap and query limits unchanged.",
+    "performance_object_sha256_preserved": "8e2ff90c5c4a33c1b303f9d526647e854e7cc080b6b073810850a40d37e0268f"
+  }
 }
