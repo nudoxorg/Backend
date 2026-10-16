@@ -194,6 +194,67 @@ fn invalid_arguments_never_reach_owner_and_next_valid_call_works() {
     }
 }
 
+fn assert_exact_membership_retry(
+    commands: &[SurfaceCommand],
+    selected: &PackageSourceMembershipPageRequestV1,
+) {
+    assert_eq!(
+        commands.first(),
+        Some(&SurfaceCommand::PackageSourceMembership {
+            request: selected.clone()
+        })
+    );
+    let expected = PackageSourceMembershipPageRequestV1 {
+        limit: 64,
+        ..selected.clone().with_selection([11; 32], [12; 32])
+    };
+    assert_eq!(
+        commands.get(1),
+        Some(&SurfaceCommand::PackageSourceMembership { request: expected })
+    );
+}
+
+fn assert_native_stale_retains_the_exact_retry(
+    selected: &PackageSourceMembershipPageRequestV1,
+    raw: bool,
+) {
+    let large = page_for(selected, &rows());
+    let stale = PackageSourceMembershipPageResultV1::Stale {
+        package: selected.package.clone(),
+        current_source_relation_root: Some([99; 32]),
+        current_source_version: Some([98; 32]),
+    };
+    let mut server = ready(Fake {
+        surface_replies: [
+            SurfaceReply::PackageSourceMembershipPage(large),
+            SurfaceReply::PackageSourceMembershipPage(stale.clone()),
+        ]
+        .into(),
+        ..Fake::default()
+    });
+    let response = invoke(&mut server, selected, raw, false);
+    // An honest native Stale result is admitted typed data. It does not assert
+    // that a forged page's proof passed, and is not a tool-domain fault.
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert!(response.get("error").is_none());
+    let returned = if raw {
+        &response["result"]["structuredContent"]["surface"]["data"]
+    } else {
+        &response["result"]["structuredContent"]["package_source_membership_page"]
+    };
+    assert_eq!(returned, &json!(stale));
+    assert_eq!(server.product.surface_commands.len(), 2);
+    let SurfaceCommand::PackageSourceMembership { request: retry } =
+        &server.product.surface_commands[1]
+    else {
+        panic!("membership")
+    };
+    assert_eq!(retry.expected_source_relation_root, Some([11; 32]));
+    assert_eq!(retry.expected_source_version, Some([12; 32]));
+    assert_eq!(retry.cursor, selected.cursor);
+    assert_exact_membership_retry(&server.product.surface_commands, selected);
+}
+
 #[test]
 fn retries_keep_pinned_extent_and_stop_on_native_stale_or_wrong_selection() {
     let selected = PackageSourceMembershipPageRequestV1 {
@@ -203,37 +264,8 @@ fn retries_keep_pinned_extent_and_stop_on_native_stale_or_wrong_selection() {
         )
     };
     for raw in [false, true] {
+        assert_native_stale_retains_the_exact_retry(&selected, raw);
         let large = page_for(&selected, &rows());
-        let stale = PackageSourceMembershipPageResultV1::Stale {
-            package: selected.package.clone(),
-            current_source_relation_root: Some([99; 32]),
-            current_source_version: Some([98; 32]),
-        };
-        let mut server = ready(Fake {
-            surface_replies: [
-                SurfaceReply::PackageSourceMembershipPage(large.clone()),
-                SurfaceReply::PackageSourceMembershipPage(stale.clone()),
-            ]
-            .into(),
-            ..Fake::default()
-        });
-        let response = invoke(&mut server, &selected, raw, false);
-        assert_eq!(response["result"]["isError"], false, "{response}");
-        let returned = if raw {
-            &response["result"]["structuredContent"]["surface"]["data"]
-        } else {
-            &response["result"]["structuredContent"]["package_source_membership_page"]
-        };
-        assert_eq!(returned, &json!(stale));
-        assert_eq!(server.product.surface_commands.len(), 2);
-        let SurfaceCommand::PackageSourceMembership { request: retry } =
-            &server.product.surface_commands[1]
-        else {
-            panic!("membership")
-        };
-        assert_eq!(retry.expected_source_relation_root, Some([11; 32]));
-        assert_eq!(retry.expected_source_version, Some([12; 32]));
-        assert_eq!(retry.cursor, selected.cursor);
         let mut smaller = selected.clone();
         smaller.limit = 64;
         for mutation in 0..4 {
@@ -254,6 +286,9 @@ fn retries_keep_pinned_extent_and_stop_on_native_stale_or_wrong_selection() {
                 2 => *source_relation_root = [99; 32],
                 _ => *file_count += 1,
             }
+            // The first three corrupt the page/cursor agreement; the fourth
+            // is internally valid but changes the already pinned total.
+            assert_eq!(wrong.has_admissible_shape(), mutation == 3);
             let mut server = ready(Fake {
                 surface_replies: [
                     SurfaceReply::PackageSourceMembershipPage(large.clone()),
@@ -263,15 +298,48 @@ fn retries_keep_pinned_extent_and_stop_on_native_stale_or_wrong_selection() {
                 ..Fake::default()
             });
             let response = invoke(&mut server, &selected, raw, false);
-            assert_eq!(
-                response["result"]["isError"], true,
+            let (kind, cause) = if mutation == 3 {
+                ("freshness", "moved")
+            } else {
+                ("protocol", "unproven")
+            };
+            // The common MCP classifier keeps failed proofs and incoherent
+            // selection in JSON-RPC errors, rather than domain tool results.
+            assert!(
+                response.get("result").is_none(),
                 "mutation={mutation} {response}"
             );
+            assert_eq!(response["error"]["code"], -32603, "{response}");
+            assert_eq!(response["error"]["data"]["kind"], kind, "{response}");
+            let fault = &response["error"]["data"]["structuredContent"];
+            assert_eq!(fault["slug"], kind);
+            assert_eq!(fault["cause"], cause);
+            assert_eq!(fault["answer"], "fault");
+            assert_context_bounded(&response);
             assert_eq!(
                 server.product.surface_commands.len(),
                 2,
                 "invalid reply cannot trigger another attempt"
             );
+            assert_exact_membership_retry(&server.product.surface_commands, &selected);
+            let valid_request = PackageSourceMembershipPageRequestV1 {
+                limit: 1,
+                ..selected.clone()
+            };
+            let valid = page_for(&valid_request, &rows());
+            server
+                .product
+                .surface_replies
+                .push_back(SurfaceReply::PackageSourceMembershipPage(valid.clone()));
+            let response = invoke(&mut server, &valid_request, raw, false);
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            let returned = if raw {
+                &response["result"]["structuredContent"]["surface"]["data"]
+            } else {
+                &response["result"]["structuredContent"]["package_source_membership_page"]
+            };
+            assert_eq!(returned, &json!(valid));
+            assert_eq!(server.product.surface_commands.len(), 3);
         }
     }
 }
