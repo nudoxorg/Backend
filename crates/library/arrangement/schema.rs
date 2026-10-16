@@ -274,7 +274,6 @@ pub(super) fn searchable_text(row: &Row) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -336,7 +335,8 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_windows_preserve_canonical_posting_relation_roots() {
+    fn borrowed_windows_preserve_canonical_posting_relation_roots()
+    -> Result<(), backend_flow::FlowError> {
         let coverage = backend_version::CoverageWitness::closed_relation(
             backend_version::ClosedRelationScope::from_scope_root(
                 backend_version::ScopeRoot::from_u64(0x6772_616d_626f_7272),
@@ -359,19 +359,18 @@ mod tests {
                 owned_window_grams(text).into_iter().map(posting),
                 coverage,
                 frontier.clone(),
-            )
-            .expect("former scalar-window posting relation");
+            )?;
             let borrowed = MaterializedIndex::<SearchPostingRelation>::from_entries(
                 search_grams(text).into_iter().map(posting),
                 coverage,
                 frontier.clone(),
-            )
-            .expect("borrowed scalar-window posting relation");
+            )?;
             assert_eq!(borrowed.root(), previous.root());
             assert_eq!(borrowed.coverage(), previous.coverage());
             assert_eq!(borrowed.frontier(), previous.frontier());
             assert_eq!(borrowed.len(), previous.len());
         }
+        Ok(())
     }
 
     #[test]
