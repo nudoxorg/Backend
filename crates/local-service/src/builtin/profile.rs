@@ -1002,29 +1002,55 @@ impl BuiltinIntent {
         }
         source_facts_changes.sort_by_key(|change| change.key);
         if source_facts_changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300)
-            || (encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty())
-            || (encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty())
-            || source_facts_changes
-                .windows(2)
-                .any(|window| window[0].key >= window[1].key)
-            || source_facts_changes.iter().any(|change| {
-                change.expected == change.after
-                    || [change.expected.as_ref(), change.after.as_ref()]
-                        .into_iter()
-                        .flatten()
-                        .any(|record| {
-                            let Some(owner) = record.file_key() else {
-                                return true;
-                            };
-                            product_source_file_facts_record_key(owner, record)
-                                .map_or(true, |canonical| canonical != change.key)
-                        })
-            })
         {
             return Err(BuiltinModelError(
-                "source-facts intent is unordered, oversized, or contains an invalid owner"
-                    .to_owned(),
+                "source-facts intent exceeds its row-count limit".to_owned(),
             ));
+        }
+        if encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "source-facts intent is empty for its encoding version".to_owned(),
+            ));
+        }
+        if encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "source-facts intent is present before its encoding version".to_owned(),
+            ));
+        }
+        if source_facts_changes
+            .windows(2)
+            .any(|window| window[0].key >= window[1].key)
+        {
+            return Err(BuiltinModelError(
+                "source-facts intent row keys are not strictly ordered".to_owned(),
+            ));
+        }
+        for change in &source_facts_changes {
+            if change.expected == change.after {
+                return Err(BuiltinModelError(
+                    "source-facts intent contains an unchanged row".to_owned(),
+                ));
+            }
+            for (side, record) in [
+                ("expected", change.expected.as_ref()),
+                ("after", change.after.as_ref()),
+            ] {
+                let Some(record) = record else {
+                    continue;
+                };
+                let Some(owner) = record.file_key() else {
+                    return Err(BuiltinModelError(format!(
+                        "source-facts intent {side} row has no file owner"
+                    )));
+                };
+                if product_source_file_facts_record_key(owner, record)
+                    .map_or(true, |canonical| canonical != change.key)
+                {
+                    return Err(BuiltinModelError(format!(
+                        "source-facts intent {side} row owner or canonical key does not match"
+                    )));
+                }
+            }
         }
         if (changes.is_empty()
             && semantic_changes.is_empty()
