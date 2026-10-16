@@ -234,7 +234,30 @@ impl Ask {
         let landed = cx.subscribe(&store, |ask: &mut Self, _, event: &StoreEvent, cx| {
             let search_changed = matches!((event, ask.draft.query()),
                 (StoreEvent::Resource(PageKey::Search(query)), Some(mine)) if query == mine);
-            if search_changed || event.is_branch(Branch::Root) {
+            let publication_changed = event.is_branch(Branch::Root)
+                || event.is_branch(Branch::Owner)
+                || matches!(event, StoreEvent::PackagesPublished(_));
+            if publication_changed {
+                // Ask is an auxiliary read, outside the route's focused keys.
+                // Publication invalidates its old job, but the store only
+                // restarts route reads itself. Re-enter through ordinary
+                // current-root admission; never resume the old query's claim.
+                let current = cx.weak_entity();
+                cx.defer(move |cx| {
+                    let _ = current.update(cx, |ask, cx| {
+                        if !ask.current_editor(cx) { return; }
+                        let Some(query) = ask.draft.query().cloned() else { return; };
+                        let key = PageKey::Search(query);
+                        ask.links.store.update(cx, |store, cx| {
+                            // Do not bypass debounce for a never-issued draft.
+                            if store.pages().keys().contains(&key) {
+                                store.ensure(key, cx);
+                            }
+                        });
+                    });
+                });
+            }
+            if search_changed || publication_changed {
                 cx.notify();
             }
         });
@@ -1693,6 +1716,53 @@ mod tests {
         let refused = rig.cx.update(|_, cx| facet::probe::take(cx));
         assert!(refused.texts.iter().any(|text| text.region.as_deref() == Some("ask")
             && text.content == "Mystery has no page yet"), "the refusal is actually painted in the retained query");
+    }
+
+    #[gpui::test]
+    fn a_published_root_restarts_an_open_failed_search_without_editing(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct PublishingSearch(Arc<AtomicUsize>);
+        impl PageReader for PublishingSearch {
+            fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                if matches!(request, ReadRequest::Search(_))
+                    && self.0.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    return Err(crate::runtime::reads::failure(
+                        &backend_client::ClientError::CommandFailed(backend_library::CommandFailure::WrongBasis {
+                            expected: backend_library::view_state_root(&[("publication".into(), "new".into())]).into(),
+                            observed: backend_library::view_state_root(&[("publication".into(), "old".into())]).into(),
+                        }),
+                    ));
+                }
+                Fixture.read(request, context)
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::clone(&calls);
+        let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
+            ReadPool::start(1, move |_| PublishingSearch(Arc::clone(&reads))).expect("pool"));
+        rig.keys("secondary-k");
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let query = ask.read_with(rig.cx, |ask, _| ask.draft.query().cloned().expect("current query"));
+        let route = rig.route();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a failed read never spins a retry loop");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).is_empty()));
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("publication".into(), "new".into())]), 13,
+        );
+        rig.graph.store.update(rig.cx, |store, cx| {
+            let snapshot = store.snapshot();
+            store.admit_snapshot(Arc::new(snapshot.with_key(root, None)), cx);
+        });
+        rig.settle();
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one fresh read follows the admitted publication");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.search(&query).value_root()), Some(root));
+        assert!(!ask.read_with(rig.cx, |ask, cx| ask.choices(cx).is_empty()));
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        assert_eq!(rig.route(), route, "a publication does not navigate or edit the query");
     }
 
     struct FailedSearch;

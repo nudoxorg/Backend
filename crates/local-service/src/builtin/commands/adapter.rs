@@ -6681,13 +6681,13 @@ fn map_semantic_authority_error(
 mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CatalogReplyRequest, CommandAdapter, CommandReply,
-        Executed, GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournalError,
-        JournalEntry, MAX_WAITING_COMMANDS, PreparedProductSelection, ProductDaemon,
-        ProductSemanticPublicationKey, ProfileWorker, ResidentCatalog, ResidentDependencies,
-        StoredOperation, StoredOperationState, admitted_project_source_root,
+        Executed, GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournal,
+        IndexOperationJournalError, JournalEntry, MAX_WAITING_COMMANDS, PreparedProductSelection,
+        ProductDaemon, ProductSemanticPublicationKey, ProfileWorker, ResidentCatalog,
+        ResidentDependencies, StoredOperation, StoredOperationState, admitted_project_source_root,
         capture_terminalization_failed, classify_add_target, index_operation_failure,
-        index_operation_published_observation, legacy_add_compiler_failure,
-        pending_capture_unresolved,
+        index_operation_published_observation, index_publication_worker,
+        legacy_add_compiler_failure, pending_capture_unresolved,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -6706,6 +6706,7 @@ mod tests {
     use std::fs;
     use std::num::NonZeroUsize;
     use std::path::Path;
+    use std::sync::Mutex;
 
     fn typed_compiler_refusal() -> backend_library::IndexJobOutcome {
         let attempt = backend_library::interface::CompilerAttempt {
@@ -6861,7 +6862,14 @@ mod tests {
         let (command, reply) =
             catalog_reply_fixture(&"\"\\\n".repeat(backend_library::MAX_REPLY_BODY / 2), 0);
         let catalog = CatalogReplyRequest::from_command(&command).expect("catalog");
-        let wrong = CatalogReplyRequest::Names(backend_library::ViewRevision::from_bytes([3; 32]));
+        let wrong = CatalogReplyRequest::Names(
+            backend_library::view_state_root(&[("other".to_owned(), "root".to_owned())]).into(),
+        );
+        assert_ne!(
+            wrong.basis(),
+            catalog.basis(),
+            "independent foreign view basis"
+        );
         assert!(
             CommandAdapter::bound_catalog_reply(Some(wrong), &reply).is_err(),
             "wrong source is not a size refusal"

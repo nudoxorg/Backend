@@ -2389,13 +2389,14 @@ mod tests {
             assert_eq!(project.source_paths().count(), 0);
             assert!(project.check_result().file_results.is_empty());
             assert_eq!(project.diagnostics().count(), 1);
-            assert!(
+            assert!(matches!(
                 project
                     .checked_query_session(&budget)
                     .unwrap()
-                    .file_index("__native_tsz_type_reference__.ts")
-                    .is_none()
-            );
+                    .file_index("__native_tsz_type_reference__.ts"),
+                Err(TszAuthorityError::MissingSource(path))
+                    if path == "__native_tsz_type_reference__.ts"
+            ));
         }
     }
     #[test]
