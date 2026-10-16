@@ -194,6 +194,105 @@ def drew_a_frame(trace: Path) -> bool:
     return False
 
 
+def _proc_text(path: Path, limit: int = 1024) -> str:
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except OSError as error:
+        return f"unavailable ({error.__class__.__name__})"
+    truncated = len(data) > limit
+    text = data[:limit].decode(errors="replace").strip()
+    return text + ("…" if truncated else "")
+
+
+def _gui_process_diagnostics(pid: int, proc_root: Path = Path("/proc")) -> str:
+    """Read a small, secret-free /proc snapshot before failure cleanup.
+
+    File reads are byte-capped; the 0.5s budget stops further sampling when
+    possible, but is best-effort because an individual procfs read has no
+    portable timeout.
+    """
+    deadline = time.monotonic() + 0.5
+    proc = proc_root / str(pid)
+
+    def task_ids(process_pid: int) -> list[int]:
+        task_dir = proc_root / str(process_pid) / "task"
+        try:
+            found = []
+            with os.scandir(task_dir) as entries:
+                for entry in entries:
+                    if time.monotonic() >= deadline:
+                        break
+                    if entry.name.isdecimal():
+                        found.append(int(entry.name))
+                    if len(found) >= 128:
+                        break
+            return found or [process_pid]
+        except OSError:
+            return [process_pid]
+
+    root_tasks = task_ids(pid)
+    child_pids = set()
+    for tid in root_tasks:
+        if time.monotonic() >= deadline:
+            break
+        child_text = _proc_text(proc / "task" / str(tid) / "children", 256)
+        child_pids.update(
+            int(value) for value in child_text.split() if value.isdecimal()
+        )
+        if len(child_pids) >= 3:
+            break
+    pids = [pid, *sorted(child_pids)[:3]]
+    details = []
+    threads = []
+    cwd_details = []
+    for child_pid in pids:
+        if time.monotonic() >= deadline:
+            details.append("process snapshot budget elapsed (0.5s best effort)")
+            break
+        try:
+            cwd = os.readlink(proc_root / str(child_pid) / "cwd")[:512]
+        except OSError as error:
+            cwd = f"unavailable ({error.__class__.__name__})"
+        cwd_details.append(f"pid={child_pid} cwd={cwd!r}")
+        task_dir = proc_root / str(child_pid) / "task"
+        task_entries = root_tasks if child_pid == pid else task_ids(child_pid)
+        for tid in task_entries:
+            if time.monotonic() >= deadline:
+                break
+            thread = task_dir / str(tid)
+            comm = _proc_text(thread / "comm", 128)
+            priority = int(any(name in comm.casefold() for name in ("owner", "compiler", "locald")))
+            threads.append((priority, child_pid, tid, comm, thread))
+    threads.sort(key=lambda item: item[0], reverse=True)
+    for _, child_pid, tid, comm, thread in threads[:32]:
+        if time.monotonic() >= deadline:
+            details.append("thread snapshot budget elapsed (0.5s best effort)")
+            break
+        wchan = _proc_text(thread / "wchan", 128)
+        stack = _proc_text(thread / "stack", 512)
+        details.append(
+            f"pid={child_pid} tid={tid} comm={comm!r} wchan={wchan!r}\nstack:\n{stack}"
+        )
+    if len(threads) > 32:
+        details.append(f"thread sample capped at 32 of {len(threads)} discovered threads")
+    details[:0] = cwd_details
+    return "\n".join(details)
+
+
+def _tail(path: Path, limit: int = 3000) -> str:
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - limit))
+            data = stream.read(limit)
+    except OSError as error:
+        return f"unavailable ({error.__class__.__name__})"
+    text = data.decode(errors="replace")
+    return ("…" if size > limit else "") + text
+
+
 def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     xvfb = shutil.which("Xvfb")
     xdotool = shutil.which("xdotool")
@@ -259,11 +358,15 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                     log.flush()
                     server_log.flush()
                     details = "\n".join(
-                        f"{name}:\n{(home / name).read_text(errors='replace')[-3000:]}"
+                        f"{name}:\n{_tail(home / name)}"
                         for name in ("desktop.log", "xvfb.log", "trace.jsonl")
                         if (home / name).is_file()
                     )
-                    return fail(f"desktop did not shut down within 10s after Quit\n{details}")
+                    process_details = _gui_process_diagnostics(app.pid)
+                    return fail(
+                        "desktop did not shut down within 10s after Quit\n"
+                        f"{details}\nprocesses:\n{process_details}"
+                    )
                 if code != 0:
                     return fail(f"desktop quit with exit {code}")
                 print(f"gui: visible window and first frame after {first_frame:.1f}s; clean Quit")

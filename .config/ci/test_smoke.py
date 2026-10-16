@@ -71,6 +71,38 @@ class SmokeContract(unittest.TestCase):
             out.write('\n{"name":"frame","draw_ms":0.8}\n')
         self.assertTrue(smoke.drew_a_frame(trace))
 
+    def test_gui_shutdown_diagnostics_sample_owner_threads_with_bounds(self):
+        proc_root = self.root / "proc"
+
+        def process(pid, threads, children="", thread_children=None):
+            base = proc_root / str(pid)
+            (base / "task" / str(pid)).mkdir(parents=True)
+            (base / "task" / str(pid) / "children").write_text(children)
+            (base / "cwd").symlink_to(self.home)
+            (base / "environ").write_text("PRIVATE_ENV_SENTINEL")
+            (base / "cmdline").write_text("PRIVATE_ARG_SENTINEL")
+            thread_children = thread_children or {}
+            for tid, comm in threads:
+                thread = base / "task" / str(tid)
+                thread.mkdir(parents=True, exist_ok=True)
+                (thread / "comm").write_text(comm)
+                (thread / "children").write_text(thread_children.get(tid, ""))
+                (thread / "wchan").write_text("futex_wait_queue")
+                (thread / "stack").write_text("[<0>] schedule+0x1/0x2")
+
+        ordinary = [(400 + index, f"ui-frame-{index}") for index in range(34)]
+        process(400, [*ordinary, (9000, "backend-owner")], thread_children={433: "450"})
+        process(450, [(450, "locald-worker")])
+
+        snapshot = smoke._gui_process_diagnostics(400, proc_root)
+
+        self.assertLessEqual(snapshot.count(" tid="), 32)
+        self.assertIn("tid=9000 comm='backend-owner'", snapshot)
+        self.assertIn("tid=450 comm='locald-worker'", snapshot)
+        self.assertIn(f"pid=400 cwd='{self.home}'", snapshot)
+        self.assertNotIn("PRIVATE_ENV_SENTINEL", snapshot)
+        self.assertNotIn("PRIVATE_ARG_SENTINEL", snapshot)
+
     def gui(self, visible=True, quit_code=0, ignore_quit=False):
         def executable(name, code):
             path = self.bin_dir / name

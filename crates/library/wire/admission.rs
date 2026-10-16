@@ -8,7 +8,7 @@
 use super::ReplyDto;
 use crate::{
     Command, CommandDto, CommandReply, Cursor, Document, Fragment, Outline, OutlineNode, Row,
-    ViewProjection, ViewProjectionError, ViewRevision, WireClaim, view_identity_bytes,
+    ViewProjection, ViewProjectionError, ViewRevision, WireClaim,
 };
 use core::{fmt, mem::size_of};
 
@@ -406,12 +406,19 @@ fn admit_projection_page(
     command: &Command,
     page: &crate::ProjectionPage,
 ) -> Result<(), ReplyAdmissionError> {
-    let recipe = page_recipe(command).ok_or_else(|| {
-        ReplyAdmissionError::Protocol(
-            "projection page reply does not match a paged command".to_owned(),
-        )
-    })?;
     let expected_recipe = match command {
+        Command::PackagePage(_) => {
+            crate::QueryPageRecipe::packages(page.snapshot.root.basis().root).identity()
+        }
+        Command::OutlinePage {
+            package,
+            page: request,
+        } => crate::QueryPageRecipe::outline(
+            page.snapshot.root.basis().root,
+            *package,
+            request.limit(),
+        )
+        .identity(),
         Command::GraphPage {
             symbol,
             page: request,
@@ -421,12 +428,11 @@ fn admit_projection_page(
             request.window(),
         )
         .identity(),
-        _ => view_identity_bytes(&[
-            b"query",
-            &recipe,
-            page.snapshot.root.basis().root.as_bytes(),
-            &[0],
-        ]),
+        _ => {
+            return Err(ReplyAdmissionError::Protocol(
+                "projection page reply does not match a paged command".to_owned(),
+            ));
+        }
     };
     if page.snapshot.root.recipe != expected_recipe {
         return Err(ReplyAdmissionError::Protocol(
@@ -467,21 +473,6 @@ fn admit_projection_page(
         ));
     }
     Ok(())
-}
-
-fn page_recipe(command: &Command) -> Option<Vec<u8>> {
-    match command {
-        Command::PackagePage(_) => Some(b"packages-page".to_vec()),
-        Command::OutlinePage { package, page } => {
-            Some(crate::catalog::outline_page_recipe(*package, page.limit()))
-        }
-        Command::GraphPage { symbol, .. } => {
-            let mut recipe = b"graph-page".to_vec();
-            recipe.extend_from_slice(&symbol.claimed_bytes());
-            Some(recipe)
-        }
-        _ => None,
-    }
 }
 
 /// Returns a conservative allocation bound for one reply DTO.
