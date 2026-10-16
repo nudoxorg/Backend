@@ -214,7 +214,7 @@ impl FileStore {
         ))
     }
 
-    fn verify_object_value_targets(&self, object: &TypedObject) -> Result<(), StoreError> {
+    pub(super) fn verify_object_value_targets(&self, object: &TypedObject) -> Result<(), StoreError> {
         if !self.relation_registry.contains_schema(object.schema()) {
             return Ok(());
         }

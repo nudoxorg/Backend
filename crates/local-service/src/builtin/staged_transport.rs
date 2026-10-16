@@ -92,9 +92,10 @@ fn budgets(
 fn pool() -> Result<StagePool, StoreError> {
     static POOL: OnceLock<StagePool> = OnceLock::new();
     let (bytes, pages) = configured_limits()?;
-    let metadata = ClosureCompositionBudget::metadata_bytes_for(pages + 256)?
-        .checked_add(64 * 1024 * 8 + pages * size_of::<ObjectId>() * 4)
-        .ok_or(StoreError::Bounds)?;
+    // Include the bounded queued-page payload before admitting a live stage.
+    // Source/page/live-stage limits are unchanged; this is a conservative
+    // metadata reservation, shared with the writer's own admission check.
+    let metadata = StagePool::metadata_required(pages.checked_add(256).ok_or(StoreError::Bounds)?)?;
     let total = bytes.checked_mul(4).ok_or(StoreError::Bounds)?;
     let shared = POOL.get_or_init(|| StagePool::new(4, total, pages, metadata));
     Ok(shared.with_limits(4, total, pages, metadata))
