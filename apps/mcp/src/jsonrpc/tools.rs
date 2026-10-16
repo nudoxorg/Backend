@@ -827,6 +827,28 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     if grammar.tool() == "backend.index" {
         output_schema["properties"]["index_poll"] = index_poll_schema();
     }
+    if grammar.tool() == "backend.select_semantic_version" {
+        output_schema["description"] = json!(
+            "A bounded selection acknowledgement, including when reconfirming an already selected generation. Complete semantic records and history catalogs are separate reads through metadata_call and semantic-source ranges; detail=full does not inline that catalog."
+        );
+        output_schema["properties"]["selection_receipt"] = json!({
+            "type":"object", "additionalProperties":false,
+            "required":["schema","package","coordinate","profile","generation","selected"],
+            "properties":{
+                "schema":{"const":"backend.semantic-selection-receipt.v1"},
+                "package":{
+                    "type":"object","additionalProperties":false,"required":["kind","value"],
+                    "properties":{"kind":{"enum":["purl","local"]},"value":{"type":"string"}}
+                },
+                "coordinate":{"type":"string"},
+                "profile":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"integer","minimum":0,"maximum":255}},
+                "generation":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}},
+                "selected":{"const":true}
+            }
+        });
+        output_schema["properties"]["metadata_call"] = json!({"type":"object","description":"Copy this separately executable read, then follow descriptor pages to the receipt's exact coordinate/profile/generation and semantic-source ranges for the complete captured record."});
+        output_schema["properties"]["metadata_read"] = json!({"type":"string"});
+    }
     json!({
         "name": grammar.tool(),
         "title": title,
