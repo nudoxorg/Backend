@@ -2108,13 +2108,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if kind == DeclarationKind::Class && crossed_function {
                 continue;
             }
-            let selection = select_import_row(candidates
-                .iter()
-                .copied()
-                .filter(|row| {
-                    row.declaration
-                        .is_some_and(|declaration| self.owners[declaration] == Some(scope))
-                }));
+            let selection = select_import_row(candidates.iter().copied().filter(|row| {
+                row.declaration
+                    .is_some_and(|declaration| self.owners[declaration] == Some(scope))
+            }));
             match selection {
                 ImportRowSelection::Empty => {}
                 ImportRowSelection::Found(row) => return Some(row),
@@ -2124,13 +2121,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 crossed_function = true;
             }
         }
-        let selection = select_import_row(candidates
-            .iter()
-            .copied()
-            .filter(|row| {
-                row.declaration
-                    .is_some_and(|declaration| self.owners[declaration].is_none())
-            }));
+        let selection = select_import_row(candidates.iter().copied().filter(|row| {
+            row.declaration
+                .is_some_and(|declaration| self.owners[declaration].is_none())
+        }));
         match selection {
             ImportRowSelection::Empty => select_import_row(candidates.into_iter()).row(),
             selection => selection.row(),

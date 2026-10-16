@@ -44,9 +44,20 @@ pub(in crate::builtin) fn image_publication_rows_for_test(
     path: &str,
 ) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
     let projected = semantic::project_image_rows(
-        image, *blake3::hash(image.as_ref()).as_bytes(), project, profile, basis, false, path, &[],
+        image,
+        *blake3::hash(image.as_ref()).as_bytes(),
+        project,
+        profile,
+        basis,
+        false,
+        path,
+        &[],
     )?;
-    Ok(projected.rows.into_iter().map(|projected| projected.row).collect())
+    Ok(projected
+        .rows
+        .into_iter()
+        .map(|projected| projected.row)
+        .collect())
 }
 
 /// Human-readable spelling; anonymous anchors remain identity evidence.
