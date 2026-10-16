@@ -8395,20 +8395,50 @@ fn receiver_peel_plain_bang_stays_syntactic() -> TestResult<()> {
 #[test]
 fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<()> {
     use backend_compile::SourceBindingIdentity;
+    use backend_semantic::ir::{DeclarationPublicationRole as Role, SemanticReader as _};
     let source = b"// UTF-8 is covered by the projection fixture\nexport interface Workout { name: string; }\nexport namespace First { export function workout() {} }\nnamespace Nested { export function workout() {} }\nfunction workout(value: number): void;\nfunction workout(value: string): void;\nfunction workout(value: unknown) {}\n";
     let authority = report(source);
     let compiled = try_lower(source, Some(&authority))?;
     let syntax =
         backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("workout.ts"), source)?;
     let mut checked = 0;
+    let mut support = 0;
     for item in compiled.ir.items().filter(|item| {
         [b"Workout".as_slice(), b"workout".as_slice()]
             .into_iter()
             .any(|name| item.name() == name)
     }) {
-        let span = item
-            .source()
-            .ok_or_else(|| io::Error::other("written declaration lost its compiler extent"))?;
+        let entity = compiled
+            .ir
+            .entity(item.id())
+            .ok_or_else(|| io::Error::other("named canonical entity"))?;
+        let role = entity.authority.publication;
+        assert_ne!(
+            role,
+            Role::Unavailable,
+            "named fact {:?} {:?} {:?} has no publication role",
+            item.id(),
+            item.name(),
+            item.kind()
+        );
+        if role == Role::ReferenceOnly {
+            assert!(
+                item.source().is_none(),
+                "reference-only fact {:?} {:?} {:?} must not own a source extent",
+                item.id(),
+                item.name(),
+                item.kind()
+            );
+            support += 1;
+            continue;
+        }
+        assert_eq!(role, Role::PrimaryOwned);
+        let span = item.source().ok_or_else(|| {
+            io::Error::other(format!(
+                "written declaration lost its compiler extent: id={:?} name={:?} kind={:?} role={:?}",
+                item.id(), item.name(), item.kind(), role
+            ))
+        })?;
         assert!(
             syntax.declarations().iter().any(|site| {
                 item.name() == site.name().as_bytes()
@@ -8425,6 +8455,10 @@ fn primary_declaration_extents_match_exact_structural_captures() -> TestResult<(
     assert!(
         checked >= 5,
         "fixture must include interface, shadowed functions and overload declarations"
+    );
+    assert!(
+        support > 0,
+        "fixture must retain named canonical type-expression support"
     );
     Ok(())
 }

@@ -530,7 +530,7 @@ mod cold_projection_tests {
                 name,
                 anonymous_callable_anchor: None,
                 kind: *kind,
-                visibility: Visibility::Public,
+                visibility: Visibility::Unknown,
                 authority: EntityAuthorityFacts {
                     publication: DeclarationPublicationRole::PrimaryOwned,
                     source: FactAvailability::Captured,
