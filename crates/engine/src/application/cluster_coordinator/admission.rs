@@ -15,9 +15,7 @@ use crate::compiler_input_capture_v2::{CapturedFullWorkspaceV2, CompilerInputCap
 use crate::compiler_input_manifest_v2::CompilerInputManifestV2;
 use crate::compiler_input_tree_v2::{CompilerInputTreeRecordV2, CompilerWorkspaceFileRoleV2};
 use crate::publication::binding::CompilationBindingFacts;
-use crate::publication::manifest::{
-    CompilationManifestFacts, CompilationManifestFormat, CompilationManifestView,
-};
+use crate::publication::manifest::{CompilationManifestFacts, CompilationManifestView};
 use backend_execution::{
     CompilerAssignment, CompilerAssignmentRoute, StoredCompilerCandidate, VerifiedCompilerInput,
 };

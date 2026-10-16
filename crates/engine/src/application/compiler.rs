@@ -33,10 +33,7 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceSessionLease,
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
-use backend_frontend_typescript::{
-    TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszFileWorkPolicy, TszProject,
-    TszProjectCheckerExecution, TszProjectOptions, TszSourceError,
-};
+use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
 // Each admitted compiler lane owns its private checker pool. Two compiler
 // lanes currently admit at most four file-check workers per owner; parse,
 // bind and merge are separate stages with their existing execution controls.
@@ -45,7 +42,7 @@ const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
-    CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
+    CompilerRequest as ApplicationCompilerRequest, CompilerTerminal,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
     PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
     PythonAuthorityFailureKind, SemanticImageAccessError, SemanticImageAuthority,
@@ -71,7 +68,6 @@ use backend_version::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    error::Error as _,
     fmt::Write as _,
     io,
     path::{Path, PathBuf},

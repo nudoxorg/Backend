@@ -5,9 +5,7 @@ use crate::compiler_input_manifest::CompilerInputManifestError;
 use crate::publication::binding::{
     COMPILATION_BINDING_BYTES, CompilationBindingFacts, CompilationBindingView,
 };
-use crate::publication::manifest::{
-    CompilationManifestFacts, CompilationManifestIdentity, CompilationManifestView,
-};
+use crate::publication::manifest::CompilationManifestIdentity;
 use backend_cluster_transport::AssignmentScope;
 use backend_semantic::ir::SemanticPlaneManifest;
 use backend_store::hydration::VerifiedGenerationFacts;
