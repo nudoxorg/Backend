@@ -587,3 +587,161 @@ fn repeated_import_fallback_does_not_guess_a_binding_or_change_ordinary_twin_ded
     }
     Ok(())
 }
+
+fn assert_normalized_fallback_is_ambiguous(source: &str) -> TestResult {
+    let module = syntax(source)?;
+    let bindings = module
+        .declarations
+        .iter()
+        .filter(|declaration| declaration.name == "K")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bindings.len(),
+        2,
+        "Ruff retains two semantic-name-equivalent sites"
+    );
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|declaration| declaration.kind == DeclarationKind::Alias)
+            .count(),
+        if source.starts_with("from ") { 2 } else { 1 }
+    );
+    let spellings = bindings
+        .iter()
+        .map(|declaration| {
+            &source[declaration.name_span.start as usize..declaration.name_span.end as usize]
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(spellings, HashSet::from(["K", "K"]));
+    let mut facts = FactSet::new();
+    let mut emitter = Emitter::new(source.as_bytes(), &module, &mut facts, None);
+    emitter
+        .emit_non_class_declarations()
+        .map_err(|cause| format!("{cause:?}"))?;
+    for statement in ["before = K", "after = K"] {
+        let start = source
+            .find(statement)
+            .ok_or("normalized-name fixture use")?
+            + statement.len()
+            - 1;
+        let occurrence = module
+            .occurrences
+            .iter()
+            .find(|occurrence| occurrence.span.start as usize == start)
+            .ok_or("normalized-name occurrence")?;
+        assert_eq!(occurrence.target, "K");
+        assert!(
+            emitter.named_row(&emitter.pushed, occurrence).is_none(),
+            "raw display spelling cannot select one normalized-equivalent import binding"
+        );
+        assert!(matches!(
+            emitter
+                .occurrence_target(&emitter.pushed, occurrence)
+                .map_err(|cause| format!("{cause:?}"))?,
+            Some((
+                backend_semantic::ir::OccurrenceTarget::Foreign(_),
+                OccurrenceConfidence::Index
+            ))
+        ));
+    }
+    drop(emitter);
+    let mut complete = FactSet::new();
+    collect_with_checker(&module, source.as_bytes(), &mut complete, None)
+        .map_err(|cause| format!("{cause:?}"))?;
+    let ir = image(source, &complete)?;
+    let mut observed = 0;
+    for (_, occurrence) in ir.link_occurrences() {
+        let Some(span) = occurrence.source else {
+            continue;
+        };
+        if ["before = K", "after = K"].iter().any(|statement| {
+            source
+                .find(statement)
+                .is_some_and(|start| span.start() as usize == start + statement.len() - 1)
+        }) {
+            let link = ir
+                .link(occurrence.link)
+                .ok_or("persisted normalized-name use")?;
+            assert!(
+                matches!(link.target, LinkTarget::External(_)),
+                "no guessed local endpoint survives publication"
+            );
+            assert_eq!(
+                occurrence.confidence,
+                backend_semantic::ir::Confidence::Indexed
+            );
+            observed += 1;
+        }
+    }
+    assert_eq!(
+        observed, 2,
+        "both earlier and later uses retain honest unresolved evidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn normalized_import_fallback_refuses_equivalent_aliases_and_ordinary_collisions() -> TestResult {
+    for source in [
+        "from a import first as K\nbefore = K\nfrom b import second as K\nafter = K\n",
+        "K = 1\nbefore = K\nfrom b import second as K\nafter = K\n",
+        "K = 1\nbefore = K\nfrom b import second as K\nafter = K\n",
+    ] {
+        assert_normalized_fallback_is_ambiguous(source)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn normalized_ordinary_fallback_keeps_existing_owner_and_rebinding_policy() -> TestResult {
+    let source = "K = 1\nK = 2\nvalue = K\n";
+    let module = syntax(source)?;
+    let bindings = module
+        .declarations
+        .iter()
+        .filter(|declaration| declaration.name == "K")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bindings.len(),
+        1,
+        "ordinary module rebinding remains deduplicated"
+    );
+    let binding = bindings[0];
+    assert_eq!(
+        &source[binding.span.start as usize..binding.span.end as usize],
+        "K = 1"
+    );
+    assert_eq!(
+        &source[binding.binding_span.start as usize..binding.binding_span.end as usize],
+        "K = 2"
+    );
+    assert_eq!(
+        &source[binding.name_span.start as usize..binding.name_span.end as usize],
+        "K"
+    );
+    let mut facts = FactSet::new();
+    let mut emitter = Emitter::new(source.as_bytes(), &module, &mut facts, None);
+    emitter
+        .emit_non_class_declarations()
+        .map_err(|cause| format!("{cause:?}"))?;
+    let start = source.find("value = K").ok_or("ordinary use")? + "value = ".len();
+    let occurrence = module
+        .occurrences
+        .iter()
+        .find(|occurrence| occurrence.span.start as usize == start)
+        .ok_or("ordinary occurrence")?;
+    let row = emitter
+        .named_row(&emitter.pushed, occurrence)
+        .ok_or("normalized ordinary binding")?;
+    let index = row.declaration.ok_or("ordinary declaration")?;
+    assert_eq!(module.declarations[index].name_span, binding.name_span);
+    assert_eq!(module.declarations[index].kind, DeclarationKind::Constant);
+    assert!(
+        matches!(emitter.occurrence_target(&emitter.pushed, occurrence)
+        .map_err(|cause| format!("{cause:?}"))?,
+        Some((backend_semantic::ir::OccurrenceTarget::Local(entity), OccurrenceConfidence::Index))
+            if entity.raw == row.ordinal)
+    );
+    Ok(())
+}

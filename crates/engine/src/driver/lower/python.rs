@@ -2080,7 +2080,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let target = occurrence.target.as_bytes();
         let candidates = rows
             .iter()
-            .filter(|row| row.name == target)
+            .filter(|row| {
+                // Ruff normalizes semantic identifiers (NFKC); source spelling
+                // remains the row's display and captured identity. Compare the
+                // authoritative declaration name for imports and ordinary rows
+                // alike, so normalization cannot hide a competing binding.
+                row.declaration.map_or(row.name, |index| {
+                    self.module.declarations[index].name.as_bytes()
+                }) == target
+            })
             .collect::<Vec<_>>();
         let first = *candidates.first()?;
         if candidates.len() == 1 {
