@@ -4695,6 +4695,12 @@ fn run_worker_generation(
         Ok(compiler) => compiler,
         Err(error) => {
             debug_worker_generation_stop(startup.is_some(), "compiler-construction");
+            if std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1") {
+                eprintln!(
+                    "NUDOX-COMPILER-OWNER phase={} compiler-construction error={error}",
+                    if startup.is_some() { "startup" } else { "generation" }
+                );
+            }
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
