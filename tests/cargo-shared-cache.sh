@@ -704,6 +704,7 @@ assert_eq 'preserve caller data' "$(cat "$explicit_build_root-sentinel")"
 role_capacity_slot="$(printf '%s' "$test_root/roots/a" | cksum | awk '{print $1 % 2}')"
 role_alternate_capacity_slot="$((1 - role_capacity_slot))"
 role_capacity_lock="$test_root/cache-explicit/locks/slot-$role_capacity_slot.lock"
+rm -f "$role_capacity_lock"
 mkdir -p "$role_capacity_lock"
 printf '%s\n' "$$" > "$role_capacity_lock/pid"
 printf 'warm role graph\n' > "$explicit_dir/warm-owner-graph.rmeta"
@@ -725,7 +726,7 @@ while [ "$role_reuse_waited" -lt 80 ] \
 done
 assert_file_lines "$role_reuse_log" 1
 assert_eq "$explicit_dir" "$(cut -d '|' -f 2 "$role_reuse_log")"
-[ -d "$test_root/cache-explicit/locks/slot-$role_alternate_capacity_slot.lock" ] \
+[ -f "$test_root/cache-explicit/locks/slot-$role_alternate_capacity_slot.lock" ] \
   || fail "role graph reacquisition did not use the alternate host permit"
 [ -d "$explicit_build_root/.nudox-cargo/leases/slot-0.lock" ] \
   || fail "role graph lease was not independent of the host permit"
@@ -767,9 +768,19 @@ assert_eq "$parallel_role_a/.nudox-cargo/slot-0" \
   "$(awk -F '|' -v root="$test_root/roots/a" '$1 == root { print $2; exit }' "$parallel_role_log")"
 assert_eq "$parallel_role_b/.nudox-cargo/slot-0" \
   "$(awk -F '|' -v root="$test_root/roots/b" '$1 == root { print $2; exit }' "$parallel_role_log")"
-assert_eq 2 "$(find "$parallel_role_cache/locks" -maxdepth 1 -type d -name 'slot-*.lock' -print | wc -l | tr -d ' ')"
-parallel_permit_owners="$(for slot in 0 1; do cat "$parallel_role_cache/locks/slot-$slot.lock/workspace"; done | sort | tr '\n' ':')"
-assert_eq "$test_root/roots/a:$test_root/roots/b:" "$parallel_permit_owners"
+assert_eq 2 "$(find "$parallel_role_cache/locks" -maxdepth 1 -type f -name 'slot-*.lock' -print | wc -l | tr -d ' ')"
+for parallel_slot in 0 1; do
+  python3 - "$parallel_role_cache/locks/slot-$parallel_slot.lock" <<'PY'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as permit:
+    try:
+        fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('parallel build did not hold its capacity permit')
+PY
+done
 [ -d "$parallel_role_a/.nudox-cargo/leases/slot-0.lock" ] \
   || fail "first role graph lacks its independent lease"
 [ -d "$parallel_role_b/.nudox-cargo/leases/slot-0.lock" ] \
@@ -851,8 +862,8 @@ fi
 assert_eq "$before_lines" "$(wc -l < "$explicit_log" | tr -d ' ')"
 assert_eq 'keep target' "$(cat "$conflicted_target_root/keep.txt")"
 
-if find "$test_root/cache-explicit/locks" -mindepth 1 -print -quit 2>/dev/null | grep . >/dev/null; then
-  fail "explicit build-dir leaked a capacity lease"
+if find "$test_root/cache-explicit/locks" -mindepth 1 -type d -name 'worktree-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "explicit build-dir leaked a worktree lease"
 fi
 if find "$test_root/cache-explicit/affinity" -type f -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "explicit build-dir changed default graph affinity"
@@ -914,9 +925,9 @@ for invalid_permit in symlink fifo hardlink; do
 done
 
 # A cancelled compile forwards the signal to fake Cargo and releases both
-# the worktree and slot leases before the wrapper exits. Exercise both legacy
-# directories and the persistent flock permit protocol.
-for signal_protocol in directory file; do
+# the worktree and slot leases before the wrapper exits. Exercise both a
+# pre-existing flock permit and the new-file creation path.
+for signal_protocol in file new-file; do
 signal_cache="$test_root/signal-cache-$signal_protocol"
 signal_log="$test_root/signal-$signal_protocol.log"
 signal_target="$test_root/signal-target-$signal_protocol"
@@ -927,6 +938,8 @@ signal_release="$test_root/signal-child-$signal_protocol.release"
 if [ "$signal_protocol" = file ]; then
   mkdir -p "$signal_cache/locks"
   printf 'persistent permit\n' > "$signal_cache/locks/slot-0.lock"
+else
+  mkdir -p "$signal_cache/locks"
 fi
 signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-0}"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
@@ -1019,8 +1032,71 @@ import fcntl, sys
 with open(sys.argv[1], 'r+') as permit:
     fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
 PY
+else
+  [ -f "$signal_cache/locks/slot-0.lock" ] || fail "new capacity permit disappeared after cancellation"
+  if mkdir "$signal_cache/locks/slot-0.lock" 2>/dev/null; then
+    fail "mkdir-only sibling acquired a new regular-file capacity permit"
+  fi
 fi
 done
+
+# A hard kill cannot strand a newly created capacity permit. The fake Cargo
+# inherits the locked descriptor, so it continues consuming the slot until it
+# actually exits; the persistent file itself remains for later siblings.
+kill_cache="$test_root/fork-kill-cache"
+kill_log="$test_root/fork-kill.log"
+kill_release="$test_root/fork-kill.release"
+kill_child_pid="$test_root/fork-kill-child.pid"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$kill_log" \
+  NUDOX_BUILD_CACHE_ROOT="$kill_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_RELEASE_FILE="$kill_release" \
+  NUDOX_TEST_CHILD_PID_FILE="$kill_child_pid" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build &
+fork_kill_wrapper="$!"
+fork_kill_waited=0
+while [ "$fork_kill_waited" -lt 80 ] && [ ! -f "$kill_child_pid" ]; do
+  sleep 0.05
+  fork_kill_waited="$((fork_kill_waited + 1))"
+done
+[ -f "$kill_child_pid" ] || fail "hard-kill case never reached fake Cargo"
+kill_permit="$kill_cache/locks/slot-0.lock"
+[ -f "$kill_permit" ] || fail "new capacity permit was not a regular file"
+kill -KILL "$fork_kill_wrapper"
+if wait "$fork_kill_wrapper"; then
+  fail "SIGKILL wrapper unexpectedly succeeded"
+fi
+python3 - "$kill_permit" <<'PY'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as permit:
+    try:
+        fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('forked Cargo lost the capacity flock after wrapper SIGKILL')
+PY
+fork_kill_contender_status=0
+NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$kill_cache/contender.log" \
+  NUDOX_BUILD_CACHE_ROOT="$kill_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" check 2> "$kill_cache/contender.stderr" || fork_kill_contender_status="$?"
+assert_eq 75 "$fork_kill_contender_status"
+[ ! -e "$kill_cache/contender.log" ] || fail "hard-kill sibling reached Cargo before permit release"
+touch "$kill_release"
+fork_kill_child="$(cat "$kill_child_pid")"
+fork_kill_waited=0
+while [ "$fork_kill_waited" -lt 80 ] && kill -0 "$fork_kill_child" 2>/dev/null; do
+  sleep 0.05
+  fork_kill_waited="$((fork_kill_waited + 1))"
+done
+if kill -0 "$fork_kill_child" 2>/dev/null; then
+  fail "fake Cargo survived release after wrapper SIGKILL"
+fi
+NUDOX_TEST_WORKTREE="$test_root/roots/c" NUDOX_TEST_LOG="$kill_cache/retry.log" \
+  NUDOX_BUILD_CACHE_ROOT="$kill_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" check
+[ -f "$kill_permit" ] || fail "persistent capacity permit pathname disappeared"
 
 # Interrupting while waiting for a busy warm lane also releases the worktree
 # lease. Keep the synthetic slot owner alive for the duration of this check.
@@ -1058,7 +1134,7 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
 ceiling_owner="$!"
 ceiling_waited=0
-while [ "$ceiling_waited" -lt 40 ] && ! find "$ceiling_cache/locks" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; do
+while [ "$ceiling_waited" -lt 40 ] && ! find "$ceiling_cache/locks" -type f -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; do
   sleep 0.05
   ceiling_waited="$((ceiling_waited + 1))"
 done
@@ -1366,4 +1442,4 @@ assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint
 [ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
 [ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
 
-echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, managed cache lifetime, daemon protocol isolation, exit propagation, stale worktree recovery)"
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, cancellation and fork-kill recovery, stamps, provenance, managed cache lifetime, daemon protocol isolation, exit propagation, stale worktree recovery)"
