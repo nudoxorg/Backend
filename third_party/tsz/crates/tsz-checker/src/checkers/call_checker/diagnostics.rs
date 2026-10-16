@@ -23,6 +23,314 @@ fn callback_mismatch_memo_disabled() -> bool {
     })
 }
 
+#[cfg(test)]
+mod void_callback_probe_tests {
+    use super::*;
+    use crate::context::{CheckerOptions, ProgramContext};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tsz_binder::BinderState;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::FunctionShape;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    struct CountWork(AtomicU64);
+
+    impl ExecutionCheckpoint for CountWork {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.0.fetch_add(work, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn callback(arena: &tsz_parser::NodeArena) -> NodeIndex {
+        arena
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.kind == syntax_kind_ext::ARROW_FUNCTION
+                    || node.kind == syntax_kind_ext::FUNCTION_EXPRESSION
+            })
+            .max_by_key(|(_, node)| node.end - node.pos)
+            .map(|(index, _)| NodeIndex(index as u32))
+            .expect("callback expression")
+    }
+
+    fn probe(source: &str, expected_return: TypeId) -> (Option<usize>, u64) {
+        let mut parser = ParserState::new("probe.ts".into(), source.into());
+        let root = parser.parse_source_file();
+        let arena = parser.get_arena();
+        let mut binder = BinderState::new();
+        binder.bind_source_file(arena, root);
+        let interner = TypeInterner::new();
+        let expected = interner.function(FunctionShape {
+            params: Vec::new(),
+            this_type: None,
+            return_type: expected_return,
+            type_params: Vec::new(),
+            type_predicate: None,
+            is_constructor: false,
+            is_method: false,
+        });
+        let work = CountWork(AtomicU64::new(0));
+        let queries = QueryCache::new(&interner).with_execution_checkpoint(&work);
+        let mut checker = CheckerState::new(
+            arena,
+            &binder,
+            &queries,
+            "probe.ts".into(),
+            CheckerOptions::default(),
+        );
+        let argument = callback(arena);
+        work.0.store(0, Ordering::Relaxed);
+        let result = checker
+            .raw_block_body_callback_mismatch(&[argument], |_, _| Some(expected))
+            .map(|(index, _, _)| index);
+        (result, work.0.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn void_return_probe_does_not_reenter_nested_callback_bodies() {
+        let source = "const callback = () => { const nested = () => { return missing; }; nested(); return 'accepted'; };";
+        let (mismatch, work) = probe(source, TypeId::VOID);
+        assert_eq!(mismatch, None);
+        assert_eq!(
+            work, 0,
+            "a discarded return needs no speculative body inference"
+        );
+        let (mismatch, work) = probe(source, TypeId::NUMBER);
+        assert_eq!(
+            mismatch,
+            Some(0),
+            "concrete return mismatches are still checked"
+        );
+        assert!(
+            work > 0,
+            "non-void contexts must still infer the callback body"
+        );
+    }
+
+    #[test]
+    fn generator_callbacks_keep_the_existing_probe() {
+        let (_, work) = probe(
+            "const callback = function* () { yield 1; return 2; };",
+            TypeId::VOID,
+        );
+        assert!(
+            work > 0,
+            "generator components retain the existing analysis"
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum BodyContext {
+        Standalone,
+        OutcomesWithoutOwners,
+        Program,
+    }
+
+    fn check_body_diagnostics(
+        source: &str,
+        context: BodyContext,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        let mut parser = ParserState::new("test.ts".into(), source.into());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let mut binder = BinderState::new();
+        binder.bind_source_file(parser.get_arena(), root);
+        let arena = Arc::new(parser.into_arena());
+        let binder = Arc::new(binder);
+        let interner = TypeInterner::new();
+        let mut checker = CheckerState::new(
+            &arena,
+            &binder,
+            &interner,
+            "test.ts".into(),
+            CheckerOptions {
+                strict: true,
+                ..Default::default()
+            },
+        );
+        assert!(!checker.ctx.report_unresolved_imports);
+        match context {
+            BodyContext::Standalone => {}
+            BodyContext::OutcomesWithoutOwners => {
+                // Native07's incomplete fixture: outcomes select exact owner lookup,
+                // but a standalone binder has no registered program symbol owners.
+                checker
+                    .ctx
+                    .set_project_module_resolution_outcomes(Arc::new(Default::default()));
+                let sink = binder.file_locals.get("sink").expect("declared sink");
+                assert!(checker.ctx.project_source_symbol(sink).is_none());
+                assert_eq!(checker.get_type_of_symbol(sink), TypeId::UNKNOWN);
+            }
+            BodyContext::Program => {
+                // One file means every binder symbol has the same exact owner. Use
+                // the existing program installer, not just its outcome-map setter.
+                // There are no imports/directives, so the closed outcome map is empty.
+                let mut program = ProgramContext {
+                    all_arenas: Arc::new(vec![Arc::clone(&arena)]),
+                    all_binders: Arc::new(vec![Arc::clone(&binder)]),
+                    symbol_file_targets: Arc::new(
+                        binder.symbols.iter().map(|symbol| (symbol.id, 0)).collect(),
+                    ),
+                    project_module_resolution_outcomes: Some(Arc::new(Default::default())),
+                    ..ProgramContext::default()
+                };
+                program.build_global_indices();
+                program.build_global_symbol_file_index();
+                program.apply_to(&mut checker.ctx);
+                checker.ctx.set_current_file_idx(0);
+                assert!(checker.ctx.report_unresolved_imports);
+                for symbol in binder.symbols.iter() {
+                    assert_eq!(
+                        checker.ctx.resolve_symbol_declaring_file_index(symbol.id),
+                        Some(0)
+                    );
+                    assert!(std::ptr::eq(
+                        checker
+                            .ctx
+                            .project_source_symbol(symbol.id)
+                            .expect("program symbol owner"),
+                        symbol
+                    ));
+                }
+            }
+        }
+        checker.check_source_file(root);
+        if matches!(context, BodyContext::Program) {
+            // Check after the normal source pass so these assertions cannot warm
+            // function types before the callback diagnostic paths under test.
+            for (name, callback_return) in [("sink", TypeId::VOID), ("numberSink", TypeId::NUMBER)]
+            {
+                if let Some(symbol) = binder.file_locals.get(name) {
+                    let ty = checker.get_type_of_symbol(symbol);
+                    let signature = crate::query_boundaries::checkers::call::get_call_signature(
+                        checker.ctx.types,
+                        ty,
+                        1,
+                    )
+                    .expect("declared callee remains callable");
+                    assert_eq!(signature.return_type, TypeId::VOID);
+                    assert_eq!(signature.params.len(), 1);
+                    assert_eq!(
+                        stable_call_recovery_return_type(
+                            checker.ctx.types,
+                            signature.params[0].type_id
+                        ),
+                        Some(callback_return),
+                        "{name} retains its declared callback return"
+                    );
+                }
+            }
+            assert!(
+                checker
+                    .ctx
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| !matches!(diagnostic.code, 18046 | 7006)),
+                "declared callees and contextual parameters must stay typed: {:?}",
+                checker.ctx.diagnostics
+            );
+        }
+        checker.ctx.diagnostics.clone()
+    }
+
+    #[test]
+    fn void_return_probe_preserves_actual_body_and_argument_diagnostics() {
+        let source = r#"
+declare function sink(callback: (event: string) => void): void;
+declare function numberSink(callback: () => number): void;
+sink((event) => { const invalid: number = event; missingInsideCallback; return 'accepted'; });
+sink((event: number) => { return event; });
+numberSink(() => { return 'rejected'; });
+"#;
+        let diagnostics = check_body_diagnostics(source, BodyContext::Program);
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2322),
+            "body assignment error: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2304
+                && source[diagnostic.start as usize..].starts_with("missingInsideCallback")),
+            "body name error: {diagnostics:?}"
+        );
+        let parameter_call = source.find("sink((event: number)").expect("parameter call");
+        let return_call = source.find("numberSink(() =>").expect("return call");
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == 2345
+                && (parameter_call..return_call).contains(&(diagnostic.start as usize))),
+            "parameter compatibility error: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == 2345
+                    && diagnostic.start as usize >= return_call),
+            "non-void return error: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_name_policy_is_explicit_for_void_callback_diagnostics() {
+        let source =
+            "declare function sink(callback: () => void): void; sink(() => { missingInVoid; });";
+        let legacy = check_body_diagnostics(source, BodyContext::Standalone);
+        assert!(
+            legacy.iter().all(|diagnostic| diagnostic.code != 2304),
+            "legacy standalone construction intentionally suppresses unresolved names: {legacy:?}"
+        );
+        let incomplete = check_body_diagnostics(source, BodyContext::OutcomesWithoutOwners);
+        assert!(
+            incomplete.iter().any(|diagnostic| diagnostic.code == 18046),
+            "an outcome map without symbol ownership is not a program fixture: {incomplete:?}"
+        );
+        let admitted = check_body_diagnostics(source, BodyContext::Program);
+        let missing = source.find("missingInVoid").expect("missing name");
+        assert_eq!(admitted.iter().filter(|diagnostic| diagnostic.code == 2304
+            && diagnostic.start as usize == missing).count(), 1,
+            "an admitted program must report the body name exactly once: {admitted:?}");
+    }
+
+    #[test]
+    fn admitted_void_callbacks_preserve_nested_and_function_expression_names() {
+        let source = r#"
+declare function sink(callback: (event: string) => void): void;
+sink((event) => {
+    const nested = () => { missingNested; return event; };
+    nested(); missingOuter; return 'discarded';
+});
+sink(function(event) { missingFunction; return event; });
+sink((event) => missingExpression);
+"#;
+        let diagnostics = check_body_diagnostics(source, BodyContext::Program);
+        for name in [
+            "missingNested",
+            "missingOuter",
+            "missingFunction",
+            "missingExpression",
+        ] {
+            let start = source.find(name).expect("missing name");
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(
+                        |diagnostic| diagnostic.code == 2304 && diagnostic.start as usize == start
+                    )
+                    .count(),
+                1,
+                "{name} must survive normal checking, independent of a discarded return: {diagnostics:?}"
+            );
+        }
+        assert!(
+            diagnostics.iter().all(|diagnostic| diagnostic.code != 2345),
+            "void-substitutable returns remain accepted: {diagnostics:?}"
+        );
+    }
+}
+
 impl<'a> CheckerState<'a> {
     pub(super) fn snapshot_overload_retry_state(&mut self) -> FullSnapshot {
         self.ctx.snapshot_full()
@@ -512,6 +820,17 @@ impl<'a> CheckerState<'a> {
             }
             let expected = expected_for_index(self, index)?;
             if expected == TypeId::ERROR || expected == TypeId::UNKNOWN || expected == TypeId::ANY {
+                return None;
+            }
+            // A non-generator callback cannot have a return mismatch against
+            // an agreed void return: the caller discards its returned value.
+            // Do not speculatively recheck its entire body (and nested calls)
+            // just to reach the same void-substitutability rule below. Normal
+            // argument compatibility and body diagnostics are checked by the
+            // caller; this probe rolls its speculative diagnostics back.
+            if !func.asterisk_token
+                && stable_call_recovery_return_type(self.ctx.types, expected) == Some(TypeId::VOID)
+            {
                 return None;
             }
             // Contextual-callback mismatch memo (#13250). Overload resolution and
