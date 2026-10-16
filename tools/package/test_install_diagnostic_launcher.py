@@ -14,6 +14,11 @@ import test_install_forgejo_preview as mirror_tests
 ROOT = Path(__file__).parent
 LAUNCHER = ROOT / "install_diagnostic_preview.sh"
 BOOTSTRAP = mirror_tests.PUBLISHED_BOOTSTRAP_FIXTURE
+GLOBAL_LAUNCHER = ROOT / "install_preview.sh"
+GLOBAL_BOOTSTRAP = ROOT / "fixtures/install-preview-bootstrap-c533dfe34b7d137a-pinned.py"
+GLOBAL_BOOTSTRAP_URL = "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-c533dfe34b7d137a.py"
+GLOBAL_BOOTSTRAP_SHA256 = "c533dfe34b7d137a08f1569e217cdfd44fc733c8584f0b619c57a23b27cc0209"
+GLOBAL_BOOTSTRAP_BYTES = 6033
 
 
 class LauncherTests(unittest.TestCase):
@@ -53,6 +58,120 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
         # Apple's /usr/bin/python3 shim may create an unrelated xcrun_db here.
         self.assertEqual([p for p in self.private.iterdir() if p.name != "xcrun_db"], [], result.stderr)
         return result
+
+    def run_global_launcher(self, *args, timeout=25):
+        result = subprocess.run(["/bin/sh", str(GLOBAL_LAUNCHER), *args], env=self.environment,
+                                capture_output=True, text=True, timeout=timeout)
+        self.assertEqual([p for p in self.private.iterdir() if p.name != "xcrun_db"], [], result.stderr)
+        return result
+
+    def prepare_global_success_transport(self):
+        self.script("uname", "#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n")
+        self.environment.update(CURL_BODY=str(GLOBAL_BOOTSTRAP), CURL_STATUS="0")
+        channel = json.loads((ROOT / "preview-channel.json").read_text())
+        installer = self.root / "platform installer.py"
+        installer_body = b"import json,os,sys\nopen(os.environ['CHILD_ARGS'],'w').write(json.dumps(sys.argv[1:]))\n"
+        installer.write_bytes(installer_body)
+        installer_entry = channel["platforms"]["linux-x64"]["installer"]
+        installer_entry["sha256"] = hashlib.sha256(installer_body).hexdigest()
+        installer_entry["bytes"] = len(installer_body)
+        channel_path = self.root / "github channel.json"
+        channel_path.write_text(json.dumps(channel))
+        mapping = {"https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/preview-channel.json": str(channel_path),
+                   channel["platforms"]["linux-x64"]["installer"]["url"]: str(installer)}
+        mapping_path = self.root / "url mapping.json"
+        mapping_path.write_text(json.dumps(mapping))
+        (self.root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
+platform.system=lambda: 'Linux'
+platform.machine=lambda: 'x86_64'
+mapping=json.loads(pathlib.Path(os.environ['FIXTURE_MAPPING']).read_text())
+class Response(io.BytesIO):
+ def __init__(self,url): super().__init__(pathlib.Path(mapping[url]).read_bytes()); self.url=url
+ def geturl(self): return self.url
+class Opener:
+ def open(self,request,timeout):
+  url=request.full_url
+  with open(os.environ['FIXTURE_REQUESTS'],'a') as log: log.write(url+'\\n')
+  return Response(url)
+urllib.request.build_opener=lambda *handlers: Opener()
+''')
+        self.environment.update(PYTHONPATH=str(self.root), FIXTURE_MAPPING=str(mapping_path),
+                                FIXTURE_REQUESTS=str(self.root / "requests.log"),
+                                CHILD_ARGS=str(self.root / "child args.json"))
+        return channel, installer
+
+    def test_github_bootstrap_shell_is_exact_reviewed_body_with_only_pin_and_copy_changes(self):
+        source = LAUNCHER.read_text()
+        expected = source
+        replacements = [
+            ("# Download and execute the immutable R2 Python bootstrap as a saved file.",
+             "# Download and execute the immutable GitHub diagnostic-preview bootstrap as a saved file."),
+            ("# This delivery repair still installs the October 6/8 diagnostic binaries.",
+             "# The current GitHub channel remains explicitly diagnostic and records known limits."),
+            ("https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py",
+             GLOBAL_BOOTSTRAP_URL),
+            ("36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5", GLOBAL_BOOTSTRAP_SHA256),
+            ("installer_bytes=13426", "installer_bytes=" + str(GLOBAL_BOOTSTRAP_BYTES)),
+            ("Supports macOS arm64 and Linux x86_64; installs the historical R2 diagnostic preview.",
+             "Supports macOS arm64 and Linux x86_64; installs the current GitHub diagnostic preview."),
+            ("Downloading the pinned R2 diagnostic installer (historical October 6/8 binaries).",
+             "Downloading the pinned GitHub diagnostic-preview bootstrap."),
+        ]
+        for old, new in replacements:
+            self.assertEqual(expected.count(old), 1)
+            expected = expected.replace(old, new)
+        actual = GLOBAL_LAUNCHER.read_text()
+        self.assertEqual(actual, expected)
+        body = GLOBAL_BOOTSTRAP.read_bytes()
+        self.assertEqual(len(body), GLOBAL_BOOTSTRAP_BYTES)
+        self.assertEqual(hashlib.sha256(body).hexdigest(), GLOBAL_BOOTSTRAP_SHA256)
+        channel = json.loads((ROOT / "preview-channel.json").read_text())
+        self.assertEqual(channel["bootstrap"], {"url": GLOBAL_BOOTSTRAP_URL,
+                                                "sha256": GLOBAL_BOOTSTRAP_SHA256,
+                                                "bytes": GLOBAL_BOOTSTRAP_BYTES})
+
+    def test_github_bootstrap_shell_truncation_and_curl_errors_never_execute(self):
+        self.environment.update(CURL_BODY=str(GLOBAL_BOOTSTRAP), CURL_STATUS="0", CURL_PARTIAL="1")
+        prefix = self.root / "partial download prefix"
+        result = self.run_global_launcher("--prefix", str(prefix))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("size/SHA-256 mismatch", result.stderr)
+        self.assertFalse(prefix.exists())
+
+        self.environment.update(CURL_STATUS="22", CURL_PARTIAL="1")
+        failed = self.run_global_launcher("--prefix", str(prefix))
+        self.assertEqual(failed.returncode, 22, failed.stderr)
+        self.assertIn("HTTPS download failed", failed.stderr)
+        self.assertFalse(prefix.exists())
+
+    def test_github_bootstrap_shell_forwards_quoted_prefix_to_saved_bootstrap(self):
+        channel, _installer = self.prepare_global_success_transport()
+        prefix = self.root / "prefix with spaces ' and quote"
+        result = self.run_global_launcher("--prefix", str(prefix), "--allow-downgrade")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.root / "child args.json").read_text()),
+                         ["--prefix", str(prefix), "--allow-downgrade"])
+        self.assertIn("Diagnostic preview; whole-project acceptance is not established.", result.stdout)
+        self.assertIn(channel["platforms"]["linux-x64"]["known_failures"][0], result.stdout)
+        requests = (self.root / "requests.log").read_text().splitlines()
+        self.assertEqual(requests, [
+            "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/preview-channel.json",
+            channel["platforms"]["linux-x64"]["installer"]["url"],
+        ])
+        curl_args = json.loads((self.root / "curl.json").read_text())
+        self.assertIn(GLOBAL_BOOTSTRAP_URL, curl_args)
+        self.assertEqual(curl_args[curl_args.index("--max-filesize") + 1], str(GLOBAL_BOOTSTRAP_BYTES))
+
+    def test_github_bootstrap_shell_rejects_rustpython_before_curl(self):
+        self.environment["NUDOX_INSTALL_PYTHON"] = sys.executable
+        self.environment["PYTHONPATH"] = str(self.root)
+        (self.root / "sitecustomize.py").write_text(
+            'import platform\nplatform.python_implementation=lambda: "RustPython"\n')
+        self.environment["CURL_BODY"] = str(GLOBAL_BOOTSTRAP)
+        result = self.run_global_launcher()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("NUDOX_INSTALL_PYTHON", result.stderr)
+        self.assertFalse((self.root / "curl.json").exists())
 
     def fixture_transport(self):
         entry, archive = mirror_tests.mac_fixture(self.root)
