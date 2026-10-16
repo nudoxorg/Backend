@@ -76,6 +76,28 @@ pub(super) enum PreparedScanProfiles {
     Compile(Box<PreparedScanCompilation>),
 }
 
+fn reused_profiles_intent(
+    package: backend_engine::PackageKey,
+    label: &str,
+    changes: Vec<BuiltinSourceChange>,
+    source_facts_changes: Vec<BuiltinSourceFactsChange>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    // The v7 encoding intentionally requires at least one facts row. Keep
+    // source-only updates in the existing v4 format when no facts were made.
+    if source_facts_changes.is_empty() {
+        BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())
+    } else {
+        BuiltinIntent::index_with_source_facts(
+            package,
+            label,
+            changes,
+            Vec::new(),
+            Vec::new(),
+            source_facts_changes,
+        )
+    }
+}
+
 /// The exact dirty-profile input handles and private Pending after-images,
 /// admitted together against PreparedScanSource's immutable base.
 pub(super) struct PreparedScanCompilation {
@@ -634,14 +656,8 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             {
                 None
             } else {
-                let mut intent = BuiltinIntent::index_with_source_facts(
-                    package,
-                    &label,
-                    changes,
-                    Vec::new(),
-                    Vec::new(),
-                    source_facts_changes,
-                )?;
+                let mut intent =
+                    reused_profiles_intent(package, &label, changes, source_facts_changes)?;
                 if !native_frontier_changes.is_empty() {
                     intent = intent
                         .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
@@ -724,6 +740,68 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             execution_intent,
         },
     })
+}
+
+#[cfg(test)]
+mod reused_profiles_intent_tests {
+    use super::*;
+
+    #[test]
+    fn source_only_reused_change_uses_intent_without_empty_facts_section() {
+        let label = "tinyioc fixture";
+        let package = backend_engine::PackageKey::from_value(label);
+        let project = ProductSourceRecord::new(label.to_owned()).expect("project record");
+        let intent = reused_profiles_intent(
+            package,
+            label,
+            vec![BuiltinSourceChange {
+                key: package.to_bytes(),
+                after: Some(project),
+            }],
+            Vec::new(),
+        )
+        .expect("source-only reused intent");
+
+        let encoded = intent.encode();
+        assert_eq!(&encoded[..4], b"BPI4");
+        assert_eq!(encoded[4], 4);
+        assert!(intent.source_facts_changes().is_empty());
+    }
+
+    #[test]
+    fn reused_intent_keeps_facts_encoding_when_fact_rows_exist() {
+        let label = "tinyioc fixture";
+        let package = backend_engine::PackageKey::from_value(label);
+        let update = backend_engine::build_product_source_file_facts(
+            [1; 32],
+            "Content/TinyIoC.cs",
+            backend_engine::SourceLanguage::CSharp,
+            [2; 32],
+            [3; 32],
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                b"TinyIoC source facts",
+            ),
+            &[],
+        )
+        .expect("facts manifest");
+        let (key, record) = update.into_rows().next().expect("manifest row");
+        let intent = reused_profiles_intent(
+            package,
+            label,
+            Vec::new(),
+            vec![BuiltinSourceFactsChange {
+                key,
+                expected: None,
+                after: Some(record),
+            }],
+        )
+        .expect("facts-bearing reused intent");
+
+        let encoded = intent.encode();
+        assert_eq!(&encoded[..4], b"BPI7");
+        assert_eq!(encoded[4], 7);
+        assert_eq!(intent.source_facts_changes().len(), 1);
+    }
 }
 
 impl SourceCompilePlan {
