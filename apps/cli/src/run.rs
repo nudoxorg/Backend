@@ -9,8 +9,8 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    HealthReport, PageContinuation, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
-    encode_id,
+    encode_id, HealthReport, PageContinuation, ReplyDto, SurfaceCommand, SurfaceReply,
+    ViewStateRoot,
 };
 use backend_present::{Engine, Fault, Probe, Request};
 
@@ -321,11 +321,145 @@ mod graph_admission_tests {
     use super::*;
     use backend_library::{
         Command, CommandDto, CommandReply, DependencyAuthority, DependencyEvidence,
-        DependencyScope, PackageDependencyRecord, PackageDependencyTarget, PackageGraphDirection,
-        PackageGraphKnowledge, PackageGraphPage, PackageGraphPageRequest, PackageGraphPageTerminal,
-        PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference, RegistryEcosystem,
+        DependencyFacts, DependencyScope, IndexedCheckedPackageGraph, PackageDependencyRecord,
+        PackageDependencyTarget, PackageGraphCursor, PackageGraphDirection,
+        PackageGraphIndexLimits, PackageGraphKnowledge, PackageGraphPage, PackageGraphPageRequest,
+        PackageGraphPageTerminal, PackageGraphSourceAuthority, PackageGraphSourceKey,
+        PackageReference, RegistryEcosystem, VerifiedPackageGraphPageRequest,
     };
     use std::sync::{Arc, Mutex};
+
+    struct CheckedGraphFixture {
+        graph: Arc<IndexedCheckedPackageGraph>,
+        source: PackageGraphSourceKey,
+        rows: Arc<[PackageDependencyRecord]>,
+        owner_key: [u8; 32],
+        view_root: [u8; 32],
+    }
+
+    fn checked_graph_fixture(row_count: usize) -> CheckedGraphFixture {
+        let package = PackageReference::parse("pkg:cargo/fixture@1").expect("source");
+        let authority = PackageGraphSourceAuthority::Local([7; 32]);
+        let source = PackageGraphSourceKey::new(package.clone(), authority);
+        let mut rows = (0..row_count)
+            .map(|index| {
+                let target = format!("{}{index}", "a".repeat(2_000));
+                PackageDependencyRecord::new_with_source_authority(
+                    package.clone(),
+                    authority,
+                    PackageDependencyTarget::new(
+                        RegistryEcosystem::Cargo,
+                        target.clone(),
+                        "a".repeat(4_000),
+                        Some(
+                            PackageReference::parse(&format!("pkg:cargo/{target}@1"))
+                                .expect("admitted target coordinate"),
+                        ),
+                    )
+                    .expect("complete wide requirement"),
+                    DependencyScope::Runtime,
+                    false,
+                    DependencyEvidence {
+                        authority: DependencyAuthority::LocalManifest,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|row| row.facts_version);
+        let graph = Arc::new(
+            IndexedCheckedPackageGraph::new(
+                vec![(
+                    source.clone(),
+                    DependencyFacts::Known(rows.clone().into_boxed_slice()),
+                )],
+                PackageGraphIndexLimits {
+                    max_sources: 128,
+                    max_fact_bytes: 256 * 1024 * 1024,
+                    max_total_rows: 4_096,
+                    max_reverse_edges: 4_096,
+                    max_index_key_bytes: 8 * 1024 * 1024,
+                },
+            )
+            .expect("owner-indexed checked facts"),
+        );
+        CheckedGraphFixture {
+            graph,
+            source,
+            rows: Arc::from(rows.into_boxed_slice()),
+            owner_key: [0x51; 32],
+            view_root: [0x19; 32],
+        }
+    }
+
+    fn graph_request(fixture: &CheckedGraphFixture, limit: u16) -> PackageGraphPageRequest {
+        PackageGraphPageRequest::new(
+            fixture.source.coordinate.clone(),
+            PackageGraphDirection::Dependencies,
+            Some(fixture.source.authority),
+            limit,
+        )
+        .expect("bounded typed graph request")
+    }
+
+    /// Builds exactly one canonical checked-fact page, then lets the public
+    /// owner API verify and seal its continuation before a client sees it.
+    fn checked_graph_page(
+        request: &PackageGraphPageRequest,
+        fixture: &CheckedGraphFixture,
+    ) -> PackageGraphPage {
+        request.admit().expect("request admission");
+        assert_eq!(request.direction, PackageGraphDirection::Dependencies);
+        assert_eq!(request.package, fixture.source.coordinate);
+        assert_eq!(request.authority, Some(fixture.source.authority));
+
+        let start = request.cursor.as_ref().map_or(0, |cursor| {
+            fixture
+                .rows
+                .partition_point(|row| row.facts_version <= cursor.after_edge_id)
+        });
+        let end = start
+            .saturating_add(usize::from(request.limit))
+            .min(fixture.rows.len());
+        let rows = fixture.rows[start..end].to_vec().into_boxed_slice();
+        let terminal = if end < fixture.rows.len() {
+            let after_edge_id = rows.last().expect("nonempty continuing page").facts_version;
+            PackageGraphPageTerminal::More(PackageGraphCursor {
+                schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+                view_root: fixture.view_root,
+                facts_witness: fixture.graph.witness(),
+                recipe: request.recipe(Some(&fixture.source)),
+                catalog_snapshot: request.catalog_snapshot,
+                source: Some(fixture.source.clone()),
+                limit: request.limit,
+                after_edge_id,
+                // This unsigned candidate is never returned: the owner API
+                // checks its exact facts and issues the authenticated seal.
+                seal: [0; 32],
+            })
+        } else {
+            PackageGraphPageTerminal::Complete
+        };
+        let mut page = PackageGraphPage {
+            schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+            view_root: fixture.view_root,
+            facts_witness: fixture.graph.witness(),
+            catalog_snapshot: request.catalog_snapshot,
+            package: request.package.clone(),
+            direction: request.direction,
+            source: Some(fixture.source.clone()),
+            limit: request.limit,
+            knowledge: PackageGraphKnowledge::Known,
+            rows,
+            terminal,
+        };
+        let verified = VerifiedPackageGraphPageRequest::verify(request, &fixture.owner_key)
+            .expect("public owner verification of exact request");
+        page.seal_against_checked_facts(&verified, fixture.view_root, &fixture.graph)
+            .expect("public owner verifies exact rows and issues any cursor seal");
+        page
+    }
 
     #[test]
     fn cli_graph_adaptation_preserves_observed_attachment_input_and_original_scope() {
@@ -350,34 +484,18 @@ mod graph_admission_tests {
     }
 
     struct GraphTransport {
-        page: PackageGraphPage,
+        fixture: CheckedGraphFixture,
         seen: Arc<Mutex<Vec<Command>>>,
     }
     impl backend_client::CommandTransport for GraphTransport {
         fn request(&mut self, command: CommandDto) -> Result<ReplyDto, ClientError> {
-            let page = if let Command::Surface(SurfaceCommand::PackageGraphPage { request }) =
-                &command.command
-            {
-                let mut page = self.page.clone();
-                page.limit = request.limit;
-                page.rows = page
-                    .rows
-                    .iter()
-                    .take(usize::from(request.limit))
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
-                assert!(
-                    page.admit_for(request).is_ok(),
-                    "synthetic page mismatch: request limit {}, page limit {}, row count {}",
-                    request.limit,
-                    page.limit,
-                    page.rows.len(),
-                );
-                page
-            } else {
-                self.page.clone()
+            let Command::Surface(SurfaceCommand::PackageGraphPage { request }) = &command.command
+            else {
+                return Err(ClientError::Protocol(
+                    "graph fixture received an unrelated command".to_owned(),
+                ));
             };
+            let page = checked_graph_page(request, &self.fixture);
             self.seen
                 .lock()
                 .expect("commands")
@@ -401,65 +519,12 @@ mod graph_admission_tests {
             Some(base.join("owner.sock")),
         )
         .expect("uncreated frozen attachment");
-        // Keep the source coordinate short enough to fit the published CLI
-        // operand cap when the oversized-output recovery command is rendered.
-        let source = PackageReference::parse("pkg:cargo/fixture@1").expect("source");
-        let authority = PackageGraphSourceAuthority::Local([7; 32]);
-        // Keep every coordinate within the 2 KiB package-URL admission cap.
-        // Two distinct, complete rows force the normal 5-to-2-to-1 page-size
-        // adaptation. The final one-row page fits the human preview budget;
-        // no malformed coordinate is needed to exercise that path.
-        let mut rows = (0..2)
-            .map(|index| {
-                let target = format!("{}{index}", "t".repeat(2000));
-                PackageDependencyRecord::new_with_source_authority(
-                    source.clone(),
-                    authority,
-                    PackageDependencyTarget::new(
-                        RegistryEcosystem::Cargo,
-                        target.clone(),
-                        "r".repeat(4000),
-                        Some(
-                            PackageReference::parse(&format!("pkg:cargo/{target}@1"))
-                                .expect("admitted target coordinate"),
-                        ),
-                    )
-                    .expect("complete wide requirement"),
-                    DependencyScope::Runtime,
-                    false,
-                    DependencyEvidence {
-                        authority: DependencyAuthority::LocalManifest,
-                        frontier: [7; 32],
-                        provenance: [8; 32],
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        rows.sort_unstable_by_key(|row| row.facts_version);
-        let source_key = PackageGraphSourceKey::new(source.clone(), authority);
-        let mut request = PackageGraphPageRequest::new(
-            source.clone(),
-            PackageGraphDirection::Dependencies,
-            Some(authority),
-            5,
-        )
-        .expect("fixed native request");
-        request.catalog_snapshot = Some([6; 32]);
-        let page = PackageGraphPage {
-            schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
-            view_root: [9; 32],
-            facts_witness: [10; 32],
-            catalog_snapshot: request.catalog_snapshot,
-            package: source.clone(),
-            direction: request.direction,
-            source: Some(source_key.clone()),
-            limit: 5,
-            knowledge: PackageGraphKnowledge::Known,
-            rows: rows.into_boxed_slice(),
-            terminal: PackageGraphPageTerminal::Complete,
-        };
-        page.admit_for(&request)
-            .expect("actual native request-bound fixture");
+        // Two wide, complete checked-fact rows force the normal 5-to-2-to-1
+        // output adaptation. The final one-row page must retain a genuine
+        // More cursor for the unreturned edge.
+        let fixture = checked_graph_fixture(2);
+        let request = graph_request(&fixture, 5);
+        let source = fixture.source.coordinate.clone();
         let command = SurfaceCommand::PackageGraphPage {
             request: request.clone(),
         };
@@ -479,7 +544,7 @@ mod graph_admission_tests {
             let mut session = Session::from_transport(
                 paths.endpoint(),
                 GraphTransport {
-                    page: page.clone(),
+                    fixture: fixture.clone(),
                     seen: seen.clone(),
                 },
             );
@@ -506,7 +571,10 @@ mod graph_admission_tests {
             };
             let final_page = view.package_graph_page().expect("complete graph page");
             assert_eq!(final_page.rows.len(), 1);
-            assert_eq!(final_page.terminal, PackageGraphPageTerminal::Complete);
+            let PackageGraphPageTerminal::More(cursor) = &final_page.terminal else {
+                panic!("adaptive one-row page preserves the remaining edge");
+            };
+            assert_eq!(cursor.after_edge_id, final_page.rows[0].facts_version);
             assert_eq!(
                 *seen.lock().expect("exact commands"),
                 [
@@ -526,6 +594,10 @@ mod graph_admission_tests {
                 ],
                 "the valid graph adapts at the published page-size sequence"
             );
+            let remaining =
+                checked_graph_page(&request.clone().with_cursor(cursor.clone()), &fixture);
+            assert_eq!(remaining.rows.as_ref(), &fixture.rows[1..]);
+            assert_eq!(remaining.terminal, PackageGraphPageTerminal::Complete);
             let restored = session.request_context().expect("restored original scope");
             assert_eq!(
                 restored
@@ -541,6 +613,169 @@ mod graph_admission_tests {
                     .cancellation_reason(),
                 Some(backend_client::RequestCancellationReason::Explicit)
             );
+        }
+        assert!(
+            !paths.data().exists(),
+            "advice never creates a workspace or authority"
+        );
+        assert!(!paths.endpoint().exists(), "advice never starts an owner");
+    }
+
+    #[test]
+    fn cli_fixed_cursor_refusal_preserves_observed_attachment_and_original_scope() {
+        const PROBE: &str = "run::graph_admission_tests::cli_fixed_cursor_refusal_probe";
+        for custom in [false, true] {
+            let mut child =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            child
+                .args(["--exact", PROBE, "--nocapture"])
+                .env("NUDOX_TEST_GRAPH_FIXED_CURSOR", "1");
+            if custom {
+                child.env(
+                    backend_runtime::AUTHORITY_SECRET_ENV,
+                    "/private/not-displayed-graph-authority",
+                );
+            } else {
+                child.env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+            }
+            let result = child.output().expect("isolated CLI execution test");
+            assert!(result.status.success(), "{result:?}");
+        }
+    }
+
+    #[test]
+    fn cli_fixed_cursor_refusal_probe() {
+        if std::env::var("NUDOX_TEST_GRAPH_FIXED_CURSOR").is_err() {
+            return;
+        }
+        let base =
+            std::env::temp_dir().join(format!("graph-fixed-cursor-refusal-{}", std::process::id()));
+        let paths = backend_runtime::WorkspacePaths::discover(
+            Some(base.join("project ' literal\nnext")),
+            Some(base.join("state")),
+            Some(base.join("owner.sock")),
+        )
+        .expect("uncreated frozen attachment");
+        let fixture = checked_graph_fixture(6);
+        let initial = graph_request(&fixture, 3);
+        let initial_page = checked_graph_page(&initial, &fixture);
+        let PackageGraphPageTerminal::More(cursor) = initial_page.terminal else {
+            panic!("three-row initial page issues a real continuation");
+        };
+        assert_eq!(
+            cursor.after_edge_id,
+            initial_page
+                .rows
+                .last()
+                .expect("initial page row")
+                .facts_version
+        );
+        let request = initial.with_cursor(cursor.clone());
+        VerifiedPackageGraphPageRequest::verify(&request, &fixture.owner_key)
+            .expect("continuation verifies against the same owner key");
+        let resumed_page = checked_graph_page(&request, &fixture);
+        assert_eq!(resumed_page.rows.len(), 3);
+        assert_eq!(resumed_page.terminal, PackageGraphPageTerminal::Complete);
+        assert_eq!(
+            resumed_page.rows.as_ref(),
+            &fixture.rows[3..],
+            "the issued boundary resumes at the exact next edge"
+        );
+
+        for mode in [
+            backend_present::StartupRecoveryMode::Active,
+            backend_present::StartupRecoveryMode::Existing,
+        ] {
+            let context = crate::process::observed_product_cli_context(&paths, mode);
+            let custom = std::env::var_os(backend_runtime::AUTHORITY_SECRET_ENV).is_some();
+            assert_eq!(context.is_none(), custom);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let mut session = Session::from_transport(
+                paths.endpoint(),
+                GraphTransport {
+                    fixture: fixture.clone(),
+                    seen: seen.clone(),
+                },
+            );
+            let scope = backend_client::RequestContext::new();
+            let deadline = scope
+                .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+                .expect("original deadline");
+            session
+                .set_request_context(Some(scope.clone()))
+                .expect("original request scope");
+            let human = crate::options::Options::plain(crate::options::Format::Human);
+            let json = crate::options::Options::plain(crate::options::Format::Json);
+            let fault = execute_with_output_admission(
+                &mut session,
+                &Request::Surface(Box::new(SurfaceCommand::PackageGraphPage {
+                    request: request.clone(),
+                })),
+                Some(&paths),
+                None,
+                backend_present::Detail::Summary,
+                context.as_ref(),
+                |answer| {
+                    crate::render::admit_graph_answer(answer, &json)
+                        .expect("complete JSON fits unchanged byte and token budgets");
+                    crate::render::admit_graph_answer(answer, &human)
+                },
+            )
+            .expect_err("the exact resumed page exceeds the human preview budget");
+            assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);
+            assert_eq!(
+                *seen.lock().expect("exact commands"),
+                [Command::Surface(SurfaceCommand::PackageGraphPage {
+                    request: request.clone(),
+                })],
+                "a resumed cursor is fixed-size and is never shrunk or replayed"
+            );
+            let restored = session.request_context().expect("restored original scope");
+            assert_eq!(
+                restored
+                    .read_deadline(std::time::Duration::from_secs(90))
+                    .expect("same deadline"),
+                deadline
+            );
+            scope.cancel(backend_client::RequestCancellationReason::Explicit);
+            assert_eq!(
+                session
+                    .request_context()
+                    .expect("original scope")
+                    .cancellation_reason(),
+                Some(backend_client::RequestCancellationReason::Explicit)
+            );
+
+            if custom {
+                assert!(fault.affordance().shell().is_none());
+            } else {
+                let backend_present::Affordance::ReadPackageGraphJson {
+                    request: exact,
+                    detail,
+                    ..
+                } = fault.affordance()
+                else {
+                    panic!("complete JSON recovery affordance for the exact resume");
+                };
+                assert_eq!(exact.as_ref(), &request);
+                assert_eq!(exact.authority, Some(fixture.source.authority));
+                assert_eq!(exact.cursor.as_ref(), Some(&cursor));
+                assert_eq!(exact.limit, 3);
+                assert_eq!(*detail, backend_present::Detail::Summary);
+                VerifiedPackageGraphPageRequest::verify(exact, &fixture.owner_key)
+                    .expect("recovery keeps the genuine owner-issued cursor");
+                let shell = fault
+                    .affordance()
+                    .shell()
+                    .expect("observed CLI executable and attachment");
+                assert!(shell.contains(" --format json "));
+                assert!(shell.contains(&paths.project().to_string_lossy().to_string()));
+                assert!(shell.contains(&paths.data().to_string_lossy().to_string()));
+                assert!(shell.contains(&paths.endpoint().to_string_lossy().to_string()));
+                assert!(shell.contains("unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE"));
+                assert!(!shell.contains("authority.secret"));
+                assert!(!shell.contains("not-displayed-graph-authority"));
+            }
         }
         assert!(
             !paths.data().exists(),
