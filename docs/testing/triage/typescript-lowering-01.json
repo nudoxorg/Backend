@@ -1,0 +1,1249 @@
+{
+  "task": "W1.3",
+  "title": "150-test TypeScript lowering cohort review",
+  "source_head": "d9b2b1b9c1aaee3207e3d847a947225daf925101",
+  "file": "crates/engine/tests/typescript_lower.rs",
+  "file_sha256_before": "dba6cfa28f848abe6eb7a28b93da8c0407d63692587b792a26916eedb360f7fc",
+  "cohort_definition": "First 150 #[test] declarations in source order; the full file has 218 declarations. All function bodies were lexically bracketed with string/comment handling and body-hashed.",
+  "fixtures": {
+    "source.ts": "06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e",
+    "golden.json": "f91967d5b2da9a37d38a570f8b31a7c8fdbef0e62559266ffe81c76975707e90"
+  },
+  "review_summary": {
+    "cohort": 150,
+    "kept": 145,
+    "removed": 5,
+    "net_reduction": 5,
+    "full_file_exact_body_duplicate_groups": [
+      {
+        "members": [
+          "golden_this_type_and_local_nominal_computed_rows_bind_by_name",
+          "golden_oracle_confidence_picks_distinct_overload_targets",
+          "golden_narrowing_extends_the_declared_fact_with_a_site_row"
+        ],
+        "same_body_sha256": "a2d33e8c9b4a17666c4d6214b97e7d3d78b15edc8779c80973b0a75e6e5ede61"
+      }
+    ],
+    "shared_fixture_smokes": {
+      "golden_computed_cells_fill_extension_facts_with_checker_rows": "> 0",
+      "golden_inferred_const_and_union_records_match_the_checker": ">= 2",
+      "golden_foreign_generic_base_names_the_resolved_spelling": ">= 5",
+      "golden_this_type_and_local_nominal_computed_rows_bind_by_name": ">= 10",
+      "golden_oracle_confidence_picks_distinct_overload_targets": ">= 10",
+      "golden_narrowing_extends_the_declared_fact_with_a_site_row": ">= 10"
+    },
+    "retained_smoke_name": "shared_golden_transcript_lowering_emits_at_least_ten_entities",
+    "retained_semantic_assertions_elsewhere": "golden_lowered_facts_match_the_frozen_table consumes the same transcript and checks named type facts against a frozen table; focused tests in this file assert local computed references, occurrence targets, narrowing rows, and source sites.",
+    "file_test_count_before": 218,
+    "file_test_count_after": 213,
+    "removed_tests": 5,
+    "renamed_test": {
+      "from": "golden_this_type_and_local_nominal_computed_rows_bind_by_name",
+      "to": "shared_golden_transcript_lowering_emits_at_least_ten_entities"
+    }
+  },
+  "entries": [
+    {
+      "ordinal": 1,
+      "name": "declared_scalar_annotations_map_onto_lattice_records",
+      "line": 463,
+      "body_sha256": "5b90380425cfc0cc565ee2c732b04c5f08ad3063d79f5800e4c9e4f867c7e9e8",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 2,
+      "name": "ambient_async_transform_index_signatures_keep_distinct_object_owners",
+      "line": 483,
+      "body_sha256": "80243260814a994b1671f53c8654f29adb0e5afacabac293568e248765661973",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 3,
+      "name": "mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members",
+      "line": 528,
+      "body_sha256": "ef365a7f745a4c14104112d48bb109239993437da468299169058c6bdb882d08",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 4,
+      "name": "structural_types_commit_union_intersection_tuple_array_and_apply_records",
+      "line": 549,
+      "body_sha256": "03335df9cf62d81996936f56feb0af88bc3cbeaaef035baff784ab119366f945",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 5,
+      "name": "signatures_commit_parameter_and_result_facts_and_distinct_overloads",
+      "line": 566,
+      "body_sha256": "52a79c38ce418b92c94a23eaf16821b0d8b566fb8b109e2e0116d23e94ddf67a",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 6,
+      "name": "references_resolve_local_import_and_unresolved_targets",
+      "line": 581,
+      "body_sha256": "bb003b97c970165596f90d17100ad3a457eb089732097feb49bfb3f7bc2a45e4",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 7,
+      "name": "jsdoc_commits_text_code_and_local_link_fragments",
+      "line": 602,
+      "body_sha256": "17180b63f938c1830db951169789b483fcbbd5c717f0fb097bd383a5a9a70257",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 8,
+      "name": "a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag",
+      "line": 613,
+      "body_sha256": "215379deaec7ce912f120431f547c44f97a3e861404bba2315ca4da4b645f9a6",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 9,
+      "name": "absent_jsdoc_commits_no_documentation_section",
+      "line": 635,
+      "body_sha256": "bc64782c2e7639a97f1c4f52a243f319a584150200e68d9f1e9bfacc31971bc5",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 10,
+      "name": "template_literal_mapped_and_conditional_records_commit_their_tags",
+      "line": 644,
+      "body_sha256": "3a643a86e00ebfcb4f529e94bd2bf222f97aa79dc8dafb4dc7b56c5c3323fdc0",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 11,
+      "name": "decoded_computed_records_retain_mapped_modifiers_and_literal_bases",
+      "line": 668,
+      "body_sha256": "a80c4dd61a007849967cc753f16cbfb42c66dae0773a7640c5c8bd2935e18668",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 12,
+      "name": "anonymous_object_literals_commit_named_member_children",
+      "line": 698,
+      "body_sha256": "fb041c2fd4dfeb1f741456170bece2d7fbedbcd2978870f5f220669a6efd71ce",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 13,
+      "name": "single_declaration_owns_its_annotation_without_synthetic_rows",
+      "line": 713,
+      "body_sha256": "4ce6099d83668decfb8d1abb6e64c4bdeca016b163808fff92c490d1e423db73",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 14,
+      "name": "foreign_generic_reference_is_unknown_without_checker_module_authority",
+      "line": 725,
+      "body_sha256": "807cc633da41bb16e264ac53c473d483b7c3b77a3d3f73cf1514522fa87ee693",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 15,
+      "name": "nested_object_literal_types_lower_on_a_small_stack",
+      "line": 743,
+      "body_sha256": "9ba81eb3e514e69d64cd553ef19e008296ba79c52e767579677e54ef845daa7a",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 16,
+      "name": "self_referential_alias_is_bounded_on_a_small_stack",
+      "line": 768,
+      "body_sha256": "50511f62f538bde918d53b69fada4a6e786cd5a98e9f2de021494ded7c9274af",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 17,
+      "name": "plugin_union_keeps_all_forty_literal_members_reachable",
+      "line": 803,
+      "body_sha256": "15beb52bbc7560db4f3bec01c8718489eca9d85f16a43940fc53cefd7e7bae37",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 18,
+      "name": "checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly",
+      "line": 833,
+      "body_sha256": "62629c69cb078b0f0462106df18c76049eb8239f7775ada6d35c8f866cfd3685",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 19,
+      "name": "direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier",
+      "line": 922,
+      "body_sha256": "f935f717c0f41c1b42e85430443a256b1a0b986bccfc036a92b52cbd6d15ccb7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 20,
+      "name": "empty_source_admits_the_current_schema_fragment_without_semantic_data",
+      "line": 940,
+      "body_sha256": "fb31320e3bab99b6e06ef79688669d6317200c8bc20e6fa9e45ea78c9d05831b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 21,
+      "name": "oxc_bound_symbols_fill_the_canonical_declaration_lane",
+      "line": 944,
+      "body_sha256": "6f885429df54dc9e5790a1f433e81a4856ac5a9c5f0770c3ae0c7fe697a02a9d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 22,
+      "name": "oxc_interface_is_never_rewritten_as_a_record",
+      "line": 956,
+      "body_sha256": "49cefefbae6f882227d7ae41117076c501576259fa32ba4595126464e6c19d6e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 23,
+      "name": "golden_computed_cells_fill_extension_facts_with_checker_rows",
+      "line": 966,
+      "body_sha256": "2dbc9bae072ae9dc1d043188766e76f4479835eb757061356ea1c1f7fc9dfba0",
+      "decision": "remove",
+      "reason": "Same module-wide source.ts and golden.json as the retained smoke; same Checker decode and public lowering calls; assertion checks only entity count. The retained shared_golden_transcript_lowering_emits_at_least_ten_entities checks >=10, subsuming this weaker threshold, while golden_lowered_facts_match_the_frozen_table and focused tests retain semantic expectations. No unique assertion exists in this body."
+    },
+    {
+      "ordinal": 24,
+      "name": "golden_inferred_const_and_union_records_match_the_checker",
+      "line": 974,
+      "body_sha256": "593d650c9d6881951de17c7be9d2888ed0c9e75cfa6608484d1db9ca16fb8e9e",
+      "decision": "remove",
+      "reason": "Same module-wide source.ts and golden.json as the retained smoke; same Checker decode and public lowering calls; assertion checks only entity count. The retained shared_golden_transcript_lowering_emits_at_least_ten_entities checks >=10, subsuming this weaker threshold, while golden_lowered_facts_match_the_frozen_table and focused tests retain semantic expectations. No unique assertion exists in this body."
+    },
+    {
+      "ordinal": 25,
+      "name": "golden_foreign_generic_base_names_the_resolved_spelling",
+      "line": 981,
+      "body_sha256": "e673b567d3cba8078fdd3fe654908ca8735f6409fb480bf4fd0782266ac4c2bd",
+      "decision": "remove",
+      "reason": "Same module-wide source.ts and golden.json as the retained smoke; same Checker decode and public lowering calls; assertion checks only entity count. The retained shared_golden_transcript_lowering_emits_at_least_ten_entities checks >=10, subsuming this weaker threshold, while golden_lowered_facts_match_the_frozen_table and focused tests retain semantic expectations. No unique assertion exists in this body."
+    },
+    {
+      "ordinal": 26,
+      "name": "golden_this_type_and_local_nominal_computed_rows_bind_by_name",
+      "line": 988,
+      "body_sha256": "a2d33e8c9b4a17666c4d6214b97e7d3d78b15edc8779c80973b0a75e6e5ede61",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it.",
+      "retained_as": "shared_golden_transcript_lowering_emits_at_least_ten_entities"
+    },
+    {
+      "ordinal": 27,
+      "name": "golden_oracle_confidence_picks_distinct_overload_targets",
+      "line": 995,
+      "body_sha256": "a2d33e8c9b4a17666c4d6214b97e7d3d78b15edc8779c80973b0a75e6e5ede61",
+      "decision": "remove",
+      "reason": "Same module-wide source.ts and golden.json as the retained smoke; same Checker decode and public lowering calls; assertion checks only entity count. The retained shared_golden_transcript_lowering_emits_at_least_ten_entities checks >=10, subsuming this weaker threshold, while golden_lowered_facts_match_the_frozen_table and focused tests retain semantic expectations. No unique assertion exists in this body."
+    },
+    {
+      "ordinal": 28,
+      "name": "golden_narrowing_extends_the_declared_fact_with_a_site_row",
+      "line": 1002,
+      "body_sha256": "a2d33e8c9b4a17666c4d6214b97e7d3d78b15edc8779c80973b0a75e6e5ede61",
+      "decision": "remove",
+      "reason": "Same module-wide source.ts and golden.json as the retained smoke; same Checker decode and public lowering calls; assertion checks only entity count. The retained shared_golden_transcript_lowering_emits_at_least_ten_entities checks >=10, subsuming this weaker threshold, while golden_lowered_facts_match_the_frozen_table and focused tests retain semantic expectations. No unique assertion exists in this body."
+    },
+    {
+      "ordinal": 29,
+      "name": "computed_reference_to_earlier_fact_resolves_locally",
+      "line": 1009,
+      "body_sha256": "640f57d0adf98920b3c9353c0802ae6811b9c54834a97f16d94a974a693ff204",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 30,
+      "name": "narrowing_object_members_bind_spellings_at_the_assignment_site",
+      "line": 1041,
+      "body_sha256": "1c6cb13e7cdb2f8f6a6a77b1e178dced6e135c0753b19e73c04e31badeb83b39",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 31,
+      "name": "checker_resolved_global_reaches_an_oracle_universe_key",
+      "line": 1070,
+      "body_sha256": "e2a0fcc9534c8f770418c057961d3dc6e37f5dcfa63f04eb4515104a8d7037c8",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 32,
+      "name": "package_module_bases_stay_honestly_syntactic",
+      "line": 1082,
+      "body_sha256": "8c66b815e8dd83c5babd337489c0d9b23080bde5877af64da186e0470562cb2d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 33,
+      "name": "checker_only_property_call_targets_the_exact_member",
+      "line": 1094,
+      "body_sha256": "5afc2c64390bce835b6621fc8ba1e6206b855fc5474ca6e26694c5d27aa14af8",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 34,
+      "name": "this_field_read_targets_the_enclosing_class_field",
+      "line": 1146,
+      "body_sha256": "9947142ba435145816c1407fdd1556323bd253c211a520a6cb2032e8350481d4",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 35,
+      "name": "nested_same_name_field_inside_type_literal_does_not_shadow_class_member",
+      "line": 1172,
+      "body_sha256": "6734931cdd3ac0cf580f617361d058b05c031a89ebaf9575b4dd0b385d7da461",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 36,
+      "name": "nested_same_name_field_inside_nested_class_does_not_shadow_class_member",
+      "line": 1201,
+      "body_sha256": "f0ef110e70fc14736311b5cc990c398344847755fa540ef9deb00a4344c15286",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 37,
+      "name": "this_field_read_stays_inside_its_enclosing_class",
+      "line": 1228,
+      "body_sha256": "b36f193aacb0d17245ead9d22d99168ad3852f7aafef59a7308a2204524b011c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 38,
+      "name": "this_method_call_targets_the_enclosing_class_method",
+      "line": 1259,
+      "body_sha256": "0305b557c1268b2179b692e39558e0f9776efe5ab4c94cfd88509a603c306121",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 39,
+      "name": "this_inherited_field_resolves_to_base_score",
+      "line": 1292,
+      "body_sha256": "e1a8ed22bf27a821936df45c8931ae7507a310a4f0cd8b3fa3cc716e20ef8745",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 40,
+      "name": "this_inherited_field_resolves_to_grand_score",
+      "line": 1318,
+      "body_sha256": "56a75ecc078e7bb12ad39d266c595d26ebb1644cc9ddb27609a59531b8d84e00",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 41,
+      "name": "this_inherited_field_child_shadows_base_score",
+      "line": 1343,
+      "body_sha256": "7f13970e9ba5a625d608328a6e3c4d8d46f28bb6fa3bc4754d51ef45d0e2dd17",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 42,
+      "name": "this_inherited_field_unrelated_class_does_not_steal",
+      "line": 1374,
+      "body_sha256": "affc18b42c529cdcc3f310c9e1dbeb79cb00091b1110c9c6439518b4770d6009",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 43,
+      "name": "parameter_property_public_read_targets_same_class_score",
+      "line": 1405,
+      "body_sha256": "5fe0b035e8fba4905a044d5bd46796fd2b4d5677eb62463f684d8256c319cfc1",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 44,
+      "name": "parameter_property_private_keyword_read_targets_same_class_score",
+      "line": 1432,
+      "body_sha256": "ff6f48ff07ca594369cde9ee8942b72ccc773e67e42eff9ff9d6bf751da3e831",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 45,
+      "name": "parameter_property_protected_read_targets_same_class_score",
+      "line": 1460,
+      "body_sha256": "68364136a35ee549372960cf07234a69145f87122d3a0c23287268d9e8bef1b6",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 46,
+      "name": "parameter_property_readonly_read_targets_same_class_score",
+      "line": 1487,
+      "body_sha256": "10f423f361d236cc81f4631a2aa8380e63a824665b6bb01224688909e56e9a87",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 47,
+      "name": "parameter_property_ordinary_parameter_stays_syntactic",
+      "line": 1514,
+      "body_sha256": "302206d8f4d498b606dd34c8207bf117993e4fa578c45f560c779c5134b603de",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 48,
+      "name": "parameter_property_child_read_targets_base_score_not_other",
+      "line": 1549,
+      "body_sha256": "9b9c56bef9f124e0b0f6ded617aa7f7360a072b8f94fffd2092b9532b8e3866c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 49,
+      "name": "parameter_property_child_own_score_wins_over_base",
+      "line": 1581,
+      "body_sha256": "0ab9c55df2c86ecc4fdd3e310b5741a8a7087908a2437bceba36b14272821374",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 50,
+      "name": "accessor_field_read_targets_same_class_score",
+      "line": 1617,
+      "body_sha256": "92de9786f100e767dd24433e1b02301b4ea1fab6e3e6fa136f612523dfb208ab",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 51,
+      "name": "accessor_private_field_read_targets_same_class_score",
+      "line": 1644,
+      "body_sha256": "f3e0967d43b41f9cb5b5a91ab6793032a2925ee32a1154d6c8dd6bf839b1ee1c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 52,
+      "name": "accessor_static_field_read_targets_same_class_score",
+      "line": 1676,
+      "body_sha256": "0e663262cd4f8438aba04d863a00472a1ad5b2ffe3d0a4693aa889fe1defbdcb",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 53,
+      "name": "accessor_child_read_targets_base_score_not_other",
+      "line": 1703,
+      "body_sha256": "0c74e16cc5b22d5763d99b35111b28b95784d218fef35d8a7870a022c4729e7e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 54,
+      "name": "accessor_child_own_score_wins_over_base",
+      "line": 1735,
+      "body_sha256": "03a200af6a0f462921c30fe75fe86f536a08e462e822342a06a2f3aff021aaf7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 55,
+      "name": "accessor_public_keyword_read_targets_same_class_score",
+      "line": 1771,
+      "body_sha256": "079361a1b7ee09ac2a353a8e1f1a313364268a6c42d9fdba1eea34035414e2d1",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 56,
+      "name": "getter_setter_read_targets_getter_not_setter",
+      "line": 1800,
+      "body_sha256": "7ccca0db3fe3f2f458d6184610cbd82bace86536f906709702a8553b57013b6c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 57,
+      "name": "getter_only_read_targets_getter",
+      "line": 1838,
+      "body_sha256": "121e9b21310d527c1b1acaecdaf20e08504a4a02787bee9ae850bda5a21dcc59",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 58,
+      "name": "setter_only_read_targets_setter",
+      "line": 1871,
+      "body_sha256": "b4d1cac62922fb8b31af02f09bd018ab41188f727caefe779c832b53c48c3c18",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 59,
+      "name": "getter_setter_call_targets_getter_not_setter",
+      "line": 1904,
+      "body_sha256": "564901c2e06ba9584ab56f2c69ffcc068ac467489b526f75223452cc7e4c98e6",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 60,
+      "name": "getter_setter_child_read_targets_child_getter",
+      "line": 1942,
+      "body_sha256": "361d756c0bce46e4b94e850e27b61fee4466d2f4990c60a0095a1b31a19c61df",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 61,
+      "name": "getter_setter_child_read_targets_base_getter_not_setter",
+      "line": 1989,
+      "body_sha256": "bcb8510fbba06660a7879d595a552991a32ec34dc6a6849a9cfdd97e9f4e30c0",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 62,
+      "name": "getter_setter_read_targets_getter_when_setter_is_declared_first",
+      "line": 2033,
+      "body_sha256": "2ddc8348fbd370250dd0d2e816d43a2dad73dcc76e918df01bd22af0e66e5a63",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 63,
+      "name": "parameter_property_object_literal_inside_constructor_is_not_the_field",
+      "line": 2070,
+      "body_sha256": "479baa3d907b703c1de947d4ed0d9755494700c7fbf3dd431b8dc34c4638ee64",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 64,
+      "name": "parameter_property_nested_class_targets_inner_score",
+      "line": 2103,
+      "body_sha256": "07fbd98525836ea5da7f759c2ac46ba1ae55a6773cb99cc48f84d616f2f3fd8f",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 65,
+      "name": "this_inherited_method_call_resolves_to_base_note",
+      "line": 2134,
+      "body_sha256": "9da9b1b936e371cc326b0c5b9c193126c42d618e20f2590244dd4d7d6b961926",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 66,
+      "name": "this_method_value_targets_enclosing_class_note",
+      "line": 2172,
+      "body_sha256": "e71d8b17f425450bf9a4a259c74476500597bd333258ea7a33cd97901e752417",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 67,
+      "name": "this_inherited_method_value_resolves_to_base_note",
+      "line": 2211,
+      "body_sha256": "0367a67494fe7a41e898277ed3c6b8ed01dd6433f5c364c717ba0da46d696b3d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 68,
+      "name": "this_inherited_method_value_resolves_to_grand_note",
+      "line": 2254,
+      "body_sha256": "3d6142a08f087f5fec4783abe664cebaa44801fddaa95485470ca9101af81f85",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 69,
+      "name": "this_inherited_method_value_child_shadows_base_note",
+      "line": 2291,
+      "body_sha256": "b73872d64759d05ee9d8e76bf770cbb440803389d26d9ff14c168357c3d115cb",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 70,
+      "name": "this_inherited_method_value_child_field_shadows_base_method",
+      "line": 2334,
+      "body_sha256": "28287e060ef4453c6a41cf3cb609fa0771a2b816a34d1e1697c205d5225a364e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 71,
+      "name": "this_inherited_method_value_generic_base_resolves_to_base_note",
+      "line": 2378,
+      "body_sha256": "1ad8e5e43d8068145cfa90c6945923ef40bcf637b35f7e06d37a5500ed0d7ef0",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 72,
+      "name": "this_inherited_method_value_imported_base_stays_syntactic",
+      "line": 2415,
+      "body_sha256": "e8bcca00a19cceee9791cd0e089ddf66664f9287c5f4c43e6bfcc377d7e66ebc",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 73,
+      "name": "this_inherited_method_child_shadows_base_note",
+      "line": 2459,
+      "body_sha256": "a29c9ca2d9036bbd78d122cb113ec3f223a6d71638146f2dac1115f81e48d9a7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 74,
+      "name": "this_inherited_field_generic_base_resolves_to_base_score",
+      "line": 2490,
+      "body_sha256": "b76464687462ff2f78acb1d9956fa240155c0429d94bbaed2234df9527023bfe",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 75,
+      "name": "this_inherited_field_imported_base_stays_syntactic",
+      "line": 2515,
+      "body_sha256": "025c6c741aa303730eb75b0de8d53c685c295dee950d29ae7a76ed43810efc8e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 76,
+      "name": "private_field_read_targets_same_class_score",
+      "line": 2547,
+      "body_sha256": "a28bd58bb8dc925e7d4f6853b177a0ef49c19b4b6e0cf5128cb97d4c5b111c5d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 77,
+      "name": "private_method_call_targets_same_class_note",
+      "line": 2574,
+      "body_sha256": "1212b58db8b26db42d1bd76c9d5bd8f841b330b6eccbaee759cd8e37e61d03d9",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 78,
+      "name": "private_method_value_targets_same_class_note",
+      "line": 2601,
+      "body_sha256": "1f3cdedc7ed141ce919cf9bcadae371edcc6fb0a2c84a9cb2345384a74f13e75",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 79,
+      "name": "private_field_read_child_does_not_see_base_score",
+      "line": 2633,
+      "body_sha256": "6c6dc021c276b259fc34743d69c1f6e1de9c15cf5f0974d114459189f026ae49",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 80,
+      "name": "private_field_read_child_own_score_wins_over_base",
+      "line": 2664,
+      "body_sha256": "43e8dd6cc7f5c3dab90f888e8d9443bc4ccee253c8201d75693a65f5a59b4672",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 81,
+      "name": "private_field_read_other_receiver_stays_syntactic",
+      "line": 2696,
+      "body_sha256": "75f8a41c0991b0582488c4d89d27fb17b3885cd582a66f86489b32102c330bd7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 82,
+      "name": "private_static_field_read_targets_same_class_score",
+      "line": 2737,
+      "body_sha256": "74dfa24074d829ed62978bc119bf676d711858d4e694e86dd8069637e04ef2a5",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 83,
+      "name": "private_field_read_parenthesized_this_targets_same_class_score",
+      "line": 2764,
+      "body_sha256": "b6cbe3ff5213069aa9888cfbb5f18672a509a03eef0b065df5464f1aecced8b4",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 84,
+      "name": "private_method_call_child_own_note_wins_over_base",
+      "line": 2796,
+      "body_sha256": "9ca7b1f182b32ae7c58b09df1e16aa05da76c0d507a4eaa8d9d7a4b006246a46",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 85,
+      "name": "private_super_field_is_rejected",
+      "line": 2839,
+      "body_sha256": "f328265f1883e1b7e10de48b8469c7e519903afee1033c295e307425b1471999",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 86,
+      "name": "private_parenthesized_super_is_rejected",
+      "line": 2870,
+      "body_sha256": "ca646803e4112c207f6d92e3f54a28b3a9b5cbb8a5f990b3e7192487eb75da3a",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 87,
+      "name": "super_method_call_skips_child_override",
+      "line": 2901,
+      "body_sha256": "bc13cffb3e3ab38ceb88546202b21e74e4a46505a1bbf8d4266e7d7d29eb154c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 88,
+      "name": "super_field_read_targets_base_score_not_other",
+      "line": 2939,
+      "body_sha256": "6043597630b86a1a9acb52bebc27b915177950280cc6b21f5e5fc3cfa898fc7c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 89,
+      "name": "super_field_read_skips_child_shadowing_score",
+      "line": 2971,
+      "body_sha256": "d5bce3acea81547aeed2a8a7634dabe66d36e73921da3fd22940cf68105c6562",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 90,
+      "name": "super_field_read_resolves_to_grand_score",
+      "line": 3003,
+      "body_sha256": "77f30b8da5a4311722640d52003f36297e316c7c33252ca37584fb6d5e12df8f",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 91,
+      "name": "super_method_value_targets_base_note_not_child",
+      "line": 3029,
+      "body_sha256": "5ddfa4d1a6dea44ba239ecd5442819e4e02a80ef8509883cb9577927dcd0c201",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 92,
+      "name": "super_method_value_child_method_does_not_shadow_base_field",
+      "line": 3073,
+      "body_sha256": "073129a3d31c8937af24552bc4504ed01b6ec3ea22810ec495de373673b2484c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 93,
+      "name": "super_field_read_imported_base_stays_syntactic",
+      "line": 3119,
+      "body_sha256": "6ec9e1baa60831ceef40c7e970f9a050d22d58eb66c0841c27f6b9c0e20ee98e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 94,
+      "name": "super_method_call_generic_base_resolves_to_base_note",
+      "line": 3152,
+      "body_sha256": "c2078eaacf58a1aef62769c204be2023355a40f818282af9fdbeeb6e34a32d5c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 95,
+      "name": "computed_member_same_class_field_read",
+      "line": 3178,
+      "body_sha256": "56fd18f8e4da68a01b8450719ca034086cd9a096c773eca0d8ca5889c29ebe98",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 96,
+      "name": "computed_member_inherited_field_with_decoy",
+      "line": 3203,
+      "body_sha256": "911b4e717e1c9b6a8e06b93b57fa8d4f93760f031876280cf0aeecdae0533b1c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 97,
+      "name": "computed_member_same_class_call",
+      "line": 3235,
+      "body_sha256": "bb6a6441689c167b196ed74c99276d44a7d549cc94408d2aba773db7db428669",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 98,
+      "name": "computed_member_super_call_skips_child",
+      "line": 3260,
+      "body_sha256": "4b7c16f0846469839d5b7138310425ecd037f9bd00cba6a10eb5a18ccfda06cd",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 99,
+      "name": "computed_member_method_value_targets_enclosing_class_note",
+      "line": 3298,
+      "body_sha256": "aaa7ffaa21c28a0bc47b286f777013f7906be1450dcc578343d16b821e8569e2",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 100,
+      "name": "computed_member_single_quotes_field_read",
+      "line": 3342,
+      "body_sha256": "621a718dc489e0d3c0edc1f81f9e96b95e09473fd6e42a4063ffe5a3c5e08a6b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 101,
+      "name": "computed_member_imported_only_base_stays_syntactic",
+      "line": 3367,
+      "body_sha256": "b2ff4caec70758b305fb829e957b151444f8489ce66576fd5271e51439f30d67",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 102,
+      "name": "computed_member_dynamic_key_emits_nothing",
+      "line": 3401,
+      "body_sha256": "192f9c0b8ca07f091d7d06469ca54f11a6a6702ef96f8d1cd0f6620a0e2fcdfe",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 103,
+      "name": "computed_member_other_receiver_stays_syntactic",
+      "line": 3420,
+      "body_sha256": "70af3bb0e39d4695c4c3d1d3aebccd5de709f38aa9769d90f5b60e57b6e6602b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 104,
+      "name": "computed_member_escape_emits_nothing",
+      "line": 3459,
+      "body_sha256": "84396132af4fe1bb7ac43cf60d4cdfbb0e4a4af13d2a502531ddbe2e38bb402e",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 105,
+      "name": "computed_member_numeric_key_emits_nothing",
+      "line": 3479,
+      "body_sha256": "fdf9803b22c11b882bb2b069691d30f9dc12ab2db5c5f5adaa93d7fbd7b9cd82",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 106,
+      "name": "computed_member_template_key_emits_nothing",
+      "line": 3499,
+      "body_sha256": "eec2955ce0a7238b447749496ea28dd60ed3a4ac51fb1a9c3045b55dbf966346",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 107,
+      "name": "chained_builtin_call_stays_foreign_while_this_field_is_local",
+      "line": 3519,
+      "body_sha256": "364661fef3223232fca786733e09247435253cea7e7fad372125690f5dbaba2c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 108,
+      "name": "foreign_receiver_field_access_stays_syntactic",
+      "line": 3563,
+      "body_sha256": "aa926650fa4f33ec732c31f28aa6ee66f173443208538b7a7aa31c93d855da84",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 109,
+      "name": "checker_resolved_property_access_is_not_duplicated",
+      "line": 3587,
+      "body_sha256": "20d5995f4ef39bdd7d022f18a813fee85789c87848d7ae3e57309793fcb7550d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 110,
+      "name": "cross_file_method_call_is_an_oracle_package_call",
+      "line": 3646,
+      "body_sha256": "e049e09cab3406d33f8d7203df2ffc8e38cd7e7cb8270ff0c163857b64ba3725",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 111,
+      "name": "checker_foreign_method_value_stays_when_checker_name_unspelled_in_source",
+      "line": 3748,
+      "body_sha256": "fbde3a9e6434a64b9d6b6311752ac00e34a97416f8d2545f242df86a03971f78",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 112,
+      "name": "genuinely_unresolvable_names_stay_honestly_external",
+      "line": 3810,
+      "body_sha256": "0aa13279618496f8f67af45f4c9fcf38ceb3665363076cdb3ddb987f302bc573",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 113,
+      "name": "computed_row_pool_bound_and_union_child_bound_are_typed_rejections",
+      "line": 3821,
+      "body_sha256": "3169eabdcc618971fda9ffa4d1956084880c6c50deaaae00a89fcf3e2b26c72b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 114,
+      "name": "dependency_mapped_binder_with_file_homonym_becomes_one_oracle_gap_leaf",
+      "line": 3872,
+      "body_sha256": "324416261041963882d117a6045a83c61d83b1fa190004f2bdf95841b9f78bc0",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 115,
+      "name": "dependency_object_keeps_source_declared_member_and_marks_computed_gap",
+      "line": 3911,
+      "body_sha256": "9d85f4d05c069b7e1f34f775d04c8f527c74fc11892c219fe0e9e44b464df384",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 116,
+      "name": "dependency_object_with_only_foreign_names_becomes_one_oracle_gap_leaf",
+      "line": 3989,
+      "body_sha256": "f5bdeb0ed57d4cb72dd0e7bd5a4bfc18be15838f3ee72f8eca7dabaa2ae88950",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 117,
+      "name": "computed_unicode_object_member_preserves_its_exact_optional_spelling",
+      "line": 4031,
+      "body_sha256": "bdc768026691c84b5869589da621ad9d46ddc12600ea961b64926237897fb262",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 118,
+      "name": "malformed_checker_source_bounds_are_rejected_before_oracle_gap_fallback",
+      "line": 4119,
+      "body_sha256": "6a7bd539bbcde560a1c5fe0ffd16f5cdabfdcaa272a66989cd9fb4bf3c44b728",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 119,
+      "name": "forward_nominal_checker_and_lowering_keep_the_later_class",
+      "line": 4186,
+      "body_sha256": "b21c892a13a3f1976bfe7a81b0b6684078e0d4527269a93caa92029ac760577c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 120,
+      "name": "golden_lowered_facts_match_the_frozen_table",
+      "line": 4358,
+      "body_sha256": "9dfdaf8a77a14df345e0d90764068dc73e0ef35770491a0335069041cefacc7b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 121,
+      "name": "wide_syntactic_associative_fold_keeps_members_ordered_and_shallow",
+      "line": 4614,
+      "body_sha256": "755d4ee8e809dca9dc690426486b4cd994f88f7ead14e539efe3126707b9959a",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 122,
+      "name": "a_type_with_sixty_five_parameters_keeps_every_parameter",
+      "line": 4714,
+      "body_sha256": "17c53169eda818b2f1d4497205763002363d2bd47ac70ba2296be4017b3b1cd9",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 123,
+      "name": "nested_function_types_declare_each_parameter_binding",
+      "line": 4732,
+      "body_sha256": "64245a9923bf063115a13ce52bbe2beddbd979078ab07e0a2734b7869ec65d49",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 124,
+      "name": "mapped_name_type_and_initializer_bindings_are_declared",
+      "line": 4751,
+      "body_sha256": "fd2b42d26781dc7df4ce9e0a4e72993cc9baf883b766174c379fdbbd018e3d91",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 125,
+      "name": "parameter_defaults_declare_nested_function_bindings",
+      "line": 4770,
+      "body_sha256": "2bb666dc7ccb52ef576e2c9f46bacadb7c049a8ab06137eaf002c2deba86abf6",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 126,
+      "name": "constructor_assignments_declare_nested_function_bindings",
+      "line": 4782,
+      "body_sha256": "31ca39b59cb6ce3c69cc529f7e5adbebec2ecea4d68dffc7a5df84ad52f3fa68",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 127,
+      "name": "catch_binding_use_is_a_local_static",
+      "line": 4795,
+      "body_sha256": "39617822d21585a39c7081f13763f500bea8b9d17f51effc693398847cc28e68",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 128,
+      "name": "catch_binding_destructure_stays_unpublished",
+      "line": 4849,
+      "body_sha256": "1ca026becdef66a6e2db9202caf540a5019044c751001fe7cf5b40ebb3a00c08",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 129,
+      "name": "enum_member_value_use_targets_that_enum",
+      "line": 4874,
+      "body_sha256": "785dcc77ada3926d9e31047f3fb7583a2a1edae16c8d04963db95e2e4583a2e6",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 130,
+      "name": "catch_binding_repeated_name_still_lowers",
+      "line": 4918,
+      "body_sha256": "d229846bc2f99435848d4496a50257b458febc26e3c08a6a4acbc73c532d40c7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 131,
+      "name": "enum_member_missing_name_does_not_invent_a_variant",
+      "line": 4947,
+      "body_sha256": "d29f3012a5a544a9096bd6afa9f3e810bbda11914724bfd379e8282ba1b08ad1",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 132,
+      "name": "enum_member_non_enum_receiver_is_not_a_variant",
+      "line": 4970,
+      "body_sha256": "2e7052c2f4da66472692dbc61448e97dbe8feea7d26bea5ce6382b7a60a7cd44",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 133,
+      "name": "function_value_reference_is_a_call_not_a_read",
+      "line": 4991,
+      "body_sha256": "a9184300577747273ebea443de75a79dae60bf3f1bdcfbb0dc78b33db46d8ad0",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 134,
+      "name": "namespace_call_targets_box_note_not_other",
+      "line": 5269,
+      "body_sha256": "b7c5e42f0901a8bea6831e7d95efbfc89caa9602a74f0903de8d38522da7e392",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 135,
+      "name": "namespace_function_value_targets_box_note_not_other",
+      "line": 5302,
+      "body_sha256": "8913398724bea988c195e1e52b757d10a0a2f0fbaccc5d7affafeeec6717718f",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 136,
+      "name": "namespace_const_read_targets_box_score_not_other",
+      "line": 5340,
+      "body_sha256": "6f64cc4ec2090cc5da46ec32b183e416721ba3640557fe6aa295316b61b0493c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 137,
+      "name": "namespace_let_read_targets_box_score_not_other",
+      "line": 5373,
+      "body_sha256": "461598df04467915c230846a8a91e2858f4bcd29341eb575125ae135977e2e8c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 138,
+      "name": "namespace_merged_blocks_call_targets_note",
+      "line": 5406,
+      "body_sha256": "05dc53175961b44d4f14ad70f2e867a9d527861db469ff906e52fb93e0173978",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 139,
+      "name": "namespace_parenthesized_call_targets_box_note",
+      "line": 5434,
+      "body_sha256": "06dbc00ca8eae23cdc5e2464f36cdbeecc91c79fa228b422f4f09cb0277a8c4f",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 140,
+      "name": "namespace_computed_call_targets_box_note_not_score",
+      "line": 5467,
+      "body_sha256": "0fa1b2d454a7a7a911b74275e31b526ae8133dbcccc66dd5881307a6f0e5bc7c",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 141,
+      "name": "namespace_computed_escape_does_not_bind_note",
+      "line": 5502,
+      "body_sha256": "520869b54cad4418393fdf6a25c122b65d1f4f908daab1db49dfe8efc51fdbca",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 142,
+      "name": "namespace_other_receiver_stays_syntactic",
+      "line": 5523,
+      "body_sha256": "ba0c5be94185bbd062383b55e3ae91dfc11ffa8d160046c64083115183d36f6d",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 143,
+      "name": "namespace_class_value_targets_box_child_not_other",
+      "line": 5570,
+      "body_sha256": "dfbae4050b0e9733d0f1d84bf0e91ee583674c3046c3e61f73eb6b9d4002e699",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 144,
+      "name": "namespace_enum_value_targets_box_color_not_other",
+      "line": 5609,
+      "body_sha256": "03676243ed3e571e9c8403cd21411d4bd43ec474eaaa4f574e82708483d55358",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 145,
+      "name": "namespace_parenthesized_class_value_targets_box_child",
+      "line": 5642,
+      "body_sha256": "b9976be49cb31db48737d721acaedb928ddca865b4fa5012a433c0d8b1b90fae",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 146,
+      "name": "namespace_class_call_targets_box_child_not_other",
+      "line": 5675,
+      "body_sha256": "9b7cde40d9b684b63e6ad86d50ea458cc2a6fef1e6ab829101e2064916c52ac7",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 147,
+      "name": "namespace_class_other_receiver_stays_syntactic",
+      "line": 5709,
+      "body_sha256": "1c3dfca60d4e60caa536967497116a1f941a4262bd5ab322b1a73c28cbe940e4",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 148,
+      "name": "namespace_computed_class_targets_box_child_not_score",
+      "line": 5751,
+      "body_sha256": "fd32f72eecc5d49ac2f69c526edb668efbb5d72ac79b5b937f93a133690c551b",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 149,
+      "name": "namespace_computed_class_escape_does_not_bind_child",
+      "line": 5786,
+      "body_sha256": "09e6699078e05744ee039bac3a9b23feac4bd7e9ecb530cee6fc76f00cad53e8",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    },
+    {
+      "ordinal": 150,
+      "name": "implements_call_targets_interface_note_not_other",
+      "line": 5807,
+      "body_sha256": "1d5446b29f9e0b27d62b9bba2046f47751e21aae09c5e4a908498e0093e82433",
+      "decision": "keep",
+      "reason": "Kept: unique complete body hash in the full 218-test file; this case carries a distinct source/expectation path or exact semantic assertion. No exact duplicate body was found for it."
+    }
+  ],
+  "file_sha256_after": "899ba041da720ea05ef2bdd2201520798265a0b840abfd20039ea5f99f0a7f3f"
+}

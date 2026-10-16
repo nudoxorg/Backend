@@ -963,50 +963,13 @@ fn oxc_interface_is_never_rewritten_as_a_record() -> TestResult<()> {
 
     Ok(())
 }
-
 #[test]
-fn golden_computed_cells_fill_extension_facts_with_checker_rows() -> TestResult<()> {
-    let r = Checker::default().decode(TRANSCRIPT)?;
-    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() > 0);
-
-    Ok(())
-}
-#[test]
-fn golden_inferred_const_and_union_records_match_the_checker() -> TestResult<()> {
-    let r = Checker::default().decode(TRANSCRIPT)?;
-    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 2);
-
-    Ok(())
-}
-#[test]
-fn golden_foreign_generic_base_names_the_resolved_spelling() -> TestResult<()> {
-    let r = Checker::default().decode(TRANSCRIPT)?;
-    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 5);
-
-    Ok(())
-}
-#[test]
-fn golden_this_type_and_local_nominal_computed_rows_bind_by_name() -> TestResult<()> {
+fn shared_golden_transcript_lowering_emits_at_least_ten_entities() -> TestResult<()> {
     let r = Checker::default().decode(TRANSCRIPT)?;
     assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
 
     Ok(())
 }
-#[test]
-fn golden_oracle_confidence_picks_distinct_overload_targets() -> TestResult<()> {
-    let r = Checker::default().decode(TRANSCRIPT)?;
-    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
-
-    Ok(())
-}
-#[test]
-fn golden_narrowing_extends_the_declared_fact_with_a_site_row() -> TestResult<()> {
-    let r = Checker::default().decode(TRANSCRIPT)?;
-    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
-
-    Ok(())
-}
-
 #[test]
 fn computed_reference_to_earlier_fact_resolves_locally() -> TestResult<()> {
     let report = Checker::default().decode(TRANSCRIPT)?;
