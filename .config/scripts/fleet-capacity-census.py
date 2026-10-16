@@ -36,6 +36,10 @@ MAX_CENSUS_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_CENSUS_ERROR_BYTES = 64 * 1024
 CENSUS_TIMEOUT_SECONDS = 22
 SSH_CONNECT_TIMEOUT_SECONDS = 8
+CI_DISK_FIELDS = (
+    "root_disk_device", "ci_disk_path", "ci_disk_device",
+    "ci_disk_available_bytes", "ci_disk_reserved_bytes", "ci_disk_reserve_file",
+)
 
 DEFAULT_HOSTS = {
     "local": {"limit": 5, "ssh_target": None, "python": None},
@@ -58,6 +62,24 @@ OPTIONAL_HOSTS = {
         "python": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
     },
 }
+
+
+def _valid_ci_disk_resources(resources: Mapping[str, Any]) -> bool:
+    if not all(field in resources for field in CI_DISK_FIELDS):
+        return False
+    for field in ("root_disk_device", "ci_disk_device", "ci_disk_available_bytes",
+                  "ci_disk_reserved_bytes", "root_disk_available_bytes", "root_disk_reserved_bytes"):
+        if type(resources.get(field)) is not int or resources[field] < 0:
+            return False
+    if resources["ci_disk_path"] not in ("/", "/srv/ci") or resources["ci_disk_reserve_file"] != "/etc/nudox-ci-disk-reserve-gib":
+        return False
+    same_device = resources["ci_disk_device"] == resources["root_disk_device"]
+    expected_root_reserve = resources["ci_disk_reserved_bytes"] if same_device else 0
+    if resources["root_disk_reserved_bytes"] != expected_root_reserve:
+        return False
+    return resources["ci_disk_path"] != "/" or (
+        same_device and resources["ci_disk_available_bytes"] == resources["root_disk_available_bytes"]
+    )
 
 
 def _utc(value: Any) -> dt.datetime | None:
@@ -552,6 +574,8 @@ def evaluate_fleet(
                 reasons.append(f"{name}:root-disk-invalid-or-missing")
             if type(reserve) is not int or reserve < 0:
                 reasons.append(f"{name}:root-disk-reserve-invalid")
+        if any(field in resources for field in CI_DISK_FIELDS) and not _valid_ci_disk_resources(resources):
+            reasons.append(f"{name}:ci-disk-resources-invalid")
         host_summaries[name] = {
             "complete": complete,
             "sample_started_at_utc": census.get("sample_started_at_utc"),
@@ -573,6 +597,7 @@ def evaluate_fleet(
             "snapshot_issue_counts": census.get("snapshot_issue_counts"),
             "snapshot_race_counts": census.get("snapshot_race_counts"),
             "census_sha256": sample.get("census_sha256"),
+            **{field: resources[field] for field in CI_DISK_FIELDS if field in resources},
         }
 
     if total_admission_slots + (1 if destination in hosts else 0) > FLEET_ADMISSION_SLOT_LIMIT:
@@ -586,6 +611,10 @@ def evaluate_fleet(
             reasons.append("destination-root-disk-reserve-invalid")
         elif type(disk) is int and reserved and disk < reserved:
             reasons.append("destination-root-disk-below-ci-reserve")
+        if _valid_ci_disk_resources(host_summaries[destination]) and (
+            host_summaries[destination]["ci_disk_available_bytes"] < host_summaries[destination]["ci_disk_reserved_bytes"]
+        ):
+            reasons.append("destination-ci-disk-below-reserve")
     unique_reasons = list(dict.fromkeys(reasons))
     safe_excluded_hosts = [
         {
