@@ -230,6 +230,10 @@ in
           repo/frontends/rust/fixtures/toml_pin \
           repo/apps/desktop/tests/fixtures/browse_tree
         cp -r ${../scripts} repo/.config/scripts
+        # The protocol test addresses this wrapper at its canonical sibling
+        # path; keep it explicit as a Nix input instead of relying on the
+        # directory copy's filtered source contents.
+        cp ${../scripts/cargo-rustc-cache.sh} repo/.config/scripts/cargo-rustc-cache.sh
         cp ${../ci/linux.nu} ${../ci/lib.nu} repo/.config/ci/
         cp ${../../frontends/rust/fixtures/toml_pin/Cargo.lock} repo/frontends/rust/fixtures/toml_pin/Cargo.lock
         cp ${../../apps/desktop/tests/fixtures/browse_tree/Cargo.lock} repo/apps/desktop/tests/fixtures/browse_tree/Cargo.lock
