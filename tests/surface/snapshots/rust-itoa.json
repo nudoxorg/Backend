@@ -1,0 +1,2299 @@
+{
+  "answers": {
+    "cli add": {
+      "exit": 0
+    },
+    "cli outline": {
+      "exit": 0,
+      "json": {
+        "answer": "outline",
+        "budget": {
+          "bytes": 12908,
+          "bytesPerToken": 4,
+          "estimatedTokens": 3227
+        },
+        "declarations": 66,
+        "detail": "summary",
+        "extent": "complete",
+        "package": {
+          "coordinate": "/tmp/nudox-surface/rust-itoa/project",
+          "key": "17f85615",
+          "name": "project",
+          "project": "/tmp/nudox-surface/rust-itoa/project",
+          "segments": [],
+          "shape": "package",
+          "trail": "project"
+        },
+        "roots": [
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::670b3b4cec83dbab088ae91daec98266cc223eeb288d5d7d94f55ad0e700bb8a::bytes",
+                "key": "9ba04279",
+                "kind": "field",
+                "name": "bytes"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+            "key": "7b47f9a3",
+            "kind": "struct",
+            "name": "Buffer"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN",
+                "key": "80c20e73",
+                "kind": "constant",
+                "name": "MAX_STR_LEN"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::75a8e4fcd0e1f4ef75743864c439a919f1f94c66b77754faf1844cdf94174d5e::Integer",
+            "key": "873e681c",
+            "kind": "trait",
+            "name": "Integer"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::32841f2d075e208b98dd3efa70c699df419476f171ea83c174cd83c7974f2c8d::benches",
+            "key": "2f82ea4d",
+            "kind": "macro",
+            "name": "benches"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::d8b6f79b2102dc7ce97052cbac1f646e0066cbd1552f51bb2283fdb0f026a1f0::impl_Integer_size",
+            "key": "503444cf",
+            "kind": "macro",
+            "name": "impl_Integer_size"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6e55a8377b6ba1e33f82a56ac7b0a587021899a4aef0b0133450522a05294232::DEC_DIGITS_LUT",
+            "key": "6fb2f2d7",
+            "kind": "constant",
+            "name": "DEC_DIGITS_LUT"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::eb5503c7a5d4d9b1087051be7b1592232787cbe8a290264d6e679868988ea096::impl_Integer128",
+            "key": "70711369",
+            "kind": "macro",
+            "name": "impl_Integer128"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::1f70cb17dd06952462b5457168caa3a55b216bf33789418167befc6f2e67685b::impl_Integer",
+            "key": "82c1c55d",
+            "kind": "macro",
+            "name": "impl_Integer"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::fba3671b79dff38cae3568da7196631cef52cd2aa5c586a5a32f677a214b4a0f::x",
+                "key": "5dde73e8",
+                "kind": "variable",
+                "name": "x"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ee890c0d0a80ec0c5e5be12160df57476da5c2017b32255448f05d86ae70cc1d::u128_mulhi",
+                "key": "8df15c98",
+                "kind": "variable",
+                "name": "u128_mulhi"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a7bf20ee376f6d394d62054ef08453ab66fb2be74b40f899859cdcb25f93e0e4::y",
+                "key": "bb6a4cb9",
+                "kind": "variable",
+                "name": "y"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a2f71aa813b77ded96a2dc65eaca96e48b214457cca449b110e613bd885a5b58::u128_mulhi",
+            "key": "6365bdd1",
+            "kind": "function",
+            "name": "u128_mulhi"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::69627edcab50b001c0371fcc08ce862d44df93d844a5d5d2ff950bf97402721d::n",
+                "key": "57c671f6",
+                "kind": "variable",
+                "name": "n"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::34133657548ac99cec9423b63d5341b450fb9e3c332311eefd64e57f2f05fd5e::udivmod_1e19",
+                "key": "c7f64301",
+                "kind": "variable",
+                "name": "udivmod_1e19"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::7f3850e0e6d06b319fffcab969a5b27e9dea06dd0e906af9a48bef5017746948::udivmod_1e19",
+            "key": "ec58c95f",
+            "kind": "function",
+            "name": "udivmod_1e19"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c31cf8fa58c479916b682b6f97d35c5f9077d9f436395b8b34b7b38d6f24ed4a::udiv128",
+            "key": "bc59ed35",
+            "kind": "module",
+            "name": "udiv128"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer",
+                    "key": "51fce954",
+                    "kind": "type",
+                    "name": "Buffer"
+                  },
+                  {
+                    "children": [
+                      {
+                        "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6a7a523ef0202b287469599cc5c0ff111d694de08cf0357fac8d21b78ef314b6::buf",
+                        "key": "20bec019",
+                        "kind": "variable",
+                        "name": "buf"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f5246ffb04c56d56bd21d424317b63855b542d2f7061774c5bafcb10af1a6a0c::self",
+                        "key": "3b547ed7",
+                        "kind": "variable",
+                        "name": "self"
+                      },
+                      {
+                        "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::0fcd608d7a9c6d512bfbdcdd7a439ff0df750a2685bd316c3f586e7638aa6353::write",
+                        "key": "dd43804c",
+                        "kind": "variable",
+                        "name": "write"
+                      }
+                    ],
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::883ce11b03f40521de093e179c91b0a1c3d182c98aeb1bc2d1ec6a0bf0934d06::write",
+                    "key": "81973251",
+                    "kind": "function",
+                    "name": "write"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::0330dafe1eb7dd55a4aa3252f3c6dccfe83d9161978341b5ab1d4ec6f9ecae5e::Sealed",
+                "key": "6b6d303f",
+                "kind": "trait",
+                "name": "Sealed"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6304874c829dbb0474f0798a116b375041c256bd12aa30f0df45a6a930bee4da::private",
+            "key": "c518dfac",
+            "kind": "module",
+            "name": "private"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::dccbd7693bffa28f96b5eae23df8d2344fa320b964c29c0085ca6c8e680d56bd::test",
+            "key": "bb1a5cc8",
+            "kind": "macro",
+            "name": "test"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e1c52f25391c1467855b87f2b830bf9d44ef950906b6a7cd6e9ccbc04bef13f8::isize",
+            "key": "0b931e14",
+            "kind": "type",
+            "name": "isize"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::b91c4daa7631f8ddd084830ed2b1ef623139c8f769121a01150c47a28cdb1c39::i16",
+                "key": "9f79d31c",
+                "kind": "type",
+                "name": "i16"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::7cdb194e32d6db7339a30efe85a8c038694f1be1047976b69ee6b68514dea4a1::i16",
+            "key": "163e4c00",
+            "kind": "type",
+            "name": "i16"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5f15876b35b4e3db8f7795ec3bb3cff08008cfa873d33c7d9a7ba62774cf4096::clone",
+                    "key": "5efc5c82",
+                    "kind": "variable",
+                    "name": "clone"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::9517727fde1c8663eb78a076250aa3b3238848dfc32a4d374a3eb09b2bcd97f6::self",
+                    "key": "e0452316",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::da20cafd7cad5e16b475a4c43969127b3f48081d3aba702b2720bca62c3ea1b3::clone",
+                "key": "be216db4",
+                "kind": "function",
+                "name": "clone"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer",
+            "key": "17a24991",
+            "kind": "type",
+            "name": "Buffer"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::be3ee90c2e049f8ecfb6b1cfbd89791b0aa0bc7d81ffc52be985ea811124ea2a::u128",
+            "key": "1bf0878b",
+            "kind": "type",
+            "name": "u128"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b1a2ac7d9f1e45177d531c979c3b1c2df1::Buffer",
+            "key": "21ca6930",
+            "kind": "type",
+            "name": "Buffer"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::37d49239f0551d4c33fd6cac033e58b9e74ef1c32d29e212b3783f7e581d0c83::i128",
+            "key": "301c42dd",
+            "kind": "type",
+            "name": "i128"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::95291e7801eda475d628972a6ecb94610f4f8828ad5fdbbcb885c44ac1a341a8::u8",
+                "key": "b6295ae2",
+                "kind": "type",
+                "name": "u8"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::9f8d4c8b46a031ccdbc0ba8f98fd211353845a371670a82ccef558742982211c::u8",
+            "key": "3cb93187",
+            "kind": "type",
+            "name": "u8"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::982dc93448b5cb1bcd1ab9aee51cf4ba4cf3ed9474937ee2d88300f9f330756f::usize",
+            "key": "550bb348",
+            "kind": "type",
+            "name": "usize"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::41a217e625e9b2a63ccd6b3e5585ad4e5274a17ddce0c08167dd8a34b116b9e7::i8",
+                "key": "103c1822",
+                "kind": "type",
+                "name": "i8"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::3ae6111e552e6d59c7fbd6e8d81e75c7f50ab030428bf1ea92d0c43abcb45db5::i8",
+            "key": "5ac47f8c",
+            "kind": "type",
+            "name": "i8"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::bb57615f6e781afdf6897092a603e6b7cf242b4c608f9d78f9763ede4a1c9924::default",
+                    "key": "8cfba48c",
+                    "kind": "variable",
+                    "name": "default"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::44dce8ee7c3a866c6d88791541292795474fd63efcd5f456019d09113ee37326::default",
+                "key": "279cd6a6",
+                "kind": "function",
+                "name": "default"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b19e233807adda265ba36c9e830ca538d2::Buffer",
+            "key": "718a2877",
+            "kind": "type",
+            "name": "Buffer"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::85d78c338efe1d10667bdab4d330967ecb2ebc03c4b7291858cfcd102180b963::format",
+                    "key": "0cf11c92",
+                    "kind": "variable",
+                    "name": "format"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e9ae6dbae233b7d680c726032bd4229f81f2a3afe671ebca338a26abeceea225::self",
+                    "key": "7f61dfe5",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a4c736c28d8dcd55be52fae309398a83cb455daaa9e82c95a60e1e92caa2198c::i",
+                    "key": "f15bb053",
+                    "kind": "variable",
+                    "name": "i"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format",
+                "key": "1547e948",
+                "kind": "function",
+                "name": "format"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6baac0f3cd585ce45fa9cb0fd48c23044ef158598951170d2cdfcafbd5f1c190::new",
+                    "key": "7faaa353",
+                    "kind": "variable",
+                    "name": "new"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::05a327ab230ad5f30ef96048e5bb4eb205d9b91373da31b9a04b17f619393a90::new",
+                "key": "154b6c00",
+                "kind": "function",
+                "name": "new"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b142698c47df3bc87d1c0837b1f9d5cf70::Buffer",
+            "key": "810343ee",
+            "kind": "type",
+            "name": "Buffer"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::37d49239f0551d4c33fd6cac033e58b9c9aa7a9323559fdc30842fbf065c4774::i128",
+            "key": "832fbb12",
+            "kind": "type",
+            "name": "i128"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::41873c9e964136a4fbadc635fff467a866abc8f36a9e9474e7e89faa307794b6::i32",
+                "key": "0aa25ffc",
+                "kind": "type",
+                "name": "i32"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::26cd46719eb299b540d86c781a6b51ef63af609246d1bb359a9539cc28a0d561::i32",
+            "key": "9255def5",
+            "kind": "type",
+            "name": "i32"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c113411a6a9ab9c9a6d660326fccb05999ecfbcb609be81f2c7db156c21b3ad0::u64",
+                "key": "fbfa7af3",
+                "kind": "type",
+                "name": "u64"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a3c24fa7f697f80c623a2d4d3d114eb7a51e9fb48a3d345867de418dacb8a3c2::u64",
+            "key": "9b0196c1",
+            "kind": "type",
+            "name": "u64"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e1c52f25391c1467855b87f2b830bf9d57d9332991bff50aa40f3b98de7c962c::isize",
+            "key": "aeac6c3d",
+            "kind": "type",
+            "name": "isize"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::b7fa0c3b3118fd17fbba07b9c5a05f0c9b89abbccdd874e108da81988dfde2cf::u16",
+                "key": "ad8671f9",
+                "kind": "type",
+                "name": "u16"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6fc350d164e05def492ce99674cc9d0913fb295954aa63276ae94517e7fa6b88::u16",
+            "key": "b1b0c35c",
+            "kind": "type",
+            "name": "u16"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::be3ee90c2e049f8ecfb6b1cfbd89791b074062f69383941cc38597c977edaec1::u128",
+            "key": "b388d893",
+            "kind": "type",
+            "name": "u128"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::620873cf26c73ec207ac6da0f3e6f00bdf8d09ed49fcb309a59b1727672b86cd::u32",
+                "key": "13f4be63",
+                "kind": "type",
+                "name": "u32"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::16f2f42560323d0fb50f4675c48fc953c26b60fcbafb20fc3a24b1a110890fad::u32",
+            "key": "b4d994c7",
+            "kind": "type",
+            "name": "u32"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c85f16165587b890928a51aff36dbefeb71e5f287f0df6f565add782bfc9db2d::i64",
+                "key": "fcb0340d",
+                "kind": "type",
+                "name": "i64"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::d44cad7abd8195709de726244e39eb1c90741b27fa564ab527a28da168418812::i64",
+            "key": "e2ca38f7",
+            "kind": "type",
+            "name": "i64"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::982dc93448b5cb1bcd1ab9aee51cf4ba1b0dd28ebd8395caa7aafe3638f4637c::usize",
+            "key": "ef86f852",
+            "kind": "type",
+            "name": "usize"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::254518fc85c2cce1deb12be801269aefc3d82b933ea7dc86822428439d84a3cf::crate",
+            "key": "1fe2e3d8",
+            "kind": "module",
+            "name": "crate"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e4ad3cd33904add9447ced0176c82665f2012245db6992cc57395d6c7f9a77fb::MaybeUninit<u8>",
+            "key": "efa9db7c",
+            "kind": "variable",
+            "name": "MaybeUninit<u8>"
+          }
+        ],
+        "unnamed": 0
+      }
+    },
+    "cli packages": {
+      "exit": 0,
+      "json": {
+        "answer": "shelf",
+        "budget": {
+          "bytes": 371,
+          "bytesPerToken": 4,
+          "estimatedTokens": 93
+        },
+        "detail": "summary",
+        "projects": [
+          {
+            "declarations": null,
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project",
+              "key": "17f85615",
+              "name": "itoa",
+              "project": "/tmp/nudox-surface/rust-itoa/project",
+              "segments": [],
+              "shape": "package",
+              "trail": "project"
+            },
+            "readiness": "ready"
+          }
+        ],
+        "revision": "6b084e2b"
+      }
+    },
+    "cli search Buffer": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 5742,
+          "bytesPerToken": 4,
+          "estimatedTokens": 1436
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Buffer",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+              "line": 64,
+              "name": "Buffer",
+              "path": "src/lib.rs",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  123,
+                  71,
+                  249,
+                  163,
+                  84,
+                  195,
+                  174,
+                  101,
+                  149,
+                  79,
+                  184,
+                  227,
+                  186,
+                  220,
+                  101,
+                  90,
+                  162,
+                  203,
+                  213,
+                  162,
+                  52,
+                  124,
+                  65,
+                  220,
+                  84,
+                  195,
+                  208,
+                  173,
+                  228,
+                  60,
+                  17,
+                  75
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+            },
+            "kind": "struct",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "A correctly sized stack allocation for the formatted integer to be written"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer",
+              "line": 124,
+              "name": "Buffer",
+              "path": "src/lib.rs",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  81,
+                  252,
+                  233,
+                  84,
+                  136,
+                  179,
+                  103,
+                  129,
+                  98,
+                  114,
+                  191,
+                  119,
+                  49,
+                  190,
+                  141,
+                  162,
+                  32,
+                  86,
+                  217,
+                  25,
+                  194,
+                  205,
+                  32,
+                  4,
+                  22,
+                  246,
+                  181,
+                  46,
+                  176,
+                  137,
+                  41,
+                  231
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:124 \u203a Buffer"
+            },
+            "kind": "type",
+            "language": "rust",
+            "score": 4294967294,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer",
+              "name": "Buffer",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  23,
+                  162,
+                  73,
+                  145,
+                  58,
+                  209,
+                  119,
+                  137,
+                  188,
+                  198,
+                  77,
+                  127,
+                  113,
+                  200,
+                  213,
+                  12,
+                  231,
+                  238,
+                  94,
+                  211,
+                  200,
+                  217,
+                  178,
+                  41,
+                  70,
+                  106,
+                  100,
+                  133,
+                  82,
+                  131,
+                  217,
+                  30
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a Buffer"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967293,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b1a2ac7d9f1e45177d531c979c3b1c2df1::Buffer",
+              "name": "Buffer",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  33,
+                  202,
+                  105,
+                  48,
+                  142,
+                  219,
+                  22,
+                  173,
+                  154,
+                  136,
+                  36,
+                  107,
+                  28,
+                  29,
+                  17,
+                  156,
+                  232,
+                  78,
+                  117,
+                  229,
+                  223,
+                  50,
+                  174,
+                  229,
+                  32,
+                  185,
+                  120,
+                  38,
+                  209,
+                  96,
+                  120,
+                  99
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a Buffer"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967292,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b19e233807adda265ba36c9e830ca538d2::Buffer",
+              "name": "Buffer",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  113,
+                  138,
+                  40,
+                  119,
+                  230,
+                  11,
+                  113,
+                  188,
+                  100,
+                  60,
+                  80,
+                  53,
+                  110,
+                  234,
+                  0,
+                  31,
+                  64,
+                  98,
+                  122,
+                  43,
+                  218,
+                  216,
+                  46,
+                  160,
+                  236,
+                  66,
+                  91,
+                  144,
+                  75,
+                  1,
+                  2,
+                  122
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a Buffer"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967291,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b142698c47df3bc87d1c0837b1f9d5cf70::Buffer",
+              "name": "Buffer",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  129,
+                  3,
+                  67,
+                  238,
+                  134,
+                  4,
+                  217,
+                  49,
+                  193,
+                  81,
+                  70,
+                  231,
+                  205,
+                  128,
+                  96,
+                  214,
+                  199,
+                  129,
+                  58,
+                  99,
+                  127,
+                  40,
+                  146,
+                  192,
+                  213,
+                  84,
+                  75,
+                  106,
+                  192,
+                  236,
+                  191,
+                  140
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a Buffer"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967290,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::75a8e4fcd0e1f4ef75743864c439a919f1f94c66b77754faf1844cdf94174d5e::Integer",
+              "line": 113,
+              "name": "Integer",
+              "path": "src/lib.rs",
+              "segments": [
+                "Integer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  135,
+                  62,
+                  104,
+                  28,
+                  132,
+                  213,
+                  205,
+                  192,
+                  46,
+                  123,
+                  81,
+                  64,
+                  56,
+                  87,
+                  248,
+                  70,
+                  187,
+                  213,
+                  128,
+                  2,
+                  181,
+                  191,
+                  29,
+                  139,
+                  87,
+                  99,
+                  175,
+                  224,
+                  91,
+                  10,
+                  26,
+                  161
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:113 \u203a Integer"
+            },
+            "kind": "trait",
+            "language": "rust",
+            "score": 4294967289,
+            "state": "ready",
+            "summary": "An integer that can be written into an"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format",
+              "line": 98,
+              "name": "format",
+              "path": "src/lib.rs",
+              "segments": [
+                "format"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  21,
+                  71,
+                  233,
+                  72,
+                  214,
+                  221,
+                  154,
+                  94,
+                  217,
+                  127,
+                  102,
+                  153,
+                  153,
+                  92,
+                  206,
+                  195,
+                  19,
+                  12,
+                  77,
+                  102,
+                  143,
+                  205,
+                  94,
+                  215,
+                  82,
+                  100,
+                  81,
+                  195,
+                  216,
+                  16,
+                  15,
+                  208
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:98 \u203a format"
+            },
+            "kind": "function",
+            "language": "rust",
+            "score": 4294967288,
+            "state": "ready",
+            "summary": "Print an integer into this buffer and return a reference to its string"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::05a327ab230ad5f30ef96048e5bb4eb205d9b91373da31b9a04b17f619393a90::new",
+              "line": 90,
+              "name": "new",
+              "path": "src/lib.rs",
+              "segments": [
+                "new"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  21,
+                  75,
+                  108,
+                  0,
+                  218,
+                  210,
+                  60,
+                  170,
+                  7,
+                  249,
+                  5,
+                  69,
+                  107,
+                  235,
+                  98,
+                  167,
+                  156,
+                  214,
+                  124,
+                  147,
+                  69,
+                  123,
+                  213,
+                  166,
+                  145,
+                  16,
+                  75,
+                  6,
+                  21,
+                  163,
+                  34,
+                  123
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:90 \u203a new"
+            },
+            "kind": "function",
+            "language": "rust",
+            "score": 4294967287,
+            "state": "ready",
+            "summary": "This is a cheap operation; you don't need to worry about reusing buffers"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::external::symbol:30813dddac8951748d6f4430bcb3a440968c650c93b8d03f5d6718795121f296::itoa::Buffer",
+              "name": "Buffer",
+              "segments": [
+                "itoa",
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  48,
+                  129,
+                  61,
+                  221,
+                  172,
+                  137,
+                  81,
+                  116,
+                  141,
+                  111,
+                  68,
+                  48,
+                  188,
+                  179,
+                  164,
+                  64,
+                  150,
+                  140,
+                  101,
+                  12,
+                  147,
+                  184,
+                  208,
+                  63,
+                  93,
+                  103,
+                  24,
+                  121,
+                  81,
+                  33,
+                  242,
+                  150
+                ]
+              },
+              "shape": "external",
+              "trail": "project \u203a itoa::Buffer"
+            },
+            "language": "unknown",
+            "score": 4294967286,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search format": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 2276,
+          "bytesPerToken": 4,
+          "estimatedTokens": 569
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "format",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format",
+              "line": 98,
+              "name": "format",
+              "path": "src/lib.rs",
+              "segments": [
+                "format"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  21,
+                  71,
+                  233,
+                  72,
+                  214,
+                  221,
+                  154,
+                  94,
+                  217,
+                  127,
+                  102,
+                  153,
+                  153,
+                  92,
+                  206,
+                  195,
+                  19,
+                  12,
+                  77,
+                  102,
+                  143,
+                  205,
+                  94,
+                  215,
+                  82,
+                  100,
+                  81,
+                  195,
+                  216,
+                  16,
+                  15,
+                  208
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:98 \u203a format"
+            },
+            "kind": "function",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Print an integer into this buffer and return a reference to its string"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+              "line": 64,
+              "name": "Buffer",
+              "path": "src/lib.rs",
+              "segments": [
+                "Buffer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  123,
+                  71,
+                  249,
+                  163,
+                  84,
+                  195,
+                  174,
+                  101,
+                  149,
+                  79,
+                  184,
+                  227,
+                  186,
+                  220,
+                  101,
+                  90,
+                  162,
+                  203,
+                  213,
+                  162,
+                  52,
+                  124,
+                  65,
+                  220,
+                  84,
+                  195,
+                  208,
+                  173,
+                  228,
+                  60,
+                  17,
+                  75
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+            },
+            "kind": "struct",
+            "language": "rust",
+            "score": 4294967294,
+            "state": "ready",
+            "summary": "A correctly sized stack allocation for the formatted integer to be written"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN",
+              "line": 116,
+              "name": "MAX_STR_LEN",
+              "path": "src/lib.rs",
+              "segments": [
+                "MAX_STR_LEN"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  128,
+                  194,
+                  14,
+                  115,
+                  194,
+                  54,
+                  172,
+                  222,
+                  74,
+                  64,
+                  183,
+                  223,
+                  92,
+                  47,
+                  96,
+                  13,
+                  33,
+                  43,
+                  148,
+                  255,
+                  212,
+                  66,
+                  186,
+                  25,
+                  74,
+                  180,
+                  78,
+                  98,
+                  221,
+                  100,
+                  180,
+                  108
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project \u203a src/lib.rs:116 \u203a MAX_STR_LEN"
+            },
+            "kind": "constant",
+            "language": "rust",
+            "score": 4294967293,
+            "state": "ready",
+            "summary": "The maximum length of string that formatting an integer of this type can"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "mcp": {
+      "calls": [
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "Buffer"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytesPerToken": 4,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 864,
+                "normalizedFrameBytesExcludingCounters": 3456,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `Buffer` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n\u2022 `Buffer` \u00b7 type \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer`\n\u2022 `Buffer` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytesExcludingCursor": 2056,
+                "bytesPerToken": 4,
+                "estimatedTokensExcludingCursor": 514
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": true,
+              "nextCursor": "mcp2-<live-validated>",
+              "query": "Buffer",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+                    "line": 64,
+                    "name": "Buffer",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "Buffer"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        123,
+                        71,
+                        249,
+                        163,
+                        84,
+                        195,
+                        174,
+                        101,
+                        149,
+                        79,
+                        184,
+                        227,
+                        186,
+                        220,
+                        101,
+                        90,
+                        162,
+                        203,
+                        213,
+                        162,
+                        52,
+                        124,
+                        65,
+                        220,
+                        84,
+                        195,
+                        208,
+                        173,
+                        228,
+                        60,
+                        17,
+                        75
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+                  },
+                  "kind": "struct",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "A correctly sized stack allocation for the formatted integer to be written"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer",
+                    "line": 124,
+                    "name": "Buffer",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "Buffer"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        81,
+                        252,
+                        233,
+                        84,
+                        136,
+                        179,
+                        103,
+                        129,
+                        98,
+                        114,
+                        191,
+                        119,
+                        49,
+                        190,
+                        141,
+                        162,
+                        32,
+                        86,
+                        217,
+                        25,
+                        194,
+                        205,
+                        32,
+                        4,
+                        22,
+                        246,
+                        181,
+                        46,
+                        176,
+                        137,
+                        41,
+                        231
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:124 \u203a Buffer"
+                  },
+                  "kind": "type",
+                  "language": "rust",
+                  "score": 4294967294,
+                  "state": "ready"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer",
+                    "name": "Buffer",
+                    "segments": [
+                      "Buffer"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        23,
+                        162,
+                        73,
+                        145,
+                        58,
+                        209,
+                        119,
+                        137,
+                        188,
+                        198,
+                        77,
+                        127,
+                        113,
+                        200,
+                        213,
+                        12,
+                        231,
+                        238,
+                        94,
+                        211,
+                        200,
+                        217,
+                        178,
+                        41,
+                        70,
+                        106,
+                        100,
+                        133,
+                        82,
+                        131,
+                        217,
+                        30
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a Buffer"
+                  },
+                  "kind": "type",
+                  "language": "unknown",
+                  "score": 4294967293,
+                  "state": "ready"
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "format"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 3565,
+                "bytesPerToken": 4,
+                "estimatedTokens": 892,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured) \u2014 Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n\u2022 `format` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format`\n\u2022 `Buffer` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer`\n\u2022 `MAX_STR_LEN` \u00b7 constant \u00b7 rust\n  `/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 2276,
+                "bytesPerToken": 4,
+                "estimatedTokens": 569
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "format",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format",
+                    "line": 98,
+                    "name": "format",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "format"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        21,
+                        71,
+                        233,
+                        72,
+                        214,
+                        221,
+                        154,
+                        94,
+                        217,
+                        127,
+                        102,
+                        153,
+                        153,
+                        92,
+                        206,
+                        195,
+                        19,
+                        12,
+                        77,
+                        102,
+                        143,
+                        205,
+                        94,
+                        215,
+                        82,
+                        100,
+                        81,
+                        195,
+                        216,
+                        16,
+                        15,
+                        208
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:98 \u203a format"
+                  },
+                  "kind": "function",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Print an integer into this buffer and return a reference to its string"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+                    "line": 64,
+                    "name": "Buffer",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "Buffer"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        123,
+                        71,
+                        249,
+                        163,
+                        84,
+                        195,
+                        174,
+                        101,
+                        149,
+                        79,
+                        184,
+                        227,
+                        186,
+                        220,
+                        101,
+                        90,
+                        162,
+                        203,
+                        213,
+                        162,
+                        52,
+                        124,
+                        65,
+                        220,
+                        84,
+                        195,
+                        208,
+                        173,
+                        228,
+                        60,
+                        17,
+                        75
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:64 \u203a Buffer"
+                  },
+                  "kind": "struct",
+                  "language": "rust",
+                  "score": 4294967294,
+                  "state": "ready",
+                  "summary": "A correctly sized stack allocation for the formatted integer to be written"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN",
+                    "line": 116,
+                    "name": "MAX_STR_LEN",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "MAX_STR_LEN"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        128,
+                        194,
+                        14,
+                        115,
+                        194,
+                        54,
+                        172,
+                        222,
+                        74,
+                        64,
+                        183,
+                        223,
+                        92,
+                        47,
+                        96,
+                        13,
+                        33,
+                        43,
+                        148,
+                        255,
+                        212,
+                        66,
+                        186,
+                        25,
+                        74,
+                        180,
+                        78,
+                        98,
+                        221,
+                        100,
+                        180,
+                        108
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project \u203a src/lib.rs:116 \u203a MAX_STR_LEN"
+                  },
+                  "kind": "constant",
+                  "language": "rust",
+                  "score": 4294967293,
+                  "state": "ready",
+                  "summary": "The maximum length of string that formatting an integer of this type can"
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {},
+            "tool": "backend.outline"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 15846,
+                "bytesPerToken": 4,
+                "estimatedTokens": 3962,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "# project\n`/tmp/nudox-surface/rust-itoa/project`\n\n\u03c4 isize  `isize`\n\u03c4 i16  `i16`\n  \u03c4 i16  `i16`\n\u03c4 Buffer  `Buffer`\n  \u0192 clone  `src/lib.rs:80 \u203a clone`\n    \u25ab clone  `clone`\n    \u25ab self  `self`\n\u03c4 u128  `u128`\n\u25a6 crate  `crate`\n\u03c4 Buffer  `Buffer`\n! benches  `benches/bench.rs:7 \u203a benches`\n\u03c4 i128  `i128`\n\u03c4 u8  `u8`\n  \u03c4 u8  `u8`\n! impl_Integer_size  `src/lib.rs:224 \u203a impl_Integer_size`\n\u03c4 usize  `usize`\n\u03c4 i8  `i8`\n  \u03c4 i8  `i8`\n\u0192 u128_mulhi  `src/udiv128.rs:7 \u203a u128_mulhi`\n  \u25ab x  `x`\n  \u25ab u128_mulhi  `u128_mulhi`\n  \u25ab y  `y`\n\u25aa DEC_DIGITS_LUT  `src/lib.rs:129 \u203a DEC_DIGITS_LUT`\n! impl_Integer128  `src/lib.rs:251 \u203a impl_Integer128`\n\u03c4 Buffer  `Buffer`\n  \u0192 default  `src/lib.rs:70 \u203a default`\n    \u25ab default  `default`\n\u25a3 Buffer  `src/lib.rs:64 \u203a Buffer`\n  \u00b7 bytes  `src/lib.rs:65 \u203a bytes`\n\u03c4 Buffer  `Buffer`\n  \u0192 format  `src/lib.rs:98 \u203a format`\n    \u25ab format  `format`\n    \u25ab self  `self`\n    \u25ab i  `i`\n  \u0192 new  `src/lib.rs:90 \u203a new`\n    \u25ab new  `new`\n! impl_Integer  `src/lib.rs:138 \u203a impl_Integer`\n\u03c4 i128  `i128`\n\u25c7 Integer  `src/lib.rs:113 \u203a Integer`\n  \u25aa MAX_STR_LEN  `src/lib.rs:116 \u203a MAX_STR_LEN`\n\u03c4 i32  `i32`\n  \u03c4 i32  `i32`\n\u03c4 u64  `u64`\n  \u03c4 u64  `u64`\n\u03c4 isize  `isize`\n\u03c4 u16  `u16`\n  \u03c4 u16  `u16`\n\u03c4 u128  `u128`\n\u03c4 u32  `u32`\n  \u03c4 u32  `u32`\n! test  `tests/test.rs:4 \u203a test`\n\u25a6 udiv128  `src/lib.rs:46 \u203a udiv128`\n\u25a6 private  `src/lib.rs:120 \u203a private`\n  \u25c7 Sealed  `src/lib.rs:122 \u203a Sealed`\n    \u03c4 Buffer  `src/lib.rs:124 \u203a Buffer`\n    \u0192 write  `src/lib.rs:125 \u203a write`\n      \u25ab buf  `buf`\n      \u25ab self  `self`\n      \u25ab write  `write`\n\u03c4 i64  `i64`\n  \u03c4 i64  `i64`\n\u0192 udivmod_1e19  `src/udiv128.rs:34 \u203a udivmod_1e19`\n  \u25ab n  `n`\n  \u25ab udivmod_1e19  `udivmod_1e19`\n\u03c4 usize  `usize`\n\u25ab MaybeUninit<u8>  `MaybeUninit<u8>`\n66 declaration(s) \u00b7 complete\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "outline",
+              "budget": {
+                "bytes": 13466,
+                "bytesPerToken": 4,
+                "estimatedTokens": 3367
+              },
+              "declarations": 66,
+              "detail": "summary",
+              "extent": "complete",
+              "package": {
+                "coordinate": "/tmp/nudox-surface/rust-itoa/project",
+                "key": "17f85615",
+                "name": "project",
+                "project": "/tmp/nudox-surface/rust-itoa/project",
+                "segments": [],
+                "shape": "package",
+                "trail": "project"
+              },
+              "page": {
+                "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+                "coverage": [
+                  {
+                    "lane": "exact",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "names",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "graph",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "semantic",
+                    "reason": "unconfigured",
+                    "state": "unavailable"
+                  }
+                ],
+                "limit": 200,
+                "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+                "more": false,
+                "schema": 3,
+                "sequence": 2,
+                "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+                "source_root": "6b084e2bc43520f3555188559ffd233a5d4db970f5c9c81c6ba2e376a82c5d35"
+              },
+              "roots": [
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e1c52f25391c1467855b87f2b830bf9d44ef950906b6a7cd6e9ccbc04bef13f8::isize",
+                  "key": "0b931e14",
+                  "kind": "type",
+                  "name": "isize"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::b91c4daa7631f8ddd084830ed2b1ef623139c8f769121a01150c47a28cdb1c39::i16",
+                      "key": "9f79d31c",
+                      "kind": "type",
+                      "name": "i16"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::7cdb194e32d6db7339a30efe85a8c038694f1be1047976b69ee6b68514dea4a1::i16",
+                  "key": "163e4c00",
+                  "kind": "type",
+                  "name": "i16"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5f15876b35b4e3db8f7795ec3bb3cff08008cfa873d33c7d9a7ba62774cf4096::clone",
+                          "key": "5efc5c82",
+                          "kind": "variable",
+                          "name": "clone"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::9517727fde1c8663eb78a076250aa3b3238848dfc32a4d374a3eb09b2bcd97f6::self",
+                          "key": "e0452316",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::da20cafd7cad5e16b475a4c43969127b3f48081d3aba702b2720bca62c3ea1b3::clone",
+                      "key": "be216db4",
+                      "kind": "function",
+                      "name": "clone"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b17c30514f5abeb40a9d6b31afbfd0ef2d::Buffer",
+                  "key": "17a24991",
+                  "kind": "type",
+                  "name": "Buffer"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::be3ee90c2e049f8ecfb6b1cfbd89791b0aa0bc7d81ffc52be985ea811124ea2a::u128",
+                  "key": "1bf0878b",
+                  "kind": "type",
+                  "name": "u128"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::254518fc85c2cce1deb12be801269aefc3d82b933ea7dc86822428439d84a3cf::crate",
+                  "key": "1fe2e3d8",
+                  "kind": "module",
+                  "name": "crate"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b1a2ac7d9f1e45177d531c979c3b1c2df1::Buffer",
+                  "key": "21ca6930",
+                  "kind": "type",
+                  "name": "Buffer"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::32841f2d075e208b98dd3efa70c699df419476f171ea83c174cd83c7974f2c8d::benches",
+                  "key": "2f82ea4d",
+                  "kind": "macro",
+                  "name": "benches"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::37d49239f0551d4c33fd6cac033e58b9e74ef1c32d29e212b3783f7e581d0c83::i128",
+                  "key": "301c42dd",
+                  "kind": "type",
+                  "name": "i128"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::95291e7801eda475d628972a6ecb94610f4f8828ad5fdbbcb885c44ac1a341a8::u8",
+                      "key": "b6295ae2",
+                      "kind": "type",
+                      "name": "u8"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::9f8d4c8b46a031ccdbc0ba8f98fd211353845a371670a82ccef558742982211c::u8",
+                  "key": "3cb93187",
+                  "kind": "type",
+                  "name": "u8"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::d8b6f79b2102dc7ce97052cbac1f646e0066cbd1552f51bb2283fdb0f026a1f0::impl_Integer_size",
+                  "key": "503444cf",
+                  "kind": "macro",
+                  "name": "impl_Integer_size"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::982dc93448b5cb1bcd1ab9aee51cf4ba4cf3ed9474937ee2d88300f9f330756f::usize",
+                  "key": "550bb348",
+                  "kind": "type",
+                  "name": "usize"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::41a217e625e9b2a63ccd6b3e5585ad4e5274a17ddce0c08167dd8a34b116b9e7::i8",
+                      "key": "103c1822",
+                      "kind": "type",
+                      "name": "i8"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::3ae6111e552e6d59c7fbd6e8d81e75c7f50ab030428bf1ea92d0c43abcb45db5::i8",
+                  "key": "5ac47f8c",
+                  "kind": "type",
+                  "name": "i8"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::fba3671b79dff38cae3568da7196631cef52cd2aa5c586a5a32f677a214b4a0f::x",
+                      "key": "5dde73e8",
+                      "kind": "variable",
+                      "name": "x"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ee890c0d0a80ec0c5e5be12160df57476da5c2017b32255448f05d86ae70cc1d::u128_mulhi",
+                      "key": "8df15c98",
+                      "kind": "variable",
+                      "name": "u128_mulhi"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a7bf20ee376f6d394d62054ef08453ab66fb2be74b40f899859cdcb25f93e0e4::y",
+                      "key": "bb6a4cb9",
+                      "kind": "variable",
+                      "name": "y"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a2f71aa813b77ded96a2dc65eaca96e48b214457cca449b110e613bd885a5b58::u128_mulhi",
+                  "key": "6365bdd1",
+                  "kind": "function",
+                  "name": "u128_mulhi"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6e55a8377b6ba1e33f82a56ac7b0a587021899a4aef0b0133450522a05294232::DEC_DIGITS_LUT",
+                  "key": "6fb2f2d7",
+                  "kind": "constant",
+                  "name": "DEC_DIGITS_LUT"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::eb5503c7a5d4d9b1087051be7b1592232787cbe8a290264d6e679868988ea096::impl_Integer128",
+                  "key": "70711369",
+                  "kind": "macro",
+                  "name": "impl_Integer128"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::bb57615f6e781afdf6897092a603e6b7cf242b4c608f9d78f9763ede4a1c9924::default",
+                          "key": "8cfba48c",
+                          "kind": "variable",
+                          "name": "default"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::44dce8ee7c3a866c6d88791541292795474fd63efcd5f456019d09113ee37326::default",
+                      "key": "279cd6a6",
+                      "kind": "function",
+                      "name": "default"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b19e233807adda265ba36c9e830ca538d2::Buffer",
+                  "key": "718a2877",
+                  "kind": "type",
+                  "name": "Buffer"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::670b3b4cec83dbab088ae91daec98266cc223eeb288d5d7d94f55ad0e700bb8a::bytes",
+                      "key": "9ba04279",
+                      "kind": "field",
+                      "name": "bytes"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5a4861e6846c8dc4ecd21cc9a22f859bb8d83903903ea7b75093153e834af80a::Buffer",
+                  "key": "7b47f9a3",
+                  "kind": "struct",
+                  "name": "Buffer"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::85d78c338efe1d10667bdab4d330967ecb2ebc03c4b7291858cfcd102180b963::format",
+                          "key": "0cf11c92",
+                          "kind": "variable",
+                          "name": "format"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e9ae6dbae233b7d680c726032bd4229f81f2a3afe671ebca338a26abeceea225::self",
+                          "key": "7f61dfe5",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a4c736c28d8dcd55be52fae309398a83cb455daaa9e82c95a60e1e92caa2198c::i",
+                          "key": "f15bb053",
+                          "kind": "variable",
+                          "name": "i"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::001e7dad965b3327185501cb4ddccf352e8d498d3b2198c4b47b6186f3b2bdf9::format",
+                      "key": "1547e948",
+                      "kind": "function",
+                      "name": "format"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6baac0f3cd585ce45fa9cb0fd48c23044ef158598951170d2cdfcafbd5f1c190::new",
+                          "key": "7faaa353",
+                          "kind": "variable",
+                          "name": "new"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::05a327ab230ad5f30ef96048e5bb4eb205d9b91373da31b9a04b17f619393a90::new",
+                      "key": "154b6c00",
+                      "kind": "function",
+                      "name": "new"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f45d8ae3c25f39d1d5182c879a5932b142698c47df3bc87d1c0837b1f9d5cf70::Buffer",
+                  "key": "810343ee",
+                  "kind": "type",
+                  "name": "Buffer"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::1f70cb17dd06952462b5457168caa3a55b216bf33789418167befc6f2e67685b::impl_Integer",
+                  "key": "82c1c55d",
+                  "kind": "macro",
+                  "name": "impl_Integer"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::37d49239f0551d4c33fd6cac033e58b9c9aa7a9323559fdc30842fbf065c4774::i128",
+                  "key": "832fbb12",
+                  "kind": "type",
+                  "name": "i128"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::5812676c99414605652e1024e6d6de0e616fd7814a334ca84647dd112f99612a::MAX_STR_LEN",
+                      "key": "80c20e73",
+                      "kind": "constant",
+                      "name": "MAX_STR_LEN"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::75a8e4fcd0e1f4ef75743864c439a919f1f94c66b77754faf1844cdf94174d5e::Integer",
+                  "key": "873e681c",
+                  "kind": "trait",
+                  "name": "Integer"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::41873c9e964136a4fbadc635fff467a866abc8f36a9e9474e7e89faa307794b6::i32",
+                      "key": "0aa25ffc",
+                      "kind": "type",
+                      "name": "i32"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::26cd46719eb299b540d86c781a6b51ef63af609246d1bb359a9539cc28a0d561::i32",
+                  "key": "9255def5",
+                  "kind": "type",
+                  "name": "i32"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c113411a6a9ab9c9a6d660326fccb05999ecfbcb609be81f2c7db156c21b3ad0::u64",
+                      "key": "fbfa7af3",
+                      "kind": "type",
+                      "name": "u64"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::a3c24fa7f697f80c623a2d4d3d114eb7a51e9fb48a3d345867de418dacb8a3c2::u64",
+                  "key": "9b0196c1",
+                  "kind": "type",
+                  "name": "u64"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e1c52f25391c1467855b87f2b830bf9d57d9332991bff50aa40f3b98de7c962c::isize",
+                  "key": "aeac6c3d",
+                  "kind": "type",
+                  "name": "isize"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::b7fa0c3b3118fd17fbba07b9c5a05f0c9b89abbccdd874e108da81988dfde2cf::u16",
+                      "key": "ad8671f9",
+                      "kind": "type",
+                      "name": "u16"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6fc350d164e05def492ce99674cc9d0913fb295954aa63276ae94517e7fa6b88::u16",
+                  "key": "b1b0c35c",
+                  "kind": "type",
+                  "name": "u16"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::be3ee90c2e049f8ecfb6b1cfbd89791b074062f69383941cc38597c977edaec1::u128",
+                  "key": "b388d893",
+                  "kind": "type",
+                  "name": "u128"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::620873cf26c73ec207ac6da0f3e6f00bdf8d09ed49fcb309a59b1727672b86cd::u32",
+                      "key": "13f4be63",
+                      "kind": "type",
+                      "name": "u32"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::16f2f42560323d0fb50f4675c48fc953c26b60fcbafb20fc3a24b1a110890fad::u32",
+                  "key": "b4d994c7",
+                  "kind": "type",
+                  "name": "u32"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::dccbd7693bffa28f96b5eae23df8d2344fa320b964c29c0085ca6c8e680d56bd::test",
+                  "key": "bb1a5cc8",
+                  "kind": "macro",
+                  "name": "test"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c31cf8fa58c479916b682b6f97d35c5f9077d9f436395b8b34b7b38d6f24ed4a::udiv128",
+                  "key": "bc59ed35",
+                  "kind": "module",
+                  "name": "udiv128"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::ede12026000b5881d73bff9e6596f0610ad21c8dff473c802154c8d631c51dfb::Buffer",
+                          "key": "51fce954",
+                          "kind": "type",
+                          "name": "Buffer"
+                        },
+                        {
+                          "children": [
+                            {
+                              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6a7a523ef0202b287469599cc5c0ff111d694de08cf0357fac8d21b78ef314b6::buf",
+                              "key": "20bec019",
+                              "kind": "variable",
+                              "name": "buf"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::f5246ffb04c56d56bd21d424317b63855b542d2f7061774c5bafcb10af1a6a0c::self",
+                              "key": "3b547ed7",
+                              "kind": "variable",
+                              "name": "self"
+                            },
+                            {
+                              "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::0fcd608d7a9c6d512bfbdcdd7a439ff0df750a2685bd316c3f586e7638aa6353::write",
+                              "key": "dd43804c",
+                              "kind": "variable",
+                              "name": "write"
+                            }
+                          ],
+                          "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::883ce11b03f40521de093e179c91b0a1c3d182c98aeb1bc2d1ec6a0bf0934d06::write",
+                          "key": "81973251",
+                          "kind": "function",
+                          "name": "write"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::0330dafe1eb7dd55a4aa3252f3c6dccfe83d9161978341b5ab1d4ec6f9ecae5e::Sealed",
+                      "key": "6b6d303f",
+                      "kind": "trait",
+                      "name": "Sealed"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::6304874c829dbb0474f0798a116b375041c256bd12aa30f0df45a6a930bee4da::private",
+                  "key": "c518dfac",
+                  "kind": "module",
+                  "name": "private"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::c85f16165587b890928a51aff36dbefeb71e5f287f0df6f565add782bfc9db2d::i64",
+                      "key": "fcb0340d",
+                      "kind": "type",
+                      "name": "i64"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::d44cad7abd8195709de726244e39eb1c90741b27fa564ab527a28da168418812::i64",
+                  "key": "e2ca38f7",
+                  "kind": "type",
+                  "name": "i64"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::69627edcab50b001c0371fcc08ce862d44df93d844a5d5d2ff950bf97402721d::n",
+                      "key": "57c671f6",
+                      "kind": "variable",
+                      "name": "n"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::34133657548ac99cec9423b63d5341b450fb9e3c332311eefd64e57f2f05fd5e::udivmod_1e19",
+                      "key": "c7f64301",
+                      "kind": "variable",
+                      "name": "udivmod_1e19"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::7f3850e0e6d06b319fffcab969a5b27e9dea06dd0e906af9a48bef5017746948::udivmod_1e19",
+                  "key": "ec58c95f",
+                  "kind": "function",
+                  "name": "udivmod_1e19"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::982dc93448b5cb1bcd1ab9aee51cf4ba1b0dd28ebd8395caa7aafe3638f4637c::usize",
+                  "key": "ef86f852",
+                  "kind": "type",
+                  "name": "usize"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-itoa/project::semantic::e4ad3cd33904add9447ced0176c82665f2012245db6992cc57395d6c7f9a77fb::MaybeUninit<u8>",
+                  "key": "efa9db7c",
+                  "kind": "variable",
+                  "name": "MaybeUninit<u8>"
+                }
+              ],
+              "unnamed": 0
+            }
+          }
+        }
+      ],
+      "exit": 0,
+      "tools": [
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.status"
+      ]
+    }
+  },
+  "performance": {
+    "cpu_seconds": 25.91,
+    "peak_rss_kib": 759328,
+    "seconds": {
+      "cli add": 27.84,
+      "cli outline": 0.04,
+      "cli packages": 0.02,
+      "cli search Buffer": 3.51,
+      "cli search format": 0.02,
+      "mcp": 0.16
+    }
+  }
+}

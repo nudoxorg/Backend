@@ -1,0 +1,150 @@
+{
+  "reviewer_scope": "Independent read-only review of the Linux Java JSR305 snapshot candidate; no candidate or source edits.",
+  "decision": "accept",
+  "candidate": {
+    "path": "tests/surface/snapshots/java-jsr305.json",
+    "sha256": "1e620b25892f69bff9e9b277f5b739facb70101afe77c59582fa9811fcafb8de",
+    "source_commit": "94cfc4d9674dec41af0f1f04f0ffab8a2f6abe0c",
+    "runtime_log": "/tmp/nudox-java-owner30-current.log"
+  },
+  "pinned_source": {
+    "path": "/nix/store/mvxh9bnipad22xz5rgb3z71ynvlha634-nudox-surface-java-jsr305-3.0.2",
+    "java_source_files": 31,
+    "extracted_project_java_files": 31,
+    "assessment": "The displayed package and declaration inventory correspond to the pinned JSR305 tree."
+  },
+  "checks": {
+    "add": "CLI add exits 0.",
+    "packages": "CLI package shelf exits 0 and reports the indexed project ready.",
+    "outline": {
+      "cli_exit": 0,
+      "mcp_exit": 0,
+      "extent": "complete",
+      "declarations": 126,
+      "distinct_nonmodule_root_names": 31,
+      "assessment": "The CLI and MCP summaries agree on declaration count and completeness; the 31 non-module roots correspond to the 31 Java source files."
+    },
+    "search": {
+      "cli_nonnull_exit": 0,
+      "cli_nullable_exit": 0,
+      "coverage": {
+        "exact": "complete",
+        "names": "complete",
+        "graph": "complete",
+        "semantic": "unavailable: unconfigured"
+      },
+      "source_records_reviewed": [
+        {
+          "query": "Nonnull",
+          "name": "javax.annotation.Nonnull",
+          "path": "javax/annotation/Nonnull.java",
+          "line": 18,
+          "kind": "trait",
+          "language": "java",
+          "state": "ready"
+        },
+        {
+          "query": "Nonnull",
+          "name": "javax.annotation.Nullable",
+          "path": "javax/annotation/Nullable.java",
+          "line": 25,
+          "kind": "trait",
+          "language": "java",
+          "state": "ready"
+        },
+        {
+          "query": "Nonnull",
+          "name": "javax.annotation.ParametersAreNonnullByDefault",
+          "path": "javax/annotation/ParametersAreNonnullByDefault.java",
+          "line": 23,
+          "kind": "trait",
+          "language": "java",
+          "state": "ready"
+        },
+        {
+          "query": "Nullable",
+          "name": "javax.annotation.ParametersAreNullableByDefault",
+          "path": "javax/annotation/ParametersAreNullableByDefault.java",
+          "line": 25,
+          "kind": "trait",
+          "language": "java",
+          "state": "ready"
+        },
+        {
+          "query": "Nonnull",
+          "name": "javax.annotation.Nonnull.Checker",
+          "path": "javax/annotation/Nonnull.java",
+          "line": 24,
+          "kind": "struct",
+          "language": "java",
+          "state": "ready"
+        }
+      ],
+      "assessment": "Qualified source-backed hits match the pinned declarations and lines. Additional pathless, language=unknown hits are lexical name-lane results; they are distinct from the source-backed Java semantic records and are consistent with complete names coverage."
+    },
+    "mcp": {
+      "exit": 0,
+      "tools_present": [
+        "backend.search",
+        "backend.outline",
+        "backend.packages"
+      ],
+      "calls_reviewed": [
+        "backend.search(Nonnull, limit=3)",
+        "backend.search(Nullable, limit=3)",
+        "backend.outline"
+      ],
+      "assessment": "MCP search records carry the same qualified names, Java paths, lines, and ready state as CLI. Both searches correctly report more=true at limit 3; the runtime log says the offered continuation was consumed by a fresh MCP session. Snapshot cursor strings are sanitized placeholders and were not treated as identities."
+    }
+  },
+  "cross_host_comparison": "Native and Linux snapshots agree on declaration totals, qualified-name set, and source locations. Opaque coordinates and keys differ with the host's /tmp versus /private/tmp project path and were not required to match.",
+  "limitations": [
+    "This review covers semantic correctness only. Calibration now has one exact-head pass and one exact-head failure on identical reviewed answers, so performance remains unstable and is not a calibrated claim.",
+    "Build 34 explicitly records zero official T2 distinct-head passing streak. Snapshot acceptance here applies only to reviewed answer content; it is not official T2 green."
+  ],
+  "reviewer": "Codex / GPT-6 Luna, independent pinned-source/result review",
+  "build": {
+    "pipeline": "nudox-triage-proof",
+    "job": "linux",
+    "number": 30,
+    "id": 495175
+  },
+  "calibration_status": "Two Java answer comparisons on the same Linux head and binaries match the reviewed candidate, but performance is unstable: repeat 1 fails the unchanged MCP bound and repeat 2 passes. No performance band, tolerance, floor, snapshot, or official T2 status changed; distinct-head passing streak remains 0.",
+  "calibration_history": {
+    "source_sha": "a453e3ff976da05cd951747de3d678a5dd8fd342",
+    "build": {
+      "pipeline": "nudox-triage-proof",
+      "job": "linux",
+      "number": 34,
+      "id": 495627,
+      "status": "failed"
+    },
+    "java_answer_comparisons": [
+      {
+        "repeat": 1,
+        "answer_matches_reviewed_candidate": true,
+        "index_seconds": 68.28,
+        "mcp_seconds": 2.23,
+        "unchanged_mcp_baseline_seconds": 1.29,
+        "unchanged_mcp_limit_seconds": 1.935,
+        "performance_pass": false,
+        "owner_cpu_seconds": 5.69,
+        "owner_peak_rss_kib": 278052
+      },
+      {
+        "repeat": 2,
+        "answer_matches_reviewed_candidate": true,
+        "index_seconds": 71.69,
+        "mcp_seconds": 1.32,
+        "unchanged_mcp_baseline_seconds": 1.29,
+        "unchanged_mcp_limit_seconds": 1.935,
+        "performance_pass": true,
+        "owner_cpu_seconds": 5.69,
+        "owner_peak_rss_kib": 280980
+      }
+    ],
+    "overall_interpretation": "Same-head/same-binary answer content matches on both runs; one MCP timing fails and one passes, so this is unstable calibration rather than stable performance acceptance.",
+    "official_t2_distinct_head_passing_streak": 0,
+    "source_record": "docs/testing/runtime/2026-10-15-java-blinker-linux34.json"
+  }
+}

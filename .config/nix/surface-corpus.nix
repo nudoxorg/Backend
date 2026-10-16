@@ -22,8 +22,63 @@ let
   percentEncodingArchive =
     assert builtins.length percentEncodingPin == 1;
     pkgs.fetchurl { inherit (builtins.head percentEncodingPin) url hash; };
+  projectPin =
+    coordinate:
+    let
+      selected = builtins.filter (candidate: candidate.coordinate == coordinate) pins;
+    in
+    assert builtins.length selected == 1;
+    builtins.head selected;
+  tarProject =
+    name: coordinate: requiredFiles:
+    let
+      selected = projectPin coordinate;
+      source = pkgs.fetchurl { inherit (selected) url hash; };
+    in
+    pkgs.runCommand "nudox-surface-${name}"
+      {
+        nativeBuildInputs = [
+          pkgs.gnutar
+          pkgs.gzip
+        ];
+      }
+      ''
+        mkdir "$out"
+        tar -xzf ${source} --strip-components=1 -C "$out"
+        ${pkgs.lib.concatMapStringsSep "\n" (
+          file: "test -f \"$out\"/" + pkgs.lib.escapeShellArg file
+        ) requiredFiles}
+      '';
+  goProject =
+    name: coordinate: requiredFiles:
+    let
+      selected = projectPin coordinate;
+      source = pkgs.fetchurl { inherit (selected) url hash; };
+      archiveRoot = pkgs.lib.removePrefix "golang:" coordinate;
+    in
+    pkgs.runCommand "nudox-surface-${name}" { nativeBuildInputs = [ pkgs.unzip ]; } ''
+      mkdir unpack
+      unzip -q ${source} -d unpack
+      mv "unpack/${archiveRoot}" "$out"
+      ${pkgs.lib.concatMapStringsSep "\n" (
+        file: "test -f \"$out\"/" + pkgs.lib.escapeShellArg file
+      ) requiredFiles}
+    '';
+  zipProject =
+    name: coordinate: requiredFiles:
+    let
+      selected = projectPin coordinate;
+      source = pkgs.fetchurl { inherit (selected) url hash; };
+    in
+    pkgs.runCommand "nudox-surface-${name}" { nativeBuildInputs = [ pkgs.unzip ]; } ''
+      mkdir "$out"
+      unzip -q ${source} -d "$out"
+      ${pkgs.lib.concatMapStringsSep "\n" (
+        file: "test -f \"$out\"/" + pkgs.lib.escapeShellArg file
+      ) requiredFiles}
+    '';
 in
-{
+rec {
   rust-percent-encoding =
     pkgs.runCommand "nudox-surface-rust-percent-encoding-2.3.2"
       {
@@ -64,4 +119,61 @@ in
         test -f "$out/xxhash.go"
         test -f "$out/xxhash_unsafe.go"
       '';
+  python-cachetools = tarProject "python-cachetools-7.2.0" "pypi:cachetools@7.2.0" [
+    "pyproject.toml"
+    "src/cachetools/__init__.py"
+  ];
+
+  python-tomli = tarProject "python-tomli-2.2.1" "pypi:tomli@2.2.1" [
+    "pyproject.toml"
+    "src/tomli/_parser.py"
+  ];
+
+  python-itsdangerous = tarProject "python-itsdangerous-2.2.0" "pypi:itsdangerous@2.2.0" [
+    "pyproject.toml"
+    "src/itsdangerous/url_safe.py"
+    "src/itsdangerous/signer.py"
+  ];
+
+  rust-itoa = tarProject "rust-itoa-1.0.14" "cargo:itoa@1.0.14" [
+    "Cargo.toml"
+    "src/lib.rs"
+  ];
+
+  rust-ryu = tarProject "rust-ryu-1.0.18" "cargo:ryu@1.0.18" [
+    "Cargo.toml"
+    "src/buffer/mod.rs"
+  ];
+
+  go-uuid = goProject "go-uuid-1.6.0" "golang:github.com/google/uuid@v1.6.0" [
+    "go.mod"
+    "version4.go"
+    "uuid.go"
+  ];
+
+  rust-itoa-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-itoa}/Cargo.lock"; };
+  rust-ryu-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-ryu}/Cargo.lock"; };
+
+  go-sync = goProject "go-sync-0.11.0" "golang:golang.org/x/sync@v0.11.0" [
+    "go.mod"
+    "semaphore/semaphore.go"
+    "singleflight/singleflight.go"
+  ];
+
+  c-rxi-map = tarProject "c-rxi-map-d6c355f" "rxi-map" [
+    "src/map.c"
+    "src/map.h"
+  ];
+  cpp-pugixml = tarProject "cpp-pugixml-1.14" "pugixml" [
+    "src/pugixml.cpp"
+    "src/pugixml.hpp"
+  ];
+  java-jsr305 = zipProject "java-jsr305-3.0.2" "maven:com.google.code.findbugs:jsr305@3.0.2" [
+    "javax/annotation/Nonnull.java"
+  ];
+  csharp-tinyioc = zipProject "csharp-tinyioc-1.3.0" "nuget:tinyioc@1.3.0" [
+    "TinyIoC.nuspec"
+    "Content/TinyIoC.cs"
+  ];
+
 }
