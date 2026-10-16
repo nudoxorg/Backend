@@ -788,8 +788,14 @@ impl<'manifest, 'have> IrHydrationCursor<'manifest, 'have> {
             }));
         }
         let range_slots = credits.range_slots.min(self.limits.max_ranges);
-        let max_chunk =
-            u64::try_from(self.limits.max_chunk).map_err(|_| ReplicationError::Overflow)?;
+        // Semantic range messages have their own 16 KiB payload grammar,
+        // independent of the caller's generic replication chunk ceiling.
+        let max_chunk = u64::try_from(
+            self.limits
+                .max_chunk
+                .min(crate::ir_hydration_wire::MAX_RANGE_BYTES),
+        )
+        .map_err(|_| ReplicationError::Overflow)?;
         let byte_budget = credits.byte_budget.min(max_chunk);
         if range_slots == 0 || byte_budget == 0 {
             return Ok(IrHydrationPoll::NoCredits);
@@ -2058,11 +2064,11 @@ mod tests {
                     image,
                     kind,
                     &[],
-                    limits,
+                    TransportLimits::default(),
                 )
                 .expect("select exact catalog image");
                 let request = match cursor
-                    .next_request(&mut source, None, HydrationCredits::new(1, 16 * 1024))
+                    .next_request(&mut source, None, HydrationCredits::new(1, 64 * 1024))
                     .expect("first bounded request")
                 {
                     IrHydrationPoll::Request(request) => request,
@@ -2071,6 +2077,7 @@ mod tests {
                 let get = SemanticRangeGet::from_request(1, target, &request, &mut source)
                     .expect("bind first range to selected image");
                 let range = get.byte_range;
+                assert_eq!(range.len, 16 * 1024);
                 let start = usize::try_from(range.start).expect("small sparse offset");
                 let end =
                     usize::try_from(range.end().expect("range end")).expect("small sparse end");
@@ -2120,8 +2127,10 @@ mod tests {
                 .expect("decode cold client checkpoint");
                 let store = FileStore::open(root.join("cas"), 16 * 1024 * 1024)
                     .expect("cold-open FileStore");
-                let mut sparse = FileSemanticRangeStore::open(store, limits)
-                    .expect("cold-open sparse FileStore adapter");
+                // Source/history readers use generic transport ceilings. A
+                // cold reopen must preserve the writer's fixed 16 KiB extents.
+                let mut sparse = FileSemanticRangeStore::open(store, TransportLimits::default())
+                    .expect("cold-open sparse adapter under generic transport ceilings");
                 let (mut cursor, partial, poll) = checkpoint
                     .resume(&manifest, &mut source, &[], limits, &mut sparse)
                     .expect("resume cursor and durable sparse extents");

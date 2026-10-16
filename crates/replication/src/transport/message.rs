@@ -214,7 +214,7 @@ impl TransportMessage {
                 .saturating_add(request.start.len())
                 .saturating_add(request.end.as_ref().map_or(0, Vec::len))
                 .saturating_add(request.resume.ranges().len().saturating_mul(16)),
-            Self::Chunk(frame) => 192usize.saturating_add(frame.payload.len()),
+            Self::Chunk(frame) => crate::CHUNK_FRAME_OVERHEAD.saturating_add(frame.payload.len()),
             Self::Resume(request) => 128usize.saturating_add(coverage_wire_size(&request.coverage)),
             Self::WireResumeRequest(request) => {
                 128usize.saturating_add(coverage_wire_size(&request.coverage))
