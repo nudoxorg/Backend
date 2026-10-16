@@ -2437,6 +2437,12 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         *claim.binding().identity.as_ref(),
         &staged,
     );
+    job.compiler.remember_typescript_snapshot(
+        &job.source_root,
+        *profile.attempt.input_digest(),
+        *claim.binding().identity.as_ref(),
+        &staged,
+    );
     let completion = record_semantic_publication(
         &relation,
         profile.key.clone(),
@@ -3892,6 +3898,12 @@ fn compile_semantic_publications_for_snapshot(
                     revision_fence,
                 )?;
                 context.compiler.remember_python_snapshot(
+                    context.source_root,
+                    scan_input_digest,
+                    *publication.0.binding().identity.as_ref(),
+                    &staged,
+                );
+                context.compiler.remember_typescript_snapshot(
                     context.source_root,
                     scan_input_digest,
                     *publication.0.binding().identity.as_ref(),
@@ -6252,8 +6264,8 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
             hasher.update(&environment.identity());
         }
     }
-    if matches!(profile, LanguageProfile::Python(_)) {
-        let sources = scan
+    if matches!(profile, LanguageProfile::Python(_) | LanguageProfile::TypeScript(_)) {
+        let mut sources = scan
             .compiler_sources
             .iter()
             .filter(|source| source.profile == profile)
@@ -6264,7 +6276,14 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
                     .filter(|source| source.profile == profile)
                     .map(|source| (source.relative_path.as_str(), &source.content)),
             )
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
+        if matches!(profile, LanguageProfile::Python(_)) {
+            // Preserve the existing Python snapshot key contract.
+            sources = sources.into_iter().collect::<BTreeMap<_, _>>().into_iter().collect();
+        }
+        // TS keeps every admitted row, including any duplicate, so partition
+        // ordering cannot hide an inconsistent source tuple.
+        sources.sort_unstable();
         for (path, content) in sources {
             hasher.update(&(path.len() as u64).to_le_bytes());
             hasher.update(path.as_bytes());
@@ -6309,6 +6328,33 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
             .contains(&profile.language()),
     )]);
     *hasher.finalize().as_bytes()
+}
+
+#[cfg(test)]
+mod typescript_snapshot_input_tests {
+    use super::*;
+    use backend_semantic::vocabulary::TypeScriptSource;
+    use std::fs;
+
+    #[test]
+    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition() {
+        let directory = crate::test_support::private_temp_dir("tsz-input-partition").unwrap();
+        let root = directory.path();
+        fs::write(root.join("a.ts"), "export const a = 1;").unwrap();
+        fs::write(root.join("b.ts"), "export const b = 2;").unwrap();
+        let text = root.to_str().unwrap();
+        let cold = ingest::scan_project(text, [27; 32], &BTreeMap::new()).unwrap();
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let input = semantic_input_digest(&cold, profile);
+        let rows = cold.files.iter().cloned().collect();
+        let warm = ingest::scan_project(text, [27; 32], &rows).unwrap();
+        assert!(warm.compiler_sources.is_empty());
+        assert_eq!(warm.reused_compiler_files.len(), 2);
+        assert_eq!(input, semantic_input_digest(&warm, profile));
+        fs::write(root.join("a.ts"), "export const a = 'changed';").unwrap();
+        let changed = ingest::scan_project(text, [27; 32], &rows).unwrap();
+        assert_ne!(input, semantic_input_digest(&changed, profile));
+    }
 }
 
 /// Selects the exact profile one source is compiled under.

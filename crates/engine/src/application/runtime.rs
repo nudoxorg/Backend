@@ -3,6 +3,11 @@
 //! Lane workers share immutable admitted configuration and own private native scratch/work
 //! directories. Staged results cross one bounded, byte-accounted queue to the publisher owner.
 
+#[path = "typescript_snapshot.rs"]
+mod typescript_snapshot;
+pub use typescript_snapshot::TypeScriptSnapshotReuse;
+use typescript_snapshot::TypeScriptSnapshotCache;
+
 use std::{
     collections::HashMap,
     num::NonZeroUsize,
@@ -3449,6 +3454,7 @@ impl LocalCompilerClient {
                         capability_signal,
                         input_witnesses,
                         python_snapshots: Mutex::new(PythonSnapshotCache::default()),
+                        typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
                         go_authority,
                         native_python,
                         python_interpreter,
@@ -4047,6 +4053,7 @@ struct RuntimeShared {
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
     python_snapshots: Mutex<PythonSnapshotCache>,
+    typescript_snapshot: Mutex<TypeScriptSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
     native_python: Option<Arc<DeferredNativePython>>,
     python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
@@ -6326,7 +6333,7 @@ mod local_plane_identity_tests {
 mod request_lease_tests {
     use super::*;
 
-    fn shared() -> RuntimeShared {
+    pub(super) fn shared() -> RuntimeShared {
         let root =
             std::env::temp_dir().join(format!("backend-request-lease-test-{}", std::process::id()));
         let paths = LocalCompilerRuntimePaths::new(
@@ -6361,6 +6368,7 @@ mod request_lease_tests {
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
             python_snapshots: Mutex::new(PythonSnapshotCache::default()),
+            typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
             go_authority: None,
             native_python: None,
             python_interpreter: None,

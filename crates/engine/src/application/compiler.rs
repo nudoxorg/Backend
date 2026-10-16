@@ -1430,7 +1430,112 @@ pub enum StagedSemanticReaderError<CallbackError: std::error::Error + 'static> {
     Callback(#[source] CallbackError),
 }
 
+fn typescript_snapshot_outcome_reusable(
+    mut gaps: impl Iterator<Item = PackageSourceCoverageGapCause>,
+    embedding: StagedEmbeddingStatus<'_>,
+) -> bool {
+    // Add is also the retry surface. Keep interrupted/refused semantic work
+    // and activated-runtime inference failures eligible for another attempt.
+    matches!(
+        embedding,
+        StagedEmbeddingStatus::NotConfigured
+            | StagedEmbeddingStatus::Available { .. }
+            | StagedEmbeddingStatus::ProvisioningUnavailable { .. }
+    ) && gaps.all(|cause| {
+        cause == PackageSourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram
+    })
+}
+
+#[cfg(test)]
+mod typescript_snapshot_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_outcomes_preserve_add_retry_for_interrupted_sources_and_inference() {
+        use PackageSourceCoverageGapCause as Gap;
+        let identity = EmbeddingPlaneIdentity::new(
+            [1; 32],
+            [2; 32],
+            [3; 32],
+            1,
+            backend_semantic::ir::EmbeddingNormalization::None,
+            [4; 32],
+            [5; 32],
+        )
+        .unwrap();
+        for embedding in [
+            StagedEmbeddingStatus::NotConfigured,
+            StagedEmbeddingStatus::Available { identity },
+            StagedEmbeddingStatus::ProvisioningUnavailable {
+                cause: EmbeddingProvisioningFailure::ActivationRejected,
+            },
+        ] {
+            assert!(typescript_snapshot_outcome_reusable(
+                [].into_iter(),
+                embedding
+            ));
+            assert!(typescript_snapshot_outcome_reusable(
+                [Gap::TypeScriptSourceExcludedFromConfiguredProgram].into_iter(),
+                embedding,
+            ));
+            for gap in [
+                Gap::TypeScriptSourceWorkBudgetExhausted,
+                Gap::CompileDeadlineExceeded,
+                Gap::SourceAuthorityRefused,
+                Gap::SourceRejectedByNativeCompiler,
+                Gap::SourceNotRepresentable,
+                Gap::RustSourceOutsideActiveCargoTarget,
+                Gap::PythonSourceSyntaxUnavailable,
+                Gap::PythonSourceEncodingUnavailable,
+                Gap::PythonSourceDependencyUnavailable,
+            ] {
+                assert!(
+                    !typescript_snapshot_outcome_reusable(
+                        [Gap::TypeScriptSourceExcludedFromConfiguredProgram, gap,].into_iter(),
+                        embedding
+                    ),
+                    "Add must retry {gap:?}"
+                );
+            }
+        }
+        let failed = StagedEmbeddingStatus::Unavailable {
+            identity,
+            reason: "transient inference failure",
+        };
+        assert!(!typescript_snapshot_outcome_reusable(
+            [].into_iter(),
+            failed
+        ));
+        assert!(!typescript_snapshot_outcome_reusable(
+            [Gap::TypeScriptSourceExcludedFromConfiguredProgram].into_iter(),
+            failed,
+        ));
+    }
+}
+
 impl StagedSemanticPackage {
+    pub(crate) fn typescript_snapshot_witness(
+        &self,
+        root: &Path,
+    ) -> Option<(
+        std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>,
+        std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>,
+    )> {
+        if !typescript_snapshot_outcome_reusable(
+            self.coverage_gaps().iter().map(PackageSourceCoverageGap::cause),
+            self.embedding_status(),
+        ) {
+            return None;
+        }
+        let host = self.staged.typescript_witness.as_ref()?;
+        if !host.is_native_for_root(root) {
+            return None;
+        }
+        Some((std::sync::Arc::clone(host), std::sync::Arc::clone(
+            self.staged.typescript_closure_witness.as_ref()?,
+        )))
+    }
+
     /// Retains the local captured-program fence for bounded snapshot reuse.
     /// This grants no ambient read completeness or complete semantic coverage.
     pub(crate) fn python_snapshot_witness(
@@ -2487,7 +2592,7 @@ pub(crate) struct StagedPackageCompilation {
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness:
-        Option<crate::application::typescript_program::TypeScriptForestClosureWitness>,
+        Option<std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>>,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
@@ -4378,7 +4483,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(project.witness())),
-            typescript_closure_witness,
+            typescript_closure_witness: typescript_closure_witness.map(std::sync::Arc::new),
             native_program_sources,
             python_witness: python_project
                 .as_ref()

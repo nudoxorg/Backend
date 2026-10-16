@@ -105,6 +105,8 @@ pub(super) struct CompilerRevisionFence {
     root: PathBuf,
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
     pub(super) files: Vec<CompilerFileRevision>,
+    /// Native producer read closure retained through the final product commit.
+    pub(super) typescript_reuse: Option<backend_engine::application::TypeScriptSnapshotReuse>,
 }
 
 impl CompilerRevisionFence {
@@ -1793,6 +1795,7 @@ fn scan_project_with_configuration_policy_attempt(
         root: root.clone(),
         directories: directories.clone(),
         files: file_revisions.values().cloned().collect(),
+        typescript_reuse: None,
     };
     let frontier_sources = paths
         .iter()
@@ -1995,6 +1998,9 @@ pub(super) fn compiler_revision_is_current_with_cancellation(
     fence: &CompilerRevisionFence,
     cancellation: Option<&AtomicBool>,
 ) -> Result<bool, String> {
+    if fence.typescript_reuse.as_ref().is_some_and(|proof| !proof.is_current(cancellation)) {
+        return Ok(false);
+    }
     if fence.open_bound_root(&fence.requested_root).is_err() {
         return Ok(false);
     }
