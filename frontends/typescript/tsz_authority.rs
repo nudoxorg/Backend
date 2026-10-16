@@ -2351,6 +2351,7 @@ mod tests {
                     .checked_query_session(&budget)
                     .unwrap()
                     .file_index("__native_tsz_type_reference__.ts")
+                    .expect("bounded empty-program lookup")
                     .is_none()
             );
         }

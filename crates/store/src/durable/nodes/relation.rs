@@ -821,7 +821,9 @@ mod tests {
             let child = node.children().next().expect("child");
             fs::remove_file(store.object_path(root_object(&child).id())).expect("simulate lost child");
             assert!(admission.existing(object.schema(), object.version()).expect("probe again").is_none());
-            drop((admission, pin, store));
+            drop(admission);
+            drop(pin);
+            drop(store);
             fs::remove_dir_all(path).expect("remove fixture");
         }
     }
@@ -839,7 +841,8 @@ mod tests {
         assert!(store.try_with_gc_exclusive_lease(|| Ok(())).expect("try GC").is_none());
         cancelled.store(false, std::sync::atomic::Ordering::Release);
         assert!(admission.existing(object.schema(), object.version()).expect("retry").is_some());
-        drop((admission, pin));
+        drop(admission);
+        drop(pin);
         assert!(store.try_with_gc_exclusive_lease(|| Ok(())).expect("try GC again").is_some());
         drop(store);
         fs::remove_dir_all(path).expect("remove fixture");
