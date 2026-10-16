@@ -18,6 +18,8 @@ use crate::identity::{Coordinate, IdentityKey};
 use crate::language::Language;
 use core::fmt;
 
+mod display;
+
 /// What one signature token reads as.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TokenKind {
@@ -158,6 +160,20 @@ pub struct Signature {
 }
 
 impl Signature {
+    /// Projects a captured declaration header for display, then classifies it.
+    /// The source stays unchanged; distinguishable legacy machine dumps are absent.
+    #[must_use]
+    pub(crate) fn from_declaration(
+        text: &str,
+        language: Language,
+        kind: Option<backend_library::DeclarationKind>,
+        local_name: &str,
+        excerpt: &backend_library::SourceExcerpt,
+    ) -> Option<Self> {
+        display::text(text, language, kind, local_name, excerpt)
+            .map(|text| Self::tokenize(&text, language))
+    }
+
     /// Tokenizes one signature under the rules of its source language.
     #[must_use]
     pub fn tokenize(text: &str, language: Language) -> Self {

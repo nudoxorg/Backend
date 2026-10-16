@@ -82,7 +82,7 @@ pub fn page_from_document_with_graph_relations(
     let signature = document
         .signature
         .as_ref()
-        .map(|text| Signature::tokenize(text, language));
+        .and_then(|text| Signature::from_declaration(text, language, kind, identity.name(), &document.excerpt));
     let page = Page::new(identity, kind, source)
         .with_language(language)
         .with_prose(Prose::from_fragments(&document.fragments))
@@ -183,12 +183,13 @@ fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
         .map(|row| {
             let identity = row_identity(row);
             let language = identity.language();
+            let signature = row.signature.as_ref().and_then(|text| {
+                Signature::from_declaration(text, language, row.kind, identity.name(), &row.excerpt)
+            });
             let member = Member::new(
                 identity,
                 row.kind,
-                row.signature
-                    .as_ref()
-                    .map(|text| Signature::tokenize(text, language)),
+                signature,
             );
             match summary_of(row) {
                 Some(text) => member.with_summary(text),
