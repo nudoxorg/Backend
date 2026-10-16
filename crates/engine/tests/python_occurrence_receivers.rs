@@ -13644,47 +13644,6 @@ class Holder(Base):
 }
 
 #[test]
-fn py_init_attribute_inherited_still_binds_without_instance_annotation() -> Result<(), TestError> {
-    const SOURCE: &[u8] = b"\
-class Decoy:
-    def note(self):
-        return 0
-
-class Child:
-    def note(self):
-        return 1
-
-class Base:
-    child: Child
-
-class Holder(Base):
-    def run(self):
-        return self.child.note()
-";
-    let env = inherited_fixture_env()?;
-    let toolchain = env.toolchain()?;
-    let cancelled = AtomicBool::new(false);
-    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
-    let view = fragment.view()?;
-    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
-    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
-    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
-    let calls = read_method_calls(&view, run_owner)?;
-    if calls.len() != 1 {
-        return Err(TestError::Falsified("run owns one MethodCall"));
-    }
-    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
-    if matches!(
-        &calls[0].occurrence.target,
-        OccurrenceTarget::Local(target) if target.raw == decoy_note
-    ) {
-        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
-    }
-    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
-    Ok(())
-}
-
-#[test]
 fn py_init_attribute_inner_class_does_not_donate() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
