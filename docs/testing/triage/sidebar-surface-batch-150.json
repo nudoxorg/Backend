@@ -1854,5 +1854,14 @@
     "The nine replacements are pending execution; successful rendered behavior is not claimed.",
     "The retained animation-ID test and five SidebarAnimationState tests remain separate obligations and are not counted as replaced.",
     "The cohort contains 150 old source bodies and zero deleted tests; only the source-body net change is -8."
-  ]
+  ],
+  "candidate": {
+    "base": "cab7cdf38",
+    "compatibility_prerequisites": [
+      "a8db59d06",
+      "3a96b42b0"
+    ],
+    "status": "refreshed source candidate; exact current-head checks pending"
+  },
+  "exact_head_validation": "Pending required fast/T1 and affected sidebar T2/T3 on the exact refreshed head. Earlier PR build 493931 and build 494064 results apply only to the former 0d16f0ff2 head and are historical."
 }

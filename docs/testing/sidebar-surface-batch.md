@@ -1,6 +1,6 @@
 # W1.3 Sidebar surface replacement batch
 
-This isolated batch is based on Backend `6c8656c419660d5e62a69912c534caf2eff72dc7`.
+This isolated candidate is refreshed on current Backend canonical `cab7cdf38`, with compatibility prerequisites `a8db59d06` and `3a96b42b0`. The source cohort audit remains frozen at `63c2adffa3e62e0717a87a7267b3bdd41513a48b` for its review hashes.
 It replaces the nine `SidebarLayout`-only tests in
 `vendor/gpui_ce_components/src/sidebar/mod.rs` with one GPUI test that renders the
 public `Sidebar` API next to a measurable sibling. The new test is not yet executed;
@@ -25,7 +25,7 @@ direct tests across the sidebar directory.
 | `offcanvas_should_anchor_child_toward_the_content_edge` | At the same midpoint in left and right pixel-width Offcanvas close transitions, rendered item geometry follows the content-facing edge in each orientation. |
 
 The replacement exercises rendered bounds via GPUI's `debug_selector`/`debug_bounds`
-test surface and public `Sidebar::{new, side, collapsible, collapsed}` methods. A custom
+test surface and public `Sidebar::{new, side, collapsible, collapsed}` methods. The test advances the executor through the actual midpoint and full transition duration, draws another frame, and verifies the item is hidden after completion. A custom
 `ProbeItem` implements the public `Collapsible` and `SidebarItem` contracts so the test
 observes which collapsed state reaches rendered content. Fractional width uses
 `gpui::relative(0.5)`, which selects the real non-pixel style path while resolving to
@@ -48,4 +48,4 @@ unchanged. The cohort therefore has zero test deletions, one pending replacement
 and a source-body net change of minus eight. The 243-body audit total is crate-wide
 review context, not this batch's deletion count.
 
-No performance baseline, tolerance, or runtime guard changes are part of this batch.
+Exact current-head fast/T1 and affected sidebar T2/T3 checks are pending. No performance baseline, tolerance, or runtime guard changes are part of this batch.
