@@ -151,8 +151,12 @@ rec {
     "uuid.go"
   ];
 
-  rust-itoa-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-itoa}/Cargo.lock"; };
-  rust-ryu-vendor = pkgs.rustPlatform.importCargoLock { lockFile = "${rust-ryu}/Cargo.lock"; };
+  rust-itoa-vendor = pkgs.rustPlatform.importCargoLock {
+    lockFile = ../../tests/surface/cargo-locks/rust-itoa.lock;
+  };
+  rust-ryu-vendor = pkgs.rustPlatform.importCargoLock {
+    lockFile = ../../tests/surface/cargo-locks/rust-ryu.lock;
+  };
 
   go-sync = goProject "go-sync-0.11.0" "golang:golang.org/x/sync@v0.11.0" [
     "go.mod"
