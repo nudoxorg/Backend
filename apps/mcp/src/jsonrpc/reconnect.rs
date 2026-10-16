@@ -311,6 +311,7 @@ impl<E: Endpoint> Reconnecting<E> {
 const fn probe_is_repeatable(probe: &Probe<'_>) -> Repeatable {
     match probe {
         Probe::Packages
+        | Probe::Declaration { .. }
         | Probe::Document(_)
         | Probe::Source(_)
         | Probe::Related(_)
@@ -488,6 +489,17 @@ impl<E: Endpoint> Product for Reconnecting<E> {
     ) -> Result<ReplyDto, ClientError> {
         self.attempt(Repeatable::Yes, |product| {
             product.graph_page_window(coordinate.clone(), window, continuation)
+        })
+    }
+
+    fn graph_page_declaration(
+        &mut self,
+        selector: backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.graph_page_declaration(selector.clone(), window, continuation)
         })
     }
 

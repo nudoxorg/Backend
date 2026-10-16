@@ -948,6 +948,11 @@ impl Engine for Fake {
             return Err(unreachable());
         }
         let reply = match probe {
+            Probe::Declaration { .. } => {
+                return Err(ClientError::Protocol(
+                    "selected read needs the immutable-row fixture".to_owned(),
+                ));
+            }
             Probe::Packages => CommandReply::Packages(snapshot(vec![
                 package_row(),
                 module_row(),

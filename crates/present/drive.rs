@@ -38,8 +38,9 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
-    CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IndexSearchCursor, IntentId,
-    PageContinuation, ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
+    CommandReply, CompileExecutionIntent, DeclarationRead, DeclarationSelector, GraphRelation,
+    HealthReport, IndexSearchCursor, IntentId, PageContinuation, ReplyDto, Row, SurfaceCommand,
+    SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 
 /// One owner-issued continuation family supported by agent-facing surfaces.
@@ -87,6 +88,13 @@ pub enum Probe<'a> {
     Related(&'a str),
     /// One declaration's outgoing neighbourhood.
     Graph(&'a str),
+    /// One exact row addressed by its untrusted public selector.
+    Declaration {
+        /// Closed declaration operand.
+        selector: &'a DeclarationSelector,
+        /// Requested declaration capability.
+        read: DeclarationRead,
+    },
     /// A bounded search page.
     Search {
         /// Query text.
@@ -127,6 +135,7 @@ impl Probe<'_> {
                 Operand::Coordinate(Coordinate::new(at))
             }
             Self::Search { text, .. } | Self::Names { text, .. } => Operand::Text(text.to_owned()),
+            Self::Declaration { selector, .. } => Operand::Argument(declaration_operand(selector)),
         }
     }
 }
@@ -337,6 +346,7 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::Remove(path) => remove(engine, path),
         Request::Page(at) => page(engine, at).map(Box::new).map(Answer::Page),
         Request::Source(at) => source(engine, at),
+        Request::Declaration { selector, read } => selected_declaration(engine, selector, *read),
         Request::Neighbourhood {
             coordinate,
             incoming,
@@ -697,6 +707,81 @@ pub fn resolve_declaration(
     }
 }
 
+fn declaration_operand(selector: &DeclarationSelector) -> String {
+    match selector {
+        DeclarationSelector::Coordinate(value)
+        | DeclarationSelector::SelectedAt {
+            coordinate: value, ..
+        } => value.clone(),
+        DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()),
+    }
+}
+
+fn selected_declaration(
+    engine: &mut dyn Engine,
+    selector: &DeclarationSelector,
+    kind: DeclarationRead,
+) -> Result<Answer, Fault> {
+    let reply = read(
+        engine,
+        Probe::Declaration {
+            selector,
+            read: kind,
+        },
+    )?;
+    match kind {
+        DeclarationRead::Document | DeclarationRead::Source => {
+            let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply
+            else {
+                return Err(shape("selected document"));
+            };
+            let coordinate = document
+                .selection
+                .as_ref()
+                .map(|selection| selection.coordinate())
+                .ok_or_else(|| shape("selected document coordinate"))?;
+            let page = if kind == DeclarationRead::Document {
+                let mut notes = Vec::new();
+                let relations = probe_relation_rows(
+                    engine,
+                    Probe::Declaration {
+                        selector,
+                        read: DeclarationRead::Related,
+                    },
+                    coordinate,
+                    &mut notes,
+                );
+                let members = probe_members(engine, coordinate, &document, &mut notes);
+                page_from_document_with_graph_relations(
+                    coordinate,
+                    &document,
+                    &members,
+                    &relations.rows,
+                    relations.graph_relations.as_deref().unwrap_or(&[]),
+                    notes,
+                )
+            } else {
+                page_from_document(coordinate, &document, &[], &[], Vec::new())
+            };
+            if kind == DeclarationRead::Source {
+                if let Some(fault) = page.source().fault() {
+                    return Err(fault.clone());
+                }
+            }
+            Ok(Answer::Page(Box::new(page)))
+        }
+        DeclarationRead::Graph | DeclarationRead::Related => {
+            let CommandReply::Graph(snapshot) = reply.reply else {
+                return Err(shape("selected graph"));
+            };
+            Ok(Answer::Records(Box::new(record_list(
+                &declaration_operand(selector),
+                &snapshot,
+            ))))
+        }
+    }
+}
+
 fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
     let coordinate = resolve_declaration(engine, text, "show")?;
     let coordinate = coordinate.as_str();
@@ -909,10 +994,16 @@ struct RelationRows {
 /// Fetches graph rows and keeps the compiler-selected typed edge sidecar
 /// attached to the same response revision.
 fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> RelationRows {
-    match engine
-        .probe(Probe::Related(coordinate))
-        .map(|reply| reply.reply)
-    {
+    probe_relation_rows(engine, Probe::Related(coordinate), coordinate, notes)
+}
+
+fn probe_relation_rows(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+    coordinate: &str,
+    notes: &mut Vec<Fault>,
+) -> RelationRows {
+    match engine.probe(probe).map(|reply| reply.reply) {
         Ok(CommandReply::Graph(snapshot)) => RelationRows {
             rows: snapshot.root.rows().to_vec(),
             graph_relations: snapshot.graph_relations,

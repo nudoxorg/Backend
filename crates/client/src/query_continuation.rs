@@ -20,7 +20,8 @@ fn query_parts(
 
 // A canonical graph coordinate must survive the hop so the execution owner
 // can resolve its exact text-derived address to a compiler-selected row.
-// Selected addresses retain only their original opaque selector commitment.
+// Selected addresses retain their opaque selector commitment and optional
+// coordinate assertion; the owner checks that label against current membership.
 fn graph_address_claim(command: &Command, claim: &WireClaim) -> bool {
     if let Command::OutlinePage { package, .. } = command {
         return matches!(claim, WireClaim::Key { schema: WireSchema::Package, id, .. }
@@ -34,7 +35,7 @@ fn graph_address_claim(command: &Command, claim: &WireClaim) -> bool {
             schema: WireSchema::Symbol,
             id,
             ..
-        } if !symbol.is_selected() => id == &encode_id(&symbol.claimed_bytes()),
+        } => symbol.is_selected() || id == &encode_id(&symbol.claimed_bytes()),
         WireClaim::KeyCommitment {
             schema: WireSchema::Symbol,
             id,
@@ -740,5 +741,91 @@ fn decode_portable_body(token: &str) -> Result<Vec<u8>, ClientError> {
         backend_library::expand_binary_certificate_command(&body).map_err(ClientError::Protocol)
     } else {
         Ok(body)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod selected_operand_tests {
+    use super::*;
+    #[test]
+    fn prepared_selected_graph_refuses_changed_or_omitted_coordinate_assertion() {
+        let symbol = backend_library::SelectedSymbolId::new([0x51; 32]).expect("selected ID");
+        let exact = DeclarationSelector::SelectedAt {
+            symbol,
+            coordinate: "/project::file.ts:1::item".to_owned(),
+        };
+        let certificate = declaration_certificate(WireCertificate::new(), &exact);
+        assert!(declaration_coordinate_claims_match(
+            Some(&certificate),
+            &exact
+        ));
+        assert!(!declaration_coordinate_claims_match(
+            Some(&certificate),
+            &DeclarationSelector::Selected(symbol)
+        ));
+        assert!(!declaration_coordinate_claims_match(
+            Some(&certificate),
+            &DeclarationSelector::SelectedAt {
+                symbol,
+                coordinate: "/project::file.ts:2::item".to_owned()
+            }
+        ));
+        assert!(!declaration_coordinate_claims_match(None, &exact));
+        let plain = declaration_certificate(
+            WireCertificate::new(),
+            &DeclarationSelector::Selected(symbol),
+        );
+        assert!(declaration_coordinate_claims_match(
+            Some(&plain),
+            &DeclarationSelector::Selected(symbol)
+        ));
+        assert!(!declaration_coordinate_claims_match(Some(&plain), &exact));
+    }
+
+    #[test]
+    fn graph_portable_claims_retain_selected_locator_and_exact_coordinate_assertion() {
+        let symbol = backend_library::SelectedSymbolId::new([0x76; 32]).expect("selected ID");
+        let selected = backend_library::DeclarationSelector::SelectedAt {
+            symbol,
+            coordinate: "/project::box.ts:1::item".to_owned(),
+        };
+        let command = Command::GraphPage {
+            symbol: selected.address(),
+            page: PageRequest::new(
+                backend_library::view_state_root(&[]),
+                QueryLimit::new(1).expect("credit"),
+            ),
+        };
+        let certificate = declaration_certificate(WireCertificate::new(), &selected);
+        assert_eq!(certificate.claims.len(), 2);
+        assert!(
+            certificate
+                .claims
+                .iter()
+                .all(|claim| graph_address_claim(&command, claim))
+        );
+        let retained = certificate
+            .claims
+            .iter()
+            .filter(|claim| graph_address_claim(&command, claim))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(retained, certificate.claims);
+        assert!(!graph_address_claim(
+            &command,
+            &WireClaim::KeyCommitment {
+                schema: WireSchema::Symbol,
+                id: encode_id(&[0x77; 32])
+            }
+        ));
+        assert!(!graph_address_claim(
+            &command,
+            &WireClaim::Key {
+                schema: WireSchema::Package,
+                id: encode_id(package_key("/project").as_bytes()),
+                value: "/project".to_owned()
+            }
+        ));
     }
 }

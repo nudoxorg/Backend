@@ -71,29 +71,8 @@ fn tagged<T: Serialize>(kind: &str, value: &T) -> serde_json::Value {
     }
 }
 
-/// Full bytes of an observed selected symbol row, exported as display operand
-/// material. This does not deserialize into a compiler `SymbolKey` or proof.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct SelectedSymbolIdDto([u8; 32]);
-
-impl SelectedSymbolIdDto {
-    /// Exact retained row bytes for a public selected-symbol operand.
-    #[must_use]
-    pub const fn bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for SelectedSymbolIdDto {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bytes = <[u8; 32]>::deserialize(deserializer)?;
-        if bytes == [0; 32] {
-            return Err(serde::de::Error::custom("selected symbol row id is empty"));
-        }
-        Ok(Self(bytes))
-    }
-}
+/// Full selected-row operand bytes, never a compiler key or proof.
+pub use backend_library::SelectedSymbolId as SelectedSymbolIdDto;
 
 /// Closed identity operand facet; display abbreviations and other key families
 /// cannot be treated as selected symbol identifiers.
@@ -165,12 +144,8 @@ impl IdentityDto {
 
 pub(crate) fn identity_semantic_data(identity: &Identity) -> Option<IdentitySemanticData> {
     match identity.key() {
-        crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
-            IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
-        ),
-        crate::IdentityKey::Package(_)
-        | crate::IdentityKey::Symbol(_)
-        | crate::IdentityKey::Absent => None,
+        crate::IdentityKey::Symbol(key) => SelectedSymbolIdDto::new(*key.as_bytes()).map(IdentitySemanticData::SelectedSymbolId),
+        crate::IdentityKey::Package(_) | crate::IdentityKey::Absent => None,
     }
 }
 

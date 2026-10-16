@@ -59,12 +59,12 @@ pub use subscription_observation::{
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
-    CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
-    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
-    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
-    IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery, PackageReference,
-    PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1, PageContinuation,
-    PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
+    CompileExecutionIntent, CoverageCapability, DeclarationRead, DeclarationSelector, DiffRecord,
+    DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest, GraphValue,
+    HealthReport, IndexCancelReceipt, IndexJobObservation, IndexJobTerminal, IndexJobTicket,
+    IndexOperationKey, IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery,
+    PackageReference, PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1,
+    PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
     RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticShapeBatch,
     SemanticShapeBudget, SemanticShapeRequest, SemanticVersionRecord, SurfaceCommand, SurfaceReply,
     SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim,
@@ -1573,6 +1573,74 @@ impl Session {
         )
     }
 
+    /// Reads a public declaration operand without promoting selected bytes to a key.
+    /// A supplied coordinate is checked by the owner against the selected row label.
+    ///
+    /// # Errors
+    /// Refuses absent/stale row membership, mismatched labels, and admission failures.
+    pub fn declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        read: DeclarationRead,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        let certificate = declaration_certificate(revision.certificate, selector);
+        let address = selector.address();
+        let command = match read {
+            DeclarationRead::Document => {
+                Command::Document(DocumentQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Source => {
+                Command::Source(DocumentQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Graph => {
+                Command::Graph(GraphNeighborhoodQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Related => {
+                Command::Related(GraphNeighborhoodQuery::addressed(address, revision.root))
+            }
+        };
+        self.send_success(command, Some(certificate))
+    }
+
+    /// Reads a graph window while retaining the exact selected ID and optional label.
+    ///
+    /// # Errors
+    /// Refuses changed continuation operands or any ordinary owner/window admission failure.
+    pub fn graph_page_declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.prepare_query_window(window, continuation, None)?;
+        if let Some(prepared) = &self.prepared_query {
+            if !declaration_coordinate_claims_match(prepared.certificate(), selector) {
+                return Err(ClientError::Protocol(
+                    "graph continuation changed declaration coordinate assertion".to_owned(),
+                ));
+            }
+            return self.resume_prepared_graph_window(
+                selector.address(),
+                window.issued().get(),
+                continuation,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let certificate = declaration_certificate(revision.certificate, selector);
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        self.send_success(
+            Command::GraphPage {
+                symbol: selector.address(),
+                page,
+            },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
     /// Reads captured source for one declaration coordinate.
     ///
     /// # Errors
@@ -2613,6 +2681,47 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
         id: encode_id(id),
         value: value.to_owned(),
     })
+}
+
+#[cfg(any(unix, windows))]
+fn declaration_coordinate_claims_match(
+    certificate: Option<&WireCertificate>,
+    selector: &DeclarationSelector,
+) -> bool {
+    let labels: Vec<_> = certificate
+        .into_iter()
+        .flat_map(|certificate| certificate.claims.iter())
+        .filter_map(|claim| match claim {
+            WireClaim::Key {
+                schema: WireSchema::Symbol,
+                value,
+                ..
+            } => Some(value.as_str()),
+            _ => None,
+        })
+        .collect();
+    labels.as_slice() == selector.coordinate().as_slice()
+}
+
+#[cfg(any(unix, windows))]
+fn declaration_certificate(
+    mut certificate: WireCertificate,
+    selector: &DeclarationSelector,
+) -> WireCertificate {
+    if let Some(symbol) = selector.selected_id() {
+        certificate = certificate.with_claim_once(WireClaim::KeyCommitment {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.bytes()),
+        });
+    }
+    if let Some(coordinate) = selector.coordinate() {
+        certificate = certificate.with_claim_once(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol_key(coordinate).as_bytes()),
+            value: coordinate.to_owned(),
+        });
+    }
+    certificate
 }
 
 #[cfg(any(unix, windows))]

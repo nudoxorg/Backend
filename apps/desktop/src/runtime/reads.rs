@@ -643,6 +643,7 @@ impl Engine for SessionEngine {
         };
         let reply = self.with_session(|session| match probe {
             Probe::Packages => session.packages(),
+            Probe::Declaration { selector, read } => session.declaration(selector, read),
             Probe::Document(at) => session.document(at),
             Probe::Source(at) => session.source(at),
             Probe::Related(at) => session.related(at),

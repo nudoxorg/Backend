@@ -23,6 +23,8 @@ use core::fmt::Write as _;
 pub enum ArgumentKind {
     /// An exact declaration coordinate returned by a previous result.
     Coordinate,
+    /// Exact selected-symbol-id object in MCP; full 64 hexadecimal digits in CLI.
+    SelectedSymbol,
     /// An absolute path to a project directory on this host.
     ProjectPath,
     /// A pinned package URL or an exact local package label.
@@ -83,6 +85,7 @@ impl ArgumentKind {
     pub const fn metavar(self) -> &'static str {
         match self {
             Self::Coordinate => "COORDINATE",
+            Self::SelectedSymbol => "SELECTED_ID",
             Self::ProjectPath => "PATH",
             Self::PackageReference => "PACKAGE",
             Self::PackageCoordinate => "PURL",
@@ -118,7 +121,8 @@ impl ArgumentKind {
         match self {
             Self::NodeId | Self::Limit | Self::Sequence | Self::DurationSeconds => "integer",
             Self::Flag => "boolean",
-            Self::IndexJobTicket
+            Self::SelectedSymbol
+            | Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
             Self::PackageSourceMembershipRequest
@@ -663,6 +667,13 @@ pub const fn registry_size() -> usize {
     COMMANDS.len()
 }
 
+const SELECTED_SYMBOL: ArgumentSpec = ArgumentSpec::optional_with_json_name(
+    "selected-id",
+    "selected_symbol",
+    ArgumentKind::SelectedSymbol,
+    "Full selected row ID from identity.semantic_data: CLI takes 64 hex digits; MCP takes the exact selected-symbol-id object. Optional coordinate asserts the selected row label. Requires current-view membership.",
+);
+
 const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     "limit",
     ArgumentKind::Limit,
@@ -750,36 +761,36 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
         name: "show",
         tool: "backend.document",
         aliases: &["document"],
-        positional: &[ArgumentSpec::required(
+        positional: &[ArgumentSpec::optional(
             "coordinate",
             ArgumentKind::Coordinate,
             "Exact declaration coordinate from a search or outline result.",
         )],
-        options: &[],
+        options: &[SELECTED_SYMBOL],
         when: "Reach for this immediately after search: it is the cheapest complete answer about one declaration.",
     },
     CommandGrammar {
         name: "source",
         tool: "backend.source",
         aliases: &[],
-        positional: &[ArgumentSpec::required(
+        positional: &[ArgumentSpec::optional(
             "coordinate",
             ArgumentKind::Coordinate,
             "Exact declaration coordinate from a search or outline result.",
         )],
-        options: &[],
+        options: &[SELECTED_SYMBOL],
         when: "Use when the signature and documentation are not enough and you need the code itself.",
     },
     CommandGrammar {
         name: "related",
         tool: "backend.related",
         aliases: &[],
-        positional: &[ArgumentSpec::required(
+        positional: &[ArgumentSpec::optional(
             "coordinate",
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to centre the neighbourhood on.",
         )],
-        options: &[],
+        options: &[SELECTED_SYMBOL],
         when: "Use after you have a coordinate to see callers and callees in this package. Package-level dependents are a separate call.",
     },
     CommandGrammar {
@@ -789,7 +800,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
         positional: &[ArgumentSpec::required(
             "coordinate",
             ArgumentKind::Coordinate,
-            "Exact declaration coordinate whose uses are requested.",
+            "Exact declaration coordinate whose uses are requested. Selected row IDs are not supported by the references protocol.",
         )],
         options: &[],
         when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
@@ -804,7 +815,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "Exact declaration coordinates; each is answered or refused on its own.",
         )],
         options: &[],
-        when: "Use instead of several show calls when you already know every coordinate you need.",
+        when: "Legacy coordinate batch read. Same-coordinate aliases use its existing first-match semantics; use show with --selected-id when exact row selection matters.",
     },
     CommandGrammar {
         name: "diff",
@@ -865,12 +876,12 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
         name: "graph",
         tool: "backend.graph",
         aliases: &[],
-        positional: &[ArgumentSpec::required(
+        positional: &[ArgumentSpec::optional(
             "coordinate",
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to traverse from.",
         )],
-        options: &[],
+        options: &[SELECTED_SYMBOL],
         when: "Use to follow one declaration outward along calls and references in its package.",
     },
     CommandGrammar {
