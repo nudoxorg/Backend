@@ -506,6 +506,8 @@ pub(crate) fn indexing(
     }
     for project in running {
         let lifecycle = project.lifecycle();
+        let can_stop = ctx.links.root.upgrade().is_some_and(|root|
+            root.read(cx).unsent_index_revision(project).is_some());
         let headline = ctx.say(format!("{}: {}.", project.label, lifecycle.label()));
         let native_status = headline.clone();
         let promise = ctx.say(lifecycle.detail());
@@ -544,7 +546,15 @@ pub(crate) fn indexing(
                 )
                 .children(
                     since.map(|since| text(ty::MONO_SMALL, &measure, palette.ink3).child(since)),
-                ),
+                )
+                .children(if can_stop {
+                    Some(super::failure::act(ctx, format!("stop-pending-{}", project.path),
+                        super::commands::ProjectCommand::StopPending, project, cx))
+                } else { None })
+                .children(project.operation.as_ref().filter(|_| !can_stop).map(|_| {
+                    quiet(ctx.say("This index may already be running. Its outcome will be checked."), &measure, palette)
+                        .text_center()
+                })),
         );
     }
     Some(Leaf::new(block))

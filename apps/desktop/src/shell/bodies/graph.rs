@@ -273,8 +273,15 @@ impl Map {
                     map.invalidate_open();
                     map.error = None;
                     if event.is_branch(Branch::Route) {
-                        map.cancel_presentation();
-                        map.route_consumed = false;
+                        let snapshot = map.links.snapshot(cx);
+                        // Leaving for a declaration keeps this graph's local
+                        // reading for Back, even if publication retires its
+                        // scene while hidden. Only a different graph visit
+                        // may discard that presentation and consume its route.
+                        if is_graph(snapshot.route()) && !map.same_presentation_visit(&snapshot) {
+                            map.cancel_presentation();
+                            map.route_consumed = false;
+                        }
                     }
                     if event.is_branch(Branch::Root) {
                         map.reset_indexed_world(cx);
@@ -388,6 +395,14 @@ impl Map {
     fn cancel_presentation(&mut self) {
         self.presentation_visit = VisitIdentity::default();
         self.retained_presentation = None;
+    }
+
+    fn same_presentation_visit(&self, snapshot: &crate::model::AppSnapshot) -> bool {
+        self.presented_visit.as_ref()
+            .or_else(|| self.retained_presentation.as_ref().map(RetainedPresentation::visit))
+            .is_some_and(|visit| visit.identity == self.presentation_visit
+                && visit.reading == snapshot.session().reading.current.id
+                && &visit.route == snapshot.route())
     }
 
     fn retain_presentation(&mut self, cx: &App) {

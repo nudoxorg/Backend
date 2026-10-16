@@ -267,6 +267,9 @@ impl Shell {
         let events = cx.subscribe_in(&graph.store, window, |shell: &mut Self, _, event: &StoreEvent, window, cx| {
             shell.store_event(event, window, cx);
         });
+        let pending_indexes = cx.observe(&graph.root, |shell: &mut Self, _, cx| {
+            shell.reader.update(cx, |_, cx| cx.notify());
+        });
         let appearance = cx.observe_window_appearance(window, |shell: &mut Self, window, cx| {
             shell.around.dark = is_dark(window.appearance());
             shell.apply_facet(cx);
@@ -395,7 +398,7 @@ impl Shell {
             renders: 0,
             frame: None,
             _reduced_motion: reduced_motion,
-            _subscriptions: vec![events, appearance, activation, moved, keystrokes, twins],
+            _subscriptions: vec![events, pending_indexes, appearance, activation, moved, keystrokes, twins],
         };
         shell.apply_facet(cx);
         shell.focus.focus(window, cx);

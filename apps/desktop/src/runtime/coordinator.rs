@@ -129,6 +129,11 @@ impl DesktopRuntime {
         self.initial_root_gate = gate;
     }
 
+    /// The owner watcher supplies the first Root for a gated runtime.
+    pub(crate) const fn has_owner_gate(&self) -> bool {
+        self.initial_root_gate.is_some()
+    }
+
     /// A later Root or Stop can retire a receipt after polling but before its
     /// UI delivery. Never let that old terminal withdraw the current attempt.
     pub(crate) fn report_initial_root_failure(&self, failure: InitialRootFailure) -> bool {
