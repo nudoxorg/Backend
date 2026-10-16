@@ -1754,3 +1754,6 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
     let invocation = invoke::parse(&words("outline /p --limit 0"), None).expect("option parse");
     assert!(lower(&invocation, "/p").is_err());
 }
+
+#[path = "tests/composite_show.rs"]
+mod composite_show;
