@@ -6082,6 +6082,9 @@ fn package_authority_projection(
         PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectDeadline { phase }) => {
             python_project_deadline_projection(*phase)
         }
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::EnvironmentCapture { .. }) => {
+            (Phase::Open, Class::Authority)
+        }
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::RustProject(_)
         | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
@@ -7421,6 +7424,44 @@ mod python_project_phase_tests {
             let message = bounded_error_chain(&cause);
             assert!(message.text.contains(&phase.to_string()));
             assert!(!message.truncated);
+        }
+    }
+
+    #[test]
+    fn unavailable_environment_inputs_keep_their_envelope_and_existing_public_kind() {
+        for (source, expected) in [
+            (
+                PythonCheckerError::Deadline { phase: "project" },
+                F::Deadline,
+            ),
+            (
+                PythonCheckerError::Cancelled { phase: "project" },
+                F::Cancelled,
+            ),
+            (
+                PythonCheckerError::Workspace {
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                },
+                F::EnvironmentCaptureRefused,
+            ),
+        ] {
+            let source = std::sync::Arc::new(source);
+            let error = PythonCheckerError::EnvironmentCapture {
+                source: std::sync::Arc::clone(&source),
+            };
+            assert_eq!(python_authority_failure_kind(&error), expected);
+            let cause = PackageAuthorityError::PythonPyrefly(error);
+            assert_eq!(
+                package_authority_projection(&cause),
+                (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority)
+            );
+            let PackageAuthorityError::PythonPyrefly(PythonCheckerError::EnvironmentCapture {
+                source: retained,
+            }) = cause
+            else {
+                panic!("environment input envelope must remain intact")
+            };
+            assert!(std::sync::Arc::ptr_eq(&retained, &source));
         }
     }
 }
