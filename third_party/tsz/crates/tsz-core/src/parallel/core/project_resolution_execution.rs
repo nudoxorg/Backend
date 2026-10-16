@@ -46,6 +46,7 @@ fn validate_project_virtual_path_with_poll<E: From<ProjectModuleResolutionError>
 fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
     program: &MergedProgram,
     resolutions: &[ProjectModuleResolution],
+    reference_policy: Option<bool>,
     mut poll: impl FnMut(u64) -> std::result::Result<(), E>,
     validate_path: impl Fn(
         &str,
@@ -84,7 +85,12 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
                 path: resolution.importer_path.clone(),
             })
             .map_err(E::from)?;
-        if resolution.specifier.is_empty() {
+        let reference_offset = match resolution.request_kind {
+            ProjectModuleRequestKind::ReferencePath { offset }
+            | ProjectModuleRequestKind::ReferenceTypes { offset } => Some(offset),
+            _ => None,
+        };
+        if resolution.specifier.is_empty() && reference_offset.is_none() {
             return Err(ProjectModuleResolutionError::EmptySpecifier.into());
         }
 
@@ -93,6 +99,12 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
             ProjectModuleRequestKind::DynamicImport => ResolutionRequestKind::DynamicImport,
             ProjectModuleRequestKind::CjsRequire => ResolutionRequestKind::CjsRequire,
             ProjectModuleRequestKind::EsmReExport => ResolutionRequestKind::EsmReExport,
+            ProjectModuleRequestKind::ReferencePath { offset } => {
+                ResolutionRequestKind::ReferencePath { offset: *offset }
+            }
+            ProjectModuleRequestKind::ReferenceTypes { offset } => {
+                ResolutionRequestKind::ReferenceTypes { offset: *offset }
+            }
             ProjectModuleRequestKind::Unsupported { syntax_kind } => {
                 return Err(ProjectModuleResolutionError::UnsupportedRequestKind {
                     syntax_kind: syntax_kind.clone(),
@@ -139,8 +151,112 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
         }
     }
 
+    validate_project_reference_outcomes_with_poll(program, reference_policy, &outcomes, &mut poll)?;
     poll(0)?;
     Ok(outcomes)
+}
+
+/// A closed program may diagnose only captured negatives. Validate every native
+/// reference site, including when the supplied map is empty or partial, then
+/// reject extra rows. This also protects sessions opened from raw program maps.
+fn validate_project_reference_outcomes_with_poll<E: From<ProjectModuleResolutionError>>(
+    program: &MergedProgram,
+    reference_policy: Option<bool>,
+    outcomes: &crate::checker::context::ResolvedModuleRequestOutcomeMap,
+    mut poll: impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), E> {
+    use crate::checker::context::{
+        ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
+    };
+    let require_coverage = reference_policy == Some(false);
+    if !require_coverage {
+        let mut has_reference = false;
+        for key in outcomes.keys() {
+            poll(1)?;
+            if key.3.is_reference() {
+                has_reference = true;
+                break;
+            }
+        }
+        if !has_reference {
+            return poll(0);
+        }
+    }
+    let mut expected = FxHashSet::default();
+    for (importer, file) in program.files.iter().enumerate() {
+        poll(1)?;
+        let Some(source) = file.arena.source_files.first() else {
+            continue;
+        };
+        for directive in crate::checker::triple_slash_validator::reference_directives_with_poll(
+            &source.text,
+            &mut poll,
+        ) {
+            let directive = directive?;
+            let invalid = |offset| ProjectModuleResolutionError::InvalidReference {
+                importer_path: file.file_name.clone(),
+                offset,
+            };
+            let mode = match directive
+                .types
+                .and(directive.resolution_mode)
+                .map(|value| value.text)
+            {
+                None => None,
+                Some("import") => Some(ResolutionModeOverride::Import),
+                Some("require") => Some(ResolutionModeOverride::Require),
+                Some(_) => return Err(invalid(directive.types.unwrap().offset as u32).into()),
+            };
+            for (value, types) in [(directive.path, false), (directive.types, true)] {
+                let Some(value) = value else {
+                    continue;
+                };
+                let offset = u32::try_from(value.offset).map_err(|_| E::from(invalid(u32::MAX)))?;
+                let kind = if types {
+                    ResolutionRequestKind::ReferenceTypes { offset }
+                } else {
+                    ResolutionRequestKind::ReferencePath { offset }
+                };
+                let key = (
+                    importer,
+                    value.text.to_owned(),
+                    if types { mode } else { None },
+                    kind,
+                );
+                let valid = match outcomes.get(&key) {
+                    Some(ResolvedModuleRequestOutcome::File(target)) => {
+                        *target < program.files.len()
+                    }
+                    Some(ResolvedModuleRequestOutcome::Unresolved) => true,
+                    None => !require_coverage,
+                    Some(ResolvedModuleRequestOutcome::External { .. }) => false,
+                };
+                if !valid {
+                    return Err(invalid(offset).into());
+                }
+                expected.insert(key);
+            }
+        }
+    }
+    for (key, _) in outcomes {
+        poll(1)?;
+        if key.3.is_reference() && !expected.contains(key) {
+            let offset = match key.3 {
+                ResolutionRequestKind::ReferencePath { offset }
+                | ResolutionRequestKind::ReferenceTypes { offset } => offset,
+                _ => unreachable!(),
+            };
+            return Err(ProjectModuleResolutionError::InvalidReference {
+                importer_path: program.files.get(key.0).map_or_else(
+                    || format!("file-index:{}", key.0),
+                    |file| file.file_name.clone(),
+                ),
+                offset,
+            }
+            .into());
+        }
+    }
+    poll(0)
 }
 
 impl MergedProgram {
@@ -151,17 +267,60 @@ impl MergedProgram {
         resolutions: &[ProjectModuleResolution],
         checkpoint: &dyn tsz_common::ExecutionCheckpoint,
     ) -> Result<(), ProjectProgramCheckError> {
+        self.set_project_module_resolutions_with_reference_policy(
+            resolutions,
+            None,
+            Some(checkpoint),
+        )
+    }
+
+    /// Attach exact outcomes under resolved checker policy. `noResolve` disables
+    /// mandatory source-reference coverage; it never invents negative outcomes.
+    pub fn set_project_module_resolutions_for_checker_options(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+        checker: &CheckerOptions,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), ProjectProgramCheckError> {
+        self.set_project_module_resolutions_with_reference_policy(
+            resolutions,
+            Some(checker.no_resolve),
+            checkpoint,
+        )
+    }
+
+    fn set_project_module_resolutions_with_reference_policy(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+        reference_policy: Option<bool>,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), ProjectProgramCheckError> {
         self.project_module_resolution_outcomes = None;
-        let scope = tsz_common::LatchedExecutionCheckpoint::new(checkpoint);
+        let scope = checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
+        let scope = scope
+            .as_ref()
+            .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
         let span = tsz_common::ProjectExecutionSpan::new(
-            Some(&scope), tsz_common::ProjectExecutionPhase::ModuleOutcomes, None,
+            scope,
+            tsz_common::ProjectExecutionPhase::ModuleOutcomes,
+            None,
         );
         let outcomes = build_project_module_resolution_outcomes_with_poll(
-            self, resolutions,
-            |work| scope.checkpoint(work).map_err(ProjectProgramCheckError::ExecutionStopped),
+            self,
+            resolutions,
+            reference_policy,
+            |work| {
+                scope
+                    .map_or(Ok(()), |scope| scope.checkpoint(work))
+                    .map_err(ProjectProgramCheckError::ExecutionStopped)
+            },
             |path, poll| validate_project_virtual_path_with_poll(path, poll),
         )?;
-        scope.checkpoint(0).map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        if let Some(scope) = scope {
+            scope
+                .checkpoint(0)
+                .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        }
         self.project_module_resolution_outcomes = Some(Arc::new(outcomes));
         span.returned();
         Ok(())

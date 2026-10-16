@@ -1212,7 +1212,7 @@ impl ScannerState {
 // Helper functions
 // =============================================================================
 
-fn is_white_space_single_line(ch: u32) -> bool {
+pub fn is_white_space_single_line(ch: u32) -> bool {
     ch == CharacterCodes::SPACE
         || ch == CharacterCodes::TAB
         || ch == CharacterCodes::VERTICAL_TAB
@@ -1336,7 +1336,7 @@ const fn is_unicode_other_id_continue(ch: u32) -> bool {
     )
 }
 
-const fn is_line_break(ch: u32) -> bool {
+pub const fn is_line_break(ch: u32) -> bool {
     ch == CharacterCodes::LINE_FEED
         || ch == CharacterCodes::CARRIAGE_RETURN
         || ch == CharacterCodes::LINE_SEPARATOR

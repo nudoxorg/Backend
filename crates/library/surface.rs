@@ -6695,6 +6695,9 @@ mod tests {
             F::NativeProjectCheckDeadline,
             F::NativeProjectCheckWorkBudgetExhausted,
             F::NativeCheckerWorkerPoolUnavailable,
+            F::NativeSessionModuleResolution,
+            F::NativeModuleInvalidReference,
+            F::NativeProjectCheckModuleInvalidReference,
         ] {
             let private = b"private absolute path /home/user/app/node_modules; native stderr";
             let terminal = CompilerTerminal::Compile {
@@ -7535,7 +7538,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            31,
+            32,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(

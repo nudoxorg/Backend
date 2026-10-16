@@ -138,7 +138,7 @@ function runApp() {
         );
     }
 
-    let (result, stats) = check_functions_with_stats(&program);
+    let (result, stats) = check_functions_with_stats(&program).unwrap();
 
     // Print diagnostics for debugging
     if result.diagnostic_count > 0 {
@@ -179,7 +179,7 @@ fn test_check_single_function() {
     )];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     assert_eq!(result.file_results.len(), 1);
     assert_eq!(result.function_count, 1);
@@ -200,7 +200,7 @@ fn test_check_multiple_functions_parallel() {
     ];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     assert_eq!(result.file_results.len(), 2);
     // File a has 2 functions, file b has 1
@@ -226,7 +226,7 @@ fn test_check_arrow_functions() {
     ];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     // Should find the arrow functions
     let total_functions: usize = result
@@ -247,7 +247,7 @@ fn test_check_class_methods() {
     ];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     // Should find the class methods
     let total_functions: usize = result
@@ -276,7 +276,7 @@ fn test_check_with_stats() {
     ];
 
     let program = compile_files(files);
-    let (result, stats) = check_functions_with_stats(&program);
+    let (result, stats) = check_functions_with_stats(&program).unwrap();
 
     assert_eq!(stats.file_count, 3);
     assert_eq!(stats.function_count, 3);
@@ -296,7 +296,7 @@ fn test_check_large_program_parallel() {
         .collect();
 
     let program = compile_files(files);
-    let (_result, stats) = check_functions_with_stats(&program);
+    let (_result, stats) = check_functions_with_stats(&program).unwrap();
 
     assert_eq!(stats.file_count, 50);
     // Each file has 1 function declaration
@@ -317,8 +317,8 @@ fn test_check_consistency() {
 
     let program = compile_files(files);
 
-    let result1 = check_functions_parallel(&program);
-    let result2 = check_functions_parallel(&program);
+    let result1 = check_functions_parallel(&program).unwrap();
+    let result2 = check_functions_parallel(&program).unwrap();
 
     assert_eq!(result1.function_count, result2.function_count);
     assert_eq!(result1.diagnostic_count, result2.diagnostic_count);
@@ -333,7 +333,7 @@ fn test_check_nested_functions() {
     )];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     // Should find both outer and inner functions
     let total_functions: usize = result
@@ -361,7 +361,7 @@ fn test_check_exported_functions() {
     ];
 
     let program = compile_files(files);
-    let result = check_functions_parallel(&program);
+    let result = check_functions_parallel(&program).unwrap();
 
     // Should find the exported functions
     let total_functions: usize = result
@@ -459,7 +459,7 @@ fn test_parallel_type_checking_with_shared_interner() {
     assert_eq!(program.files.len(), 4);
 
     // Check all files in parallel
-    let (_result, stats) = check_functions_with_stats(&program);
+    let (_result, stats) = check_functions_with_stats(&program).unwrap();
 
     assert_eq!(stats.file_count, 4);
     // Each file has 3 functions

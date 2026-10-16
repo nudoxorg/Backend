@@ -163,7 +163,7 @@ pub(crate) fn extract_jsx_frag_pragma(source: &str) -> Option<String> {
 ///
 /// Scans ALL block comments for `@jsxRuntime classic` or `@jsxRuntime automatic`.
 /// The last occurrence wins (matching tsc behavior).
-pub(crate) fn extract_jsx_runtime_pragma(source: &str) -> Option<&'static str> {
+pub fn extract_jsx_runtime_pragma(source: &str) -> Option<&'static str> {
     if !source.contains("@jsxRuntime") {
         return None;
     }
@@ -417,63 +417,17 @@ impl<'a> CheckerState<'a> {
     /// Extract `@jsxImportSource <package>` pragma from the current file's
     /// leading comments. Returns the package name or None.
     pub(crate) fn extract_jsx_import_source_pragma(&self) -> Option<String> {
-        let text = self.current_jsx_source_text()?;
-        let scan_text = leading_window(text, JSX_PRAGMA_SCAN_BYTES);
-        let bytes = scan_text.as_bytes();
-        let mut pos = 0;
-        while pos < bytes.len() {
-            if bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-                continue;
-            }
-            if pos + 1 < bytes.len() && bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
-                let comment_start = pos + 2;
-                if let Some(end_offset) = scan_text[comment_start..].find("*/") {
-                    let comment_body = &scan_text[comment_start..comment_start + end_offset];
-                    // Only honor `@jsxImportSource` when followed by a pragma
-                    // boundary. Without this, fake tags like
-                    // `@jsxImportSourcex preact` would slip through and the
-                    // package parser would extract `x` as the source.
-                    if let Some(after) = find_complete_pragma_tag(comment_body, "@jsxImportSource")
-                    {
-                        let pkg: String = comment_body[after..]
-                            .trim_start()
-                            .chars()
-                            .take_while(|c| {
-                                c.is_alphanumeric()
-                                    || *c == '_'
-                                    || *c == '-'
-                                    || *c == '/'
-                                    || *c == '@'
-                                    || *c == '.'
-                            })
-                            .collect();
-                        if !pkg.is_empty() {
-                            return Some(pkg);
-                        }
-                    }
-                    pos = comment_start + end_offset + 2;
-                } else {
-                    break;
-                }
-                continue;
-            }
-            if pos + 1 < bytes.len() && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
-                if let Some(nl) = scan_text[pos..].find('\n') {
-                    pos += nl + 1;
-                } else {
-                    break;
-                }
-                continue;
-            }
-            break;
-        }
-        None
+        extract_jsx_import_source_pragma_text(self.current_jsx_source_text()?)
     }
 
     /// Check if the JSX runtime file exists on disk by walking up from the
     /// current file's directory.
     fn jsx_runtime_file_exists_on_disk(&self, source: &str, suffix: &str) -> bool {
+        // An admitted project owns the complete module outcome map. A native
+        // closure miss cannot borrow process-CWD or host node_modules files.
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            return false;
+        }
         use std::path::Path;
 
         let current_file = &self.ctx.file_name;
@@ -994,11 +948,9 @@ impl<'a> CheckerState<'a> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn extract_jsx_import_source_pragma_text_only_for_test(text: &str) -> Option<String> {
-    // Mirrors `CheckerState::extract_jsx_import_source_pragma` but operates on
-    // a raw `&str`, so we can unit-test the boundary handling without
-    // constructing a checker. Kept in sync with the real implementation.
+/// Native program construction and JSX checking share this exact source
+/// pragma interpretation so the admitted module closure cannot select another runtime.
+pub fn extract_jsx_import_source_pragma_text(text: &str) -> Option<String> {
     let scan_text = leading_window(text, JSX_PRAGMA_SCAN_BYTES);
     let bytes = scan_text.as_bytes();
     let mut pos = 0;
@@ -1045,6 +997,11 @@ pub(crate) fn extract_jsx_import_source_pragma_text_only_for_test(text: &str) ->
         break;
     }
     None
+}
+
+#[cfg(test)]
+fn extract_jsx_import_source_pragma_text_only_for_test(text: &str) -> Option<String> {
+    extract_jsx_import_source_pragma_text(text)
 }
 
 #[cfg(test)]

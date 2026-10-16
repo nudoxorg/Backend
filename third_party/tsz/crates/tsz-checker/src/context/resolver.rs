@@ -545,11 +545,11 @@ impl<'a> CheckerContext<'a> {
         }
         self.get_binder_for_file(importer)?;
         // One program-wide set answers what scanning every binder would, in one probe.
-        if let Some(facts) = self
-            .shared_program_facts
-            .as_ref()
-            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
-        {
+        if let Some(facts) = self.shared_program_facts.as_ref().filter(|facts| {
+            self.all_binders
+                .as_ref()
+                .is_some_and(|binders| facts.accepts_binders(binders))
+        }) {
             self.types.execution_checkpoint(1).ok()?;
             return Some(facts.is_ambient_module_name(owner));
         }
@@ -1216,7 +1216,11 @@ impl<'a> CheckerContext<'a> {
         let shared = self
             .shared_program_facts
             .as_ref()
-            .filter(|facts| self.all_binders.as_ref().is_some_and(|binders| facts.accepts_binders(binders)))
+            .filter(|facts| {
+                self.all_binders
+                    .as_ref()
+                    .is_some_and(|binders| facts.accepts_binders(binders))
+            })
             .map(|facts| (facts, outcomes));
         if let Some((facts, outcomes_id)) = shared {
             if let Some(hit) = facts.consensus_get(outcomes_id, source_file_idx, specifier) {
@@ -1226,8 +1230,12 @@ impl<'a> CheckerContext<'a> {
             let computed = self
                 .project_module_consensus_for_specifier(source_file_idx, specifier)
                 .map(|outcome| match outcome {
-                    ResolvedModuleRequestOutcome::File(target) => ProjectModuleConsensus::File(*target),
-                    ResolvedModuleRequestOutcome::External { .. } => ProjectModuleConsensus::External,
+                    ResolvedModuleRequestOutcome::File(target) => {
+                        ProjectModuleConsensus::File(*target)
+                    }
+                    ResolvedModuleRequestOutcome::External { .. } => {
+                        ProjectModuleConsensus::External
+                    }
                     ResolvedModuleRequestOutcome::Unresolved => ProjectModuleConsensus::Unresolved,
                 });
             if self.types.execution_checkpoint(0).is_ok() {
@@ -1282,8 +1290,8 @@ impl<'a> CheckerContext<'a> {
                 None,
                 ResolutionRequestKind::EsmImport,
             );
-            // Keep every variant of ResolutionRequestKind in this domain,
-            // including dynamic imports and the mode-inapplicable None key.
+            // Only module forms participate: reference directives own separate
+            // source positions and cannot provide a generic module target.
             for kind in [
                 ResolutionRequestKind::EsmImport,
                 ResolutionRequestKind::DynamicImport,
@@ -1360,6 +1368,8 @@ impl<'a> CheckerContext<'a> {
             ResolutionRequestKind::DynamicImport => return Some(ResolutionModeOverride::Import),
             ResolutionRequestKind::CjsRequire => return Some(ResolutionModeOverride::Require),
             ResolutionRequestKind::EsmImport | ResolutionRequestKind::EsmReExport => {}
+            ResolutionRequestKind::ReferencePath { .. }
+            | ResolutionRequestKind::ReferenceTypes { .. } => return None,
         }
 
         let file_name = self

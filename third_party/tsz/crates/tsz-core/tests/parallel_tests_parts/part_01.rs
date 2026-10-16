@@ -147,7 +147,7 @@ b;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let exporter = result
         .file_results
@@ -205,7 +205,7 @@ c = d;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file_result = result
         .file_results
@@ -392,7 +392,7 @@ interface Constraint<A extends Runtype<any>> extends Runtype<A['witness']> {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file_result = result
         .file_results
@@ -542,7 +542,7 @@ c.chunk;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let user_file = result
         .file_results
@@ -604,7 +604,7 @@ d.chunk;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let user_file = result
         .file_results
@@ -663,7 +663,7 @@ export default function () {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let main_file = result
         .file_results
@@ -694,7 +694,7 @@ fn test_check_files_parallel_cross_file_const_and_class_redeclaration_uses_ts245
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file_b = result
         .file_results
@@ -746,7 +746,7 @@ declare module "./a" {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file_a = result
         .file_results
@@ -838,7 +838,7 @@ export interface Row2 { b: string }
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let rebuilt_main_binder =
         crate::parallel::core::create_binder_from_bound_file(&program.files[0], &program, 0);
@@ -928,7 +928,7 @@ fn test_umd_export_vs_declare_global_const_emits_ts2451() {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let module_file = result
         .file_results
@@ -1008,7 +1008,7 @@ export {}
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file1 = result
         .file_results
@@ -1110,7 +1110,7 @@ export {};
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file1 = result
         .file_results
@@ -1186,7 +1186,7 @@ enum E {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file1 = result
         .file_results
@@ -1272,7 +1272,7 @@ declare const f: ns.Foo;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1379,7 +1379,7 @@ f.x;
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let diagnostics: Vec<_> = result
         .file_results
@@ -1414,7 +1414,7 @@ function foo(): number { }
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1485,7 +1485,7 @@ class D {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1553,7 +1553,7 @@ class B {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1616,7 +1616,7 @@ class B {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results
@@ -1668,7 +1668,7 @@ function cases() {
             ..Default::default()
         },
         &[],
-    );
+    ).unwrap();
 
     let file = result
         .file_results

@@ -3,6 +3,136 @@
 //! Validates /// <reference path="..." /> directives in TypeScript files.
 
 use std::path::Path;
+use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+use tsz_scanner::scanner_impl::{is_line_break, is_white_space_single_line};
+
+/// Borrowed attribute bytes and their exact source position.
+#[derive(Clone, Copy, Debug)]
+pub struct ReferenceValue<'source> {
+    pub text: &'source str,
+    pub offset: usize,
+}
+
+/// One native triple-slash directive. Values borrow the admitted source bytes.
+#[derive(Debug)]
+pub struct ReferenceDirective<'source> {
+    pub offset: usize,
+    pub length: usize,
+    pub path: Option<ReferenceValue<'source>>,
+    pub types: Option<ReferenceValue<'source>>,
+    pub lib: Option<ReferenceValue<'source>>,
+    pub resolution_mode: Option<ReferenceValue<'source>>,
+    pub no_default_lib: Option<ReferenceValue<'source>>,
+}
+
+/// Stream leading reference directives using TSZ's tag/attribute interpretation
+/// and scanner character classes. Even a single large comment observes the
+/// shared work/cancellation checkpoint; non-directive comments allocate nothing.
+pub fn reference_directives<'source, 'checkpoint>(
+    source: &'source str,
+    checkpoint: &'checkpoint dyn ExecutionCheckpoint,
+) -> impl Iterator<Item = Result<ReferenceDirective<'source>, ProjectExecutionStop>> + 'checkpoint
+where
+    'source: 'checkpoint,
+{
+    reference_directives_with_poll(source, move |work| checkpoint.checkpoint(work))
+}
+
+/// Same native stream for compiler stages whose existing poll carries a typed
+/// admission error. The callback is borrowed; no ambient checkpoint is installed.
+pub fn reference_directives_with_poll<'source, 'poll, E: 'poll>(
+    source: &'source str,
+    mut poll: impl FnMut(u64) -> Result<(), E> + 'poll,
+) -> impl Iterator<Item = Result<ReferenceDirective<'source>, E>> + 'poll
+where
+    'source: 'poll,
+{
+    let mut position = 0usize;
+    let mut pending = 0u64;
+    let mut initial = Some(poll(0));
+    let mut done = false;
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let result = (|| {
+            if let Some(initial) = initial.take() {
+                initial?;
+            }
+            let mut tick = |work| {
+                pending += work;
+                if pending >= 64 {
+                    poll(std::mem::take(&mut pending))
+                } else {
+                    Ok(())
+                }
+            };
+            while position < source.len() {
+                let ch = source[position..].chars().next().unwrap();
+                tick(ch.len_utf8() as u64)?;
+                if is_white_space_single_line(ch as u32) || is_line_break(ch as u32) {
+                    position += ch.len_utf8();
+                    continue;
+                }
+                let start = position;
+                let rest = &source[start..];
+                let block = rest.starts_with("/*");
+                let line = rest.starts_with("//");
+                if !block && !line && !is_initial_shebang(start, rest) {
+                    return Ok(None);
+                }
+                position += 2;
+                while position < source.len() {
+                    let ch = source[position..].chars().next().unwrap();
+                    tick(ch.len_utf8() as u64)?;
+                    if block && source[position..].starts_with("*/") {
+                        position += 2;
+                        break;
+                    }
+                    if !block && is_line_break(ch as u32) {
+                        break;
+                    }
+                    position += ch.len_utf8();
+                }
+                let comment = &source[start..position];
+                if line
+                    && is_triple_slash_directive_tag_checked(comment, "reference", &mut || tick(1))?
+                {
+                    let mut attribute = |name| {
+                        extract_quoted_attr_borrowed_with_offset(comment, name, &mut || tick(1))
+                            .map(|value| {
+                                value.map(|(text, offset)| ReferenceValue {
+                                    text,
+                                    offset: start + offset,
+                                })
+                            })
+                    };
+                    return Ok(Some(ReferenceDirective {
+                        offset: start,
+                        length: comment.len(),
+                        path: attribute("path")?,
+                        types: attribute("types")?,
+                        lib: attribute("lib")?,
+                        resolution_mode: attribute("resolution-mode")?,
+                        no_default_lib: attribute("no-default-lib")?,
+                    }));
+                }
+            }
+            Ok(None)
+        })();
+        match result {
+            Ok(Some(directive)) => Some(Ok(directive)),
+            Ok(None) => {
+                done = true;
+                poll(std::mem::take(&mut pending)).err().map(Err)
+            }
+            Err(stop) => {
+                done = true;
+                Some(Err(stop))
+            }
+        }
+    })
+}
 
 /// Extract triple-slash reference paths from source text
 ///
@@ -246,93 +376,122 @@ fn is_initial_shebang(position: usize, trimmed: &str) -> bool {
 }
 
 fn is_triple_slash_directive_tag(trimmed: &str, tag: &str) -> bool {
+    is_triple_slash_directive_tag_checked(trimmed, tag, &mut || Ok::<_, ProjectExecutionStop>(()))
+        .unwrap()
+}
+
+fn is_triple_slash_directive_tag_checked<E>(
+    trimmed: &str,
+    tag: &str,
+    tick: &mut impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
     let Some(after_slashes) = trimmed.strip_prefix("///") else {
-        return false;
+        return Ok(false);
     };
-    let Some(after_open) = after_slashes.trim_start().strip_prefix('<') else {
-        return false;
+    let mut pos = 0;
+    for ch in after_slashes.chars() {
+        tick()?;
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    let Some(after_open) = after_slashes[pos..].strip_prefix('<') else {
+        return Ok(false);
     };
     let Some(rest) = after_open.strip_prefix(tag) else {
-        return false;
+        return Ok(false);
     };
 
     if rest.is_empty() {
-        return true;
+        return Ok(true);
     }
 
     let bytes = rest.as_bytes();
-    match bytes[0] {
+    Ok(match bytes[0] {
         b'>' => true,
         b'/' => bytes.len() == 1 || bytes.get(1) == Some(&b'>'),
         ch => ch.is_ascii_whitespace(),
-    }
+    })
 }
 
 /// Extract the value of a named attribute from a reference directive line.
 fn extract_quoted_attr(line: &str, attr: &str) -> Option<String> {
-    let idx = find_directive_attr_assignment(line, attr)?;
-    let after_attr = &line[idx + attr.len()..];
-
-    let eq_idx = after_attr.find('=')?;
-    let after_equals = &after_attr[eq_idx + 1..];
-
-    let first_char = after_equals.trim_start().chars().next()?;
-    if first_char != '"' && first_char != '\'' {
-        return None;
-    }
-
-    let quote_char = first_char;
-    let after_open_quote = &after_equals[after_equals.find(quote_char)? + 1..];
-
-    let end_pos = after_open_quote.find(quote_char)?;
-    Some(after_open_quote[..end_pos].to_string())
+    extract_quoted_attr_with_offset(line, attr).map(|(text, _)| text)
 }
 
-/// Extract path with byte offset of the value start within the line
+/// Extract path with byte offset of the value start within the line.
 fn extract_quoted_path_with_offset(line: &str) -> Option<(String, usize)> {
     extract_quoted_attr_with_offset(line, "path")
 }
 
-/// Extract the value and byte offset of the value start (after the opening quote).
 fn extract_quoted_attr_with_offset(line: &str, attr: &str) -> Option<(String, usize)> {
-    let attr_idx = find_directive_attr_assignment(line, attr)?;
-    let after_attr = &line[attr_idx + attr.len()..];
-
-    let eq_idx = after_attr.find('=')?;
-    let after_equals = &after_attr[eq_idx + 1..];
-    let trimmed = after_equals.trim_start();
-
-    let first_char = trimmed.chars().next()?;
-    if first_char != '"' && first_char != '\'' {
-        return None;
-    }
-
-    // Byte offset of the character after the opening quote (the value start)
-    let value_offset =
-        attr_idx + attr.len() + eq_idx + 1 + (after_equals.len() - trimmed.len()) + 1;
-
-    let after_open_quote = &trimmed[1..];
-    let end_pos = after_open_quote.find(first_char)?;
-    Some((after_open_quote[..end_pos].to_string(), value_offset))
+    extract_quoted_attr_borrowed_with_offset(line, attr, &mut || Ok::<_, ProjectExecutionStop>(()))
+        .ok()
+        .flatten()
+        .map(|(text, offset)| (text.to_owned(), offset))
 }
 
-fn find_directive_attr_assignment(line: &str, attr: &str) -> Option<usize> {
-    for (idx, _) in line.match_indices(attr) {
-        let prev_is_attr_name = line[..idx]
-            .chars()
-            .next_back()
-            .is_some_and(is_directive_attr_name_char);
-        if prev_is_attr_name {
+/// The existing extractors and captured discovery share exact attribute-name
+/// boundaries, quote handling and offsets. The captured caller meters each step.
+fn extract_quoted_attr_borrowed_with_offset<'source, E>(
+    line: &'source str,
+    attr: &str,
+    tick: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Option<(&'source str, usize)>, E> {
+    let mut previous = None;
+    let mut quote = None;
+    for (idx, ch) in line.char_indices() {
+        tick()?;
+        if let Some(delimiter) = quote {
+            if ch == delimiter {
+                quote = None;
+            }
+            previous = Some(ch);
             continue;
         }
-
-        let after_attr = &line[idx + attr.len()..];
-        let leading_ws = after_attr.len() - after_attr.trim_start().len();
-        if after_attr[leading_ws..].starts_with('=') {
-            return Some(idx);
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            previous = Some(ch);
+            continue;
         }
+        let boundary = !previous.is_some_and(is_directive_attr_name_char);
+        previous = Some(ch);
+        if !boundary || !line[idx..].starts_with(attr) {
+            continue;
+        }
+        let mut pos = idx + attr.len();
+        for ch in line[pos..].chars() {
+            tick()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if !line[pos..].starts_with('=') {
+            continue;
+        }
+        pos += 1;
+        for ch in line[pos..].chars() {
+            tick()?;
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        let Some(quote @ ('\'' | '"')) = line[pos..].chars().next() else {
+            return Ok(None);
+        };
+        let offset = pos + 1;
+        for (end, ch) in line[offset..].char_indices() {
+            tick()?;
+            if ch == quote {
+                return Ok(Some((&line[offset..offset + end], offset)));
+            }
+        }
+        return Ok(None);
     }
-    None
+    Ok(None)
 }
 
 const fn is_directive_attr_name_char(ch: char) -> bool {
@@ -346,16 +505,31 @@ const fn is_directive_attr_name_char(ch: char) -> bool {
 /// 1. Try exact path first
 /// 2. If no extension or not found, try source extensions supported by options.
 pub fn validate_reference_path(source_file: &Path, reference_path: &str, allow_js: bool) -> bool {
+    resolve_reference_path_with(source_file, reference_path, allow_js, |path| {
+        Ok::<_, std::convert::Infallible>(path.exists())
+    })
+    .unwrap()
+    .is_some()
+}
+
+/// Native path-reference probe order, with caller-owned filesystem authority.
+/// A missing result is distinct from a provider/cancellation error.
+pub fn resolve_reference_path_with<E>(
+    source_file: &Path,
+    reference_path: &str,
+    allow_js: bool,
+    mut is_file: impl FnMut(&Path) -> Result<bool, E>,
+) -> Result<Option<std::path::PathBuf>, E> {
     if reference_path.is_empty() {
-        return false;
+        return Ok(None);
     }
 
     if let Some(parent) = source_file.parent() {
         let base_path = parent.join(reference_path);
 
         // Try exact path first
-        if base_path.exists() {
-            return true;
+        if is_file(&base_path)? {
+            return Ok(Some(base_path));
         }
 
         // If the filename already has an extension, don't try others.
@@ -366,19 +540,19 @@ pub fn validate_reference_path(source_file: &Path, reference_path: &str, allow_j
             .and_then(|f| f.to_str())
             .is_some_and(|f| f.contains('.'));
         if has_extension {
-            return false;
+            return Ok(None);
         }
 
         for ext in reference_path_probe_extensions(allow_js) {
             let path_with_ext = parent.join(format!("{reference_path}{ext}"));
-            if path_with_ext.exists() {
-                return true;
+            if is_file(&path_with_ext)? {
+                return Ok(Some(path_with_ext));
             }
         }
 
-        false
+        Ok(None)
     } else {
-        false
+        Ok(None)
     }
 }
 

@@ -61,6 +61,14 @@ pub(crate) struct NativeTypeScriptInputs {
     pub(crate) solution: bool,
 }
 
+impl NativeTypeScriptInputs {
+    /// Solution containers have no semantic members, but their native config
+    /// diagnostics still need an exact retained project owner.
+    pub(crate) fn requires_retained_authority(&self) -> bool {
+        !self.solution || !self.options.program_diagnostics.is_empty()
+    }
+}
+
 /// A captured source can retain provenance without being a Compiler API program member.
 /// Exclusion never admits that source to TSZ or supplies semantic authority for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1655,6 +1663,7 @@ fn build_native_inputs_for_config(
     let options = TszProjectOptions {
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+        program_diagnostics: Vec::new(),
         module_resolutions: resolutions,
         file_formats,
         environment,

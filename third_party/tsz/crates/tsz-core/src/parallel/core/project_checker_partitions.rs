@@ -166,6 +166,7 @@ fn check_project_partitions_observing_file_boundaries(
     let outcomes = build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
+        Some(checker_options.no_resolve),
         |work| {
             execution_checkpoint
                 .checkpoint(work)

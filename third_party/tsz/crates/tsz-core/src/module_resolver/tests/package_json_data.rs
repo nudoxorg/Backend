@@ -71,6 +71,18 @@ fn test_package_json_deserialize_invalid_types_field_is_ignored() {
 }
 
 #[test]
+fn test_package_json_preserves_explicit_null_type_fields() {
+    let explicit_null: PackageJson =
+        serde_json::from_str(r#"{"types":null,"typings":null}"#).unwrap();
+    let omitted: PackageJson = serde_json::from_str("{}").unwrap();
+
+    assert!(explicit_null.types_is_null);
+    assert!(explicit_null.typings_is_null);
+    assert!(!omitted.types_is_null);
+    assert!(!omitted.typings_is_null);
+}
+
+#[test]
 fn test_package_type_default_is_commonjs() {
     assert_eq!(PackageType::default(), PackageType::CommonJs);
 }

@@ -139,6 +139,23 @@ pub enum ResolutionRequestKind {
     DynamicImport,
     CjsRequire,
     EsmReExport,
+    /// Triple-slash path/type values use exact source byte offsets, so repeated
+    /// directives cannot collapse into an ordinary module-resolution request.
+    ReferencePath {
+        offset: u32,
+    },
+    ReferenceTypes {
+        offset: u32,
+    },
+}
+
+impl ResolutionRequestKind {
+    pub const fn is_reference(self) -> bool {
+        matches!(
+            self,
+            Self::ReferencePath { .. } | Self::ReferenceTypes { .. }
+        )
+    }
 }
 
 /// Global cross-binder index: identifier name → list of `(file_idx, SymbolId)`

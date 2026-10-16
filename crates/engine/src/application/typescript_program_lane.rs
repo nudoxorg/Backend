@@ -3,7 +3,8 @@
 //! The host re-admits the complete forest and source closure on every request.
 //! Only that freshly admitted forest may borrow these authorities; this cache
 //! never discovers inputs, admits membership, or supplies a closure witness.
-//! One package root is resident at a time, and removed/solution nodes are evicted.
+//! One package root is resident at a time. Removed nodes and solutions without
+//! retained native diagnostics are evicted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -105,6 +106,7 @@ mod tests {
                 ..TszCheckerOptions::default()
             },
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x31; 32]),

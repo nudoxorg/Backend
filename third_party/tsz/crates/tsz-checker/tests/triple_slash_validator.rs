@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn captured_directives_borrow_shebang_prologue_values_with_exact_offsets() {
+    struct Unlimited;
+    impl ExecutionCheckpoint for Unlimited {
+        fn checkpoint(&self, _: u64) -> Result<(), ProjectExecutionStop> {
+            Ok(())
+        }
+    }
+    let source = "#!/usr/bin/env node\r\n/* ignored */\n/// <reference types='node' resolution-mode='require' />\u{2028}/// <reference path='./env.d.ts' />\nexport {};\n/// <reference types='late' />";
+    let directives = reference_directives(source, &Unlimited)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(directives.len(), 2);
+    let types = directives[0].types.unwrap();
+    assert_eq!(types.text, "node");
+    assert_eq!(
+        &source[types.offset..types.offset + types.text.len()],
+        "node"
+    );
+    assert_eq!(directives[0].resolution_mode.unwrap().text, "require");
+    assert_eq!(directives[1].path.unwrap().text, "./env.d.ts");
+}
+
+#[test]
+fn captured_directive_scan_stops_inside_one_large_comment() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Limited(AtomicU64);
+    impl ExecutionCheckpoint for Limited {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.fetch_add(work, Ordering::Relaxed) + work > 128 {
+                Err(ProjectExecutionStop::WorkBudgetExhausted)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for prefix in ["/*", "//", "/// "] {
+        let source = format!(
+            "{prefix}{}\n/// <reference types='late' />",
+            " ".repeat(4096)
+        );
+        let checkpoint = Limited(AtomicU64::new(0));
+        let result = reference_directives(&source, &checkpoint).collect::<Result<Vec<_>, _>>();
+        assert!(matches!(
+            result,
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        ));
+        assert!(checkpoint.0.load(Ordering::Relaxed) < source.len() as u64);
+    }
+}
+
+#[test]
+fn captured_attribute_values_cannot_introduce_another_directive_attribute() {
+    let source = "/// <reference path=\"types='phantom'\" />";
+    assert!(extract_reference_types(source).is_empty());
+    assert_eq!(extract_reference_paths(source)[0].0, "types='phantom'");
+}
+
+#[test]
+fn captured_path_probes_keep_absence_separate_from_provider_errors() {
+    let mut probes = Vec::new();
+    let result =
+        resolve_reference_path_with(Path::new("/captured/main.ts"), "ambient", false, |path| {
+            probes.push(path.to_owned());
+            Ok::<_, std::io::Error>(path == Path::new("/captured/ambient.d.ts"))
+        })
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(std::path::PathBuf::from("/captured/ambient.d.ts"))
+    );
+    assert_eq!(probes.len(), 4);
+    let error =
+        resolve_reference_path_with(Path::new("/captured/main.ts"), "ambient", false, |_| {
+            Err::<bool, _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[test]
 fn test_extract_reference_paths() {
     let source = r#"
 /// <reference path="./types.d.ts" />

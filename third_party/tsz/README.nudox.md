@@ -35,3 +35,50 @@ queries. Variance completed-visit memo keys include bound generic parameter
 names, so shared subtrees under the same complete context are visited once.
 Shared effective-variance masks, partial dependency-walk publication and raw
 lifetime-erased public guards are intentionally not adopted.
+
+Captured native web-program discovery also shares the checker's JSX pragma
+owners, resolves automatic/configured/source types through native package
+exports and `typesVersions`, and streams borrowed reference directives under the
+admission work checkpoint. Source path/type reference observations use the
+existing immutable request-outcome map, with typed reference kinds and exact
+UTF-8 value offsets. Admission validates those kinds, offsets, modes and values
+against the source. Captured misses produce TS6053/TS2688 in the retained checker;
+admitted checks never use the legacy reference-path disk probe. Reference rows
+do not enter ordinary module-resolution projections or consensus.
+Every source path/type directive requires its own explicit outcome, unless the
+resolved checker policy enables `noResolve`. Missing, extra, duplicate or invalid
+rows refuse admission. Prepared images and query sessions also validate reference
+coverage before accepting an immutable program map, including raw caller maps.
+Public one-shot file/function checking and statistics APIs now return typed
+resolution failures as well. The WASM bindings propagate them as JavaScript
+errors without changing successful return values. Legacy outcome setters defer
+mandatory coverage until checking receives its `noResolve` policy; the native
+options-aware setter performs full admission immediately.
+
+Program/configuration diagnostics have a retained channel separate from the
+per-source checker result. Missing configured `types` entries retain native
+TS2688 and their entry-point reason only for captured NotFound outcomes; provider
+failures still refuse admission. TSZ's captured diagnostic config loader retains
+native config diagnostics, and its parser diagnoses terminal `**` includes with
+TS5010 against original JSONC string-token spans while keeping valid selectors.
+Inherited diagnostics retain their defining config file. Config files and global
+diagnostics do not become semantic source members, and diagnostic-only programs
+do not acquire a fabricated root. The diagnostic vector participates in program
+identity and is available through `program_diagnostics()` or the combined
+`diagnostics()` iterator; per-source `CheckResult` counts retain their meaning.
+Solution containers with config diagnostics retain a zero-source authority in
+the existing program lane and appear in the forest consumer's retained-image
+list, while their semantic leaf and query session remain absent. Once their
+diagnostics disappear, ordinary solution eviction removes that image. The
+package compiler currently projects semantic facts; this retained compiler
+channel does not add a package/UI diagnostic publication boundary.
+
+The shared source directive stream also owns `no-default-lib` for native closure
+discovery. A true directive in the captured source graph suppresses configured
+and default libraries without rewriting `noLib`; explicit source library
+references still load unless `noLib` is set. Sources are scanned before embedded
+libraries are linked, so embedded libraries' own directives do not suppress
+themselves. The vendored parser's legacy `has_no_default_lib` field remains
+unused; this integration applies the directive at the native program's library
+selection boundary. These are native source repairs with regression coverage;
+they require separately admitted compilation and execution validation.

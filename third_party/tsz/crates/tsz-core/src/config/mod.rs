@@ -41,7 +41,8 @@ mod resolved_options;
 
 pub use option_fanout::apply_non_strict_fanout;
 pub use parse::{
-    ParsedTsConfig, RemovedOptionNotice, parse_tsconfig, parse_tsconfig_with_diagnostics,
+    ParsedTsConfig, RemovedOptionNotice, include_specification_has_trailing_recursion,
+    parse_tsconfig, parse_tsconfig_with_diagnostics,
     parse_tsconfig_with_diagnostics_deferred,
 };
 pub use resolved_options::{

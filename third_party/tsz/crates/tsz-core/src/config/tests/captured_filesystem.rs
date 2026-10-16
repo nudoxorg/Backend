@@ -188,14 +188,67 @@ fn captured_config_loader_propagates_provider_refusals() {
     );
     fs.deny("/virtual/workspace/project/base.json");
 
-    let error = load_tsconfig_with_file_system(
+    let error =
+        load_tsconfig_with_file_system(Path::new("/virtual/workspace/project/tsconfig.json"), &fs)
+            .expect_err("a provider refusal cannot become an absent extends target");
+    assert!(
+        error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+    );
+
+    let error = load_tsconfig_with_diagnostics_and_file_system(
         Path::new("/virtual/workspace/project/tsconfig.json"),
         &fs,
     )
-    .expect_err("a provider refusal cannot become an absent extends target");
-    assert!(error
-        .downcast_ref::<io::Error>()
-        .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied));
+    .err()
+    .expect("diagnostic recovery cannot hide a provider refusal");
+    assert!(
+        error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+    );
+}
+
+#[test]
+fn captured_config_diagnostics_keep_base_selector_anchors_and_valid_inherited_roots() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/project");
+    fs.add_dir("/virtual/workspace/project/base");
+    let base_source = r#"{/* π */ "include":["bad/**","valid/**/*"]}"#;
+    fs.add_file("/virtual/workspace/project/base/options.json", base_source);
+    fs.add_file(
+        "/virtual/workspace/project/tsconfig.json",
+        r#"{"extends":"./base/options.json","compilerOptions":{"noLib":true}}"#,
+    );
+    let parsed = load_tsconfig_with_diagnostics_and_file_system(
+        Path::new("/virtual/workspace/project/tsconfig.json"),
+        &fs,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.config.include,
+        Some(vec!["/virtual/workspace/project/base/valid/**/*".into()])
+    );
+    assert_eq!(parsed.diagnostics.len(), 1);
+    let diagnostic = &parsed.diagnostics[0];
+    assert_eq!(diagnostic.code, 5010);
+    assert_eq!(
+        diagnostic.file,
+        "/virtual/workspace/project/base/options.json"
+    );
+    assert_eq!(
+        diagnostic.start as usize,
+        base_source.find("\"bad/**\"").unwrap()
+    );
+    assert_eq!(diagnostic.length, "\"bad/**\"".len() as u32);
+    assert!(
+        fs.accesses
+            .read()
+            .unwrap()
+            .iter()
+            .all(|path| path.starts_with("/virtual/workspace"))
+    );
 }
 
 #[test]

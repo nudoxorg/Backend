@@ -11345,6 +11345,7 @@ mod lane_tests {
         let options = TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
@@ -11402,6 +11403,7 @@ mod lane_tests {
         let options = TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: module_resolutions.to_vec(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x71; 32]),
@@ -11744,6 +11746,7 @@ mod lane_tests {
         let options = TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x6b; 32]),
@@ -12403,6 +12406,7 @@ describe('suite', () => {\n\
         let mut options = TszProjectOptions {
             checker: TszCheckerOptions::default(),
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x79; 32]),

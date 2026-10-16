@@ -25,7 +25,7 @@ fn diagnostics(files: &[(&str, &str)]) -> Vec<(String, u32)> {
         strict: true,
         ..CheckerOptions::default()
     };
-    let result = check_files_parallel(&program, &options, &[]);
+    let result = check_files_parallel(&program, &options, &[]).unwrap();
     result
         .file_results
         .iter()

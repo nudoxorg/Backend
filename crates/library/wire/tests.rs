@@ -1876,7 +1876,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=30 {
+    for historical in 21..=31 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -2758,8 +2758,8 @@ mod index_ticket_reply;
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 31,
-        "matched DTO31 retains catalog windows, admission details and worker refusal"
+        DTO_VERSION, 32,
+        "current matched cohort retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2903,7 +2903,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
 
 #[test]
 fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar() {
-    assert_eq!(DTO_VERSION, 31);
+    assert_eq!(DTO_VERSION, 32);
     let issued = QueryLimit::new(4).expect("issued");
     let fixed = CommandDto::new(
         1,
@@ -2935,7 +2935,8 @@ fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar()
     assert!(grammar.check_envelope_version(29).is_ok());
     assert!(grammar.check_envelope_version(30).is_ok());
     assert!(grammar.check_envelope_version(31).is_ok());
-    assert!(grammar.check_envelope_version(32).is_err());
+    assert!(grammar.check_envelope_version(32).is_ok());
+    assert!(grammar.check_envelope_version(33).is_err());
 }
 
 #[test]
@@ -3255,8 +3256,8 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
 }
 
 #[test]
-fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort() {
-    assert_eq!(DTO_VERSION, 31);
+fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matched_cohort() {
+    assert_eq!(DTO_VERSION, 32);
     // Use the real strict coverage projection, rather than a hand-written field.
     let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
         lane: crate::Lane::Semantic,
@@ -3269,22 +3270,22 @@ fn settled_gap_dto31_rejects_old30_before_payload_and_requires_a_matched_cohort(
     .expect("cohort envelope");
     let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
         .expect_err("old peer stops before decoding a gapped variant");
-    assert!(old_peer.contains("reply DTO version 31"));
+    assert!(old_peer.contains("reply DTO version 32"));
     assert!(old_peer.contains("same build"));
     assert!(!old_peer.contains("unknown variant"));
     // A mutation under the previous cohort is refused before its nested shape.
     let old_mutation = br#"{"version":30,"request_id":1,"command":{"index_operation_start":{"unknown_future_field":true}}}"#;
     let error = crate::decode_command_body(old_mutation).expect_err("old live mutation refused");
     assert!(error.contains("command DTO version 30"));
-    assert!(error.contains("this build supports 31"));
+    assert!(error.contains("this build supports 32"));
     assert!(!error.contains("unknown field"));
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
-    for version in 21..=31 {
+    for version in 21..=32 {
         grammar
             .check_envelope_version(version)
             .expect("explicit maintained history");
     }
-    assert!(grammar.check_envelope_version(32).is_err());
+    assert!(grammar.check_envelope_version(33).is_err());
 }
 
 #[test]
@@ -3316,7 +3317,7 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
         },
     )
     .with_certificate(certificate(&root));
-    let bytes = serde_json::to_vec(&dto).expect("DTO31 gapped snapshot");
+    let bytes = serde_json::to_vec(&dto).expect("current gapped snapshot");
     let live = ViewDto::decode_with_certificate(&bytes, Some(capability(basis.object)))
         .expect("current live certificate admission");
     assert_eq!(live.snapshot.root, root);
@@ -3326,6 +3327,20 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
         grammar
             .decode_snapshot(&bytes, capability(basis.object))
             .expect("strict persisted proof")
+            .snapshot
+            .root,
+        root
+    );
+    // DTO32 changes live refusals only. This synthetic historical envelope
+    // retains the exact Gapped root/certificate; it is not an old-build capture.
+    let mut historical: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
+    historical["version"] = serde_json::json!(31);
+    let historical = serde_json::to_vec(&historical).expect("historical envelope");
+    assert!(ViewDto::decode_with_certificate(&historical, Some(capability(basis.object))).is_err());
+    assert_eq!(
+        grammar
+            .decode_snapshot(&historical, capability(basis.object))
+            .expect("DTO31 Gapped snapshot keeps strict proof admission")
             .snapshot
             .root,
         root

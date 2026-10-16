@@ -449,6 +449,7 @@ fn stopped_admission_precedes_invalid_resolution_and_resolution_bytes_are_metere
     let result = build_project_module_resolution_outcomes_with_poll(
         &program,
         &[resolution],
+        Some(false),
         |units| {
             budget
                 .checkpoint(units)

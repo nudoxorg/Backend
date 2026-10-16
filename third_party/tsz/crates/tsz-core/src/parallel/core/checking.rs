@@ -139,14 +139,21 @@ pub struct ProjectFileFormatInput {
     pub format: ProjectFileFormat,
 }
 
-/// Syntactic form of a TypeScript module request supplied by an admitted
-/// compiler program.
+/// Syntactic form of an import or source reference supplied by an admitted
+/// compiler program. Reference offsets locate the attribute value in UTF-8
+/// source bytes; these kinds never participate in generic module lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ProjectModuleRequestKind {
     EsmImport,
     DynamicImport,
     CjsRequire,
     EsmReExport,
+    ReferencePath {
+        offset: u32,
+    },
+    ReferenceTypes {
+        offset: u32,
+    },
     /// The compiler bridge saw a request kind TSZ does not model. Keeping it
     /// explicit makes the unsupported case fail closed instead of falling
     /// through to heuristic filename resolution.
@@ -196,6 +203,10 @@ pub enum ProjectModuleResolutionError {
     },
     EmptySpecifier,
     EmptyExternalIdentity,
+    InvalidReference {
+        importer_path: String,
+        offset: u32,
+    },
     UnsupportedRequestKind {
         syntax_kind: String,
     },
@@ -230,6 +241,10 @@ impl std::fmt::Display for ProjectModuleResolutionError {
             Self::EmptyExternalIdentity => {
                 formatter.write_str("external module identity must not be empty")
             }
+            Self::InvalidReference { importer_path, offset } => write!(
+                formatter,
+                "invalid captured reference at {importer_path:?}:{offset}"
+            ),
             Self::UnsupportedRequestKind { syntax_kind } => write!(
                 formatter,
                 "unsupported TypeScript module request kind: {syntax_kind}"
@@ -316,6 +331,7 @@ pub enum ProjectCheckerSessionError {
     /// The merged program has not been bound to compiler-owned module
     /// resolution outcomes, so queries could otherwise guess by filename.
     MissingProjectModuleResolutions,
+    ModuleResolution(ProjectModuleResolutionError),
     /// A prepared check or query request used a budget outside its admission.
     ExecutionCheckpointMismatch,
     /// The requested file index is outside the exact merged program.
@@ -335,6 +351,7 @@ impl std::fmt::Display for ProjectCheckerSessionError {
             Self::MissingProjectModuleResolutions => {
                 formatter.write_str("project checker session requires exact module resolutions")
             }
+            Self::ModuleResolution(error) => write!(formatter, "{error}"),
             Self::ExecutionCheckpointMismatch => formatter.write_str(
                 "project checker scope does not match its admitted execution budget",
             ),
@@ -360,6 +377,10 @@ impl std::fmt::Display for ProjectCheckerSessionError {
 }
 
 impl std::error::Error for ProjectCheckerSessionError {}
+
+impl From<ProjectModuleResolutionError> for ProjectCheckerSessionError {
+    fn from(error: ProjectModuleResolutionError) -> Self { Self::ModuleResolution(error) }
+}
 
 /// Reusable, read-only project checking context for exact semantic queries.
 ///
@@ -393,6 +414,9 @@ impl<'a> ProjectCheckerSession<'a> {
             .project_module_resolution_outcomes
             .clone()
             .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        validate_project_reference_outcomes_with_poll(program, Some(checker_options.no_resolve),
+            &project_module_resolution_outcomes,
+            |work| execution_checkpoint.checkpoint(work).map_err(ProjectCheckerSessionError::ExecutionStopped))?;
         let plan = ParallelCheckPlan::build(
             program,
             checker_options,
@@ -622,7 +646,9 @@ fn collect_functions_from_node(
 /// `crates/tsz-cli/src/driver/check.rs::collect_diagnostics`, which also owns
 /// file scheduling, cache/watch invalidation, checker reuse, and diagnostic
 /// ordering.
-pub fn check_functions_parallel(program: &MergedProgram) -> CheckResult {
+pub fn check_functions_parallel(
+    program: &MergedProgram,
+) -> Result<CheckResult, ProjectModuleResolutionError> {
     check_functions_parallel_with_project_semantic_options(
         program,
         ProjectSemanticOptions::structural(),
@@ -634,7 +660,10 @@ pub fn check_functions_parallel(program: &MergedProgram) -> CheckResult {
 pub fn check_functions_parallel_with_project_semantic_options(
     program: &MergedProgram,
     project_semantic_options: ProjectSemanticOptions,
-) -> CheckResult {
+) -> Result<CheckResult, ProjectModuleResolutionError> {
+    if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+        validate_project_reference_outcomes_with_poll(program, Some(false), outcomes, |_| Ok(()))?;
+    }
     ensure_rayon_global_pool();
 
     let file_names: Vec<String> = program
@@ -780,11 +809,11 @@ pub fn check_functions_parallel_with_project_semantic_options(
 
     let diagnostic_count: usize = file_results.iter().map(|r| r.diagnostics.len()).sum();
 
-    CheckResult {
+    Ok(CheckResult {
         file_results,
         function_count,
         diagnostic_count,
-    }
+    })
 }
 
 /// Type check full source files in parallel using Rayon.
@@ -813,7 +842,7 @@ pub fn check_files_parallel(
     program: &MergedProgram,
     checker_options: &CheckerOptions,
     lib_files: &[Arc<LibFile>],
-) -> CheckResult {
+) -> Result<CheckResult, ProjectModuleResolutionError> {
     check_files_parallel_with_project_semantic_options(
         program,
         checker_options,
@@ -829,22 +858,28 @@ pub fn check_files_parallel_with_project_semantic_options(
     checker_options: &CheckerOptions,
     lib_files: &[Arc<LibFile>],
     project_semantic_options: ProjectSemanticOptions,
-) -> CheckResult {
-    check_files_parallel_with_optional_project_inputs(
+) -> Result<CheckResult, ProjectModuleResolutionError> {
+    if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+        validate_project_reference_outcomes_with_poll(
+            program, Some(checker_options.no_resolve), outcomes, |_| Ok(()),
+        )?;
+    }
+    Ok(check_files_parallel_with_optional_project_inputs(
         program,
         checker_options,
         lib_files,
         project_semantic_options,
         program.project_module_resolution_outcomes.clone(),
-    )
+    ))
 }
 
 /// Check a complete program using exact compiler-owned module resolutions.
 ///
 /// Supplying this map puts the checker in authoritative project mode: every
 /// request is resolved only by its importer/specifier/kind/mode tuple. Missing
-/// entries and `Unresolved` entries remain unresolved; `External` entries are
-/// known successful resolutions without an in-program file. No filename or
+/// module entries and `Unresolved` entries remain unresolved; `External` entries
+/// are known successful resolutions without an in-program file. Source reference
+/// rows require exact coverage unless `noResolve` is enabled. No filename or
 /// basename guessing is allowed in this mode.
 pub fn check_files_parallel_with_project_inputs(
     program: &MergedProgram,
@@ -853,7 +888,10 @@ pub fn check_files_parallel_with_project_inputs(
     project_semantic_options: ProjectSemanticOptions,
     resolutions: &[ProjectModuleResolution],
 ) -> Result<CheckResult, ProjectModuleResolutionError> {
-    let outcomes = build_project_module_resolution_outcomes(program, resolutions)?;
+    let outcomes = build_project_module_resolution_outcomes_with_poll(
+        program, resolutions, Some(checker_options.no_resolve), |_| Ok(()),
+        |path, _| validate_project_virtual_path(path),
+    )?;
     Ok(check_files_parallel_with_optional_project_inputs(
         program,
         checker_options,
@@ -881,6 +919,7 @@ pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
     let outcomes = build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
+        Some(checker_options.no_resolve),
         |work| {
             execution_checkpoint
                 .checkpoint(work)
@@ -947,6 +986,7 @@ fn build_project_module_resolution_outcomes(
     build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
+        None,
         |_| Ok(()),
         |path, _poll| validate_project_virtual_path(path),
     )
@@ -960,7 +1000,10 @@ fn unambiguous_project_file_path_map(
 ) -> FxHashMap<(usize, String), usize> {
     let mut by_specifier: FxHashMap<(usize, String), Option<usize>> = FxHashMap::default();
     let mut conflicts = FxHashSet::default();
-    for ((file_idx, specifier, _, _), outcome) in outcomes {
+    for ((file_idx, specifier, _, kind), outcome) in outcomes {
+        if kind.is_reference() {
+            continue;
+        }
         let key = (*file_idx, specifier.clone());
         let target = match outcome {
             crate::checker::context::ResolvedModuleRequestOutcome::File(target_idx) => {
@@ -1193,6 +1236,8 @@ impl PreparedProjectCheckerImage {
     ) -> Result<Self, ProjectCheckerSessionError> {
         let outcomes = program.project_module_resolution_outcomes.clone()
             .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        validate_project_reference_outcomes_with_poll(&program, Some(checker_options.no_resolve), &outcomes,
+            |work| checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work)).map_err(ProjectCheckerSessionError::ExecutionStopped))?;
         let plan_span = tsz_common::ProjectExecutionSpan::new(checkpoint, tsz_common::ProjectExecutionPhase::CheckerPlan, None);
         let views = ParallelCheckPlan::build(&program, &checker_options, lib_files, semantics, Some(outcomes), checkpoint)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?.views;
@@ -2116,6 +2161,118 @@ mod project_module_resolution_tests {
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    #[test]
+    fn reference_query_admission_rejects_a_forged_incomplete_program_map() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/main.ts".into(),
+                    "/// <reference path='./present.d.ts' />\nexport {};".into(),
+                ),
+                ("src/present.d.ts".into(), "interface Present {}".into()),
+            ],
+            &[],
+        );
+        program.project_module_resolution_outcomes =
+            Some(Arc::new(ResolvedModuleRequestOutcomeMap::default()));
+        let cancelled = AtomicBool::new(false);
+        let budget = tsz_common::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &cancelled,
+            10_000,
+        );
+        let options = CheckerOptions::default();
+        assert!(matches!(
+            check_files_parallel(&program, &options, &[]),
+            Err(ProjectModuleResolutionError::InvalidReference { .. })
+        ));
+        assert!(matches!(
+            check_files_parallel_with_project_semantic_options(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::structural()
+            ),
+            Err(ProjectModuleResolutionError::InvalidReference { .. })
+        ));
+        assert!(matches!(
+            check_functions_parallel(&program),
+            Err(ProjectModuleResolutionError::InvalidReference { .. })
+        ));
+        assert!(matches!(
+            check_functions_with_stats(&program),
+            Err(ProjectModuleResolutionError::InvalidReference { .. })
+        ));
+        assert!(matches!(
+            ProjectCheckerSession::new(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                &budget
+            ),
+            Err(ProjectCheckerSessionError::ModuleResolution(
+                ProjectModuleResolutionError::InvalidReference { .. }
+            ))
+        ));
+        assert!(matches!(
+            PreparedProjectCheckerImage::new(
+                program,
+                options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                Some(&budget)
+            ),
+            Err(ProjectCheckerSessionError::ModuleResolution(
+                ProjectModuleResolutionError::InvalidReference { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn legacy_outcome_attachment_defers_reference_coverage_until_options_are_known() {
+        let mut program = compile_files_with_libs(
+            vec![(
+                "src/main.ts".into(),
+                "/// <reference types='unused-types' />\nexport {};".into(),
+            )],
+            &[],
+        );
+        program.set_project_module_resolutions(&[]).unwrap();
+        let mut options = CheckerOptions::default();
+        options.no_resolve = true;
+        assert!(check_files_parallel(&program, &options, &[]).is_ok());
+        options.no_resolve = false;
+        assert!(matches!(
+            check_files_parallel(&program, &options, &[]),
+            Err(ProjectModuleResolutionError::InvalidReference { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let budget = tsz_common::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &cancelled,
+            10_000,
+        );
+        program
+            .set_project_module_resolutions_with_execution_checkpoint(&[], &budget)
+            .unwrap();
+        options.no_resolve = true;
+        assert!(
+            ProjectCheckerSession::new(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                &budget
+            )
+            .is_ok()
+        );
+        program.project_module_resolution_outcomes = None;
+        assert!(
+            check_files_parallel(&program, &CheckerOptions::default(), &[]).is_ok(),
+            "standalone checking remains the legacy path"
+        );
+    }
     struct ArmedExecutionStop {
         armed: AtomicBool,
         remaining: AtomicU64,
@@ -2887,8 +3044,10 @@ pub fn create_binder_from_bound_file_with_shared(
 }
 
 /// Check function bodies with statistics
-pub fn check_functions_with_stats(program: &MergedProgram) -> (CheckResult, CheckStats) {
-    let result = check_functions_parallel(program);
+pub fn check_functions_with_stats(
+    program: &MergedProgram,
+) -> Result<(CheckResult, CheckStats), ProjectModuleResolutionError> {
+    let result = check_functions_parallel(program)?;
 
     let stats = CheckStats {
         file_count: result.file_results.len(),
@@ -2896,7 +3055,7 @@ pub fn check_functions_with_stats(program: &MergedProgram) -> (CheckResult, Chec
         diagnostic_count: result.diagnostic_count,
     };
 
-    (result, stats)
+    Ok((result, stats))
 }
 
 /// Statistics about parallel type checking

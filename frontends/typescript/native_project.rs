@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 
 use tsz::config::{ResolvedCompilerOptions, TsConfig};
-use tsz::module_resolver::{ImportKind, ImportingModuleKind, ModuleResolver};
+use tsz::module_resolver::{ImportKind, ImportingModuleKind, ModuleResolver, ResolutionFailure};
 use tsz::parser::node::NodeAccess;
 use tsz::parser::{MeteredParserState, NodeIndex, syntax_kind_ext};
 use tsz::scanner::SyntaxKind;
@@ -35,6 +35,7 @@ pub struct NativeProgram {
     /// Stable native options, including resolver policy, retained in the recipe.
     pub options_identity: String,
     pub root_names: Vec<PathBuf>,
+    pub program_diagnostics: Vec<crate::TszDiagnostic>,
 }
 
 pub struct NativeModuleResolution {
@@ -54,10 +55,13 @@ pub fn build(
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<NativeProgram, String> {
     poll(checkpoint, 0)?;
-    let config = match config_path {
-        Some(path) => tsz::config::load_tsconfig_with_file_system(path, fs)
-            .map_err(|error| error.to_string())?,
-        None => TsConfig::default(),
+    let (config, mut program_diagnostics) = match config_path {
+        Some(path) => {
+            let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(path, fs)
+                .map_err(|error| error.to_string())?;
+            (parsed.config, parsed.diagnostics)
+        }
+        None => (TsConfig::default(), Vec::new()),
     };
     let mut options =
         tsz::config::resolve_compiler_options_embedded(config.compiler_options.as_ref())
@@ -85,6 +89,7 @@ pub fn build(
             file_formats: Vec::new(),
             options_identity,
             root_names: roots,
+            program_diagnostics,
         });
     }
     let mut pending = roots.iter().cloned().collect::<VecDeque<_>>();
@@ -98,6 +103,7 @@ pub fn build(
         &options,
         &mut resolver,
         &mut pending,
+        &mut program_diagnostics,
         checkpoint,
     )?;
     let mut sources = BTreeMap::new();
@@ -106,6 +112,7 @@ pub fn build(
     let mut request_keys = BTreeSet::new();
     let mut total_bytes = 0usize;
     let mut source_lib_references = BTreeSet::new();
+    let mut suppress_configured_libraries = false;
     while let Some(path) = pending.pop_front() {
         poll(checkpoint, 1)?;
         let path = fs
@@ -143,8 +150,12 @@ pub fn build(
         file_formats.push((path.clone(), format));
         {
             let mut type_imports = BTreeSet::new();
-            for reference in &arena.type_refs {
-                let mut name = reference.type_name;
+            for mut name in arena
+                .type_refs
+                .iter()
+                .map(|reference| reference.type_name)
+                .chain(arena.type_queries.iter().map(|query| query.expr_name))
+            {
                 while let Some(node) = arena.get(name) {
                     if let Some(qualified) = arena.get_qualified_name(node) {
                         name = qualified.left;
@@ -261,23 +272,154 @@ pub fn build(
                     });
                 }
             }
-            for reference in tsz::config::extract_lib_references(&text) {
-                source_lib_references.insert(reference);
-            }
-            for reference in triple_slash_paths(&text)
-                .into_iter()
-                .filter(|_| !options.no_resolve)
+            if arena.nodes.iter().any(|node| {
+                matches!(
+                    node.kind,
+                    syntax_kind_ext::JSX_ELEMENT
+                        | syntax_kind_ext::JSX_SELF_CLOSING_ELEMENT
+                        | syntax_kind_ext::JSX_FRAGMENT
+                )
+            }) && let Some(specifier) = jsx_runtime_specifier(&options.checker, &text)
             {
-                pending.push_back(normalize(
-                    &path.parent().unwrap_or(Path::new("")).join(reference),
-                ));
+                poll(checkpoint, 1)?;
+                let kind = ImportKind::EsmImport;
+                let mode = resolver.importing_module_kind_for_import(&path, kind, None);
+                let target = resolver
+                    .resolve_with_kind_checked(&specifier, &path, tsz::span::Span::new(0, 0), kind)
+                    .map_err(|error| error.to_string())?
+                    .ok()
+                    .map(|resolved| resolved.resolved_path);
+                let key = (
+                    path.clone(),
+                    specifier.clone(),
+                    format!("{kind:?}"),
+                    format!("{mode:?}"),
+                );
+                if request_keys.insert(key) {
+                    if resolutions.len() >= MAX_REQUESTS {
+                        return Err("native TSZ module request count exceeds bound".into());
+                    }
+                    if !options.no_resolve
+                        && let Some(target) = &target
+                    {
+                        pending.push_back(target.clone());
+                    }
+                    resolutions.push(NativeModuleResolution {
+                        importer: path.clone(),
+                        specifier,
+                        kind: TszProjectModuleRequestKind::EsmImport,
+                        mode: Some(match mode {
+                            ImportingModuleKind::Esm => TszResolutionModeOverride::Import,
+                            ImportingModuleKind::CommonJs => TszResolutionModeOverride::Require,
+                        }),
+                        target,
+                    });
+                }
+            }
+            for directive in
+                tsz::checker::triple_slash_validator::reference_directives(&text, checkpoint)
+            {
+                let directive = directive
+                    .map_err(|stop| format!("native TSZ directive scan stopped: {stop:?}"))?;
+                poll(checkpoint, 1)?;
+                suppress_configured_libraries |= directive
+                    .no_default_lib
+                    .is_some_and(|value| value.text == "true");
+                if let Some(lib) = directive.lib {
+                    source_lib_references.insert(lib.text.to_owned());
+                }
+                if options.no_resolve {
+                    continue;
+                }
+                if let Some(reference) = directive.path {
+                    let target = tsz::checker::triple_slash_validator::resolve_reference_path_with(
+                        &path,
+                        &reference.text.replace('\\', "/"),
+                        options.allow_js
+                            || matches!(
+                                path.extension().and_then(|extension| extension.to_str()),
+                                Some("js" | "jsx" | "mjs" | "cjs")
+                            ),
+                        |candidate| fs.is_file(candidate),
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|target| normalize(&target));
+                    if let Some(target) = &target {
+                        pending.push_back(target.clone());
+                    }
+                    if resolutions.len() >= MAX_REQUESTS {
+                        return Err("native TSZ module request count exceeds bound".into());
+                    }
+                    resolutions.push(NativeModuleResolution {
+                        importer: path.clone(),
+                        specifier: reference.text.to_owned(),
+                        kind: TszProjectModuleRequestKind::ReferencePath {
+                            offset: reference.offset as u32,
+                        },
+                        mode: None,
+                        target,
+                    });
+                }
+                if let Some(reference) = directive.types {
+                    let offset = reference.offset as u32;
+                    let reference = reference.text;
+                    let mode = match directive.resolution_mode.map(|value| value.text) {
+                        None => None,
+                        Some("import") => Some(ImportingModuleKind::Esm),
+                        Some("require") => Some(ImportingModuleKind::CommonJs),
+                        Some(_) => {
+                            return Err(
+                                "native TSZ type reference has invalid resolution-mode".into()
+                            );
+                        }
+                    };
+                    let target = match resolver
+                        .resolve_type_reference_directive_checked(
+                            reference,
+                            &path,
+                            options.type_roots.as_deref(),
+                            mode,
+                        )
+                        .map_err(|error| error.to_string())?
+                    {
+                        Ok(target) => Some(target.resolved_path),
+                        Err(ResolutionFailure::NotFound { .. }) => None,
+                        Err(error) => {
+                            return Err(format!(
+                                "native TSZ type reference {reference:?} refused: {error:?}"
+                            ));
+                        }
+                    };
+                    if let Some(target) = &target {
+                        pending.push_back(target.clone());
+                    }
+                    if resolutions.len() >= MAX_REQUESTS {
+                        return Err("native TSZ module request count exceeds bound".into());
+                    }
+                    resolutions.push(NativeModuleResolution {
+                        importer: path.clone(),
+                        specifier: reference.to_owned(),
+                        kind: TszProjectModuleRequestKind::ReferenceTypes { offset },
+                        mode: mode.map(|mode| match mode {
+                            ImportingModuleKind::Esm => TszResolutionModeOverride::Import,
+                            ImportingModuleKind::CommonJs => TszResolutionModeOverride::Require,
+                        }),
+                        target,
+                    });
+                }
             }
         }
         sources.insert(path, text);
     }
     // Linked declarations are data dependencies. Their bytes enter the program's
     // identity even when a project has no TypeScript package installed.
-    let mut libs = options.lib_files.clone();
+    // A source no-default-lib suppresses default/configured libraries, while
+    // explicit source lib references still load unless noLib itself is set.
+    let mut libs = if suppress_configured_libraries {
+        Vec::new()
+    } else {
+        options.lib_files.clone()
+    };
     if !options.checker.no_lib && !source_lib_references.is_empty() {
         libs.extend(
             tsz::config::resolve_lib_files_from_embedded(
@@ -306,6 +448,7 @@ pub fn build(
         file_formats,
         options_identity,
         root_names: roots,
+        program_diagnostics,
     })
 }
 
@@ -403,10 +546,15 @@ fn select_roots(
     }
     let includes = includes
         .iter()
+        .filter(|pattern| !pattern.is_empty())
+        // TSZ's config contract discards invalid recursive terminal selectors;
+        // other selectors and explicit files still determine the program.
+        .filter(|pattern| !tsz::config::include_specification_has_trailing_recursion(pattern))
         .map(|pattern| selector_pattern(directory, pattern))
         .collect::<Vec<_>>();
     let excludes = excludes
         .iter()
+        .filter(|pattern| !pattern.is_empty())
         .map(|pattern| selector_pattern(directory, pattern))
         .collect::<Vec<_>>();
     if includes
@@ -462,10 +610,7 @@ fn select_roots(
             poll(checkpoint, 1)?;
             let path = directory.join(entry.name);
             let logical = path.to_string_lossy().replace('\\', "/");
-            if excludes
-                .iter()
-                .any(|pattern| selector_matches(pattern, &logical))
-            {
+            if any_selector_matches(&excludes, &logical, false, false, checkpoint)? {
                 continue;
             }
             let is_directory = match entry.kind {
@@ -476,13 +621,14 @@ fn select_roots(
                 _ => false,
             };
             if is_directory {
+                if !any_selector_matches(&includes, &logical, true, true, checkpoint)? {
+                    continue;
+                }
                 pending.push((path, depth + 1));
                 continue;
             }
             if source_extension(&path, options.allow_js)
-                && includes
-                    .iter()
-                    .any(|pattern| selector_matches(pattern, &logical))
+                && any_selector_matches(&includes, &logical, true, false, checkpoint)?
             {
                 roots.insert(path);
                 if roots.len() > MAX_FILES {
@@ -509,7 +655,13 @@ fn selector_pattern(directory: &Path, selector: &str) -> String {
     let mut path = absolute_selector(directory, selector)
         .to_string_lossy()
         .replace('\\', "/");
-    if !selector.contains(['*', '?']) && Path::new(selector).extension().is_none() {
+    // TypeScript isImplicitGlob tests only the last normalized component:
+    // a dotted directory needs an explicit wildcard, while packages/*/src is implicit.
+    if path
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| !last.contains(['.', '*', '?']))
+    {
         path.push_str("/**/*");
     }
     path
@@ -528,79 +680,149 @@ fn normalize(path: &Path) -> PathBuf {
     output
 }
 
-// TypeScript root selectors support *, ? and **. This iterative DP has bounded
-// work and does not interpret shell character classes or follow ambient globs.
-fn selector_matches(pattern: &str, path: &str) -> bool {
-    glob_matches(pattern, path)
-        || pattern
-            .strip_suffix("/**/*")
-            .is_some_and(|directory| glob_matches(directory, path))
+// TypeScript's include matcher excludes hidden/common-package components when
+// a wildcard consumes them. Excludes allow them. Both matching levels use bounded
+// iterative DP; question marks consume one UTF-16 code unit, as the native contract does.
+fn any_selector_matches(
+    patterns: &[String],
+    path: &str,
+    include: bool,
+    directory_prefix: bool,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<bool, String> {
+    for pattern in patterns {
+        if glob_path_matches(pattern, path, include, directory_prefix, checkpoint)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-fn glob_matches(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let path = path.as_bytes();
+fn glob_path_matches(
+    pattern: &str,
+    path: &str,
+    include: bool,
+    directory_prefix: bool,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<bool, String> {
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let path = path.split('/').collect::<Vec<_>>();
     let mut current = vec![false; path.len() + 1];
     current[0] = true;
-    let mut i = 0;
-    while i < pattern.len() {
+    for component in pattern {
+        poll(checkpoint, path.len() as u64)?;
+        if directory_prefix && current[path.len()] {
+            return Ok(true);
+        }
         let mut next = vec![false; path.len() + 1];
-        if pattern[i] == b'*' {
-            let recursive = pattern.get(i + 1) == Some(&b'*');
-            let slash = recursive && pattern.get(i + 2) == Some(&b'/');
-            if slash {
-                let mut active = false;
-                for j in 0..=path.len() {
-                    active |= current[j];
-                    next[j] = current[j] || j > 0 && path[j - 1] == b'/' && active;
+        if component == "**" {
+            for j in 0..=path.len() {
+                if current[j] {
+                    next[j] = true;
                 }
-            } else {
-                for j in 0..=path.len() {
-                    if current[j] {
-                        next[j] = true;
-                    }
-                    if j > 0 && next[j - 1] && (recursive || path[j - 1] != b'/') {
-                        next[j] = true;
-                    }
+                if j > 0 && next[j - 1] && (!include || wildcard_directory(path[j - 1])) {
+                    next[j] = true;
                 }
-            }
-            if slash {
-                i += 3;
-            } else {
-                i += if recursive { 2 } else { 1 };
             }
         } else {
             for j in 0..path.len() {
-                if current[j] && (pattern[i] == path[j] || pattern[i] == b'?' && path[j] != b'/') {
+                if current[j]
+                    && segment_matches(
+                        component,
+                        path[j],
+                        include,
+                        !directory_prefix && j + 1 == path.len(),
+                        checkpoint,
+                    )?
+                {
                     next[j + 1] = true;
                 }
             }
-            i += 1;
         }
         current = next;
     }
-    current[path.len()]
+    Ok(if include {
+        current[path.len()]
+    } else {
+        current.into_iter().any(|matched| matched)
+    })
 }
 
-fn triple_slash_paths(source: &str) -> Vec<String> {
-    source
-        .lines()
-        .take_while(|line| line.trim().is_empty() || line.trim_start().starts_with("//"))
-        .filter_map(|line| {
-            let line = line
-                .trim_start()
-                .strip_prefix("///")?
-                .trim_start()
-                .strip_prefix("<reference")?;
-            let field = line.find("path=")?;
-            let value = line[field + 5..].trim_start();
-            let quote = value.chars().next()?;
-            if quote != '\'' && quote != '"' {
-                return None;
+fn wildcard_directory(component: &str) -> bool {
+    !component.starts_with('.')
+        && !matches!(
+            component,
+            "node_modules" | "bower_components" | "jspm_packages"
+        )
+}
+
+fn segment_matches(
+    pattern: &str,
+    path: &str,
+    include: bool,
+    file_name: bool,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<bool, String> {
+    let wildcard = pattern.contains(['*', '?']);
+    if include && wildcard && matches!(path, "node_modules" | "bower_components" | "jspm_packages")
+    {
+        return Ok(false);
+    }
+    if include && pattern.starts_with(['*', '?']) && path.starts_with('.') {
+        return Ok(false);
+    }
+    let pattern = pattern.encode_utf16().collect::<Vec<_>>();
+    let path = path.encode_utf16().collect::<Vec<_>>();
+    let minified = ".min.js".encode_utf16().collect::<Vec<_>>();
+    let mut current = vec![false; path.len() + 1];
+    current[0] = true;
+    for token in pattern {
+        poll(checkpoint, path.len() as u64)?;
+        let mut next = vec![false; path.len() + 1];
+        if token == u16::from(b'*') {
+            for j in 0..=path.len() {
+                if current[j] {
+                    next[j] = true;
+                }
+                if j > 0 && next[j - 1] && !(include && file_name && path[j - 1..] == minified) {
+                    next[j] = true;
+                }
             }
-            Some(value[1..].split(quote).next()?.to_owned())
-        })
-        .collect()
+        } else {
+            for j in 0..path.len() {
+                if current[j] && (token == u16::from(b'?') || token == path[j]) {
+                    next[j + 1] = true;
+                }
+            }
+        }
+        current = next;
+    }
+    Ok(current[path.len()])
+}
+
+fn jsx_runtime_specifier(options: &TszCheckerOptions, source: &str) -> Option<String> {
+    use tsz_common::checker_options::JsxMode;
+    let pragma_source = tsz::checker::jsx::program_import_source_pragma(source);
+    let mode = match tsz::checker::jsx::program_runtime_pragma(source) {
+        Some("classic") => JsxMode::React,
+        Some("automatic") if options.jsx_mode == JsxMode::ReactJsxDev => JsxMode::ReactJsxDev,
+        Some("automatic") => JsxMode::ReactJsx,
+        _ => options.jsx_mode,
+    };
+    let suffix = match mode {
+        JsxMode::ReactJsxDev => "jsx-dev-runtime",
+        JsxMode::ReactJsx => "jsx-runtime",
+        _ if pragma_source.is_some() || !options.jsx_import_source.is_empty() => "jsx-runtime",
+        _ => return None,
+    };
+    let source = pragma_source.unwrap_or_else(|| {
+        if options.jsx_import_source.is_empty() {
+            "react".into()
+        } else {
+            options.jsx_import_source.clone()
+        }
+    });
+    Some(format!("{source}/{suffix}"))
 }
 
 fn add_type_roots(
@@ -609,6 +831,7 @@ fn add_type_roots(
     options: &ResolvedCompilerOptions,
     resolver: &mut ModuleResolver<'_>,
     pending: &mut VecDeque<PathBuf>,
+    program_diagnostics: &mut Vec<crate::TszDiagnostic>,
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<(), String> {
     let Some(directory) = directory else {
@@ -620,70 +843,189 @@ fn add_type_roots(
         let mut roots = Vec::new();
         for ancestor in directory.ancestors().take(32) {
             roots.push(ancestor.join("node_modules/@types"));
-            if fs
-                .resolution_boundary()
-                .is_some_and(|boundary| ancestor == boundary)
-            {
+            if !fs.may_walk_parent(ancestor) {
                 break;
             }
         }
         roots
     };
-    let requested = options
-        .types
-        .as_ref()
-        .map(|types| types.iter().cloned().collect::<BTreeSet<_>>());
-    for root in roots {
-        poll(checkpoint, 1)?;
-        let Some(entries) = fs.read_dir(&root).map_err(|error| error.to_string())? else {
-            continue;
-        };
-        for entry in entries {
-            let Some(name) = entry.name.to_str() else {
-                return Err("native TSZ @types name is not UTF-8".into());
-            };
-            if name.starts_with('.')
-                || requested
-                    .as_ref()
-                    .is_some_and(|requested| !requested.contains(name))
-            {
-                continue;
-            }
-            let path = root.join(&entry.name);
-            let manifest = path.join("package.json");
-            let target =
-                if let Some(bytes) = fs.read_file(&manifest).map_err(|error| error.to_string())? {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                    value
-                        .get("types")
-                        .or_else(|| value.get("typings"))
-                        .and_then(serde_json::Value::as_str)
-                        .map_or_else(|| path.join("index.d.ts"), |entry| path.join(entry))
-                } else {
-                    path.join("index.d.ts")
-                };
-            if fs.is_file(&target).map_err(|error| error.to_string())? {
-                pending.push_back(target);
-            }
-        }
-    }
-    if let Some(types) = &options.types {
-        for name in types {
+    let requested = match &options.types {
+        Some(types) => types.clone(),
+        None => {
             poll(checkpoint, 1)?;
-            let importer = directory.join("__native_tsz_type_reference__.ts");
-            if let Ok(resolved) = resolver
-                .resolve_with_kind_checked(
-                    name,
-                    &importer,
-                    tsz::span::Span::new(0, 0),
-                    ImportKind::EsmImport,
-                )
+            resolver
+                .automatic_type_directive_names_checked(&roots)
                 .map_err(|error| error.to_string())?
-            {
-                pending.push_back(resolved.resolved_path);
+        }
+    };
+    let importer = directory.join("__native_tsz_type_reference__.ts");
+    if requested.len() > MAX_REQUESTS {
+        return Err("native TSZ type directive count exceeds bound".into());
+    }
+    let mut seen = BTreeSet::new();
+    for name in requested {
+        poll(checkpoint, 1)?;
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        match resolver
+            .resolve_program_type_reference_directive_checked(
+                &name,
+                &importer,
+                options.type_roots.as_deref(),
+                None,
+            )
+            .map_err(|error| error.to_string())?
+        {
+            Ok(resolved) => pending.push_back(resolved.resolved_path),
+            Err(ResolutionFailure::NotFound { .. }) => {
+                use tsz::checker::diagnostics::{
+                    Diagnostic, diagnostic_codes, diagnostic_messages, format_message,
+                };
+                let mut diagnostic = Diagnostic::from_code(
+                    diagnostic_codes::CANNOT_FIND_TYPE_DEFINITION_FILE_FOR,
+                    "",
+                    0,
+                    0,
+                    &[&name],
+                );
+                let (code, message) = if options.types.is_some() {
+                    (diagnostic_codes::ENTRY_POINT_OF_TYPE_LIBRARY_SPECIFIED_IN_COMPILEROPTIONS, diagnostic_messages::ENTRY_POINT_OF_TYPE_LIBRARY_SPECIFIED_IN_COMPILEROPTIONS)
+                } else {
+                    (
+                        diagnostic_codes::ENTRY_POINT_FOR_IMPLICIT_TYPE_LIBRARY,
+                        diagnostic_messages::ENTRY_POINT_FOR_IMPLICIT_TYPE_LIBRARY,
+                    )
+                };
+                diagnostic
+                    .related_information
+                    .push(Diagnostic::related_message(
+                        code,
+                        "",
+                        0,
+                        0,
+                        format_message(message, &[&name]),
+                    ));
+                program_diagnostics.push(diagnostic);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "native TSZ configured type {name:?} refused: {error:?}"
+                ));
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Unlimited;
+    impl ExecutionCheckpoint for Unlimited {
+        fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn include_selectors_follow_last_component_implicit_glob_contract() {
+        let root = Path::new("/repo");
+        assert_eq!(selector_pattern(root, "src.v1"), "/repo/src.v1");
+        assert_eq!(selector_pattern(root, ".src"), "/repo/.src");
+        assert_eq!(
+            selector_pattern(root, "packages/*/src"),
+            "/repo/packages/*/src/**/*"
+        );
+        assert!(
+            glob_path_matches(
+                "/repo/src.v1/**/*",
+                "/repo/src.v1/main.ts",
+                true,
+                false,
+                &Unlimited
+            )
+            .unwrap()
+        );
+        assert!(
+            !glob_path_matches(
+                "/repo/src.v1",
+                "/repo/src.v1/main.ts",
+                true,
+                false,
+                &Unlimited
+            )
+            .unwrap()
+        );
+    }
+    #[test]
+    fn native_include_globs_keep_hidden_dependency_and_minified_file_boundaries() {
+        let matches =
+            |pattern, path| glob_path_matches(pattern, path, true, false, &Unlimited).unwrap();
+        assert!(!matches("/repo/**/*", "/repo/.hidden/main.ts"));
+        assert!(!matches("/repo/**/*", "/repo/node_modules/pkg/index.d.ts"));
+        assert!(matches("/repo/.hidden/**/*", "/repo/.hidden/main.ts"));
+        assert!(matches(
+            "/repo/node_modules/pkg/**/*",
+            "/repo/node_modules/pkg/index.d.ts"
+        ));
+        assert!(!matches("/repo/**/*", "/repo/src/vendor.min.js"));
+        assert!(matches("/repo/**/*.min.js", "/repo/src/vendor.min.js"));
+        assert!(matches(
+            "/repo/*/src/**/*",
+            "/repo/vendor.min.js/src/main.ts"
+        ));
+        assert!(matches("/repo/src/?.ts", "/repo/src/é.ts"));
+        assert!(!matches("/repo/src/?.ts", "/repo/src/😀.ts"));
+        assert!(matches("/repo/src/??.ts", "/repo/src/😀.ts"));
+        assert!(
+            !glob_path_matches("/repo/src/**/*.ts", "/repo/vendor", true, true, &Unlimited)
+                .unwrap()
+        );
+    }
+    #[test]
+    fn native_root_matcher_propagates_work_stops_inside_a_single_pattern() {
+        struct Stopped;
+        impl ExecutionCheckpoint for Stopped {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+            }
+        }
+        assert!(
+            glob_path_matches("/repo/**/*", "/repo/src/main.ts", true, false, &Stopped).is_err()
+        );
+    }
+    #[test]
+    fn reference_directives_are_leading_trivia_with_exact_attribute_names_and_modes() {
+        let references = tsz::checker::triple_slash_validator::reference_directives(
+            "\u{feff}/* /// <reference types=\"wrong\" /> */\n/// <reference types = 'node' resolution-mode = 'require' />\n/// <reference path = './ambient.d.ts' />\nexport const text = '/// <reference types=\"wrong\" />';\n/// <reference types=\"late\" />",
+            &Unlimited,
+        ).collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].types.unwrap().text, "node");
+        assert_eq!(references[0].resolution_mode.unwrap().text, "require");
+        assert_eq!(references[1].path.unwrap().text, "./ambient.d.ts");
+    }
+    #[test]
+    fn automatic_jsx_runtime_honors_source_pragma_and_classic_override() {
+        let mut options = TszCheckerOptions::default();
+        options.jsx_mode = tsz_common::checker_options::JsxMode::ReactJsx;
+        assert_eq!(
+            jsx_runtime_specifier(&options, "export const element = <div />;"),
+            Some("react/jsx-runtime".into())
+        );
+        assert_eq!(
+            jsx_runtime_specifier(
+                &options,
+                "/** @jsxImportSourcex wrong */\n/** @jsxImportSource preact */\nexport const element = <div />;"
+            ),
+            Some("preact/jsx-runtime".into())
+        );
+        assert_eq!(
+            jsx_runtime_specifier(
+                &options,
+                "/** @jsxRuntime classic */\nexport const element = <div />;"
+            ),
+            None
+        );
+    }
 }
