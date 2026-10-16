@@ -37,7 +37,7 @@
       "lines": "20-31, 34-52, 55-78",
       "sha256": "e32f3fa7e994ff704796e58e115c5258e94a79a184d1608864772f2f2f5274fc",
       "symbols": {
-        "Buffer": "Public struct with a 24-byte uninitialized output buffer; Buffer::new initializes that storage.",
+        "Buffer": "Public struct with a 24-slot output buffer stored as MaybeUninit<u8>; construction leaves the byte contents uninitialized until the formatter writes them.",
         "format_finite": "Public generic method for sealed f32/f64 types; delegates to Ryu's formatter and returns a UTF-8 string view into the buffer. Its documented contract says callers must ensure finite input; it intentionally skips NaN/infinity checks."
       },
       "query_expectations": "Both selected search terms resolve to authored declarations in this file. Results for format_finite should preserve its finite-input caveat; Buffer is the public formatting buffer type."
@@ -46,6 +46,14 @@
       "lines": "1-14, 16-50, 53-62",
       "sha256": "703521c8cb9c6959ee305776a9971d24754b6fff5c1737741be04f956a3692e8",
       "semantics": "Uses #![feature(test)], extern crate test, Bencher and black_box; macro-generated benchmarks call Buffer::new and format_finite for f32/f64 values and compare against std formatting. This explains why bench/test cfg context matters to Rust analysis."
+    }
+  },
+  "expected_surface_shape": {
+    "scope": "Source-derived review guidance only; no exact query result counts, outline totals, rank order, or snapshot bytes are predicted.",
+    "outline": "The crate privately declares `buffer` and re-exports `Buffer` and `Float` at the root. A useful outline should preserve the authored Buffer struct at src/buffer/mod.rs, its private bytes field, and the Buffer implementation's new, format, and format_finite methods where the current outline projection exposes them. Rust indexing may also emit type/reference records for the root re-export and method signatures, and the bench macro may contribute declarations; exact root counts/order are runtime-dependent.",
+    "search": {
+      "Buffer": "Prefer the authored struct declaration in src/buffer/mod.rs (line 20) when present; root-reexport/type references may also appear. The CLI query has no explicit limit; MCP asks for limit 3, so don't require equal record counts between surfaces.",
+      "format_finite": "The authored generic method is in src/buffer/mod.rs at line 72, inside impl Buffer. If a record summary is present, it should retain the documented finite-input caveat: the method does not check NaN or infinity. The finite formatting behavior should not be conflated with Buffer::format, which handles nonfinite inputs first."
     }
   },
   "failure_and_source_context": {
