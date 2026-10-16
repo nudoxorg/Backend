@@ -109,7 +109,7 @@
       {
         "from": "crates/semantic/tests/semantic_ir.rs::transparent_state_terms_pack_directly_without_interning_allocations",
         "to": "crates/semantic/tests/semantic_ir.rs::interned_nominal_types_preserve_entity_indices",
-        "change": "Keep valid frontend entity setup and exact typed ID mapping; remove private layout, allocation-count and storage-column width assertions."
+        "change": "Keep valid frontend entity setup and exact typed ID mapping, the 2-call/1536-byte reservation baseline, and allocation-free guarded interning; remove only private type-layout and storage-column width assertions."
       }
     ]
   },

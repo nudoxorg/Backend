@@ -2,18 +2,17 @@
 
 use allocation_counter::{AllocationInfo, measure};
 use backend_semantic::ir::{
-    AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence,
-    CorePayloadHash, DeclarationFamilyId, Delta, Diff, DocInput, EntityAuthorityFacts,
-    EntityChange, EntityVersion, FacetComparison, FactAvailability, FrontendTree, GuardedType, Ir,
-    IrBuilder, ItemKind, LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier,
-    OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, SemanticCoreReader, SemanticDiff,
-    SemanticEntityChange, SemanticImageView, SemanticLinkChangeKind, SemanticReader,
-    SemanticSnapshot, Snapshot, SourceIdentity, SourceSpan, TreeEntityId, TreeItemInput,
-    TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader, TypePairPayload, TypeParameter,
-    TypeParameterBound, TypeParameterInference, TypeParameterKind, TypeParameterRequirements,
-    TypeQuadPayload, TypeScriptFacts, TypeTriplePayload, UnknownState, UnknownType,
-    UnrepresentedAuthorityOwner, Variance, VariantFingerprint, Visibility,
-    encode_full_semantic_image, full_semantic_image_len,
+    AtomId, BorrowedTree, ComputedType, ConcreteType, Confidence, CorePayloadHash,
+    DeclarationFamilyId, Delta, Diff, DocInput, EntityAuthorityFacts, EntityChange, EntityVersion,
+    FacetComparison, FactAvailability, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
+    LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, OccurrenceAuthorityFacts,
+    PackageLineage, ParentageAuthority, SemanticCoreReader, SemanticDiff, SemanticEntityChange,
+    SemanticImageView, SemanticLinkChangeKind, SemanticReader, SemanticSnapshot, Snapshot,
+    SourceIdentity, SourceSpan, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+    TypeExpr, TypeHeader, TypePairPayload, TypeParameter, TypeParameterBound,
+    TypeParameterInference, TypeParameterKind, TypeParameterRequirements, TypeQuadPayload,
+    TypeScriptFacts, TypeTriplePayload, UnknownType, UnrepresentedAuthorityOwner, Variance,
+    VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -461,17 +460,23 @@ fn interned_nominal_types_preserve_entity_indices() {
         names: &names,
     };
     let mut builder = IrBuilder::new();
+    let reservation = measure(|| builder.reserve_types(versions.len()));
+    assert_eq!(reservation.count_total, 2, "{reservation:?}");
+    assert_eq!(reservation.bytes_total, 1_536, "{reservation:?}");
+    let interning = measure(|| {
+        for raw in 0..versions.len() {
+            let id = builder
+                .intern_guarded(GuardedType::concrete(ConcreteType::Nominal(
+                    backend_semantic::ir::EntityId::new(raw as u32),
+                )))
+                .expect("reserved packed type");
+            assert_eq!(id.erase().raw, raw as u32);
+        }
+    });
+    assert_eq!(interning, AllocationInfo::default());
     builder
         .add_frontend_tree(&tree)
         .expect("valid entity range");
-    for raw in 0..versions.len() {
-        let id = builder
-            .intern_guarded(GuardedType::concrete(ConcreteType::Nominal(
-                backend_semantic::ir::EntityId::new(raw as u32),
-            )))
-            .expect("valid nominal type");
-        assert_eq!(id.erase().raw, raw as u32);
-    }
     let ir = builder.finish().expect("nominal targets become valid");
     assert_eq!(ir.entity_count(), versions.len());
 }
