@@ -7251,6 +7251,9 @@ mod tests {
     #[path = "index_source_worker.rs"]
     mod index_source_worker_tests;
 
+    #[path = "index_source_empty.rs"]
+    mod index_source_empty_tests;
+
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
         use crate::builtin::{BuiltinCaptureChange, BuiltinSourceFactsChange, WorkspaceModel};
