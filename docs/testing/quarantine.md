@@ -63,3 +63,23 @@ check. No expired entry is automatically renewed or silently reenabled. Removing
 an ignore requires removing its metadata too; renewing one requires current
 observations and an accountable review. Source inventory/lexer/expiry controls
 run in the Nix sandbox, without compiling or executing the ignored Rust tests.
+## Managed native intake 2026-10-16
+
+Canonical9ae0eca9d contains five new ignore attributes not registered by its
+language integration commits. Fast2297 flags all five; no new ignore attribute
+or runtime filter is added here. The Backend maintainer team owns review by
+October30 UTC (14 days, no extension of existing entries).
+
+Three Python environment controls require genuine managed CPython3.12/3.14
+and, for the transitive-installation control, pinned uv. They exercise ordinary
+venv selection, closed native-default host capture and offline wheel/change
+invalidation. Two TypeScript controls require pinned Node and TypeScript API
+paths: rooted-specifier negative-observation containment, and production checked
+forest reuse plus source/dependency/options invalidation. Their bodies use these
+explicit prerequisites and exercise real native tools.
+
+This is ownership of existing skips, not acceptance of those native behaviors.
+Before expiry, run them explicitly with their required pinned tool inputs in a
+managed deep lane and either remove the ignore or retain current reviewed native
+evidence and a specific integration task. No native pass is claimed from the
+metadata/lexer checks; no guard is bypassed or ignored test silently enabled.
