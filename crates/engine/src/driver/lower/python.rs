@@ -692,9 +692,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Pass two: functions (parameters and result slots first), then
-    /// variables and aliases, all in source order. Shadowed bindings are
-    /// skipped: the extractor already dropped later module-level rebindings,
-    /// and identical twins keep the first declaration.
+    /// variables and aliases, all in source order. Ordinary identical twins
+    /// keep the first declaration; exact written import sites remain available
+    /// as authored provenance even when their unknown types are equal.
     fn emit_non_class_declarations(&mut self) -> Result<(), PythonCollectError> {
         let tables = self.type_tables()?;
         for index in 0..self.module.declarations.len() {
@@ -1199,10 +1199,38 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return Ok(());
         }
         let extension = self.python_extension(&[], None, Confidence::Syntactic)?;
-        let fact = SemanticFact::new(EntityKind::Alias, name, LEAF_PRODUCT)
+        let mut fact = SemanticFact::new(EntityKind::Alias, name, LEAF_PRODUCT)
             .typed(unknown_record(TypeReason::Unannotated))
             .with_extension(EmissionExtension::Python(extension));
+        if is_import_alias(declaration) {
+            // Import sites can have the same unknown structural type without
+            // denoting the same written binding. Anchor identity in Ruff's exact
+            // captured name, never an emission ordinal or a display spelling.
+            self.slice(declaration.binding_span)?;
+            let capture = backend_compile::SourceBindingCapture::new(
+                declaration.binding_span.start,
+                declaration.binding_span.end,
+                declaration.name_span.start,
+                declaration.name_span.end,
+            )
+            .ok_or(PythonCollectError::Span {
+                start: declaration.name_span.start,
+                end: declaration.name_span.end,
+            })?;
+            let (start, end) = capture.name();
+            let mut discriminator = *b"pyimport\0\0\0\0\0\0\0\0";
+            discriminator[8..12].copy_from_slice(&start.to_le_bytes());
+            discriminator[12..16].copy_from_slice(&end.to_le_bytes());
+            fact = fact.with_identity_discriminator(discriminator);
+        }
         let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
+        if is_import_alias(declaration) {
+            // Ruff proves this declaration was authored in the primary source.
+            // Ownership neither certifies an imported type nor claims that this
+            // is the final runtime/export binding of its spelling.
+            self.facts.publication_roles[ordinal] =
+                backend_semantic::ir::DeclarationPublicationRole::PrimaryOwned;
+        }
         self.record_pushed(index, ordinal, name, declaration);
         Ok(())
     }
@@ -2080,28 +2108,33 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if kind == DeclarationKind::Class && crossed_function {
                 continue;
             }
-            if let Some(found) = candidates
+            let selection = select_import_row(candidates
                 .iter()
-                .find(|row| {
+                .copied()
+                .filter(|row| {
                     row.declaration
                         .is_some_and(|declaration| self.owners[declaration] == Some(scope))
-                })
-                .copied()
-            {
-                return Some(found);
+                }));
+            match selection {
+                ImportRowSelection::Empty => {}
+                ImportRowSelection::Found(row) => return Some(row),
+                ImportRowSelection::Ambiguous => return None,
             }
             if kind == DeclarationKind::Function {
                 crossed_function = true;
             }
         }
-        candidates
+        let selection = select_import_row(candidates
             .iter()
-            .find(|row| {
+            .copied()
+            .filter(|row| {
                 row.declaration
                     .is_some_and(|declaration| self.owners[declaration].is_none())
-            })
-            .copied()
-            .or(Some(first))
+            }));
+        match selection {
+            ImportRowSelection::Empty => select_import_row(candidates.into_iter()).row(),
+            selection => selection.row(),
+        }
     }
 
     /// Whether a bare name at `occurrence` is a local variable or parameter
@@ -7047,7 +7080,7 @@ fn annotation_root_name(annotation: &Annotation) -> Option<String> {
 /// Python legally rebinds a name in the same scope at runtime, but the syntax
 /// extractor already drops later module-level rebindings and keeps overload
 /// branches distinct. The identity model is coordinate-free, so two
-/// byte-identical twins in one scope share one family and one structural
+/// byte-identical ordinary twins in one scope share one family and one structural
 /// variant and the image build rejects the honest duplicate as
 /// `DuplicateDeclarationIdentity`. This pass keeps the first live binding per
 /// `(owner, kind, name)` signature group instead of minting coordinates into
@@ -7062,13 +7095,17 @@ fn annotation_root_name(annotation: &Annotation) -> Option<String> {
 /// members for `TypedDict`/`Protocol` classes and nothing else for plain
 /// classes (whose variant is the bare self-nominal). Distinct overloads keep
 /// distinct fingerprints and all survive; byte-identical twins share one
-/// fingerprint and only the later (larger `span.start`, ties by index) stays
+/// fingerprint and only the first (smaller `span.start`, ties by index) stays
 /// live. A dead binding's whole subtree is dead too: inner declarations
 /// owned by a shadowed class or function are dropped with it, as is every
 /// parameter and result slot of a dropped function (those rows are only
 /// emitted for live functions).
 ///
-/// References resolve through the pushed (live-only) rows by name, so after
+/// Written imports are exempt: their exact captured name spans distinguish
+/// authored provenance rows, and native definitions must be able to join
+/// to any of those sites. Name-only fallback cannot select between them.
+///
+/// Legacy references resolve through the pushed (live-only) rows by name, so after
 /// the collapse every occurrence points at the live binding. For identical
 /// twins that redirection is type-identical; an earlier call that textually
 /// precedes the shadowing definition therefore keeps its meaning while
@@ -7080,7 +7117,7 @@ fn compute_live_set(module: &ModuleFacts, owners: &[Option<usize>]) -> Vec<bool>
     // only inside the same lexical scope.
     let mut groups: HashMap<(Option<usize>, u8, &str), Vec<usize>> = HashMap::new();
     for (index, declaration) in module.declarations.iter().enumerate() {
-        if declaration.kind == DeclarationKind::Module {
+        if declaration.kind == DeclarationKind::Module || is_import_alias(declaration) {
             continue;
         }
         groups
@@ -7135,6 +7172,45 @@ fn compute_live_set(module: &ModuleFacts, owners: &[Option<usize>]) -> Vec<bool>
         }
     }
     live
+}
+
+/// Ruff import aliases retain a module-spelling span; PEP 695 aliases do not.
+fn is_import_alias(declaration: &DeclarationFact) -> bool {
+    declaration.kind == DeclarationKind::Alias && declaration.value_span.is_some()
+}
+
+/// Several written import bindings of one spelling are not a name-only proof
+/// of the active binding. Exact native definitions bypass this fallback.
+enum ImportRowSelection<'rows, 'source> {
+    Empty,
+    Found(&'rows Pushed<'source>),
+    Ambiguous,
+}
+
+impl<'rows, 'source> ImportRowSelection<'rows, 'source> {
+    fn row(self) -> Option<&'rows Pushed<'source>> {
+        match self {
+            Self::Found(row) => Some(row),
+            Self::Empty | Self::Ambiguous => None,
+        }
+    }
+}
+
+fn select_import_row<'rows, 'source: 'rows>(
+    rows: impl Iterator<Item = &'rows Pushed<'source>>,
+) -> ImportRowSelection<'rows, 'source> {
+    let mut first = None;
+    let mut imported = false;
+    for row in rows {
+        imported |= row.imported.is_some();
+        if first.is_some() && imported {
+            return ImportRowSelection::Ambiguous;
+        }
+        if first.is_none() {
+            first = Some(row);
+        }
+    }
+    first.map_or(ImportRowSelection::Empty, ImportRowSelection::Found)
 }
 
 /// The innermost enclosing class or function of one declaration, by smallest
@@ -7206,9 +7282,8 @@ fn shadowing_fingerprint(module: &ModuleFacts, index: usize) -> String {
             if is_type_alias && let Some(found) = alias_value_annotation_for(module, declaration) {
                 format!("alias:{:?}", normalized_annotation(&found.annotation))
             } else {
-                // Import bindings all lower to the same honest unknown row
-                // regardless of the imported module spelling, so every same
-                // name import shares one fingerprint and the later wins.
+                // Imports are exempt from twin collapse and carry exact site
+                // identity. This fallback does not determine their liveness.
                 "alias:import".to_string()
             }
         }
@@ -7952,6 +8027,10 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
         }),
     }
 }
+
+#[cfg(test)]
+#[path = "python_import_binding_tests.rs"]
+mod import_binding_tests;
 
 #[cfg(test)]
 mod tests {
