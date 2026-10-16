@@ -7538,7 +7538,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            31,
+            32,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
