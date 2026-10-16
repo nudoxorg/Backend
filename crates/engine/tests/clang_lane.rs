@@ -1412,7 +1412,7 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
                 return Err(TestError::Check("wrong signature-width cause"));
             }
         }
-        Err(other) => return Err(TestError::Check("wrong signature-width terminal")),
+        Err(_other) => return Err(TestError::Check("wrong signature-width terminal")),
         Ok(_) => return Err(TestError::Check("signature-width wall admitted")),
     }
     if !output.iter().all(|byte| *byte == 0xa5) {

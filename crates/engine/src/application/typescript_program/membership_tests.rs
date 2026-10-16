@@ -623,7 +623,7 @@ fn configured_package_keeps_selected_semantics_excluded_gaps_and_exact_source_fr
     };
     use backend_semantic::{
         ir::{
-            Confidence, ExternalTarget, LinkKind, LinkTarget, SemanticCoreReader, SemanticReader,
+            Confidence, ExternalTarget, LinkKind, LinkTarget, SemanticCoreReader,
         },
         vocabulary::{LanguageProfile, Stage, TypeScriptSource},
     };

@@ -5,7 +5,7 @@
 use super::*;
 use crate::builtin::BuiltinIntent;
 use crate::builtin::profile::{
-    BuiltinIntentOperation, BuiltinIntentSchema, BuiltinSemanticRelation, BuiltinSourceChange,
+    BuiltinIntentOperation, BuiltinIntentSchema, BuiltinSourceChange,
     BuiltinWorkspaceRelation, RetiredSourceProbe, prepare_transition_with_source_update,
 };
 use backend_engine::{

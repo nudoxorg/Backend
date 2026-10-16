@@ -6298,7 +6298,7 @@ mod tests {
         path::Path,
         sync::{
             OnceLock,
-            atomic::{AtomicBool, Ordering},
+            atomic::AtomicBool,
         },
     };
 

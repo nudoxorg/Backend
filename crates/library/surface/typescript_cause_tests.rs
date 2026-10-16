@@ -93,7 +93,7 @@ fn typescript_cause_forgeries_are_refused() {
         false,
     );
     let value = serde_json::to_value(&failure).unwrap();
-    let mut mutate = |edit: &dyn Fn(&mut serde_json::Value)| {
+    let mutate = |edit: &dyn Fn(&mut serde_json::Value)| {
         let mut forged = value.clone();
         edit(&mut forged);
         serde_json::from_value::<PackageCompilerFailure>(forged).is_err()

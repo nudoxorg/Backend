@@ -2426,7 +2426,7 @@ fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> Prod
             view.note = Some(format!("Partial coverage: {}", reason.as_str()));
             view
         }
-        RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
+        RegistryMetadata::NotRecorded(_reason) => metadata_view("owner", metadata),
     }
 }
 

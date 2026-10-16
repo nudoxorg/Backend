@@ -2667,7 +2667,7 @@ mod tests {
     use super::*;
     use backend_semantic::ir::TypeFactFault;
     use backend_semantic::ir::{DocFactFault, OccurrenceFault};
-    use backend_semantic::ir::{FragmentView, SemanticCoreReader, SemanticReader, SourceIdentity};
+    use backend_semantic::ir::{FragmentView, SemanticReader, SourceIdentity};
     use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;

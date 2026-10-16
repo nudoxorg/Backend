@@ -231,7 +231,7 @@ pub(super) fn build_direct_inputs_for_config(
             return Err(closure_limit(
                 "native forest source bytes",
                 aggregate.source_bytes,
-                (256 * 1024 * 1024),
+                256 * 1024 * 1024,
             ));
         }
         let virtual_path = workspace_virtual_path(inputs, &admitted.path)?;

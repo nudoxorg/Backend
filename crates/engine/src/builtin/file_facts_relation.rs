@@ -2549,7 +2549,7 @@ mod tests {
     fn paged_facts_reuse_source_producer_pages_after_a_prefix_insertion() {
         let project = [5; 32];
         let frontend = backend_frontend_typescript::syntax_frontend().expect("TypeScript frontend");
-        let source = tsx_catalog_source((0..900), false);
+        let source = tsx_catalog_source(0..900, false);
         let original_analysis = frontend
             .analyze(Path::new("src/Panels.tsx"), source.as_bytes())
             .expect("realistic TSX source analysis");
@@ -2569,7 +2569,7 @@ mod tests {
             &original,
         )
         .expect("initial facts");
-        let prefixed_source = tsx_catalog_source((0..900), true);
+        let prefixed_source = tsx_catalog_source(0..900, true);
         let prefixed_analysis = frontend
             .analyze(Path::new("src/Panels.tsx"), prefixed_source.as_bytes())
             .expect("prefixed realistic TSX source analysis");

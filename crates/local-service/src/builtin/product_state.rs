@@ -5643,7 +5643,7 @@ mod tests {
         );
         assert!(after_repeat.projection_hash_bytes > before_repeat.projection_hash_bytes);
 
-        let mut publisher = backend_engine::ForgeAcquisitionService::open(
+        let publisher = backend_engine::ForgeAcquisitionService::open(
             root.join("forge"),
             backend_engine::ForgeAcquisitionPolicy::Online,
             backend_engine::ForgeAcquisitionLimits::default(),
