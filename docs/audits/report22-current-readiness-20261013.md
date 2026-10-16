@@ -1,5 +1,13 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-16, PR403 ILO05 and current acceptance checkpoint
+
+Canonical is `174671aaa656c37e1e48518973a909c9de1b3b87`, tree `18266383e89255b17e4d45a120f8f33411cf8fa3`, after PR403 merged. The actual ILO05 run tested source `8d6699aceee19870448209acae093dcd6d145bed`, tree `ae04d3d990c3140f8e19b11bee6adef9785a0753`: all five selected native bodies passed, with zero failures or ignored cases. Root independently verified 92 files, 34 rehashed streams, complete Cargo records and source postimages, and ECHILD/scope closure with permit release. The run was UID 0 only; nonroot enforcement, inference, and application acceptance remain unrun. Proof: `/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/actual-ilo-pr403-native05/ROOT-INDEPENDENT-ILO05.json`, SHA-256 `9f8cb4e9cec5661a56e378de125701651ee0693ad8c0da64e58146b6de65a50e`. The earlier Native12 result remains 17/17 selected bodies on source `7f0516a60ea316449e6bea91bf483b9ddae8547f`; it is a separate bounded result.
+
+The current app-trio candidate is `ffa7349be1156b3b5b4cb71c4cba623102aebb66`, tree `6387aeb833b3d119c823765d1ec136351d952ccd`. A tree comparison with current canonical shows only this readiness document differs; that candidate has not been built, and no new application image or release is claimed. Root reran the Angular proposal02 source-only controls from copied sealed inputs: 36 + 22 + 8 passed. They did not execute the product. Angular04 remains partial at 41/50, and its earlier 18 non-error tool calls are invocation evidence only; correctness still requires payload assertions. The seven Python PR410 tests remain native-unrun.
+
+The public Linux baseline remains `df93af4890005c2bb748928c5a524d1f203fe04f` with the bounded Ubuntu QA03 result of 7/7; this is not full Report26 acceptance or all-tool correctness. Additional remote Cargo starts were refused under the saved four-job limit while a foreign `local carboxyl-j6` job was measured; there was no bypass or kill. Later liveness or custody claims need contemporaneous measurement and durable status. Report26 remains open.
+
 ## Follow-up: 2026-10-16, Native10–12 and current runtime gates
 
 This checkpoint is based on canonical `12502ae36375ad2806529a2da6fa8e5fc9395e90`, tree `ad45516aed3ce78b858129815d0652afcb3326a5`, after PR407 merged the authored TypeScript coordinate recovery. Native10 source `4451de291a1b3d36cb32571888ffce66c560d80f` compiled two phases but the third failed on two `ItemNameView` comparisons in new `typescript_lower` tests, so zero test bodies ran. Native11 source `f2f90232c174a4e558669d8eaef1548191450981` compiled all three phases but passed 15 of 17 selected bodies; two fixture cases failed.
