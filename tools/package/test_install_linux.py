@@ -3,7 +3,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import tarfile
 import tempfile
 import unittest
@@ -69,7 +69,7 @@ class InstallerFilesystemTests(unittest.TestCase):
         package_value = {
             "schema": "nudox.linux-portable-package.v1",
             "executables": [
-                {"name": name.removeprefix("bin/"), "packaged_path": name,
+                {"name": name[4:] if name.startswith("bin/") else name, "packaged_path": name,
                  "packaged_sha256": hashlib.sha256(body).hexdigest()}
                 for name, body in files.items() if name.startswith("bin/")
             ],
@@ -452,6 +452,26 @@ class InstallerFilesystemTests(unittest.TestCase):
                 if directory:
                     with self.assertRaisesRegex(installer.InstallError, "link or invalid"):
                         installer._verified_package_path(root, relative + "/member")
+
+    def test_package_path_containment_does_not_require_python39_is_relative_to(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "package"
+            (root / "bin").mkdir(parents=True)
+            executable = root / "bin/backend-cli"
+            executable.write_bytes(b"fixture")
+
+            # Simulate the Python 3.8 pathlib API, where PurePath.is_relative_to is absent.
+            # If the implementation regresses to calling it, this test raises TypeError.
+            with patch.object(PurePath, "is_relative_to", None, create=True):
+                self.assertEqual(installer._verified_package_path(root, "bin/backend-cli"), executable)
+                with self.assertRaisesRegex(installer.InstallError, "unsafe component"):
+                    installer._verified_package_path(root, "../outside")
+
+            alias = base / "package-alias"
+            alias.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(installer.InstallError, "not a canonical real directory"):
+                installer._verified_package_path(alias, "bin/backend-cli")
 
     def test_existing_marker_does_not_skip_rechecking_installed_files(self):
         marker = {"version": "0.2.0", "tag": "checkpoint-test", "source_sha": "a" * 40, "asset": "release.tar.gz", "sha256": "b" * 64}
