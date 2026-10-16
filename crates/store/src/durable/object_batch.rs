@@ -214,6 +214,17 @@ impl FlushedBatch {
                     let file =
                         backend_platform::durability::open_regular_file_nofollow(&pending.target)
                             .map_err(|error| io_error(&error))?;
+                    let metadata = file.metadata().map_err(|error| io_error(&error))?;
+                    if !metadata.is_file() {
+                        return Err(StoreError::Corrupt);
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt as _;
+                        if metadata.nlink() != 1 {
+                            return Err(StoreError::Corrupt);
+                        }
+                    }
                     let mut existing = Vec::with_capacity(mine.len());
                     file.take(mine.len() as u64 + 1)
                         .read_to_end(&mut existing)
@@ -271,6 +282,7 @@ std::thread_local! {
     static TEST_CONTROL: std::cell::RefCell<(Option<BatchPhase>, bool, Option<Vec<BatchPhase>>)> = const { std::cell::RefCell::new((None, false, None)) };
     static PROCESS_LEASE_PROBE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     static LEGACY_WRITER: std::cell::RefCell<Option<(FileStore, TypedObject)>> = const { std::cell::RefCell::new(None) };
+    static LEGACY_WRITER_SHADOW: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     static CRASH_PHASE: std::cell::Cell<Option<BatchPhase>> = const { std::cell::Cell::new(None) };
 }
 #[cfg(test)]
@@ -281,6 +293,10 @@ fn checkpoint(phase: BatchPhase) -> Result<(), StoreError> {
     if phase == BatchPhase::Prepared {
         if let Some((store, object)) = LEGACY_WRITER.with_borrow_mut(Option::take) {
             store.write_object(&object)?;
+            if let Some(shadow) = LEGACY_WRITER_SHADOW.with_borrow_mut(Option::take) {
+                fs::hard_link(store.object_path(object.id()), shadow)
+                    .map_err(|error| io_error(&error))?;
+            }
         }
     }
     PROCESS_LEASE_PROBE.with_borrow(|path| {
@@ -330,9 +346,39 @@ pub(super) fn record_directory_flush(path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::*;
     use backend_version::{ObjectKey, Schema};
+    use std::error::Error;
+
+    #[derive(Debug)]
+    enum TestFailure {
+        Store(StoreError),
+        Io(std::io::Error),
+    }
+    impl std::fmt::Display for TestFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "{self:?}")
+        }
+    }
+    impl Error for TestFailure {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            match self {
+                Self::Store(_) => None,
+                Self::Io(error) => Some(error),
+            }
+        }
+    }
+    impl From<StoreError> for TestFailure {
+        fn from(error: StoreError) -> Self {
+            Self::Store(error)
+        }
+    }
+    impl From<std::io::Error> for TestFailure {
+        fn from(error: std::io::Error) -> Self {
+            Self::Io(error)
+        }
+    }
+    type TestResult = Result<(), TestFailure>;
 
     struct BytesSchema;
     impl Schema for BytesSchema {
@@ -353,8 +399,8 @@ mod tests {
                 std::process::id()
             )))
         }
-        fn store(&self) -> FileStore {
-            FileStore::open(&self.0, 1024 * 1024).expect("test store")
+        fn store(&self) -> Result<FileStore, StoreError> {
+            FileStore::open(&self.0, 1024 * 1024)
         }
     }
     impl Drop for Directory {
@@ -375,6 +421,7 @@ mod tests {
         DIRECTORY_FLUSHES.with_borrow_mut(|paths| *paths = Some(Vec::new()));
         PROCESS_LEASE_PROBE.with_borrow_mut(|path| *path = None);
         LEGACY_WRITER.with_borrow_mut(|writer| *writer = None);
+        LEGACY_WRITER_SHADOW.with_borrow_mut(|path| *path = None);
         CRASH_PHASE.with(|phase| phase.set(None));
     }
     struct Reset;
@@ -385,12 +432,14 @@ mod tests {
             DIRECTORY_FLUSHES.with_borrow_mut(|paths| *paths = None);
         }
     }
-    fn temporaries(store: &FileStore) -> usize {
-        fs::read_dir(store.root().join("objects"))
-            .expect("objects")
-            .map(|e| e.expect("entry").file_name())
-            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
-            .count()
+    fn temporaries(store: &FileStore) -> std::io::Result<usize> {
+        let mut count = 0;
+        for entry in fs::read_dir(store.root().join("objects"))? {
+            if entry?.file_name().to_string_lossy().ends_with(".tmp") {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
     fn object_directory_flushes(store: &FileStore) -> usize {
         DIRECTORY_FLUSHES.with_borrow(|paths| {
@@ -404,27 +453,20 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_completes_the_same_objects_with_one_actual_directory_barrier() {
+    fn a_batch_completes_the_same_objects_with_one_actual_directory_barrier() -> TestResult {
         let baseline_dir = Directory::new("baseline");
-        let baseline = baseline_dir.store();
+        let baseline = baseline_dir.store()?;
         let candidate_dir = Directory::new("candidate");
-        let candidate = candidate_dir.store();
+        let candidate = candidate_dir.store()?;
         let objects = objects(MAX_OBJECT_BATCH_OBJECTS);
         reset(None, false);
         let _reset = Reset;
         for object in &objects {
-            assert!(
-                baseline
-                    .write_object_with_receipt(object)
-                    .expect("individual object")
-                    .created()
-            );
+            assert!(baseline.write_object_with_receipt(object)?.created());
         }
         let individual_flushes = object_directory_flushes(&baseline);
         reset(None, false);
-        let receipt = candidate
-            .write_object_batch(&objects)
-            .expect("durable batch");
+        let receipt = candidate.write_object_batch(&objects)?;
         assert_eq!(receipt.writes().len(), objects.len());
         assert!(receipt.writes().iter().all(|write| write.created()));
         assert_eq!(receipt.file_flushes(), objects.len());
@@ -442,18 +484,19 @@ mod tests {
             ]
         );
         for object in &objects {
-            assert_eq!(candidate.read_object(object.id()).expect("read"), *object);
+            assert_eq!(candidate.read_object(object.id())?, *object);
         }
-        assert_eq!(temporaries(&candidate), 0);
-        assert!(candidate.head().expect("head").is_none());
+        assert_eq!(temporaries(&candidate)?, 0);
+        assert!(candidate.head()?.is_none());
         eprintln!(
             "object_batch_actual_directory_flushes individual={individual_flushes} batch=1 objects={}",
             objects.len()
         );
+        Ok(())
     }
 
     #[test]
-    fn every_interrupted_batch_keeps_head_unselected_and_retry_is_exact() {
+    fn every_interrupted_batch_keeps_head_unselected_and_retry_is_exact() -> TestResult {
         for fault in [
             BatchPhase::Prepared,
             BatchPhase::FilesFlushed,
@@ -462,15 +505,17 @@ mod tests {
             BatchPhase::DirectoryFlushed,
         ] {
             let directory = Directory::new("fault");
-            let store = directory.store();
+            let store = directory.store()?;
             let objects = objects(5);
             reset(Some(fault), false);
             let _reset = Reset;
             assert!(store.write_object_batch(&objects).is_err());
-            let present = objects
-                .iter()
-                .filter(|o| store.contains_object(o.id()).expect("probe"))
-                .count();
+            let mut present = 0;
+            for object in &objects {
+                if store.contains_object(object.id())? {
+                    present += 1;
+                }
+            }
             assert_eq!(
                 present,
                 match fault {
@@ -479,46 +524,46 @@ mod tests {
                     _ => objects.len(),
                 }
             );
-            assert_eq!(temporaries(&store), 0);
+            assert_eq!(temporaries(&store)?, 0);
             reset(None, false);
-            let cold = directory.store();
-            assert!(cold.head().expect("cold head").is_none());
-            let receipt = cold.write_object_batch(&objects).expect("exact retry");
+            let cold = directory.store()?;
+            assert!(cold.head()?.is_none());
+            let receipt = cold.write_object_batch(&objects)?;
             assert_eq!(
                 receipt.writes().iter().filter(|w| w.created()).count(),
                 objects.len() - present
             );
             for object in &objects {
-                assert_eq!(cold.read_object(object.id()).expect("retry read"), *object);
+                assert_eq!(cold.read_object(object.id())?, *object);
             }
-            assert_eq!(temporaries(&cold), 0);
+            assert_eq!(temporaries(&cold)?, 0);
         }
+        Ok(())
     }
 
     #[test]
-    fn a_failed_file_barrier_cannot_create_any_cas_name() {
+    fn a_failed_file_barrier_cannot_create_any_cas_name() -> TestResult {
         let directory = Directory::new("file-failure");
-        let store = directory.store();
+        let store = directory.store()?;
         let objects = objects(7);
         reset(None, true);
         let _reset = Reset;
         assert!(store.write_object_batch(&objects).is_err());
-        assert!(
-            objects
-                .iter()
-                .all(|o| !store.contains_object(o.id()).expect("probe"))
-        );
+        for object in &objects {
+            assert!(!store.contains_object(object.id())?);
+        }
         assert_eq!(
             TEST_CONTROL.with_borrow(|c| c.2.clone().unwrap_or_default()),
             vec![BatchPhase::Prepared]
         );
-        assert_eq!(temporaries(&store), 0);
+        assert_eq!(temporaries(&store)?, 0);
+        Ok(())
     }
 
     #[test]
-    fn replay_is_idempotent_and_bounds_and_corruption_fail_before_linking() {
+    fn replay_is_idempotent_and_bounds_and_corruption_fail_before_linking() -> TestResult {
         let directory = Directory::new("admission");
-        let store = directory.store();
+        let store = directory.store()?;
         let objects = objects(33);
         assert!(matches!(
             store.write_object_batch(&objects),
@@ -528,55 +573,61 @@ mod tests {
             store.write_object_batch(&[objects[0].clone(), objects[0].clone()]),
             Err(StoreError::Corrupt)
         ));
-        assert_eq!(temporaries(&store), 0);
-        let first = store.write_object_batch(&objects[..32]).expect("first");
+        assert_eq!(temporaries(&store)?, 0);
+        let first = store.write_object_batch(&objects[..32])?;
         assert!(first.writes().iter().all(|w| w.created()));
-        let second = store.write_object_batch(&objects[..32]).expect("replay");
+        let second = store.write_object_batch(&objects[..32])?;
         assert!(second.writes().iter().all(|w| !w.created()));
         assert_eq!(second.file_flushes(), 0);
         assert_eq!(second.directory_flushes(), 1);
         let conflict = store.object_path(objects[32].id());
-        fs::write(conflict, b"conflict").expect("conflict");
+        fs::write(conflict, b"conflict")?;
         assert!(matches!(
             store.write_object_batch(&objects[32..]),
             Err(StoreError::Corrupt)
         ));
-        assert!(store.head().expect("head").is_none());
+        assert!(store.head()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn concurrent_batches_of_the_same_objects_preserve_cas_identity() {
+    fn concurrent_batches_of_the_same_objects_preserve_cas_identity() -> TestResult {
         let directory = Directory::new("race");
-        let store = directory.store();
+        let store = directory.store()?;
         let objects = objects(32);
-        std::thread::scope(|scope| {
-            for _ in 0..3 {
-                scope.spawn(|| {
-                    let _durable = store.write_object_batch(&objects).expect("racing batch");
-                });
+        std::thread::scope(|scope| -> TestResult {
+            let handles = (0..3)
+                .map(|_| scope.spawn(|| store.write_object_batch(&objects)))
+                .collect::<Vec<_>>();
+            for handle in handles {
+                let _receipt = handle
+                    .join()
+                    .map_err(|_| std::io::Error::other("batch writer panicked"))??;
             }
-        });
+            Ok(())
+        })?;
         for object in &objects {
-            assert_eq!(store.read_object(object.id()).expect("read"), *object);
+            assert_eq!(store.read_object(object.id())?, *object);
         }
-        assert_eq!(temporaries(&store), 0);
-        assert!(store.head().expect("head").is_none());
+        assert_eq!(temporaries(&store)?, 0);
+        assert!(store.head()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_legacy_writer_winning_after_preflight_is_reported_as_shared() {
+    fn a_legacy_writer_winning_after_preflight_is_reported_as_shared() -> TestResult {
         let directory = Directory::new("legacy-race");
-        let store = directory.store();
+        let store = directory.store()?;
         let objects = objects(4);
         // Keep a pre-existing item before the pending objects, so the
         // pending-file index differs from its input receipt index.
-        store.write_object(&objects[0]).expect("existing object");
+        store.write_object(&objects[0])?;
         reset(None, false);
         let _reset = Reset;
         LEGACY_WRITER.with_borrow_mut(|writer| {
             *writer = Some((store.clone(), objects[2].clone()));
         });
-        let receipt = store.write_object_batch(&objects).expect("racing batch");
+        let receipt = store.write_object_batch(&objects)?;
         assert_eq!(
             receipt
                 .writes()
@@ -589,68 +640,95 @@ mod tests {
         assert_eq!(receipt.directory_flushes(), 1);
         for (write, object) in receipt.writes().iter().zip(&objects) {
             assert_eq!(write.id(), object.id());
-            assert_eq!(store.read_object(write.id()).expect("exact bytes"), *object);
+            assert_eq!(store.read_object(write.id())?, *object);
         }
-        assert_eq!(temporaries(&store), 0);
-        assert!(store.head().expect("head").is_none());
+        assert_eq!(temporaries(&store)?, 0);
+        assert!(store.head()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn live_temporaries_hold_the_same_process_lease_as_store_recovery() {
+    #[cfg(unix)]
+    fn a_hardlinked_legacy_race_target_is_rejected() -> TestResult {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let directory = Directory::new("legacy-hardlink-race");
+        let store = directory.store()?;
+        let objects = objects(2);
+        let shadow = store.root().join("legacy-race-shadow");
+        reset(None, false);
+        let _reset = Reset;
+        LEGACY_WRITER.with_borrow_mut(|writer| {
+            *writer = Some((store.clone(), objects[0].clone()));
+        });
+        LEGACY_WRITER_SHADOW.with_borrow_mut(|path| *path = Some(shadow.clone()));
+
+        assert!(matches!(
+            store.write_object_batch(&objects),
+            Err(StoreError::Corrupt)
+        ));
+        assert_eq!(
+            fs::symlink_metadata(store.object_path(objects[0].id()))?.nlink(),
+            2
+        );
+        assert_eq!(temporaries(&store)?, 0);
+        assert!(store.head()?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn live_temporaries_hold_the_same_process_lease_as_store_recovery() -> TestResult {
         let directory = Directory::new("live-lease");
-        let store = directory.store();
+        let store = directory.store()?;
         reset(None, false);
         let _reset = Reset;
         PROCESS_LEASE_PROBE.with_borrow_mut(|path| *path = Some(store.root().join("LOCK")));
-        let _durable = store
-            .write_object_batch(&objects(3))
-            .expect("lease held at every phase");
+        let _durable = store.write_object_batch(&objects(3))?;
         let probe = fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(store.root().join("LOCK"))
-            .expect("lock probe");
-        probe
-            .try_lock()
-            .expect("batch releases recovery lease after return");
-        assert_eq!(temporaries(&store), 0);
+            .open(store.root().join("LOCK"))?;
+        probe.try_lock()?;
+        assert_eq!(temporaries(&store)?, 0);
+        Ok(())
     }
 
     #[test]
-    fn crash_during_a_batch_is_unselected_and_restart_reaps_only_private_temps() {
+    fn crash_during_a_batch_is_unselected_and_restart_reaps_only_private_temps() -> TestResult {
         const CHILD_DIRECTORY: &str = "NUDOX_OBJECT_BATCH_CRASH_DIRECTORY";
         if let Some(path) = std::env::var_os(CHILD_DIRECTORY) {
-            let store = FileStore::open(path, 1024 * 1024).expect("child store");
+            let store = FileStore::open(path, 1024 * 1024)?;
             reset(None, false);
             CRASH_PHASE.with(|phase| phase.set(Some(BatchPhase::FirstObjectLinked)));
-            let _durable = store
-                .write_object_batch(&objects(32))
-                .expect("child exits after first actual link");
+            let _durable = store.write_object_batch(&objects(32))?;
             std::process::exit(78);
         }
         let directory = Directory::new("crash");
-        let status=std::process::Command::new(std::env::current_exe().expect("test executable"))
-            .args(["--exact","durable::object_batch::tests::crash_during_a_batch_is_unselected_and_restart_reaps_only_private_temps","--nocapture"])
-            .env(CHILD_DIRECTORY,&directory.0).status().expect("crashing child");
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "durable::object_batch::tests::crash_during_a_batch_is_unselected_and_restart_reaps_only_private_temps",
+                "--nocapture",
+            ])
+            .env(CHILD_DIRECTORY, &directory.0)
+            .status()?;
         assert_eq!(status.code(), Some(77));
-        let cold = directory.store();
-        assert!(cold.head().expect("cold head").is_none());
+        let cold = directory.store()?;
+        assert!(cold.head()?.is_none());
         assert_eq!(
-            temporaries(&cold),
+            temporaries(&cold)?,
             0,
             "ordinary process-lease recovery reaps the interrupted group"
         );
         let objects = objects(32);
-        assert_eq!(
-            objects
-                .iter()
-                .filter(|object| cold.contains_object(object.id()).expect("probe"))
-                .count(),
-            1
-        );
-        let retry = cold
-            .write_object_batch(&objects)
-            .expect("retry after interrupted group");
+        let mut present = 0;
+        for object in &objects {
+            if cold.contains_object(object.id())? {
+                present += 1;
+            }
+        }
+        assert_eq!(present, 1);
+        let retry = cold.write_object_batch(&objects)?;
         assert_eq!(
             retry
                 .writes()
@@ -660,8 +738,9 @@ mod tests {
             31
         );
         for object in &objects {
-            assert_eq!(cold.read_object(object.id()).expect("exact bytes"), *object);
+            assert_eq!(cold.read_object(object.id())?, *object);
         }
-        assert!(cold.head().expect("head remains unselected").is_none());
+        assert!(cold.head()?.is_none());
+        Ok(())
     }
 }

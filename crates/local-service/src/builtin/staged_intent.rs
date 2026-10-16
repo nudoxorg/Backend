@@ -139,10 +139,7 @@ pub(super) struct StagePool {
 impl StagePool {
     #[cfg(unix)]
     fn write_objects(&self, store: &FileStore, objects: &[TypedObject]) -> Result<(), StoreError> {
-        use std::{
-            fs::{self, OpenOptions},
-            os::unix::fs::MetadataExt,
-        };
+        use std::{fs, os::unix::fs::MetadataExt};
         if objects.is_empty() {
             return Ok(());
         }
@@ -172,17 +169,15 @@ impl StagePool {
             return Err(StoreError::Corrupt);
         }
         let lock_path = quota.join("allocation.lock");
-        if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
+        // The quota lock must be a private inode. A hardlink to the store's
+        // process LOCK would make the later batch writer block on the same
+        // flock while this file still holds it.
+        let lock = backend_platform::durability::open_or_create_regular_file_nofollow(&lock_path)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let lock_metadata = lock.metadata().map_err(|e| StoreError::Io(e.to_string()))?;
+        if !lock_metadata.is_file() || lock_metadata.nlink() != 1 {
             return Err(StoreError::Corrupt);
         }
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)
-            .map_err(|e| StoreError::Io(e.to_string()))?;
         lock.lock().map_err(|e| StoreError::Io(e.to_string()))?;
         let selected = store
             .head()?
@@ -893,6 +888,36 @@ pub(super) fn visit_staged_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    enum TestFailure {
+        Store(StoreError),
+        Io(std::io::Error),
+    }
+    impl std::fmt::Display for TestFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "{self:?}")
+        }
+    }
+    impl std::error::Error for TestFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Store(_) => None,
+                Self::Io(error) => Some(error),
+            }
+        }
+    }
+    impl From<StoreError> for TestFailure {
+        fn from(error: StoreError) -> Self {
+            Self::Store(error)
+        }
+    }
+    impl From<std::io::Error> for TestFailure {
+        fn from(error: std::io::Error) -> Self {
+            Self::Io(error)
+        }
+    }
+
     struct Directory(std::path::PathBuf);
     impl Directory {
         fn new() -> Self {
@@ -970,6 +995,59 @@ mod tests {
             StagePool::metadata_required(128).unwrap(),
         )
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn allocation_lock_hardlink_to_store_lock_is_refused_without_blocking()
+    -> Result<(), TestFailure> {
+        use std::time::{Duration, Instant};
+
+        const CHILD_DIRECTORY: &str = "NUDOX_STAGED_QUOTA_LOCK_HARDLINK_DIRECTORY";
+        if let Some(path) = std::env::var_os(CHILD_DIRECTORY) {
+            let store = FileStore::open(path, 1024 * 1024)?;
+            let objects = storage_pages(1);
+            match batch_pool().write_objects(&store, &objects) {
+                Err(StoreError::Corrupt) => std::process::exit(77),
+                Err(_) => std::process::exit(78),
+                Ok(()) => std::process::exit(79),
+            }
+        }
+
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024)?;
+        let quota = store.root().join("staged-ingest-quota");
+        std::fs::create_dir_all(quota.join("members"))?;
+        std::fs::hard_link(store.root().join("LOCK"), quota.join("allocation.lock"))?;
+        drop(store);
+
+        let mut child = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "builtin::staged_intent::tests::allocation_lock_hardlink_to_store_lock_is_refused_without_blocking",
+                "--nocapture",
+            ])
+            .env(CHILD_DIRECTORY, directory.path())
+            .spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                assert_eq!(status.code(), Some(77));
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                let _ = child.wait()?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "quota lock hardlink regression child blocked",
+                )
+                .into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
     fn storage_pages(count: usize) -> Vec<TypedObject> {
         (0..count)
             .map(|index| {
