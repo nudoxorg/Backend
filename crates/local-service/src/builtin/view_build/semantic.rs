@@ -751,6 +751,7 @@ fn semantic_rows(
                 key.profile(),
                 backend_semantic::vocabulary::LanguageProfile::C(_)
                     | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                    | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
             ) || native_frontier_complete.contains(&target);
             if !native_frontier_is_complete {
                 decision.stale_paths = current_paths.get(&target).cloned().unwrap_or_default();

@@ -544,6 +544,7 @@ pub(super) fn finish_index_scan(
                 captures,
                 pending_changes,
                 native_clang_candidates,
+                native_csharp_candidates,
                 native_frontier: _,
             } = *compilation;
             // The synchronous reference path commits the independently
@@ -634,6 +635,7 @@ pub(super) fn finish_index_scan(
                     fresh,
                     reused,
                     native_clang_candidates,
+                    native_csharp_candidates,
                     source_admission_policy,
                     Some(cancellation.as_ref()),
                 )
@@ -2179,6 +2181,58 @@ impl DeferredIndex {
 /// Begins the local compile of every profile the sources name, exactly as
 /// the in-place local route does (`compile_semantic_publications` with no
 /// compiler cluster), stopping short of the compile itself.
+fn admitted_native_candidate_source_set(
+    request: PackageCompileRequest,
+    package_root: PathBuf,
+    sources: Box<[OwnedPackageSource]>,
+    profile: LanguageProfile,
+    candidate_profiles: &ingest::NativeCandidateProfiles,
+    permits: &source_preparation::NativeCandidatePermits,
+) -> Result<OwnedPackageSourceSet, BuiltinModelError> {
+    if candidate_profiles.clang.contains(&profile) {
+        OwnedPackageSourceSet::new_native_clang_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .clang_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked Clang candidate permits are missing".to_owned())
+                })?,
+        )
+    } else if candidate_profiles.csharp.contains(&profile) {
+        OwnedPackageSourceSet::new_native_csharp_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .csharp_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked C# candidate permits are missing".to_owned())
+                })?,
+        )
+    } else {
+        OwnedPackageSourceSet::new(request, package_root, sources)
+    }
+    .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
 fn prepare_deferred_compile(
     snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
@@ -2191,7 +2245,7 @@ fn prepare_deferred_compile(
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
-    native_candidate_profiles: BTreeSet<LanguageProfile>,
+    native_candidate_profiles: ingest::NativeCandidateProfiles,
     native_candidate_permits: source_preparation::NativeCandidatePermits,
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
@@ -2258,34 +2312,14 @@ fn prepare_deferred_compile(
                 ScopeRoot::from_bytes(scan_input_digest),
                 Coverage::Partial,
             );
-            let source_set = if native_candidate_profiles.contains(&profile) {
-                OwnedPackageSourceSet::new_native_clang_candidate(
-                    request,
-                    context.source_root.to_path_buf(),
-                    sources.into_boxed_slice(),
-                    native_candidate_permits.project.ok_or_else(|| {
-                        BuiltinModelError("native frontier project is missing".to_owned())
-                    })?,
-                    native_candidate_permits.selected_root.ok_or_else(|| {
-                        BuiltinModelError("selected native frontier root is missing".to_owned())
-                    })?,
-                    native_candidate_permits
-                        .by_profile
-                        .get(&profile)
-                        .cloned()
-                        .ok_or_else(|| {
-                            BuiltinModelError(
-                                "checked native candidate permits are missing".to_owned(),
-                            )
-                        })?,
-                )
-            } else {
-                OwnedPackageSourceSet::new(
-                    request,
-                    context.source_root.to_path_buf(),
-                    sources.into_boxed_slice(),
-                )
-            };
+            let source_set = admitted_native_candidate_source_set(
+                request,
+                context.source_root.to_path_buf(),
+                sources.into_boxed_slice(),
+                profile,
+                native_candidate_profiles,
+                native_candidate_permits,
+            )?;
             let sources = source_set
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .with_input_claim(input_claim);
@@ -3201,7 +3235,7 @@ fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
-    native_candidate_profiles: &BTreeSet<LanguageProfile>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
     native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
@@ -3235,7 +3269,7 @@ fn compile_semantic_publications_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
-    native_candidate_profiles: &BTreeSet<LanguageProfile>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
     native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
@@ -3877,35 +3911,14 @@ fn compile_semantic_publications_for_snapshot(
                     ScopeRoot::from_bytes(scan_input_digest),
                     Coverage::Partial,
                 );
-                let source_set = if native_candidate_profiles.contains(&profile) {
-                    OwnedPackageSourceSet::new_native_clang_candidate(
-                        request,
-                        context.source_root.to_path_buf(),
-                        sources.into_boxed_slice(),
-                        native_candidate_permits.project.ok_or_else(|| {
-                            BuiltinModelError("native frontier project is missing".to_owned())
-                        })?,
-                        native_candidate_permits.selected_root.ok_or_else(|| {
-                            BuiltinModelError("selected native frontier root is missing".to_owned())
-                        })?,
-                        native_candidate_permits
-                            .by_profile
-                            .get(&profile)
-                            .cloned()
-                            .ok_or_else(|| {
-                                BuiltinModelError(
-                                    "checked native candidate permits are missing".to_owned(),
-                                )
-                            })?,
-                    )
-                } else {
-                    OwnedPackageSourceSet::new(
-                        request,
-                        context.source_root.to_path_buf(),
-                        sources.into_boxed_slice(),
-                    )
-                }
-                .map_err(|error| BuiltinModelError(error.to_string()))?
+                let source_set = admitted_native_candidate_source_set(
+                    request,
+                    context.source_root.to_path_buf(),
+                    sources.into_boxed_slice(),
+                    profile,
+                    native_candidate_profiles,
+                    native_candidate_permits,
+                )?
                 .with_input_claim(local_input_claim);
                 let source_set = match context
                     .python_environment

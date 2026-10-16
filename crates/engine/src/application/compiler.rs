@@ -881,6 +881,9 @@ pub enum PackageSourceSetError {
     /// The distinct native Clang candidate route was requested for a non-C/C++ profile.
     #[error("native Clang source candidates require a C or C++ profile and UTF-8 bytes")]
     NativeClangProfileMismatch,
+    /// The distinct native C# candidate route was requested for a non-C# profile.
+    #[error("native C# source candidates require a C# profile and UTF-8 bytes")]
+    NativeCSharpProfileMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,

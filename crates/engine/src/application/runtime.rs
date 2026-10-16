@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::builtin::NativeClangCandidatePermit;
+use crate::builtin::{NativeCSharpCandidatePermit, NativeClangCandidatePermit};
 use crate::driver::{
     CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection,
 };
@@ -97,8 +97,8 @@ fn compiler_lane_count() -> usize {
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
     MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_FRAGMENT_BYTES, MAX_PACKAGE_SEMANTIC_BYTES,
-    PackageExecutionAuthority, StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
-    StagedVersionedPlaneSegment,
+    PackageExecutionAuthority, StagedCompilerArtifact, StagedPackageCompilation,
+    StagedSemanticPackage, StagedVersionedPlaneSegment,
 };
 use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
@@ -208,6 +208,7 @@ pub struct OwnedPackageSourceSet {
     native_frontier_project: Option<[u8; 32]>,
     native_frontier_root: Option<[u8; 32]>,
     native_clang_permits: Box<[NativeClangCandidatePermit]>,
+    native_csharp_permits: Box<[NativeCSharpCandidatePermit]>,
 }
 
 /// Authority by which a complete source set entered the native compiler.
@@ -221,6 +222,8 @@ pub enum OwnedPackageSourceAdmission {
     Parsed,
     /// Exact UTF-8 C/C++ bytes admitted by the local native-source frontier.
     NativeClangCandidate,
+    /// Exact UTF-8 C# bytes admitted by the local native-source frontier.
+    NativeCSharpCandidate,
 }
 
 impl OwnedPackageSourceSet {
@@ -267,6 +270,7 @@ impl OwnedPackageSourceSet {
             native_frontier_project: None,
             native_frontier_root: None,
             native_clang_permits: Box::new([]),
+            native_csharp_permits: Box::new([]),
         })
     }
 
@@ -313,6 +317,49 @@ impl OwnedPackageSourceSet {
         admitted.native_frontier_project = Some(selected_frontier_project);
         admitted.native_frontier_root = Some(selected_frontier_root);
         admitted.native_clang_permits = permits;
+        Ok(admitted)
+    }
+
+    /// Admits a source set specifically as exact native C# candidates.
+    /// This route is limited to C# profiles and UTF-8 source buffers; it does
+    /// not reuse the Clang permit or its profile allowlist.
+    pub fn new_native_csharp_candidate(
+        request: PackageCompileRequest,
+        package_root: PathBuf,
+        sources: Box<[OwnedPackageSource]>,
+        selected_frontier_project: [u8; 32],
+        selected_frontier_root: [u8; 32],
+        permits: Box<[NativeCSharpCandidatePermit]>,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(request.target.profile, LanguageProfile::CSharp(_))
+            || sources
+                .iter()
+                .any(|source| matches!(source.source, OwnedPackageSourceContents::Raw(_)))
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        if permits.is_empty()
+            || permits.iter().any(|permit| {
+                permit.profile() != request.target.profile
+                    || permit.selected_root() != selected_frontier_root
+                    || !sources.iter().any(|source| {
+                        permit.admits(
+                            selected_frontier_project,
+                            selected_frontier_root,
+                            &source.relative_path,
+                            request.target.profile,
+                            source.source_bytes(),
+                        )
+                    })
+            })
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let mut admitted = Self::new(request, package_root, sources)?;
+        admitted.admission = OwnedPackageSourceAdmission::NativeCSharpCandidate;
+        admitted.native_frontier_project = Some(selected_frontier_project);
+        admitted.native_frontier_root = Some(selected_frontier_root);
+        admitted.native_csharp_permits = permits;
         Ok(admitted)
     }
 
@@ -960,39 +1007,72 @@ mod typescript_project_authority_transition_tests {
     use backend_semantic::vocabulary::TypeScriptSource;
 
     #[test]
-    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints() {
+    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints()
+     {
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
         let target = ContentId::from_canonical_bytes(b"same project target");
         let seed = LocalCompilerPlaneExecutionSeed::for_typescript_project(
-            target, profile, Stage::LowerIr, ContentId::from_digest([41; 32]), [42; 32],
-        ).unwrap();
+            target,
+            profile,
+            Stage::LowerIr,
+            ContentId::from_digest([41; 32]),
+            [42; 32],
+        )
+        .unwrap();
         let input = SemanticInputWitness::claimed_state(
-            [43; 32], backend_version::ScopeRoot::from_bytes([44; 32]), Coverage::Partial,
+            [43; 32],
+            backend_version::ScopeRoot::from_bytes([44; 32]),
+            Coverage::Partial,
         );
         let local = seed.bind_input(input);
         let portable = LocalCompilerExecutionIdentity {
-            target, profile, stage: Stage::LowerIr,
+            target,
+            profile,
+            stage: Stage::LowerIr,
             toolchain: NativeTool::TypeScriptCompiler,
             toolchain_identity: [91; 32],
             local_authority_fingerprint: [92; 32],
-            environment_identity: [93; 32], target_platform_identity: [94; 32],
+            environment_identity: [93; 32],
+            target_platform_identity: [94; 32],
             invocation_recipe: crate::application::CompilerInvocationRecipeV2::new(
-                profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
-                ContentId::from_digest([91; 32]), [93; 32], [94; 32], [95; 32],
-            ).unwrap(),
+                profile,
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                ContentId::from_digest([91; 32]),
+                [93; 32],
+                [94; 32],
+                [95; 32],
+            )
+            .unwrap(),
         };
         let (execution, plane) = PackageExecutionAuthority::RuntimeStartup {
-            execution: Some(portable), plane: None,
-        }.with_admitted_typescript_project(seed).identities();
-        assert!(execution.is_none(), "a startup candidate is not portable project admission");
+            execution: Some(portable),
+            plane: None,
+        }
+        .with_admitted_typescript_project(seed)
+        .identities();
+        assert!(
+            execution.is_none(),
+            "a startup candidate is not portable project admission"
+        );
         let admitted = plane.unwrap().bind_input(input);
         assert_eq!(admitted, local);
         assert_eq!(admitted.input_witness(), input);
-        assert_eq!(admitted.input_witness().coverage().state(), Coverage::Partial);
+        assert_eq!(
+            admitted.input_witness().coverage().state(),
+            Coverage::Partial
+        );
         let (execution, plane) = PackageExecutionAuthority::Fixed {
-            execution: Some(portable), plane: None,
-        }.with_admitted_typescript_project(seed).identities();
-        assert_eq!(execution, Some(portable), "foreign pinned portable authority must remain a strict constraint");
+            execution: Some(portable),
+            plane: None,
+        }
+        .with_admitted_typescript_project(seed)
+        .identities();
+        assert_eq!(
+            execution,
+            Some(portable),
+            "foreign pinned portable authority must remain a strict constraint"
+        );
         assert_eq!(plane.unwrap().bind_input(input), local);
         assert_ne!(portable.toolchain_identity(), local.toolchain_identity());
     }
@@ -1690,7 +1770,9 @@ fn compiler_environment_identity(profile: LanguageProfile) -> [u8; 32] {
         profile,
         if matches!(profile, LanguageProfile::Go(_)) {
             backend_semantic::ir::GO_DECLARATION_PUBLICATION_PROJECTION_VERSION
-        } else { backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION },
+        } else {
+            backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION
+        },
     )
 }
 
@@ -4772,7 +4854,11 @@ fn run_worker_generation(
             if std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1") {
                 eprintln!(
                     "NUDOX-COMPILER-OWNER phase={} compiler-construction error={error}",
-                    if startup.is_some() { "startup" } else { "generation" }
+                    if startup.is_some() {
+                        "startup"
+                    } else {
+                        "generation"
+                    }
                 );
             }
             if let Some(startup) = startup.take() {
@@ -5632,6 +5718,39 @@ fn run_lane(
                                         );
                                     }
                                     package.with_native_clang_candidate()?
+                                }
+                                OwnedPackageSourceAdmission::NativeCSharpCandidate => {
+                                    let selected_frontier_project =
+                                        request.native_frontier_project.ok_or(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch,
+                                        )?;
+                                    let selected_frontier_root =
+                                        request.native_frontier_root.ok_or(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch,
+                                        )?;
+                                    if request.native_csharp_permits.is_empty()
+                                        || request.native_csharp_permits.iter().any(|permit| {
+                                            permit.profile() != request.request.target.profile
+                                                || permit.selected_root() != selected_frontier_root
+                                                || !request.sources.iter().any(|source| {
+                                                    permit.admits(
+                                                        selected_frontier_project,
+                                                        selected_frontier_root,
+                                                        &source.relative_path,
+                                                        request.request.target.profile,
+                                                        source.source_bytes(),
+                                                    )
+                                                })
+                                        })
+                                    {
+                                        return Err(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch
+                                                .into(),
+                                        );
+                                    }
+                                    // C# package compilation always enters the existing Roslyn
+                                    // authority path; the permit gates exact source admission.
+                                    package
                                 }
                             };
                             let package = match raw_sources.as_ref() {

@@ -467,13 +467,23 @@ impl StructuralProjectionPlan {
     ) -> Result<(), BuiltinModelError> {
         let mut remapped = BTreeMap::new();
         for (file_key, record) in &sources.files {
-            let Some(file) = record.file_fields() else { continue; };
-            let Some(plan) = self.files.get_mut(file_key) else { continue; };
+            let Some(file) = record.file_fields() else {
+                continue;
+            };
+            let Some(plan) = self.files.get_mut(file_key) else {
+                continue;
+            };
             for declaration in &mut plan.declarations {
-                let Some(capture) = declaration.binding_capture else { continue; };
-                let Some(id) = exact.get(file.project, file.path, capture.binding()) else { continue; };
+                let Some(capture) = declaration.binding_capture else {
+                    continue;
+                };
+                let Some(id) = exact.get(file.project, file.path, capture.binding()) else {
+                    continue;
+                };
                 if !matches!(id, RowId::Symbol(_)) {
-                    return Err(BuiltinModelError("exact compiler site is not a declaration".to_owned()));
+                    return Err(BuiltinModelError(
+                        "exact compiler site is not a declaration".to_owned(),
+                    ));
                 }
                 remapped.insert(declaration.id, id);
                 declaration.id = id;
@@ -483,11 +493,15 @@ impl StructuralProjectionPlan {
         }
         for symbols in self.by_coordinate.values_mut() {
             for symbol in symbols {
-                if let Some(id) = remapped.get(&symbol.id) { symbol.id = *id; }
+                if let Some(id) = remapped.get(&symbol.id) {
+                    symbol.id = *id;
+                }
             }
         }
         for (id, _) in self.by_binding.values_mut() {
-            if let Some(mapped) = remapped.get(id) { *id = *mapped; }
+            if let Some(mapped) = remapped.get(id) {
+                *id = *mapped;
+            }
         }
         Ok(())
     }
@@ -829,6 +843,7 @@ pub(super) fn native_frontier_freshness(
             profile,
             backend_semantic::vocabulary::LanguageProfile::C(_)
                 | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
         ) {
             continue;
         }
@@ -851,7 +866,7 @@ pub(super) fn native_frontier_freshness(
             };
             if file.project != *project
                 || file.path != path
-                || file.language != backend_engine::SourceLanguage::Clang
+                || file.language != profile.language()
                 || super::super::ingest::source_profile(std::path::Path::new(path))
                     .ok()
                     .flatten()
@@ -903,6 +918,36 @@ pub(super) fn native_frontier_freshness(
                     // Keep one bounded source buffer live at a time. The
                     // selected relation has authenticated the bytes; the
                     // semantic worker reconstructs them again for compilation.
+                    profile_identities.insert(path.clone(), *source_identity);
+                }
+                backend_engine::builtin::NativePathDisposition::CSharpMalformed {
+                    source_identity,
+                    content,
+                    ..
+                } => {
+                    if profile.language() != backend_engine::SourceLanguage::CSharp
+                        || file.content_version != [0; 32]
+                        || file.source_identity.is_some()
+                        || file.admitted_unavailable_reason().ok().flatten()
+                            != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                    let Ok(native_source) = snapshot.verified_native_csharp_source(&frontier, path)
+                    else {
+                        row_bindings_valid = false;
+                        break;
+                    };
+                    if native_source.content_digest() != *content
+                        || native_source.source_identity() != *source_identity
+                        || native_source.project() != *project
+                        || native_source.profile() != *profile
+                        || native_source.relative_path() != path
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
                     profile_identities.insert(path.clone(), *source_identity);
                 }
                 backend_engine::builtin::NativePathDisposition::Refused(_) => {
