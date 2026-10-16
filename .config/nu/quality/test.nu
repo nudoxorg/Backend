@@ -2,8 +2,6 @@
 # Makes nextest groups the concurrency and scarce-resource ownership authority.
 # Prevents implementors and researchers from silently escalating to broad suites.
 
-use pr_target.nu [managed-pr-target-dir]
-
 # Runs the assignment-owned opaque evaluator and returns only normalized feedback.
 # @class implementation-feedback
 def "main test" []: nothing -> string {
