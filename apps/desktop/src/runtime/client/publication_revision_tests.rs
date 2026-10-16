@@ -1,7 +1,6 @@
 //! Physical command-stream controls for the publication shortcut. Replies
 //! deliberately refuse Revision: they prove retry/correlation and retained
 //! attachment, not producer certification or complete Root admission.
-#![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
 use backend_replication::{LocalControlLimits, read_frame, write_frame};
@@ -12,73 +11,76 @@ use std::time::Instant;
 struct Endpoint(PathBuf);
 
 impl Endpoint {
-    fn new() -> Self {
+    fn new() -> anyhow::Result<Self> {
         let directory = std::env::temp_dir().join(format!(
             "ndrr-{}-{:x}",
             std::process::id(),
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
+                .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos(),
         ));
-        std::fs::create_dir(&directory).expect("fresh private endpoint directory");
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-            .expect("private directory");
-        Self(directory.join("s"))
+        std::fs::create_dir(&directory)?;
+        let endpoint = Self(directory.join("s"));
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        Ok(endpoint)
     }
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
-        let _ = std::fs::remove_dir(self.0.parent().expect("private parent"));
+        if let Some(parent) = self.0.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }
 
-fn revision(stream: &mut UnixStream) -> backend_library::CommandDto {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("bounded read");
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .expect("bounded write");
-    let body =
-        read_frame(stream, LocalControlLimits::default()).expect("physical revision request");
-    let request = backend_library::decode_command_body(&body).expect("revision envelope");
+fn revision(stream: &mut UnixStream) -> anyhow::Result<backend_library::CommandDto> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let body = read_frame(stream, LocalControlLimits::default())
+        .map_err(|error| anyhow::anyhow!("physical revision request: {error:?}"))?;
+    let request = backend_library::decode_command_body(&body)
+        .map_err(|error| anyhow::anyhow!("revision envelope: {error:?}"))?;
     assert!(matches!(
         request.command,
         backend_library::Command::Revision
     ));
-    request
+    Ok(request)
 }
 
-fn refuse(stream: &mut UnixStream, request: backend_library::CommandDto, message: &str) {
+fn refuse(
+    stream: &mut UnixStream,
+    request: backend_library::CommandDto,
+    message: &str,
+) -> anyhow::Result<()> {
     let reply = backend_library::ReplyDto::new(
         request.request_id,
         backend_library::CommandReply::Error(message.to_owned()),
     );
     write_frame(
         stream,
-        &serde_json::to_vec(&reply).expect("reply body"),
+        &serde_json::to_vec(&reply)?,
         LocalControlLimits::default(),
     )
-    .expect("correlated owner refusal");
+    .map_err(|error| anyhow::anyhow!("correlated owner refusal: {error:?}"))?;
+    Ok(())
 }
 
 #[test]
-fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_protocol_refusal() {
+fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_protocol_refusal()
+-> anyhow::Result<()> {
     for retire_cached in [false, true] {
-        let endpoint = Endpoint::new();
-        let listener = UnixListener::bind(&endpoint.0).expect("replacement listener");
-        std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))
-            .expect("private endpoint");
-        listener.set_nonblocking(true).expect("bounded accept");
-        let (command, mut command_owner) = UnixStream::pair().expect("cached command stream");
-        let server = std::thread::spawn(move || {
-            let request = revision(&mut command_owner);
+        let endpoint = Endpoint::new()?;
+        let listener = UnixListener::bind(&endpoint.0)?;
+        std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        let (command, mut command_owner) = UnixStream::pair()?;
+        let server = std::thread::spawn(move || -> anyhow::Result<UnixListener> {
+            let request = revision(&mut command_owner)?;
             if !retire_cached {
-                refuse(&mut command_owner, request, "cached protocol refusal");
-                return listener;
+                refuse(&mut command_owner, request, "cached protocol refusal")?;
+                return Ok(listener);
             }
             // The owner retires only the cached socket, after reading the
             // request. Its independent endpoint remains available.
@@ -92,16 +94,14 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
                             assert!(Instant::now() < until, "missing {message}");
                             std::thread::sleep(Duration::from_millis(2));
                         }
-                        Err(error) => panic!("accept {message}: {error}"),
+                        Err(error) => return Err(anyhow::anyhow!("accept {message}: {error}")),
                     }
                 };
-                stream
-                    .set_nonblocking(false)
-                    .expect("blocking accepted stream");
-                let request = revision(&mut stream);
-                refuse(&mut stream, request, message);
+                stream.set_nonblocking(false)?;
+                let request = revision(&mut stream)?;
+                refuse(&mut stream, request, message)?;
             }
-            listener
+            Ok(listener)
         });
 
         let view = super::super::owner::publication_tests::view();
@@ -109,15 +109,21 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
         let basis = VersionedRoot::from_revision(1, cursor, 0);
         let gate =
             super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
-        let attachment = gate.ready_epoch().expect("ready attachment");
+        let attachment = gate
+            .ready_epoch()
+            .ok_or_else(|| anyhow::anyhow!("ready attachment missing"))?;
         assert_eq!(
             gate.publish_view(attachment, view.clone(), cursor),
             super::super::owner::PublicationAdmission::Admitted
         );
         let mut client = LocalEngineClient::gated(
             &endpoint.0,
-            LocalProjectId::from_path(endpoint.0.parent().expect("project directory"))
-                .expect("project"),
+            LocalProjectId::from_path(
+                endpoint
+                    .0
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("project directory missing"))?,
+            )?,
             gate.clone(),
         );
         client.attached_epoch = Some(attachment);
@@ -131,7 +137,9 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
             basis,
             cancel: CancellationToken::new(),
         });
-        let listener = server.join().expect("bounded physical command owner");
+        let listener = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("bounded physical command owner panicked"))??;
         let expected = if retire_cached {
             "fresh retry answered"
         } else {
@@ -150,7 +158,7 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
         assert!(Arc::ptr_eq(
             &gate
                 .publication(attachment)
-                .expect("retained publication")
+                .ok_or_else(|| anyhow::anyhow!("publication was not retained"))?
                 .0,
             &view
         ));
@@ -167,4 +175,5 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
             "protocol refusal and the one retry cannot open another connection"
         );
     }
+    Ok(())
 }

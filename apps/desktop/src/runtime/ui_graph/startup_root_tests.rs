@@ -1,9 +1,8 @@
 //! Mounted owner handover controls. The Root DTO is a fixture, not a native
 //! socket, certified publication, or proof that a busy owner releases in time.
-#![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
-use crate::core::{LocalProjectId, VersionedRoot};
+use crate::core::{ErrorValue, FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::ServiceMode;
 use crate::runtime::actor::{
     CancellationToken, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto,
@@ -32,12 +31,23 @@ impl EngineClient for RecordsRoots {
             ..
         } = request
         else {
-            panic!("the empty startup fixture only asks for its Root");
+            return Err(EngineFault::Failed(ErrorValue::new(
+                FaultCode::Protocol,
+                "the empty startup fixture only accepts its Root request",
+            )));
         };
-        self.calls.lock().expect("root calls").push(RootCall {
-            basis: *basis,
-            cancel: cancel.clone(),
-        });
+        self.calls
+            .lock()
+            .map_err(|_| {
+                EngineFault::Failed(ErrorValue::new(
+                    FaultCode::Protocol,
+                    "startup root call ledger was poisoned",
+                ))
+            })?
+            .push(RootCall {
+                basis: *basis,
+                cancel: cancel.clone(),
+            });
         if let Some(gate) = &self.gate {
             gate.wait_cancelled(cancel)
                 .map_err(|_| EngineFault::Cancelled)?;
@@ -52,7 +62,12 @@ impl EngineClient for RecordsRoots {
             revision: basis.revision(),
             delta: None,
             project: Some(ProjectDto {
-                id: LocalProjectId::new("/fixture/gui-single-root").expect("project identity"),
+                id: LocalProjectId::new("/fixture/gui-single-root").map_err(|error| {
+                    EngineFault::Failed(ErrorValue::new(
+                        FaultCode::Protocol,
+                        format!("startup project identity: {error:?}"),
+                    ))
+                })?,
                 label: Arc::from("Root reply admitted"),
                 packages: Arc::from([]),
             }),
@@ -61,34 +76,44 @@ impl EngineClient for RecordsRoots {
     }
 }
 
-fn runtime(gate: Option<&OwnerGate>, calls: &Arc<Mutex<Vec<RootCall>>>) -> DesktopRuntime {
+fn runtime(
+    gate: Option<&OwnerGate>,
+    calls: &Arc<Mutex<Vec<RootCall>>>,
+) -> anyhow::Result<DesktopRuntime> {
     let client = RecordsRoots {
         gate: gate.cloned(),
         calls: Arc::clone(calls),
     };
-    DesktopRuntime::new(
+    Ok(DesktopRuntime::new(
         AppSnapshot::empty(VersionedRoot::unserved()),
-        EngineActor::start(client, 4).expect("actor"),
-    )
+        EngineActor::start(client, 4)
+            .map_err(|error| anyhow::anyhow!("startup actor: {error:?}"))?,
+    ))
 }
 
 #[test]
-fn only_an_ungated_runtime_queues_a_constructor_root() {
+fn only_an_ungated_runtime_queues_a_constructor_root() -> anyhow::Result<()> {
     let calls = Arc::default();
     let gate = OwnerGate::starting();
-    let mut gated = runtime(Some(&gate), &calls);
+    let mut gated = runtime(Some(&gate), &calls)?;
     gated.observe_initial_root(Some(gate));
     assert!(UiRootEntity::new(gated, None).pending.is_empty());
     assert!(matches!(
-        UiRootEntity::new(runtime(None, &calls), None)
+        UiRootEntity::new(runtime(None, &calls)?, None)
             .pending
             .as_slice(),
         [QueuedIntent::Plain(Intent::RefreshRoot { .. })]
     ));
+    Ok(())
 }
 
 #[gpui::test]
 fn an_owner_handover_runs_one_root_without_cancelling_a_constructor_read(cx: &mut TestAppContext) {
+    let result = exercise_owner_handover(cx);
+    assert!(result.is_ok(), "mounted startup fixture failed: {result:?}");
+}
+
+fn exercise_owner_handover(cx: &mut TestAppContext) -> anyhow::Result<()> {
     cx.executor().allow_parking();
     // Exercise both an owner that answers after mount and one already ready
     // when the watcher is installed. Neither case needs a constructor Root.
@@ -105,15 +130,9 @@ fn an_owner_handover_runs_one_root_without_cancelling_a_constructor_read(cx: &mu
                 mode: ServiceMode::Embedded,
             });
         }
+        let runtime = runtime(Some(&gate), &calls)?;
         let graph = cx.update(|cx| {
-            UiEntityGraph::install_with_owner(
-                cx,
-                runtime(Some(&gate), &calls),
-                None,
-                None,
-                Some(gate.clone()),
-                None,
-            )
+            UiEntityGraph::install_with_owner(cx, runtime, None, None, Some(gate.clone()), None)
         });
         cx.run_until_parked();
         if !already_ready {
@@ -126,7 +145,12 @@ fn an_owner_handover_runs_one_root_without_cancelling_a_constructor_read(cx: &mu
                     .root
                     .read_with(cx, |root, _| root.snapshot().key().is_unserved())
             );
-            assert!(calls.lock().expect("root calls").is_empty());
+            assert!(
+                calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("startup root call ledger was poisoned"))?
+                    .is_empty()
+            );
             gate.publish(OwnerState::Ready {
                 key,
                 mode: ServiceMode::Embedded,
@@ -134,10 +158,13 @@ fn an_owner_handover_runs_one_root_without_cancelling_a_constructor_read(cx: &mu
         }
         super::super::wait::until("the owner Root reaches the mounted reducer", || {
             cx.run_until_parked();
-            !calls.lock().expect("root calls").is_empty()
+            calls.lock().is_ok_and(|calls| !calls.is_empty())
                 && !graph.root.read_with(cx, |root, _| root.has_pending_work())
         });
-        let calls = calls.lock().expect("root calls").clone();
+        let calls = calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("startup root call ledger was poisoned"))?
+            .clone();
         assert_eq!(
             calls.len(),
             1,
@@ -165,4 +192,5 @@ fn an_owner_handover_runs_one_root_without_cancelling_a_constructor_read(cx: &mu
             "the Root reply changed the mounted snapshot beyond OwnerReady's basis"
         );
     }
+    Ok(())
 }
