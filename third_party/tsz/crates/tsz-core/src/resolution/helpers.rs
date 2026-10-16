@@ -513,12 +513,10 @@ pub(crate) fn node16_extension_substitution(path: &Path, extension: &str) -> Opt
         .map(|(base, _)| base)
         .unwrap_or_else(|| path.to_path_buf());
 
-    Some(
-        replacements
-            .iter()
-            .map(|ext| base.with_extension(ext))
-            .collect(),
-    )
+    replacements
+        .iter()
+        .map(|ext| path_with_suffix_and_extension(&base, "", ext))
+        .collect()
 }
 
 pub(crate) fn declaration_substitution_for_main(path: &Path) -> Option<PathBuf> {
@@ -1132,6 +1130,14 @@ mod tests {
                 PathBuf::from("pkg/index.ts"),
                 PathBuf::from("pkg/index.tsx"),
                 PathBuf::from("pkg/index.d.ts"),
+            ])
+        );
+        assert_eq!(
+            node16_extension_substitution(Path::new("pkg/app.component.js"), "js"),
+            Some(vec![
+                PathBuf::from("pkg/app.component.ts"),
+                PathBuf::from("pkg/app.component.tsx"),
+                PathBuf::from("pkg/app.component.d.ts"),
             ])
         );
         assert_eq!(
