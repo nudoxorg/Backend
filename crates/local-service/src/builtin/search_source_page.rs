@@ -476,6 +476,7 @@ mod tests {
         let mut first_request = PackageSourceMembershipPageRequestV1::first(package.clone());
         first_request.limit = 128;
         let first = membership_page(&stored, &first_request);
+        assert!(first.admits_request(&first_request));
         let (source_relation_root, source_version, file_count, first_files, first_cursor) =
             match first {
                 PackageSourceMembershipPageResultV1::Page {
@@ -507,8 +508,12 @@ mod tests {
         let mut continuation_request = PackageSourceMembershipPageRequestV1::first(package.clone())
             .with_selection(source_relation_root, source_version)
             .with_cursor(first_cursor.clone());
-        continuation_request.limit = 128;
+        // Membership cursors bind the retained file position, not a limit
+        // credit. A response-budget adapter may retry this same cursor with a
+        // smaller row bound, including after a cold reopen.
+        continuation_request.limit = 7;
         let continuation = membership_page(&reopened, &continuation_request);
+        assert!(continuation.admits_request(&continuation_request));
         let (second_files, second_cursor) = match continuation {
             PackageSourceMembershipPageResultV1::Page {
                 source_relation_root: resumed_root,
@@ -523,7 +528,7 @@ mod tests {
                 assert_eq!(resumed_version, source_version);
                 assert_eq!(resumed_count, file_count);
                 assert_eq!(start_offset, 128);
-                assert_eq!(files.len(), 128);
+                assert_eq!(files.len(), 7);
                 (files, next)
             }
             other => panic!("expected resumed membership page, got {other:?}"),
@@ -548,14 +553,15 @@ mod tests {
                 .map(|file| (file.file_key, file.path.clone())),
         );
         let mut next = second_cursor;
-        let mut expected_offset = 256_u32;
+        let mut expected_offset = 135_u32;
         let mut pages = 2;
         while let Some(cursor) = next {
             let mut request = PackageSourceMembershipPageRequestV1::first(package.clone())
                 .with_selection(source_relation_root, source_version)
                 .with_cursor(cursor);
-            request.limit = 128;
+            request.limit = if pages % 2 == 0 { 1 } else { 128 };
             let result = membership_page(&reopened, &request);
+            assert!(result.admits_request(&request));
             let PackageSourceMembershipPageResultV1::Page {
                 start_offset,
                 files,
@@ -567,7 +573,7 @@ mod tests {
             };
             assert_eq!(start_offset, expected_offset);
             assert!(!files.is_empty());
-            assert!(files.len() <= 128);
+            assert!(files.len() <= usize::from(request.limit));
             expected_offset += u32::try_from(files.len()).expect("bounded page count");
             selected.extend(files.iter().map(|file| (file.file_key, file.path.clone())));
             next = following;

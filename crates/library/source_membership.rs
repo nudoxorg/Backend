@@ -249,6 +249,54 @@ pub enum PackageSourceMembershipPageResultV1 {
 }
 
 impl PackageSourceMembershipPageResultV1 {
+    /// Correlates a complete owner page with its exact requested frontier.
+    /// The cursor has no page-size credit: the owner authenticates its member
+    /// position independently of the next request's bounded row limit.
+    #[must_use]
+    pub fn admits_request(&self, request: &PackageSourceMembershipPageRequestV1) -> bool {
+        if !request.has_admissible_shape() || !self.has_admissible_shape() {
+            return false;
+        }
+        match self {
+            Self::Page {
+                package,
+                project_key,
+                source_relation_root,
+                source_version,
+                start_offset,
+                files,
+                ..
+            } => {
+                let PackageReference::Local(label) = &request.package else {
+                    return false;
+                };
+                package == &request.package
+                    && *project_key == crate::package_key(label.as_str()).to_bytes()
+                    && request
+                        .expected_source_relation_root
+                        .is_none_or(|root| root == *source_relation_root)
+                    && request
+                        .expected_source_version
+                        .is_none_or(|version| version == *source_version)
+                    && *start_offset
+                        == request
+                            .cursor
+                            .as_ref()
+                            .map_or(0, |cursor| cursor.ordinal + 1)
+                    && files.len() <= usize::from(request.limit)
+                    && request.cursor.as_ref().is_none_or(|cursor| {
+                        cursor.project_key == *project_key
+                            && files
+                                .first()
+                                .is_some_and(|first| first.file_key > cursor.last_file_key)
+                    })
+            }
+            Self::Stale { package, .. } | Self::Unavailable { package, .. } => {
+                package == &request.package
+            }
+        }
+    }
+
     /// Checks that the owner reply is bounded and self-consistent.
     #[must_use]
     pub fn has_admissible_shape(&self) -> bool {

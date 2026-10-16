@@ -37,6 +37,8 @@ mod package_graph_budget;
 mod record_budget_pages;
 #[path = "tests/semantic_source_pages.rs"]
 mod semantic_source_pages;
+#[path = "tests/source_membership_pages.rs"]
+mod source_membership_pages;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
 #[path = "tests/token_outline.rs"]
@@ -606,6 +608,7 @@ struct Fake {
     semantic_source_document: Option<std::sync::Arc<backend_library::SemanticSourceDocument>>,
     /// Synthetic immutable membership; portable source bytes remain real42.
     semantic_versions_total: Option<u64>,
+    membership_rows: Option<Vec<backend_library::PackageSourceMembershipFileV1>>,
     native_graph_rows: Option<Vec<backend_library::PackageDependencyRecord>>,
     /// Stops the exact admitted scope after a native graph reply is prepared.
     graph_cancel_after_native_reply: Option<RequestCancellationReason>,
@@ -1053,6 +1056,13 @@ impl Engine for Fake {
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.surface_commands.push(command.clone());
+        if let (SurfaceCommand::PackageSourceMembership { request }, Some(rows)) =
+            (&command, &self.membership_rows)
+        {
+            return Ok(SurfaceReply::PackageSourceMembershipPage(
+                source_membership_pages::page_for(request, rows),
+            ));
+        }
         if let (SurfaceCommand::SemanticVersions { limit, cursor, .. }, Some(total)) =
             (&command, self.semantic_versions_total)
         {

@@ -88,6 +88,7 @@ mod sections;
 mod shelf;
 mod shell;
 mod signature;
+mod source_membership;
 mod startup_recovery;
 mod status;
 mod token_count;
@@ -166,6 +167,7 @@ pub use render::{
 pub use sections::{LineRole, SectionKind, SectionReader};
 pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
+pub use source_membership::PackageSourceMembershipSelection;
 pub use status::{
     CapabilitySummary, EmbeddingState, FamilyRollup, PublishedRows, ReasonRollup, Sequence,
     SlotCount, Status, VisiblePublicationState, unavailable_name,
