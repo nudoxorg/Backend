@@ -254,6 +254,14 @@ class SmokeContract(unittest.TestCase):
     def test_gui_requires_visible_window_and_successful_public_quit(self):
         self.assertEqual(self.gui(), 0)
 
+    def test_gui_focus_and_key_share_original_five_second_budget(self):
+        import subprocess
+        success = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(smoke.time, "monotonic", side_effect=[10, 11, 14]), \
+                patch.object(smoke.subprocess, "run", return_value=success) as run:
+            self.assertEqual(smoke._deliver_gui_quit("xdotool", "123", {}), 0)
+        self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [4, 1])
+
     def test_gui_quit_injection_failure_is_not_accepted_or_hidden(self):
         self.assertEqual(self.gui(injection_error=True), 1)
         self.assertIn("Quit key delivery failed with exit 4", self.gui_error)
