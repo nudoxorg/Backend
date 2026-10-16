@@ -268,7 +268,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::Clang,
-        b"tree-sitter-cpp-0.23.4/tags-v3",
+        b"tree-sitter-cpp-0.23.4/tags-v4-export-macro-records",
         vec![backend_compile::GrammarVariant::new(
             &["c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm"],
             tree_sitter_cpp::LANGUAGE.into(),
@@ -559,4 +559,106 @@ pub struct SessionCapability {
     pub reset_key: backend_compile::SessionId,
     /// Whether a configured helper advertises persistent sessions.
     pub persistent: bool,
+}
+
+#[cfg(test)]
+mod syntax_tests {
+    use super::syntax_frontend;
+    use backend_compile::DeclarationKind;
+    use std::path::Path;
+
+    #[test]
+    fn export_macro_records_keep_their_authored_names_and_exact_source() {
+        let source = b"#define PUGIXML_API\n\
+#define PUGIXML_CLASS PUGIXML_API\n\
+namespace pugi {\n\
+class PUGIXML_CLASS xml_document: public xml_node { public: xml_document(); };\n\
+struct PUGIXML_CLASS xml_parse_result { int status; };\n\
+}\n";
+        let analysis = syntax_frontend()
+            .expect("syntax grammar")
+            .analyze(Path::new("pugixml.hpp"), source)
+            .expect("export macro does not make valid records malformed");
+        let records = analysis
+            .declarations()
+            .iter()
+            .filter(|declaration| declaration.name() != "pugixml")
+            .collect::<Vec<_>>();
+        let class = records
+            .iter()
+            .find(|declaration| declaration.name() == "xml_document")
+            .expect("authored class name");
+        assert_eq!(class.kind(), DeclarationKind::Class);
+        assert_eq!(class.line(), 4);
+        assert_eq!(
+            class.source_excerpt().text(),
+            Some("class PUGIXML_CLASS xml_document: public xml_node { public: xml_document(); }")
+        );
+        assert!(records.iter().any(|declaration| {
+            declaration.name() == "xml_parse_result"
+                && declaration.kind() == DeclarationKind::Struct
+                && declaration.line() == 5
+                && declaration.source_excerpt().text()
+                    == Some("struct PUGIXML_CLASS xml_parse_result { int status; }")
+        }));
+        assert!(
+            !records
+                .iter()
+                .any(|declaration| declaration.name() == "PUGIXML_CLASS")
+        );
+    }
+
+    #[test]
+    fn ambiguous_non_macro_record_prefix_is_not_rewritten() {
+        let source = b"namespace pugi { struct Api xml_parse_result { int status; }; }\n";
+        let analysis = syntax_frontend()
+            .expect("syntax grammar")
+            .analyze(Path::new("pugixml.hpp"), source);
+        let analysis = analysis.expect("unmodified grammar input remains admissible");
+        assert!(
+            !analysis
+                .declarations()
+                .iter()
+                .any(|declaration| declaration.name() == "xml_parse_result")
+        );
+    }
+
+    #[test]
+    fn misleading_or_conflicting_macro_definitions_are_not_masked() {
+        let cases: &[(&str, &[u8])] = &[
+            (
+                "misleading API replacement",
+                b"#define MISLEADING_API 123\nclass MISLEADING_API xml_document { int value; };\n",
+            ),
+            (
+                "misleading noexcept replacement",
+                b"#define MISLEADING_NOEXCEPT int\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
+            ),
+            (
+                "misleading punctuation after noexcept",
+                b"#define MISLEADING_NOEXCEPT noexcept +\nstruct MISLEADING_NOEXCEPT Thing { int value; };\n",
+            ),
+            (
+                "misleading punctuation after API marker",
+                b"#define MISLEADING_API ...\nclass MISLEADING_API xml_document { int value; };\n",
+            ),
+            (
+                "conflicting conditional API replacements",
+                b"#if defined(ONE)\n#define CONDITIONAL_API\n#else\n#define CONDITIONAL_API 123\n#endif\nclass CONDITIONAL_API xml_document { int value; };\n",
+            ),
+        ];
+
+        for (case, source) in cases {
+            let analysis = syntax_frontend()
+                .expect("syntax grammar")
+                .analyze(Path::new("pugixml.hpp"), source);
+            assert!(
+                analysis.is_err()
+                    || !analysis.unwrap().declarations().iter().any(|declaration| {
+                        declaration.name() == "xml_document" || declaration.name() == "Thing"
+                    }),
+                "{case} must not be treated as a proven syntax macro"
+            );
+        }
+    }
 }

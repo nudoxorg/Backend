@@ -28,7 +28,15 @@ impl<'fs> ModuleResolver<'fs> {
         path: &Path,
         package_type: Option<PackageType>,
     ) -> Option<PathBuf> {
-        self.try_file_inner(path, package_type, true)
+        self.try_file_inner(
+            path,
+            package_type,
+            true,
+            !matches!(
+                self.resolution_kind,
+                ModuleResolutionKind::Node16 | ModuleResolutionKind::NodeNext,
+            ),
+        )
     }
 
     /// Like [`Self::try_file`], but does NOT try directory index resolution
@@ -39,22 +47,22 @@ impl<'fs> ModuleResolver<'fs> {
         path: &Path,
         package_type: Option<PackageType>,
     ) -> Option<PathBuf> {
-        self.try_file_inner(path, package_type, false)
+        self.try_file_inner(path, package_type, false, false)
     }
 
-    /// Shared body of [`Self::try_file`] and [`Self::try_file_no_index`]. The
-    /// two differ only in the trailing directory-index probe, gated on
-    /// `try_index`: `try_file` passes `true`, `try_file_no_index` passes
-    /// `false` (ESM packages in Node16/NodeNext, where Node.js forbids
-    /// directory index resolution). Everything before that — normalization,
+    /// Shared file probing with separate directory-index and implicit-extension
+    /// policies. Node16/NodeNext ESM contexts prohibit both; a relative request
+    /// supplies its actual import/require mode independently of package type.
+    /// The explicit-extension stages — normalization,
     /// arbitrary-extension declaration probing, `node16_extension_substitution`,
     /// the `rewriteRelativeImportExtensions` declaration remap, and the
-    /// original-extension fallback — is identical between the two callers.
+    /// original-extension fallback — remain shared by every caller.
     fn try_file_inner(
         &self,
         path: &Path,
         package_type: Option<PackageType>,
         try_index: bool,
+        implicit_extensions: bool,
     ) -> Option<PathBuf> {
         // Canonicalize `.`/`..` before probing so the returned `PathBuf` is
         // the same across alias branches that point at the same file.
@@ -70,7 +78,12 @@ impl<'fs> ModuleResolver<'fs> {
             }) {
                 return Some(resolved);
             }
-            return None;
+            // A dotted basename such as `app.component` can still name
+            // `app.component.ts`. TypeScript appends implementation suffixes
+            // after the declaration-companion probe only outside ESM mode.
+            if !implicit_extensions {
+                return None;
+            }
         }
         if let Some((base, extension)) = split_path_extension(path) {
             // A `.json` specifier's sibling `.d.json.ts` declaration file
@@ -311,6 +324,16 @@ impl<'fs> ModuleResolver<'fs> {
         }
 
         self.try_directory(path, package_type)
+    }
+
+    pub(super) fn try_file_or_directory_with_mode(
+        &self,
+        path: &Path,
+        package_type: Option<PackageType>,
+        implicit_extensions: bool,
+    ) -> Option<PathBuf> {
+        self.try_file_inner(path, package_type, true, implicit_extensions)
+            .or_else(|| self.try_directory(path, package_type))
     }
 
     /// Resolve an exports target without Node16 extension substitution.

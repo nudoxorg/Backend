@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "task": "W3 source review of T2 surface answer candidates",
+  "review_head": "d47d7a3fa5500c8e103c1909afe7d4801ca3575a",
+  "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+  "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
+  "snapshot_baseline": "tests/surface/snapshots/python-cachetools.json at review_head",
+  "scope": "Pinned-source review of answer deltas only. No candidate snapshot, runtime output, source, or performance baseline was changed.",
+  "performance_policy": {
+    "action": "Preserve the existing golden performance object exactly when applying any reviewed answer-only update; do not copy candidate performance measurements or alter bands.",
+    "candidate_measurements": "The candidate performance object differs from the golden in every case. It is a separate sample, not a reviewed baseline update.",
+    "baseline_object_sha256": "8e2ff90c5c4a33c1b303f9d526647e854e7cc080b6b073810850a40d37e0268f",
+    "baseline_measurements": "cpu 11.76 -> 6.54s; peak RSS 513836 -> 516744 KiB; CLI add 15.56 -> 14.37s.",
+    "candidate_performance_differs": true
+  },
+  "limits": [
+    "No Cargo build/test, Nix build, or native replay was run.",
+    "Source evidence validates semantic categories and authored paths; it does not derive exact ranked result order or truncated counts.",
+    "No current-head T2 pass or performance-band pass is claimed."
+  ],
+  "source_tree_manifest_method": "SHA-256 over sorted relative file path, NUL, per-file SHA-256, newline records for every file in the pinned source tree.",
+  "case": "python-cachetools",
+  "source": {
+    "coordinate": "pypi:cachetools@7.2.0",
+    "pin_location": ".config/nix/corpus-pins.json:5023",
+    "source_tree": "/nix/store/4j9li8kwjhwbpjl72vi0ckzjv2wqcsg8-nudox-surface-python-cachetools-7.2.0",
+    "file_count": 37,
+    "source_tree_manifest_sha256": "986b319b4041312ef9776e9f11af743b498188fccacc5a3af30eef0f2b97bdd6",
+    "evidence": {
+      "src/cachetools/__init__.py": "525ba807fed4af10744f068b5f9b81710903b6f73ee897469d3bf615847e2bd0",
+      "src/cachetools/_cachedmethod.py": "ad2e75ebb6d3131225f36ce63c6f281700e675aff79ce2d447f8e97132b4ecb4"
+    }
+  },
+  "answer_delta": {
+    "outline_roots": "52 -> 61; matching old struct roots become class roots (35); candidate adds 8 constant roots and one function root. The 200-declaration cap remains the same.",
+    "search": "TTLCache records 6 -> 9; cached remains 25.",
+    "source_support": "AST parsing finds production classes Cache/FIFOCache/LFUCache/LRUCache/RRCache/TTLCache/TLRUCache and descriptor/wrapper classes; methods are nested in class bodies. Top-level cached/cache methods and key helpers are actual functions. This supports correcting Python struct to class and distinguishing methods from functions.",
+    "preserved": "Package root identity, query set, answer category, 200 declaration cap, and cached search record count remain stable.",
+    "unresolved": "No unmatched source-backed entries remain in captured capped outline/search records; capped outlines and pathless symbols retain their original partial/source-less semantics."
+  },
+  "decision": "Accept answer-only snapshot correction after independent pinned-source AST and captured-record review. Preserve prior performance measurements/bands exactly; current-head T2 acceptance remains required.",
+  "record_review": {
+    "reviewer": "Codex parent, independently of Luna source-category review",
+    "candidate_sha256": "638c67b894526315ead5b6e900bfd1e7f1f320570c80a1d571a2b2f69c719929",
+    "outline_entries": 200,
+    "validation": "Every capped outline entry name and kind independently matched Python AST declarations/imports/bindings across the pinned .py/.pyi tree; methods require class ownership, properties require @property. No unmatched entries. Complete-result claim is not inferred from capped outline.",
+    "authored_search_locations_verified": 29,
+    "pathless_search_identities": 5,
+    "search_validation": "Every distinct authored CLI/MCP search path/line/name matches original source line. Pathless type/variable/external identities remain explicitly source-less; no excerpt is invented. Existing harness normalization/continuation checks passed before snapshot comparison.",
+    "ordering": "Recorded exact deterministic current product order; no relevance optimality claim. Declaration cap and query limits unchanged.",
+    "performance_object_sha256_preserved": "8e2ff90c5c4a33c1b303f9d526647e854e7cc080b6b073810850a40d37e0268f"
+  }
+}

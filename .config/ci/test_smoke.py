@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import platform
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,7 +72,119 @@ class SmokeContract(unittest.TestCase):
             out.write('\n{"name":"frame","draw_ms":0.8}\n')
         self.assertTrue(smoke.drew_a_frame(trace))
 
-    def gui(self, visible=True, quit_code=0):
+    def test_gui_shutdown_diagnostics_sample_owner_threads_with_bounds(self):
+        proc_root = self.root / "proc"
+
+        def process(pid, threads, children="", thread_children=None):
+            base = proc_root / str(pid)
+            (base / "task" / str(pid)).mkdir(parents=True)
+            (base / "task" / str(pid) / "children").write_text(children)
+            (base / "cwd").symlink_to(self.home)
+            (base / "environ").write_text("PRIVATE_ENV_SENTINEL")
+            (base / "cmdline").write_text("PRIVATE_ARG_SENTINEL")
+            thread_children = thread_children or {}
+            for tid, comm in threads:
+                thread = base / "task" / str(tid)
+                thread.mkdir(parents=True, exist_ok=True)
+                (thread / "comm").write_text(comm)
+                (thread / "children").write_text(thread_children.get(tid, ""))
+                (thread / "wchan").write_text("futex_wait_queue")
+                (thread / "stack").write_text("[<0>] schedule+0x1/0x2")
+                fsync_number = 82 if platform.machine().casefold() in ("aarch64", "arm64") else 74
+                (thread / "syscall").write_text(f"{fsync_number} 7 0 0 0 0 0 0 0\n")
+            (base / "fd").mkdir()
+            (base / "fd" / "7").symlink_to(self.home / "workspace")
+
+        ordinary = [(400 + index, f"ui-frame-{index}") for index in range(34)]
+        process(400, [*ordinary, (9000, "backend-owner")], thread_children={433: "450"})
+        process(450, [(450, "locald-worker")])
+
+        snapshot = smoke._gui_process_diagnostics(400, proc_root)
+
+        self.assertLessEqual(snapshot.count(" tid="), 32)
+        self.assertIn("tid=9000 comm='backend-owner'", snapshot)
+        self.assertIn("name=fsync fd=7", snapshot)
+        self.assertIn(str(self.home / "workspace"), snapshot)
+        self.assertIn("tid=450 comm='locald-worker'", snapshot)
+        self.assertIn(f"pid=400 cwd='{self.home}'", snapshot)
+        self.assertNotIn("PRIVATE_ENV_SENTINEL", snapshot)
+        self.assertNotIn("PRIVATE_ARG_SENTINEL", snapshot)
+
+    def test_syscall_diagnostic_exposes_only_number_and_sync_fd_path(self):
+        proc_root = self.root / "proc"
+        thread = proc_root / "81" / "task" / "82"
+        thread.mkdir(parents=True)
+        (thread / "syscall").write_text("75 9 0 0 0 0 0 0 0\n")
+        (proc_root / "81" / "fd").mkdir()
+        (proc_root / "81" / "fd" / "9").symlink_to(self.home / "object.cas")
+
+        sync = smoke._thread_syscall_diagnostic(proc_root, 81, 82, "x86_64")
+        ordinary = thread / "syscall"
+        ordinary.write_text("42 987654 0 0 0 0 0 0 0\n")
+        other = smoke._thread_syscall_diagnostic(proc_root, 81, 82, "x86_64")
+
+        self.assertEqual(
+            sync,
+            f"syscall=75 name=fdatasync fd=9 path={str(self.home / 'object.cas')!r}",
+        )
+        self.assertEqual(other, "syscall=42 (not fsync/fdatasync)")
+        self.assertNotIn("987654", other)
+
+    def test_shutdown_trace_keeps_lifecycle_order_and_filters_frame_flood(self):
+        trace = self.root / "trace.jsonl"
+        records = [
+            {"name": "boot.owner_host_start.begin", "t_ms": 2, "detail": "private data"},
+            *(
+                {"name": "frame_collection", "t_ms": index, "timings": []}
+                for index in range(300)
+            ),
+            *(
+                {"name": f"boot.phase_{index}", "t_ms": index + 300}
+                for index in range(80)
+            ),
+            {"name": "close.finish", "t_ms": 400, "detail": "private data"},
+        ]
+        trace.write_text("\n".join(json.dumps(record) for record in records))
+
+        lifecycle = smoke._lifecycle_trace(trace)
+
+        self.assertLess(lifecycle.index("boot.owner_host_start.begin"), lifecycle.index("close.finish"))
+        self.assertNotIn("frame_collection", lifecycle)
+        self.assertNotIn("private data", lifecycle)
+        self.assertLessEqual(len(lifecycle.splitlines()), 64)
+        self.assertLess(len(lifecycle.encode()), 16 * 1024)
+
+    def test_shutdown_startup_log_keeps_only_workspace_phases(self):
+        log = self.root / "desktop.log"
+        log.write_text(
+            "unrelated diagnostic with secret\n"
+            "backend-local-service: owner startup phase WorkspaceOpen\n"
+            "backend-engine: workspace open genesis_seed.begin\n"
+            "backend-local-service: workspace genesis admitted\n"
+        )
+
+        phases = smoke._startup_log(log)
+
+        self.assertIn("owner startup phase WorkspaceOpen", phases)
+        self.assertIn("workspace open genesis_seed.begin", phases)
+        self.assertIn("workspace genesis admitted", phases)
+        self.assertNotIn("unrelated", phases)
+        self.assertNotIn("secret", phases)
+
+    def test_shutdown_startup_log_summary_is_bounded(self):
+        log = self.root / "many-phases.log"
+        log.write_text("".join(
+            f"backend-engine: workspace open phase_{index} " + ("x" * 400) + "\n"
+            for index in range(100)
+        ))
+
+        phases = smoke._startup_log(log)
+
+        self.assertLessEqual(len(phases.splitlines()), 64)
+        self.assertLess(len(phases.encode()), 16 * 1024)
+        self.assertIn("startup phase records omitted", phases)
+
+    def gui(self, visible=True, quit_code=0, ignore_quit=False):
         def executable(name, code):
             path = self.bin_dir / name
             path.write_text(f"#!{os.sys.executable}\n" + code)
@@ -87,6 +200,7 @@ class SmokeContract(unittest.TestCase):
                    "assert os.environ.get('VK_DRIVER_FILES') == '/nix/mesa/lvp.json'\n"
                    "assert os.environ.get('VK_ICD_FILENAMES') == '/nix/mesa/lvp.json'\n"
                    "assert os.environ.get('FONTCONFIG_FILE') == '/nix/fonts/fonts.conf'\n"
+                   "print('fixture X server', file=sys.stderr, flush=True)\n"
                    "os.write(int(sys.argv[2]), b'91\\n')\ntime.sleep(30)\n")
         executable("xdotool", "import os, sys\nfrom pathlib import Path\n"
                    f"visible = {visible!r}\n"
@@ -109,7 +223,10 @@ class SmokeContract(unittest.TestCase):
                    "while not Path(os.environ['HOME'], 'quit').exists():\n"
                    "    if time.monotonic() > deadline: sys.exit(9)\n"
                    "    time.sleep(0.01)\n"
+                   "print('fixture received Quit', flush=True)\n"
+                   f"if {ignore_quit!r}: time.sleep(30)\n"
                    f"sys.exit({quit_code})\n")
+        stderr = io.StringIO()
         with patch.dict(os.environ, {
             "PATH": str(self.bin_dir),
             "GENERIC_CREDENTIAL_SENTINEL": "must-not-cross-boundary",
@@ -122,8 +239,10 @@ class SmokeContract(unittest.TestCase):
             "VK_ICD_FILENAMES": "/nix/mesa/lvp.json",
             "FONTCONFIG_FILE": "/nix/fonts/fonts.conf",
         }), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return smoke.smoke_gui(self.bin_dir, self.home, 5)
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            result = smoke.smoke_gui(self.bin_dir, self.home, 5)
+        self.gui_error = stderr.getvalue()
+        return result
 
     def test_gui_requires_visible_window_and_successful_public_quit(self):
         self.assertEqual(self.gui(), 0)
@@ -133,6 +252,14 @@ class SmokeContract(unittest.TestCase):
 
     def test_gui_crash_on_quit_fails(self):
         self.assertEqual(self.gui(quit_code=7), 1)
+
+    def test_gui_hanging_after_public_quit_fails_with_diagnostics(self):
+        self.assertEqual(self.gui(ignore_quit=True), 1)
+        self.assertIn("did not shut down within 10s after Quit", self.gui_error)
+        self.assertIn("fixture received Quit", self.gui_error)
+        self.assertIn("desktop.log:", self.gui_error)
+        self.assertIn("xvfb.log:", self.gui_error)
+        self.assertIn("trace.jsonl:", self.gui_error)
 
     def test_environment_cannot_attach_to_real_workspace(self):
         with patch.dict(os.environ, {
