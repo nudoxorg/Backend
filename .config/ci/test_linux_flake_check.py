@@ -71,6 +71,7 @@ class LinuxFlakeCheckTests(unittest.TestCase):
     def test_remote_build_uses_full_inventory_in_one_bounded_request(self):
         calls = []
         output = io.StringIO()
+        expected_store = f"ssh-ng://nixbuilder@10.80.0.1?ssh-key={self.key}"
         with (
             patch.dict(os.environ, {"NIX_CONFIG": self.config}, clear=True),
             patch.object(runner, "run", self.fake_run(calls)),
@@ -79,10 +80,12 @@ class LinuxFlakeCheckTests(unittest.TestCase):
             self.assertEqual(runner.main(), 0)
         self.assertIn("current-system checks: control-plane, formatting", output.getvalue())
         self.assertIn("--no-build", calls[0][0])
-        # All flake consumers recreate attributes whose disposable-store
-        # derivations may have been collected between commands.
+        expected_store_options = ["--eval-store", "auto", "--store", expected_store]
+        # Every flake consumer uses the same explicit evaluation/build stores.
         for command, _ in calls:
             if any(value.startswith("path:.") for value in command):
+                option = command.index("--eval-store")
+                self.assertEqual(command[option:option + 4], expected_store_options)
                 option = command.index("eval-cache")
                 self.assertEqual(command[option - 1:option + 2], ["--option", "eval-cache", "false"])
         self.assertEqual(len([call for call in calls if call[0][1:2] == ["build"]]), 1)
