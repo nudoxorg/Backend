@@ -1,8 +1,8 @@
 //! Composite show must retain useful output and report failed required reads.
 use super::*;
 use backend_library::{
-    DocumentQuery, HealthReport, Library, Row, RowId, SourceExcerpt, SourceLocation, SurfaceReply,
-    symbol_key,
+    DocumentQuery, HealthReport, Library, PageRequest, Row, RowId, SourceExcerpt, SourceLocation,
+    SurfaceReply, symbol_key,
 };
 use backend_present::{Engine, Probe};
 
@@ -103,16 +103,24 @@ impl Engine for Reader {
                     Ok(ReplyDto::new(2, CommandReply::Graph(self.snapshot())))
                 }
             }
-            Probe::OutlinePage {
-                path: "/abs/app", ..
-            } => {
+            Probe::OutlinePage { path, limit } if path == "/abs/app" => {
                 self.calls.push("members");
                 if self.members_fail {
                     Err(ClientError::Protocol(
                         "DigestMismatch MEMBER_PROOF_REFUSED".to_owned(),
                     ))
                 } else {
-                    Ok(ReplyDto::new(3, CommandReply::Graph(self.snapshot())))
+                    let page = self
+                        .catalog
+                        .outline_page(
+                            package_key(path),
+                            PageRequest::new(
+                                self.catalog.revision_root(),
+                                QueryLimit::new(limit).expect("admitted outline credit"),
+                            ),
+                        )
+                        .expect("actual revision-bound member projection");
+                    Ok(ReplyDto::new(3, CommandReply::ProjectionPage(page)))
                 }
             }
             _ => panic!("unexpected probe {probe:?}"),
@@ -229,7 +237,7 @@ fn show_transport_failure_keeps_admitted_document_and_io_exit() {
         render::exit_code(&expected)
     );
     assert_ne!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
-    let output = render::json(&answer);
+    let output = render::json_with_detail(&answer, backend_present::Detail::Full);
     assert!(output.contains("RETAINED_DOCUMENT"));
     assert_eq!(reader.calls, ["document", "related", "members"]);
 }
