@@ -83,6 +83,14 @@ pub enum NativePathDisposition {
         byte_length: u32,
         chunk_count: u32,
     },
+    /// Valid UTF-8 bytes refused only by the explicit C# malformed-source
+    /// baseline result; this does not claim structural declarations.
+    CSharpMalformed {
+        content: [u8; 32],
+        source_identity: ContentId<SourceFactDomain>,
+        byte_length: u32,
+        chunk_count: u32,
+    },
     /// The path is accounted for, but is not eligible for native compilation.
     Refused(NativePathRefusal),
 }
@@ -119,6 +127,18 @@ pub struct NativeClangCandidatePermit {
     source_identity: ContentId<SourceFactDomain>,
 }
 
+/// Unforgeable authorization for one exact malformed C# path selected in a
+/// checked current native frontier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCSharpCandidatePermit {
+    project: [u8; 32],
+    selected_root: [u8; 32],
+    profile: LanguageProfile,
+    path: String,
+    content: [u8; 32],
+    source_identity: ContentId<SourceFactDomain>,
+}
+
 impl NativeClangCandidatePermit {
     /// Exact path authorized by the checked selected frontier.
     #[must_use]
@@ -127,6 +147,43 @@ impl NativeClangCandidatePermit {
     }
 
     /// Exact Clang profile authorized by the checked selected frontier.
+    #[must_use]
+    pub const fn profile(&self) -> LanguageProfile {
+        self.profile
+    }
+
+    /// Selected native-frontier root that issued this permit.
+    #[must_use]
+    pub const fn selected_root(&self) -> [u8; 32] {
+        self.selected_root
+    }
+
+    pub(crate) fn admits(
+        &self,
+        project: [u8; 32],
+        selected_root: [u8; 32],
+        relative_path: &str,
+        profile: LanguageProfile,
+        bytes: &[u8],
+    ) -> bool {
+        project == self.project
+            && selected_root == self.selected_root
+            && relative_path == self.path
+            && profile == self.profile
+            && backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes()
+                == self.content
+            && ContentId::<SourceFactDomain>::from_canonical_bytes(bytes) == self.source_identity
+    }
+}
+
+impl NativeCSharpCandidatePermit {
+    /// Exact path authorized by the checked selected frontier.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Exact C# profile authorized by the checked selected frontier.
     #[must_use]
     pub const fn profile(&self) -> LanguageProfile {
         self.profile
@@ -208,6 +265,35 @@ impl CheckedNativeFrontier {
             return None;
         };
         Some(NativeClangCandidatePermit {
+            project: self.project,
+            selected_root: self.root,
+            profile: self.profile,
+            path: path.to_owned(),
+            content,
+            source_identity,
+        })
+    }
+
+    /// Issues a native-only compiler permit for one exact malformed C# path.
+    /// Structural and refused dispositions never produce a permit.
+    #[must_use]
+    pub fn csharp_candidate_permit(&self, path: &str) -> Option<NativeCSharpCandidatePermit> {
+        if !matches!(self.profile, LanguageProfile::CSharp(_)) {
+            return None;
+        }
+        let disposition = self
+            .dispositions
+            .binary_search_by(|(candidate, _)| candidate.as_str().cmp(path))
+            .ok()?;
+        let NativePathDisposition::CSharpMalformed {
+            content,
+            source_identity,
+            ..
+        } = self.dispositions[disposition].1
+        else {
+            return None;
+        };
+        Some(NativeCSharpCandidatePermit {
             project: self.project,
             selected_root: self.root,
             profile: self.profile,
@@ -392,13 +478,22 @@ pub fn build_native_frontier_records_with_content(
         }
     }
     for (path, disposition) in &mut dispositions {
-        if let NativePathDisposition::ClangMalformed {
-            content: expected_content,
-            source_identity,
-            byte_length,
-            chunk_count,
-        } = disposition
-        {
+        let malformed = match disposition {
+            NativePathDisposition::ClangMalformed {
+                content,
+                source_identity,
+                byte_length,
+                chunk_count,
+            }
+            | NativePathDisposition::CSharpMalformed {
+                content,
+                source_identity,
+                byte_length,
+                chunk_count,
+            } => Some((content, source_identity, byte_length, chunk_count)),
+            _ => None,
+        };
+        if let Some((expected_content, source_identity, byte_length, chunk_count)) = malformed {
             let bytes = content_by_path
                 .get(path)
                 .ok_or_else(|| format!("native malformed path lacks retained bytes: {path}"))?;
@@ -423,8 +518,12 @@ pub fn build_native_frontier_records_with_content(
     let malformed_paths = dispositions
         .iter()
         .filter_map(|(path, disposition)| {
-            matches!(disposition, NativePathDisposition::ClangMalformed { .. })
-                .then_some(path.as_str())
+            matches!(
+                disposition,
+                NativePathDisposition::ClangMalformed { .. }
+                    | NativePathDisposition::CSharpMalformed { .. }
+            )
+            .then_some(path.as_str())
         })
         .collect::<BTreeSet<_>>();
     if content_by_path
@@ -433,12 +532,18 @@ pub fn build_native_frontier_records_with_content(
     {
         return Err("native content bytes name a path without malformed disposition".to_owned());
     }
-    if !matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_))
-        && dispositions.iter().any(|(_, disposition)| {
-            matches!(disposition, NativePathDisposition::ClangMalformed { .. })
-        })
+    if dispositions
+        .iter()
+        .any(|(_, disposition)| matches!(disposition, NativePathDisposition::ClangMalformed { .. }))
+        && !matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_))
     {
         return Err("Clang malformed-source disposition requires a Clang profile".to_owned());
+    }
+    if dispositions.iter().any(|(_, disposition)| {
+        matches!(disposition, NativePathDisposition::CSharpMalformed { .. })
+    }) && !matches!(profile, LanguageProfile::CSharp(_))
+    {
+        return Err("C# malformed-source disposition requires a C# profile".to_owned());
     }
     let (disposition_digest, path_count) = product_native_frontier_digest(
         dispositions
@@ -557,18 +662,27 @@ pub fn admit_native_frontier(
         return Err("native profile frontier digest is stale".to_owned());
     }
     for (path, disposition) in &dispositions {
-        if let NativePathDisposition::ClangMalformed {
-            content,
-            source_identity,
-            byte_length,
-            chunk_count,
-        } = disposition
-        {
+        let malformed = match disposition {
+            NativePathDisposition::ClangMalformed {
+                content,
+                source_identity,
+                byte_length,
+                chunk_count,
+            }
+            | NativePathDisposition::CSharpMalformed {
+                content,
+                source_identity,
+                byte_length,
+                chunk_count,
+            } => Some((*content, *source_identity, *byte_length, *chunk_count)),
+            _ => None,
+        };
+        if let Some((content, source_identity, byte_length, chunk_count)) = malformed {
             let bytes =
-                reconstruct_content(relation, project, profile, path, *byte_length, *chunk_count)?;
+                reconstruct_content(relation, project, profile, path, byte_length, chunk_count)?;
             if backend_compile::typed_of::<backend_compile::InputContentSchema>(&bytes).to_bytes()
-                != *content
-                || ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes) != *source_identity
+                != content
+                || ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes) != source_identity
             {
                 return Err(format!(
                     "native content chunks do not match path identity: {path}"
@@ -670,6 +784,18 @@ fn encode_disposition(disposition: NativePathDisposition, mut push: impl FnMut(&
             chunk_count,
         } => {
             push(&[2]);
+            push(&content);
+            push(source_identity.as_ref());
+            push(&byte_length.to_be_bytes());
+            push(&chunk_count.to_be_bytes());
+        }
+        NativePathDisposition::CSharpMalformed {
+            content,
+            source_identity,
+            byte_length,
+            chunk_count,
+        } => {
+            push(&[4]);
             push(&content);
             push(source_identity.as_ref());
             push(&byte_length.to_be_bytes());
@@ -784,7 +910,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
             validate_path(&path).map_err(|_| ())?;
             let tag = take(bytes, &mut cursor, 1)?[0];
             let disposition = match tag {
-                1 | 2 => {
+                1 | 2 | 4 => {
                     let content = take(bytes, &mut cursor, 32)?.try_into().map_err(|_| ())?;
                     let identity =
                         ContentId::<SourceFactDomain>::try_from(take(bytes, &mut cursor, 32)?)
@@ -809,11 +935,20 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
                         {
                             return Err(());
                         }
-                        NativePathDisposition::ClangMalformed {
-                            content,
-                            source_identity: identity,
-                            byte_length,
-                            chunk_count,
+                        if tag == 2 {
+                            NativePathDisposition::ClangMalformed {
+                                content,
+                                source_identity: identity,
+                                byte_length,
+                                chunk_count,
+                            }
+                        } else {
+                            NativePathDisposition::CSharpMalformed {
+                                content,
+                                source_identity: identity,
+                                byte_length,
+                                chunk_count,
+                            }
                         }
                     }
                 }
@@ -875,8 +1010,18 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
     ) {
         return Err(());
     }
+    if matches!(
+        record,
+        ProductNativeFrontierRecord::Path {
+            profile,
+            disposition: NativePathDisposition::CSharpMalformed { .. },
+            ..
+        } if !matches!(profile, LanguageProfile::CSharp(_))
+    ) {
+        return Err(());
+    }
     if matches!(record, ProductNativeFrontierRecord::ContentChunk { profile, .. }
-        if !matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)))
+        if !matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::CSharp(_)))
     {
         return Err(());
     }
@@ -896,7 +1041,7 @@ fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Result<&'a [u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::vocabulary::{CStandard, CxxStandard};
+    use backend_semantic::vocabulary::{CSharpVersion, CStandard, CxxStandard};
 
     #[test]
     fn native_frontier_records_round_trip_exact_profile_and_disposition() {
@@ -917,6 +1062,17 @@ mod tests {
                 disposition: NativePathDisposition::Structural {
                     content: [0x18; 32],
                     source_identity: identity,
+                },
+            },
+            ProductNativeFrontierRecord::Path {
+                project,
+                profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+                path: "src/raw.cs".to_owned(),
+                disposition: NativePathDisposition::CSharpMalformed {
+                    content: [0x39; 32],
+                    source_identity: identity,
+                    byte_length: 13,
+                    chunk_count: 1,
                 },
             },
             ProductNativeFrontierRecord::Path {
@@ -976,6 +1132,24 @@ mod tests {
                         content: [1; 32],
                         source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"py"),
                         byte_length: 2,
+                        chunk_count: 1,
+                    },
+                )],
+            )
+            .is_err()
+        );
+        assert!(
+            build_native_frontier_records(
+                [0; 32],
+                LanguageProfile::C(CStandard::C23),
+                vec![(
+                    "src/raw.cs".to_owned(),
+                    NativePathDisposition::CSharpMalformed {
+                        content: [1; 32],
+                        source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                            b"csharp"
+                        ),
+                        byte_length: 6,
                         chunk_count: 1,
                     },
                 )],
@@ -1162,5 +1336,125 @@ mod tests {
             bytes
         ));
         assert!(!permit.admits(project, root, "src/x.c", profile, b"int x = 2;"));
+    }
+
+    #[test]
+    fn native_csharp_permit_is_profile_specific_and_binds_exact_bytes_and_root() {
+        let project = [0x71; 32];
+        let root = [0x82; 32];
+        let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+        let bytes = b"class A {";
+        let content =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes();
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(bytes);
+        let frontier = CheckedNativeFrontier {
+            project,
+            profile,
+            root,
+            dispositions: vec![(
+                "src/a.cs".to_owned(),
+                NativePathDisposition::CSharpMalformed {
+                    content,
+                    source_identity: identity,
+                    byte_length: bytes.len() as u32,
+                    chunk_count: 1,
+                },
+            )],
+        };
+        let permit = frontier
+            .csharp_candidate_permit("src/a.cs")
+            .expect("C# malformed permit");
+        assert_eq!(permit.path(), "src/a.cs");
+        assert_eq!(permit.profile(), profile);
+        assert_eq!(permit.selected_root(), root);
+        assert!(permit.admits(project, root, "src/a.cs", profile, bytes));
+        assert!(!permit.admits([0x72; 32], root, "src/a.cs", profile, bytes));
+        assert!(!permit.admits(project, [0x83; 32], "src/a.cs", profile, bytes));
+        assert!(!permit.admits(project, root, "src/b.cs", profile, bytes));
+        assert!(!permit.admits(
+            project,
+            root,
+            "src/a.cs",
+            LanguageProfile::CSharp(CSharpVersion::CSharp13),
+            bytes
+        ));
+        assert!(!permit.admits(project, root, "src/a.cs", profile, b"class B {"));
+        assert!(frontier.candidate_permit("src/a.cs").is_none());
+
+        let wrong_language = CheckedNativeFrontier {
+            project,
+            profile: LanguageProfile::C(CStandard::C23),
+            root,
+            dispositions: vec![(
+                "src/a.cs".to_owned(),
+                NativePathDisposition::CSharpMalformed {
+                    content,
+                    source_identity: identity,
+                    byte_length: bytes.len() as u32,
+                    chunk_count: 1,
+                },
+            )],
+        };
+        assert!(wrong_language.csharp_candidate_permit("src/a.cs").is_none());
+    }
+
+    #[test]
+    fn csharp_malformed_payload_requires_utf8_and_exact_bounded_chunks() {
+        let project = [0x91; 32];
+        let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+        let bytes = vec![b'x'; NATIVE_SOURCE_CHUNK_BYTES + 7];
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes);
+        let content =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(&bytes).to_bytes();
+        let rows = build_native_frontier_records_with_content(
+            project,
+            profile,
+            vec![(
+                "src/raw.cs".to_owned(),
+                NativePathDisposition::CSharpMalformed {
+                    content,
+                    source_identity: identity,
+                    byte_length: 0,
+                    chunk_count: 0,
+                },
+            )],
+            vec![("src/raw.cs".to_owned(), bytes.clone())],
+        )
+        .expect("bounded C# candidate content");
+        assert_eq!(rows.len(), 4, "manifest, path, and two exact chunks");
+        assert!(rows.iter().any(|(_, record)| matches!(
+            record,
+            ProductNativeFrontierRecord::ContentChunk {
+                profile: row_profile,
+                path,
+                ordinal: 1,
+                bytes,
+                ..
+            } if *row_profile == profile && path == "src/raw.cs" && bytes.len() == 7
+        )));
+
+        let invalid_utf8 = vec![0xff];
+        assert!(
+            build_native_frontier_records_with_content(
+                project,
+                profile,
+                vec![(
+                    "src/raw.cs".to_owned(),
+                    NativePathDisposition::CSharpMalformed {
+                        content: backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                            &invalid_utf8,
+                        )
+                        .to_bytes(),
+                        source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                            &invalid_utf8,
+                        ),
+                        byte_length: 0,
+                        chunk_count: 0,
+                    },
+                )],
+                vec![("src/raw.cs".to_owned(), invalid_utf8)],
+            )
+            .is_err()
+        );
     }
 }

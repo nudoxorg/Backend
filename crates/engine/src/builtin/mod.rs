@@ -39,9 +39,9 @@ pub use manifest::{
 };
 pub use native_frontier_relation::{
     CheckedNativeFrontier, MAX_NATIVE_SOURCE_BYTES, NATIVE_SOURCE_CHUNK_BYTES,
-    NativeClangCandidatePermit, NativePathDisposition, NativePathRefusal,
-    ProductNativeFrontierRecord, ProductNativeFrontierRelation, ProductNativeFrontierRootSchema,
-    admit_native_frontier, build_native_frontier_records,
+    NativeCSharpCandidatePermit, NativeClangCandidatePermit, NativePathDisposition,
+    NativePathRefusal, ProductNativeFrontierRecord, ProductNativeFrontierRelation,
+    ProductNativeFrontierRootSchema, admit_native_frontier, build_native_frontier_records,
     build_native_frontier_records_with_content, product_native_frontier_chunk_key,
     product_native_frontier_digest, product_native_frontier_path_key,
     product_native_frontier_profile_key, product_native_frontier_record_key,

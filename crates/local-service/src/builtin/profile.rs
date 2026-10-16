@@ -18,16 +18,16 @@ use super::{
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
     NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
-    ProductNativeFrontierRelation, ProductNativeFrontierRootSchema,
-    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
-    ProductSemanticCaptureRootSchema, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
-    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema,
-    SemanticPublicationVersion, SemanticSourceCapture, admit_product_source_file_facts,
-    product_native_frontier_record_key, product_native_frontier_relation,
-    product_native_frontier_root_object, product_source_file_facts_record_key,
-    product_source_file_facts_relation, product_source_file_facts_root_object,
-    semantic_capture_relation, semantic_capture_root_from_object, semantic_capture_root_object,
+    ProductNativeFrontierRelation, ProductNativeFrontierRootSchema, ProductSemanticCaptureOutcome,
+    ProductSemanticCaptureRecord, ProductSemanticCaptureRelation, ProductSemanticCaptureRootSchema,
+    ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    ProductSemanticPublicationRelation, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, SemanticPublicationVersion,
+    SemanticSourceCapture, admit_product_source_file_facts, product_native_frontier_record_key,
+    product_native_frontier_relation, product_native_frontier_root_object,
+    product_source_file_facts_record_key, product_source_file_facts_relation,
+    product_source_file_facts_root_object, semantic_capture_relation,
+    semantic_capture_root_from_object, semantic_capture_root_object,
     semantic_capture_root_pointer_key,
 };
 use backend_engine::{
@@ -4025,6 +4025,21 @@ fn validate_persisted_native_frontier(
                     ));
                 }
             }
+            NativePathDisposition::CSharpMalformed { .. } => {
+                if profile.language() != backend_compile::SourceLanguage::CSharp
+                    || file.content_version != [0; 32]
+                    || file.source_identity.is_some()
+                    || file
+                        .admitted_unavailable_reason()
+                        .map_err(BuiltinModelError)?
+                        != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                {
+                    return Err(BuiltinModelError(
+                        "malformed C# candidate is not backed by an unavailable unparsed source row"
+                            .to_owned(),
+                    ));
+                }
+            }
             NativePathDisposition::Refused(reason) => {
                 use backend_engine::SourceUnavailableReason;
                 let expected = match reason {
@@ -4748,7 +4763,10 @@ mod persisted_intent_tests {
             at: 0,
             version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
         };
-        assert_eq!(decoder.capture_basis().expect("v10 present basis"), Some(basis));
+        assert_eq!(
+            decoder.capture_basis().expect("v10 present basis"),
+            Some(basis)
+        );
         assert_eq!(decoder.at, marked_payload.len());
     }
 
@@ -4756,8 +4774,8 @@ mod persisted_intent_tests {
     fn native_frontier_still_rejects_capture_intents_without_a_basis() {
         let label = "pkg:cargo/unsealed-capture@1.0.0";
         let package = backend_engine::PackageKey::from_value(label);
-        let package_reference = backend_engine::PackageReference::parse(label.to_owned())
-            .expect("package reference");
+        let package_reference =
+            backend_engine::PackageReference::parse(label.to_owned()).expect("package reference");
         let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
             .expect("package coordinate");
         let capture_key = ProductSemanticPublicationKey::new(
@@ -4768,8 +4786,8 @@ mod persisted_intent_tests {
             ),
         )
         .expect("capture key");
-        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1)
-            .expect("source capture");
+        let capture =
+            SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("source capture");
         let intent = BuiltinIntent::index_with_capture(
             package,
             label,

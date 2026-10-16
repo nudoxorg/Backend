@@ -39,7 +39,7 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     pub(in crate::builtin::commands) captures:
         BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     native_frontier: Vec<ProductNativeFrontierRecord>,
-    native_candidate_profiles: BTreeSet<LanguageProfile>,
+    native_candidate_profiles: ingest::NativeCandidateProfiles,
     python_environment: Option<PythonEnvironmentInput>,
     cancellation: Arc<AtomicBool>,
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
@@ -62,7 +62,7 @@ pub(super) struct PreparedScanSource {
     pub(super) file_keys: Vec<[u8; 32]>,
     pub(super) changes: Vec<BuiltinSourceChange>,
     pub(super) source_facts_changes: Vec<BuiltinSourceFactsChange>,
-    pub(super) native_frontier_changes: Vec<super::super::profile::BuiltinNativeFrontierChange>,
+    pub(super) native_frontier_changes: Vec<crate::builtin::profile::BuiltinNativeFrontierChange>,
     pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
     pub(super) revision_fence: ingest::CompilerRevisionFence,
     pub(super) python_environment: Option<PythonEnvironmentInput>,
@@ -108,6 +108,7 @@ pub(super) struct PreparedScanCompilation {
     pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     pub(super) pending_changes: Vec<BuiltinCaptureChange>,
     pub(super) native_clang_candidates: Vec<ingest::NativeClangCandidateHandle>,
+    pub(super) native_csharp_candidates: Vec<ingest::NativeCSharpCandidateHandle>,
     pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
 }
 
@@ -115,7 +116,9 @@ pub(super) struct PreparedScanCompilation {
 pub(super) struct NativeCandidatePermits {
     pub(super) project: Option<[u8; 32]>,
     pub(super) selected_root: Option<[u8; 32]>,
-    pub(super) by_profile: BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
+    pub(super) clang_by_profile: BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
+    pub(super) csharp_by_profile:
+        BTreeMap<LanguageProfile, Box<[backend_engine::builtin::NativeCSharpCandidatePermit]>>,
 }
 
 fn prepare_native_frontier_changes_for_snapshot(
@@ -124,7 +127,7 @@ fn prepare_native_frontier_changes_for_snapshot(
     current: &[ProductNativeFrontierRecord],
     old_file_keys: &[[u8; 32]],
     source_relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
-) -> Result<Vec<super::super::profile::BuiltinNativeFrontierChange>, BuiltinModelError> {
+) -> Result<Vec<crate::builtin::profile::BuiltinNativeFrontierChange>, BuiltinModelError> {
     let prior = product_native_frontier_relation(snapshot).map_err(|error| {
         BuiltinModelError(format!("open prior native source frontier: {error}"))
     })?;
@@ -160,10 +163,19 @@ fn prepare_native_frontier_changes_for_snapshot(
             let Some(file) = source.file_fields() else {
                 continue;
             };
-            if file.project != project || file.language != backend_engine::SourceLanguage::Clang {
+            if file.project != project {
                 continue;
             }
-            let Some(profile) = ingest::native_clang_profile_for_relative(file.path) else {
+            let profile = match file.language {
+                backend_engine::SourceLanguage::Clang => {
+                    ingest::native_clang_profile_for_relative(file.path)
+                }
+                backend_engine::SourceLanguage::CSharp => {
+                    ingest::native_csharp_profile_for_relative(file.path)
+                }
+                _ => None,
+            };
+            let Some(profile) = profile else {
                 continue;
             };
             let path_key = product_native_frontier_path_key(project, profile, file.path)
@@ -176,7 +188,9 @@ fn prepare_native_frontier_changes_for_snapshot(
                 product_native_frontier_profile_key(project, profile),
             ];
             if let Some(ProductNativeFrontierRecord::Path {
-                disposition: NativePathDisposition::ClangMalformed { chunk_count, .. },
+                disposition:
+                    NativePathDisposition::ClangMalformed { chunk_count, .. }
+                    | NativePathDisposition::CSharpMalformed { chunk_count, .. },
                 ..
             }) = &path_record
             {
@@ -226,7 +240,7 @@ fn prepare_native_frontier_changes_for_snapshot(
             .flatten();
         let next = after.remove(&key);
         if expected != next {
-            changes.push(super::super::profile::BuiltinNativeFrontierChange {
+            changes.push(crate::builtin::profile::BuiltinNativeFrontierChange {
                 key,
                 expected,
                 after: next,
@@ -240,17 +254,17 @@ pub(super) fn native_candidate_permits(
     snapshot: &WorkspaceSnapshot,
     project: [u8; 32],
     records: &[ProductNativeFrontierRecord],
-    candidate_profiles: &BTreeSet<LanguageProfile>,
+    candidate_profiles: &ingest::NativeCandidateProfiles,
 ) -> Result<NativeCandidatePermits, BuiltinModelError> {
-    if candidate_profiles.is_empty() {
+    if candidate_profiles.clang.is_empty() && candidate_profiles.csharp.is_empty() {
         return Ok(NativeCandidatePermits::default());
     }
     let relation = product_native_frontier_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open selected native frontier: {error}")))?
         .ok_or_else(|| BuiltinModelError("selected native frontier is missing".to_owned()))?;
     let selected_root = *relation.root().as_bytes();
-    let mut permits = BTreeMap::new();
-    for profile in candidate_profiles {
+    let mut clang_permits = BTreeMap::new();
+    for profile in &candidate_profiles.clang {
         let paths = records
             .iter()
             .filter_map(|record| match record {
@@ -287,12 +301,58 @@ pub(super) fn native_candidate_permits(
                 "native candidate profile has no malformed-source permits".to_owned(),
             ));
         }
-        permits.insert(*profile, profile_permits.into_boxed_slice());
+        clang_permits.insert(*profile, profile_permits.into_boxed_slice());
+    }
+    let mut csharp_permits = BTreeMap::new();
+    for profile in &candidate_profiles.csharp {
+        if !matches!(profile, LanguageProfile::CSharp(_)) {
+            return Err(BuiltinModelError(
+                "native C# candidate profile is not C#".to_owned(),
+            ));
+        }
+        let paths = records
+            .iter()
+            .filter_map(|record| match record {
+                ProductNativeFrontierRecord::Path {
+                    project: owner,
+                    profile: row_profile,
+                    path,
+                    ..
+                } if owner == &project && row_profile == profile => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let checked =
+            backend_engine::builtin::admit_native_frontier(&relation, project, *profile, &paths)
+                .map_err(|error| {
+                    BuiltinModelError(format!("admit selected native C# frontier: {error}"))
+                })?;
+        if !checked.is_compilable() || checked.selected_root() != selected_root {
+            return Err(BuiltinModelError(
+                "checked native C# frontier is refused or has a different selected root".to_owned(),
+            ));
+        }
+        let profile_permits = checked
+            .dispositions()
+            .iter()
+            .filter_map(|(path, disposition)| {
+                matches!(disposition, NativePathDisposition::CSharpMalformed { .. })
+                    .then(|| checked.csharp_candidate_permit(path))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if profile_permits.is_empty() {
+            return Err(BuiltinModelError(
+                "native C# candidate profile has no malformed-source permits".to_owned(),
+            ));
+        }
+        csharp_permits.insert(*profile, profile_permits.into_boxed_slice());
     }
     Ok(NativeCandidatePermits {
         project: Some(project),
         selected_root: Some(selected_root),
-        by_profile: permits,
+        clang_by_profile: clang_permits,
+        csharp_by_profile: csharp_permits,
     })
 }
 
@@ -374,10 +434,18 @@ pub(super) fn prepare_scan_source(
     live.extend(scan.native_clang_candidates.iter().map(|source| {
         ingest::compilation_profile(source_root, &source.relative_path, source.profile)
     }));
+    live.extend(scan.native_csharp_candidates.iter().map(|source| {
+        ingest::compilation_profile(source_root, &source.relative_path, source.profile)
+    }));
     let mut present =
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     present.extend(
         scan.native_clang_candidates
+            .iter()
+            .map(|source| source.relative_path.clone()),
+    );
+    present.extend(
+        scan.native_csharp_candidates
             .iter()
             .map(|source| source.relative_path.clone()),
     );
@@ -412,6 +480,18 @@ pub(super) fn prepare_scan_source(
             )
             .saturating_add(
                 scan.native_clang_candidates
+                    .iter()
+                    .filter(|source| {
+                        ingest::compilation_profile(
+                            source_root,
+                            &source.relative_path,
+                            source.profile,
+                        ) == profile
+                    })
+                    .count(),
+            )
+            .saturating_add(
+                scan.native_csharp_candidates
                     .iter()
                     .filter(|source| {
                         ingest::compilation_profile(
@@ -531,6 +611,9 @@ pub(super) fn prepare_scan_source(
         .chain(scan.native_clang_candidates.iter().map(|source| {
             ingest::compilation_profile(source_root, &source.relative_path, source.profile)
         }))
+        .chain(scan.native_csharp_candidates.iter().map(|source| {
+            ingest::compilation_profile(source_root, &source.relative_path, source.profile)
+        }))
         .collect::<BTreeSet<_>>();
     let mut reusable_inputs = BTreeSet::new();
     for (profile, admitted) in &inputs {
@@ -580,6 +663,18 @@ pub(super) fn prepare_scan_source(
             })
             .cloned()
             .collect();
+        let native_csharp_candidates = scan
+            .native_csharp_candidates
+            .iter()
+            .filter(|source| {
+                dirty.contains(&ingest::compilation_profile(
+                    source_root,
+                    &source.relative_path,
+                    source.profile,
+                ))
+            })
+            .cloned()
+            .collect();
         PreparedScanProfiles::Compile(Box::new(PreparedScanCompilation {
             fresh,
             reused,
@@ -588,6 +683,7 @@ pub(super) fn prepare_scan_source(
             captures,
             pending_changes,
             native_clang_candidates,
+            native_csharp_candidates,
             native_frontier: scan.native_frontier.clone(),
         }))
     };
@@ -682,6 +778,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         captures,
         pending_changes,
         native_clang_candidates,
+        native_csharp_candidates,
         native_frontier: compilation_native_frontier,
     } = *compilation;
     // The owned path materializes before requesting any capture grant. The
@@ -695,6 +792,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             fresh,
             reused,
             native_clang_candidates,
+            native_csharp_candidates,
             source_admission_policy,
             Some(cancellation.as_ref()),
         )
@@ -707,7 +805,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     if !native_frontier_changes.is_empty() {
         if intent.has_capture_changes() && intent.capture_basis().is_none() {
             intent = intent
-                .with_capture_basis(super::super::capture_basis_for_snapshot(base_snapshot)?)?;
+                .with_capture_basis(crate::builtin::capture_basis_for_snapshot(base_snapshot)?)?;
         }
         intent = intent.with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
     }

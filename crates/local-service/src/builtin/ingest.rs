@@ -9,8 +9,8 @@ use backend_compile::{
     SyntaxFrontend, typed_of,
 };
 use backend_engine::builtin::{
-    NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
-    ProductNativeFrontierRelation, NATIVE_SOURCE_CHUNK_BYTES, build_native_frontier_records,
+    NATIVE_SOURCE_CHUNK_BYTES, NativePathDisposition, NativePathRefusal,
+    ProductNativeFrontierRecord, ProductNativeFrontierRelation, build_native_frontier_records,
     build_native_frontier_records_with_content,
 };
 use backend_engine::{
@@ -87,10 +87,12 @@ pub(super) struct IndexSnapshot {
     /// Full persisted fact-page charges, including unchanged frontier files.
     pub(super) encoded_fact_bytes: Vec<([u8; 32], usize)>,
     pub(super) compiler_sources: Vec<CompilerSourceHandle>,
-    /// Exact per-path disposition for every C/C++ source in this scan.
+    /// Exact per-path dispositions for complete Clang and C# profile frontiers.
     pub(super) native_frontier: Vec<ProductNativeFrontierRecord>,
     /// Parser-malformed, UTF-8 native sources eligible for the separate Clang route.
     pub(super) native_clang_candidates: Vec<NativeClangCandidateHandle>,
+    /// Parser-malformed, UTF-8 C# sources eligible for the separate C# route.
+    pub(super) native_csharp_candidates: Vec<NativeCSharpCandidateHandle>,
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
     pub(super) revision_fence: CompilerRevisionFence,
@@ -239,6 +241,33 @@ pub(super) struct NativeClangCandidateHandle {
     pub(super) source_bytes: Option<Box<[u8]>>,
 }
 
+/// Exact parser-malformed source admitted only to the separate local Roslyn
+/// candidate route. Callers must use the dedicated materializer.
+#[derive(Clone)]
+pub(super) struct NativeCSharpCandidateHandle {
+    pub(super) relative_path: String,
+    pub(super) profile: LanguageProfile,
+    pub(super) content: [u8; 32],
+    pub(super) source_fact_identity: SourceFactIdentity,
+    pub(super) source_bytes: Option<Box<[u8]>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct NativeCandidateProfiles {
+    pub(super) clang: BTreeSet<LanguageProfile>,
+    pub(super) csharp: BTreeSet<LanguageProfile>,
+}
+
+impl NativeCandidateProfiles {
+    pub(super) fn contains(&self, profile: &LanguageProfile) -> bool {
+        self.clang.contains(profile) || self.csharp.contains(profile)
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.clang.is_empty() && self.csharp.is_empty()
+    }
+}
+
 /// Exact source bytes admitted for one semantic authority slot; Python may remain undecoded.
 #[derive(Clone)]
 pub(super) struct CompilerSource {
@@ -282,6 +311,7 @@ struct ScannedFile {
     source_facts: Option<ProductSourceFileFactsUpdate>,
     native_frontier: Option<(LanguageProfile, NativePathDisposition)>,
     native_clang_candidate: Option<NativeClangCandidateHandle>,
+    native_csharp_candidate: Option<NativeCSharpCandidateHandle>,
 }
 
 /// An opened project directory capability. Source reads resolve every path
@@ -1939,6 +1969,7 @@ fn scan_project_with_configuration_policy_attempt(
     let mut native_by_profile =
         BTreeMap::<LanguageProfile, Vec<(String, NativePathDisposition)>>::new();
     let mut native_clang_candidates = Vec::new();
+    let mut native_csharp_candidates = Vec::new();
     for file in &scanned {
         if let Some((profile, disposition)) = &file.native_frontier {
             native_by_profile
@@ -1947,20 +1978,30 @@ fn scan_project_with_configuration_policy_attempt(
                 .push((file.relative.clone(), disposition.clone()));
         }
         native_clang_candidates.extend(file.native_clang_candidate.iter().cloned());
+        native_csharp_candidates.extend(file.native_csharp_candidate.iter().cloned());
     }
     let mut native_frontier = Vec::new();
     for (profile, paths) in native_by_profile {
         let mut content = Vec::new();
-        for candidate in scanned
-            .iter_mut()
-            .filter_map(|file| file.native_clang_candidate.as_mut())
-            .filter(|candidate| candidate.profile == profile)
-        {
-            let bytes = candidate
-                .source_bytes
-                .take()
-                .ok_or_else(|| "native candidate bytes were already consumed".to_owned())?;
-            content.push((candidate.relative_path.clone(), bytes.into_vec()));
+        for file in &mut scanned {
+            if let Some(candidate) = file.native_clang_candidate.as_mut()
+                && candidate.profile == profile
+            {
+                let bytes = candidate
+                    .source_bytes
+                    .take()
+                    .ok_or_else(|| "native candidate bytes were already consumed".to_owned())?;
+                content.push((candidate.relative_path.clone(), bytes.into_vec()));
+            }
+            if let Some(candidate) = file.native_csharp_candidate.as_mut()
+                && candidate.profile == profile
+            {
+                let bytes = candidate
+                    .source_bytes
+                    .take()
+                    .ok_or_else(|| "native candidate bytes were already consumed".to_owned())?;
+                content.push((candidate.relative_path.clone(), bytes.into_vec()));
+            }
         }
         let records = build_native_frontier_records_with_content(project, profile, paths, content)
             .map_err(|error| format!("build native Clang frontier: {error}"))?;
@@ -2005,6 +2046,11 @@ fn scan_project_with_configuration_policy_attempt(
                 .map(|source| source.profile.language()),
         )
         .chain(
+            native_csharp_candidates
+                .iter()
+                .map(|source| source.profile.language()),
+        )
+        .chain(
             reused_compiler_files
                 .iter()
                 .map(|source| source.profile.language()),
@@ -2031,6 +2077,7 @@ fn scan_project_with_configuration_policy_attempt(
         compiler_sources,
         native_frontier,
         native_clang_candidates,
+        native_csharp_candidates,
         reused_compiler_files,
         compiler_configuration,
         revision_fence,
@@ -2062,10 +2109,7 @@ fn update_source_version_native_frontier(
         .filter(|record| matches!(record, ProductNativeFrontierRecord::Profile { .. }))
     {
         let mut encoded = Vec::new();
-        <ProductNativeFrontierRelation as Relation>::encode_value(
-            record,
-            &mut encoded,
-        );
+        <ProductNativeFrontierRelation as Relation>::encode_value(record, &mut encoded);
         source.update(&(encoded.len() as u64).to_be_bytes());
         source.update(&encoded);
     }
@@ -2584,7 +2628,12 @@ fn unavailable_file(
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
     let native_frontier = profile_of(frontends, path)
-        .filter(|profile| matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)))
+        .filter(|profile| {
+            matches!(
+                profile,
+                LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::CSharp(_)
+            )
+        })
         .map(|profile| {
             let refusal = match reason {
                 SourceUnavailableReason::Unreadable => NativePathRefusal::ReadUnavailable,
@@ -2611,6 +2660,7 @@ fn unavailable_file(
         source_facts: None,
         native_frontier,
         native_clang_candidate: None,
+        native_csharp_candidate: None,
     })
 }
 
@@ -2738,6 +2788,44 @@ fn scan_one(
             unavailable.source_bytes = source_bytes;
             return Ok(unavailable);
         }
+        Err(SyntaxError::MalformedSource(SourceLanguage::CSharp))
+            if matches!(profile, LanguageProfile::CSharp(_)) =>
+        {
+            let mut unavailable = unavailable_file(
+                root,
+                path,
+                project,
+                frontends,
+                python_version,
+                SourceUnavailableReason::Unparsed,
+                source_bytes,
+            )
+            .map_err(SourceFault::Fatal)?;
+            let source_fact_identity = SourceFactIdentity::from_canonical_bytes(source.as_bytes());
+            unavailable.native_frontier = Some((
+                profile,
+                NativePathDisposition::CSharpMalformed {
+                    content,
+                    source_identity: source_fact_identity,
+                    byte_length: u32::try_from(source_bytes).map_err(|_| {
+                        SourceFault::Fatal("native source length exceeds u32".to_owned())
+                    })?,
+                    chunk_count: u32::try_from(source_bytes.div_ceil(NATIVE_SOURCE_CHUNK_BYTES))
+                        .map_err(|_| {
+                            SourceFault::Fatal("native source chunk count exceeds u32".to_owned())
+                        })?,
+                },
+            ));
+            unavailable.native_csharp_candidate = Some(NativeCSharpCandidateHandle {
+                relative_path: relative,
+                profile,
+                content,
+                source_fact_identity,
+                source_bytes: Some(source.into_bytes().into_boxed_slice()),
+            });
+            unavailable.source_bytes = source_bytes;
+            return Ok(unavailable);
+        }
         Err(SyntaxError::MalformedSource(SourceLanguage::Clang))
             if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) =>
         {
@@ -2746,6 +2834,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                PythonVersion::Python314,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -2756,10 +2845,13 @@ fn scan_one(
                 NativePathDisposition::ClangMalformed {
                     content,
                     source_identity: source_fact_identity,
-                    byte_length: u32::try_from(source_bytes)
-                        .map_err(|_| SourceFault::Fatal("native source length exceeds u32".to_owned()))?,
+                    byte_length: u32::try_from(source_bytes).map_err(|_| {
+                        SourceFault::Fatal("native source length exceeds u32".to_owned())
+                    })?,
                     chunk_count: u32::try_from(source_bytes.div_ceil(NATIVE_SOURCE_CHUNK_BYTES))
-                        .map_err(|_| SourceFault::Fatal("native source chunk count exceeds u32".to_owned()))?,
+                        .map_err(|_| {
+                            SourceFault::Fatal("native source chunk count exceeds u32".to_owned())
+                        })?,
                 },
             ));
             unavailable.native_clang_candidate = Some(NativeClangCandidateHandle {
@@ -2778,6 +2870,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                PythonVersion::Python314,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -2896,7 +2989,10 @@ fn scanned_file(
         None,
         Some(source_facts),
     )?;
-    if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) {
+    if matches!(
+        profile,
+        LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::CSharp(_)
+    ) {
         scanned.native_frontier = Some((
             profile,
             NativePathDisposition::Structural {
@@ -2937,7 +3033,10 @@ fn reused_scanned_file(
         encoded_record_bytes,
         None,
     )?;
-    if matches!(profile, LanguageProfile::C(_) | LanguageProfile::Cxx(_)) {
+    if matches!(
+        profile,
+        LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::CSharp(_)
+    ) {
         scanned.native_frontier = Some((
             profile,
             NativePathDisposition::Structural {
@@ -2990,6 +3089,7 @@ fn finish_scanned_file(
         source_facts,
         native_frontier: None,
         native_clang_candidate: None,
+        native_csharp_candidate: None,
     })
 }
 
@@ -3025,26 +3125,39 @@ pub(super) fn admit_compiler_sources_for_scan(
     Ok(admitted)
 }
 
-/// Reopens normal source handles and distinct parser-malformed Clang
+/// Reopens normal source handles and distinct parser-malformed Clang/C#
 /// candidates through the same pinned root and one shared byte budget.
 pub(super) fn admit_compiler_sources_with_native_candidates_for_scan(
     root: &Path,
     revision_fence: &CompilerRevisionFence,
     mut fresh: Vec<CompilerSourceHandle>,
     reused: Vec<ReusedCompilerFile>,
-    candidates: Vec<NativeClangCandidateHandle>,
+    clang_candidates: Vec<NativeClangCandidateHandle>,
+    csharp_candidates: Vec<NativeCSharpCandidateHandle>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
-) -> Result<(Vec<CompilerSource>, BTreeSet<LanguageProfile>), String> {
-    let mut candidate_profiles = BTreeSet::new();
-    for candidate in candidates {
+) -> Result<(Vec<CompilerSource>, NativeCandidateProfiles), String> {
+    let mut candidate_profiles = NativeCandidateProfiles::default();
+    for candidate in clang_candidates {
         if !matches!(
             candidate.profile,
             LanguageProfile::C(_) | LanguageProfile::Cxx(_)
         ) {
             return Err("native candidate carries a non-Clang profile".to_owned());
         }
-        candidate_profiles.insert(candidate.profile);
+        candidate_profiles.clang.insert(candidate.profile);
+        fresh.push(CompilerSourceHandle {
+            relative_path: candidate.relative_path,
+            profile: candidate.profile,
+            content: candidate.content,
+            source_fact_identity: candidate.source_fact_identity,
+        });
+    }
+    for candidate in csharp_candidates {
+        if !matches!(candidate.profile, LanguageProfile::CSharp(_)) {
+            return Err("native candidate carries a non-C# profile".to_owned());
+        }
+        candidate_profiles.csharp.insert(candidate.profile);
         fresh.push(CompilerSourceHandle {
             relative_path: candidate.relative_path,
             profile: candidate.profile,
@@ -3420,6 +3533,15 @@ pub(super) fn native_clang_profile_for_relative(relative_path: &str) -> Option<L
         .and_then(|value| value.to_str())?
         .to_ascii_lowercase();
     dialect(SourceLanguage::Clang, &extension)
+}
+
+pub(super) fn native_csharp_profile_for_relative(relative_path: &str) -> Option<LanguageProfile> {
+    let extension = Path::new(relative_path)
+        .extension()
+        .and_then(|value| value.to_str())?;
+    extension
+        .eq_ignore_ascii_case("cs")
+        .then_some(LanguageProfile::CSharp(CSharpVersion::CSharp14))
 }
 
 /// Returns the key the view uses to pair a publication with its files.

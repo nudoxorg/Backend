@@ -751,6 +751,7 @@ fn semantic_rows(
                 key.profile(),
                 backend_semantic::vocabulary::LanguageProfile::C(_)
                     | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                    | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
             ) || native_frontier_complete.contains(&target);
             if !native_frontier_is_complete {
                 decision.stale_paths = current_paths.get(&target).cloned().unwrap_or_default();
@@ -833,6 +834,7 @@ fn semantic_rows(
                     key.profile(),
                     backend_semantic::vocabulary::LanguageProfile::C(_)
                         | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                        | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
                 ) {
                 sites.sources.source_snapshot.as_ref().and_then(|snapshot| {
                     snapshot
@@ -937,11 +939,17 @@ fn semantic_rows(
                                 candidate.as_str().cmp(path.as_str())
                             })
                         {
-                            if let backend_engine::builtin::NativePathDisposition::ClangMalformed {
-                                byte_length, ..
-                            } = &frontier.dispositions()[index].1
-                            {
-                                if usize::try_from(*byte_length)
+                            let byte_length = match &frontier.dispositions()[index].1 {
+                                backend_engine::builtin::NativePathDisposition::ClangMalformed {
+                                    byte_length, ..
+                                }
+                                | backend_engine::builtin::NativePathDisposition::CSharpMalformed {
+                                    byte_length, ..
+                                } => Some(*byte_length),
+                                _ => None,
+                            };
+                            if let Some(byte_length) = byte_length {
+                                if usize::try_from(byte_length)
                                     .map_or(true, |length| length > remaining_bytes)
                                 {
                                     return Err(BuiltinModelError(
@@ -950,7 +958,12 @@ fn semantic_rows(
                                 }
                             }
                         }
-                        snapshot.verified_native_source(frontier, &path).ok()
+                        match key.profile() {
+                            backend_semantic::vocabulary::LanguageProfile::CSharp(_) => {
+                                snapshot.verified_native_csharp_source(frontier, &path).ok()
+                            }
+                            _ => snapshot.verified_native_source(frontier, &path).ok(),
+                        }
                     } else {
                         None
                     }
@@ -1231,11 +1244,40 @@ impl SemanticRowSink<'_> {
             return None;
         }
         self.native_source
+            .filter(|source| {
+                matches!(
+                    source.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::C(_)
+                        | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                )
+            })
             .map(|source| super::native_sites::NativeProjection {
                 source,
                 max_sites: self.capacity.saturating_sub(self.rows.len()),
                 max_working_bytes: *self.remaining_bytes,
             })
+    }
+
+    pub(super) fn native_csharp_projection(
+        &self,
+    ) -> Option<super::csharp_native_sites::NativeCSharpProjection<'_>> {
+        if self.stale {
+            return None;
+        }
+        self.native_source
+            .filter(|source| {
+                matches!(
+                    source.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+                )
+            })
+            .map(
+                |source| super::csharp_native_sites::NativeCSharpProjection {
+                    source,
+                    max_sites: self.capacity.saturating_sub(self.rows.len()),
+                    max_working_bytes: *self.remaining_bytes,
+                },
+            )
     }
 }
 
@@ -1501,6 +1543,7 @@ pub(super) fn project_image_rows(
     path: &str,
     site_declarations: &[&backend_compile::SourceDeclaration],
     native: Option<super::native_sites::NativeProjection<'_>>,
+    native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
@@ -1523,7 +1566,30 @@ pub(super) fn project_image_rows(
             })
             .transpose()?
     };
-    let temporary_bytes = native_sites.as_ref().map_or(0, |sites| sites.working_bytes);
+    let native_csharp_sites = if stale {
+        None
+    } else {
+        native_csharp
+            .filter(|proof| {
+                proof.source.relative_path() == path && proof.source.profile() == profile
+            })
+            .map(|proof| {
+                super::csharp_native_sites::prove_native_csharp_sites(
+                    image,
+                    project.package.to_bytes(),
+                    proof,
+                )
+            })
+            .transpose()?
+    };
+    let temporary_bytes = native_sites
+        .as_ref()
+        .map_or(0, |sites| sites.working_bytes)
+        .saturating_add(
+            native_csharp_sites
+                .as_ref()
+                .map_or(0, |sites| sites.working_bytes),
+        );
 
     let canonical_identities = session
         .publication_entities()
@@ -1607,6 +1673,25 @@ pub(super) fn project_image_rows(
                 let location =
                     backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
                         BuiltinModelError(format!("native declaration source site: {error}"))
+                    })?;
+                row = row.with_source(location).with_excerpt(excerpt);
+            }
+        }
+        if !sites.contains_key(&identity)
+            && native_sites
+                .as_ref()
+                .and_then(|sites| sites.get(&identity))
+                .is_none()
+        {
+            if let Some(site) = native_csharp_sites
+                .as_ref()
+                .and_then(|sites| sites.get(&identity))
+            {
+                let excerpt = site.excerpt();
+                charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
+                let location =
+                    backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
+                        BuiltinModelError(format!("native C# declaration source site: {error}"))
                     })?;
                 row = row.with_source(location).with_excerpt(excerpt);
             }
@@ -1717,6 +1802,7 @@ pub(super) fn append_image_rows(
         sink.path,
         sink.site_declarations,
         sink.native_projection(),
+        sink.native_csharp_projection(),
     )?;
     super::image_rows::apply_projected_image(&projected, sink)
 }
@@ -2273,6 +2359,7 @@ mod tests {
                     size_bits: None,
                     align_bits: None,
                 },
+                declared_name: None,
                 templates,
                 includes,
             })),
