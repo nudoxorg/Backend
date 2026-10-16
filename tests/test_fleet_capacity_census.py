@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
+import io
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
 import sys
 import unittest
+from collections.abc import Iterable, Mapping
 from collections import Counter
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).parents[1] / ".config/scripts/fleet-capacity-census.py"
@@ -18,10 +23,13 @@ sys.modules[SPEC.name] = fleet
 SPEC.loader.exec_module(fleet)
 
 
-def empty_samples(now: dt.datetime) -> dict[str, dict[str, object]]:
+def empty_samples_for_hosts(
+    now: dt.datetime,
+    hosts: Iterable[str] | Mapping[str, object],
+) -> dict[str, dict[str, object]]:
     stamp = (now - dt.timedelta(seconds=1)).isoformat()
     result: dict[str, dict[str, object]] = {}
-    for name in fleet.DEFAULT_HOSTS:
+    for name in hosts:
         result[name] = {
             "host": name,
             "transport_complete": True,
@@ -49,6 +57,17 @@ def empty_samples(now: dt.datetime) -> dict[str, dict[str, object]]:
             },
         }
     return result
+
+
+def empty_samples(now: dt.datetime) -> dict[str, dict[str, object]]:
+    return empty_samples_for_hosts(now, fleet.DEFAULT_HOSTS)
+
+
+def host_configs(*, include_ilo_prod: bool = False) -> dict[str, dict[str, object]]:
+    configured = dict(fleet.DEFAULT_HOSTS)
+    if include_ilo_prod:
+        configured.update(fleet.OPTIONAL_HOSTS)
+    return {name: dict(config) for name, config in configured.items()}
 
 
 def compiler_group(
@@ -145,6 +164,29 @@ class FleetCapacityTests(unittest.TestCase):
             allow_local_over_cap_for_remote=True,
             destination_memory_only_for_remote=True,
             excluded_hosts=excluded_hosts,
+        )
+
+    def evaluate_prod_scope(
+        self,
+        destination: str = "local",
+        *,
+        hosts: dict[str, dict[str, object]] | None = None,
+        samples: dict[str, dict[str, object]] | None = None,
+        include_ilo_prod: bool = True,
+        excluded_hosts: object = None,
+        **options: object,
+    ) -> dict[str, object]:
+        active_hosts = hosts if hosts is not None else host_configs(include_ilo_prod=True)
+        active_samples = samples if samples is not None else empty_samples_for_hosts(self.now, active_hosts)
+        return fleet.evaluate_fleet(
+            active_samples,
+            destination=destination,
+            requested_jobs=4,
+            hosts=active_hosts,
+            now=self.now,
+            include_ilo_prod=include_ilo_prod,
+            excluded_hosts=excluded_hosts,
+            **options,
         )
 
     def test_ilo_python_uses_the_durable_nix_gc_root(self) -> None:
@@ -480,12 +522,330 @@ class FleetCapacityTests(unittest.TestCase):
             "host": "h16001mac", "reason": "approved temporary offline exception",
         }])
         self.assertFalse(result["sample_scope"]["full_fleet_sampled"])
+        self.assertIsNone(result["sample_scope"]["exclusion_authorization"])
         self.assertTrue(result["sample_scope"]["fleet_limit_applies_across_sampled_hosts"])
         self.assertNotIn("h16001mac", result["hosts"])
 
         full = self.evaluate()
         self.assertTrue(full["sample_scope"]["full_fleet_sampled"])
         self.assertEqual(set(full["sample_scope"]["sampled_hosts"]), set(fleet.DEFAULT_HOSTS))
+
+    def test_optional_ilo_prod_is_an_explicit_fourth_host(self) -> None:
+        self.assertEqual(set(fleet.DEFAULT_HOSTS), {"local", "ilo", "h16001mac"})
+        self.assertEqual(fleet.OPTIONAL_HOSTS["ilo-prod"]["limit"], 4)
+        self.assertEqual(fleet.OPTIONAL_HOSTS["ilo-prod"]["ssh_target"], "ilo-prod")
+        self.assertEqual(
+            fleet.OPTIONAL_HOSTS["ilo-prod"]["python"],
+            "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+        )
+
+        hosts = host_configs(include_ilo_prod=True)
+        samples = empty_samples_for_hosts(self.now, hosts)
+        result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+
+        self.assertTrue(result["advisory_allowed"], result["reasons"])
+        self.assertEqual(set(result["sample_scope"]["configured_hosts"]), set(hosts))
+        self.assertEqual(result["sample_scope"]["optional_hosts_enabled"], ["ilo-prod"])
+        self.assertEqual(set(result["sample_scope"]["sampled_hosts"]), set(hosts))
+        self.assertTrue(result["sample_scope"]["full_fleet_sampled"])
+        self.assertEqual(result["hosts"]["ilo-prod"]["host_limit"], 4)
+        # Older native samplers omit this optional field; absence remains the
+        # observed zero-reserve value rather than an invented reserve.
+        self.assertEqual(result["hosts"]["ilo-prod"]["root_disk_reserved_bytes"], 0)
+
+        legacy = self.evaluate()
+        self.assertTrue(legacy["advisory_allowed"], legacy["reasons"])
+        self.assertEqual(set(legacy["sample_scope"]["configured_hosts"]), set(fleet.DEFAULT_HOSTS))
+        self.assertEqual(legacy["sample_scope"]["optional_hosts_enabled"], [])
+        self.assertEqual(len(legacy["sample_scope"]["configured_hosts"]), 3)
+
+    def test_optional_ilo_prod_requires_opt_in_and_a_complete_four_host_set(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        four_samples = empty_samples_for_hosts(self.now, hosts)
+
+        without_opt_in = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=four_samples,
+            include_ilo_prod=False,
+        )
+        self.assertFalse(without_opt_in["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", without_opt_in["reasons"])
+        self.assertFalse(without_opt_in["sample_scope"]["full_fleet_sampled"])
+
+        missing_prod = {name: four_samples[name] for name in fleet.DEFAULT_HOSTS}
+        incomplete = self.evaluate_prod_scope(hosts=hosts, samples=missing_prod)
+        self.assertFalse(incomplete["advisory_allowed"])
+        self.assertIn("fleet-host-set-incomplete-or-unexpected", incomplete["reasons"])
+        self.assertFalse(incomplete["sample_scope"]["full_fleet_sampled"])
+
+        invalid_policy = self.evaluate_prod_scope(
+            hosts=hosts, samples=four_samples, include_ilo_prod=1,  # type: ignore[arg-type]
+        )
+        self.assertFalse(invalid_policy["advisory_allowed"])
+        self.assertIn("fleet-optional-host-policy-invalid", invalid_policy["reasons"])
+
+    def test_four_host_scope_rejects_stale_incomplete_truncated_and_invalid_resources(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        mutations = (
+            lambda sample: sample.update(transport_complete=False),
+            lambda sample: sample["census"].update(complete=False),
+            lambda sample: sample["census"].update(resource_snapshot_complete=False),
+            lambda sample: sample["census"].update(entries_omitted_count=1),
+            lambda sample: sample["census"].update(compiler_groups_omitted_count=1),
+            lambda sample: sample["census"].update(
+                sample_finished_at_utc=(self.now - dt.timedelta(seconds=61)).isoformat()
+            ),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                samples = empty_samples_for_hosts(self.now, hosts)
+                mutate(samples["ilo-prod"])
+                result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+                self.assertFalse(result["advisory_allowed"])
+                self.assertTrue(any(reason.startswith("ilo-prod:") for reason in result["reasons"]))
+
+        for name in hosts:
+            with self.subTest(host=name, field="available_memory_bytes"):
+                samples = empty_samples_for_hosts(self.now, hosts)
+                samples[name]["census"]["resource_snapshot"]["available_memory_bytes"] = True
+                result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+                self.assertFalse(result["advisory_allowed"])
+                self.assertIn(f"{name}:available-memory-invalid-or-missing", result["reasons"])
+
+            for value in (None, "17179869184", True, -1):
+                with self.subTest(host=name, disk=value):
+                    samples = empty_samples_for_hosts(self.now, hosts)
+                    samples[name]["census"]["resource_snapshot"]["root_disk_available_bytes"] = value
+                    # Destination is ILO: every participant still needs a
+                    # numeric disk observation in the four-host witness.
+                    result = self.evaluate_prod_scope(
+                        destination="ilo", hosts=hosts, samples=samples,
+                    )
+                    self.assertFalse(result["advisory_allowed"])
+                    self.assertIn(f"{name}:root-disk-invalid-or-missing", result["reasons"])
+
+            for value in (True, -1):
+                with self.subTest(host=name, reserve=value):
+                    samples = empty_samples_for_hosts(self.now, hosts)
+                    samples[name]["census"]["resource_snapshot"]["root_disk_reserved_bytes"] = value
+                    result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+                    self.assertFalse(result["advisory_allowed"])
+                    self.assertIn(f"{name}:root-disk-reserve-invalid", result["reasons"])
+
+    def test_ilo_prod_capacity_counts_proposed_sibling_and_global_slots(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        samples = empty_samples_for_hosts(self.now, hosts)
+
+        install_groups(samples, "ilo-prod", [compiler_group(11000 + i) for i in range(3)])
+        at_host_limit = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertTrue(at_host_limit["advisory_allowed"], at_host_limit["reasons"])
+        self.assertEqual(at_host_limit["current_fleet_compiler_admission_slot_count"], 3)
+        self.assertEqual(at_host_limit["host_compiler_admission_slot_limits"]["ilo-prod"], 4)
+
+        samples = empty_samples_for_hosts(self.now, hosts)
+        samples["ilo-prod"]["census"]["resource_snapshot"]["available_memory_bytes"] = fleet.MIN_AVAILABLE_MEMORY - 1
+        below_memory_floor = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertFalse(below_memory_floor["advisory_allowed"])
+        self.assertIn("ilo-prod:available-memory-below-8-gib-or-missing", below_memory_floor["reasons"])
+
+        samples = empty_samples_for_hosts(self.now, hosts)
+        samples["ilo-prod"]["census"]["resource_snapshot"]["root_disk_available_bytes"] = fleet.MIN_DESTINATION_DISK
+        at_disk_floor = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertTrue(at_disk_floor["advisory_allowed"], at_disk_floor["reasons"])
+
+        samples["ilo-prod"]["census"]["resource_snapshot"]["root_disk_reserved_bytes"] = fleet.MIN_DESTINATION_DISK + 1
+        below_reserve = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertFalse(below_reserve["advisory_allowed"])
+        self.assertIn("destination-root-disk-below-ci-reserve", below_reserve["reasons"])
+
+        samples = empty_samples_for_hosts(self.now, hosts)
+        install_groups(samples, "ilo-prod", [compiler_group(11100 + i) for i in range(4)])
+        over_host_limit = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertFalse(over_host_limit["advisory_allowed"])
+        self.assertIn("ilo-prod:host-compiler-admission-slot-limit-reached", over_host_limit["reasons"])
+
+        hosts["ilo-prod"]["limit"] = 5
+        samples = empty_samples_for_hosts(self.now, hosts)
+        over_configuration_limit = self.evaluate_prod_scope(
+            destination="ilo-prod", hosts=hosts, samples=samples,
+        )
+        self.assertFalse(over_configuration_limit["advisory_allowed"])
+        self.assertIn("ilo-prod:host-limit-exceeds-4", over_configuration_limit["reasons"])
+
+        hosts = host_configs(include_ilo_prod=True)
+        samples = empty_samples_for_hosts(self.now, hosts)
+        for host, count in (("ilo-prod", 4), ("ilo", 6), ("h16001mac", 6)):
+            install_groups(samples, host, [compiler_group(11200 + 100 * len(host) + i) for i in range(count)])
+        full = self.evaluate_prod_scope(destination="local", hosts=hosts, samples=samples)
+        self.assertEqual(full["current_fleet_compiler_group_count"], 16)
+        self.assertEqual(full["current_fleet_compiler_admission_slot_count"], 16)
+        self.assertFalse(full["advisory_allowed"])
+        self.assertIn("fleet-compiler-admission-slot-limit-reached", full["reasons"])
+
+    def test_ilo_prod_sibling_and_unknown_residual_slots_count_conservatively(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        samples = empty_samples_for_hosts(self.now, hosts)
+        siblings = compiler_group(
+            12000,
+            kind="cargo",
+            classification="unknown",
+            cargo_pids=[12001, 12002],
+            pids=[12001, 12002, 12003],
+            residual_member_pids=[12003],
+        )
+        unknown = compiler_group(12100, kind="unknown", classification="unknown")
+        install_groups(
+            samples,
+            "ilo-prod",
+            [siblings, unknown],
+            [
+                cargo_entry(12001, 12000, None, classification="unknown"),
+                cargo_entry(12002, 12000, None, classification="unknown"),
+            ],
+        )
+
+        result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+
+        self.assertTrue(result["advisory_allowed"], result["reasons"])
+        self.assertEqual(result["hosts"]["ilo-prod"]["compiler_group_count"], 2)
+        self.assertEqual(result["hosts"]["ilo-prod"]["compiler_admission_slot_count"], 4)
+        self.assertEqual(result["current_fleet_compiler_admission_slot_count"], 4)
+        self.assertIn(
+            "ilo-prod:active-cargo-process-jobs-unknown-counted-conservatively",
+            result["limitations"],
+        )
+        self.assertIn(
+            "ilo-prod:unresolved-compiler-group-counted-conservatively",
+            result["limitations"],
+        )
+
+    def test_ilo_prod_mac_exclusion_is_opted_in_and_reported_as_partial_scope(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        reason = "2026-10-16 user request; fresh Mac-offline proof reviewed with managed permit"
+        active_hosts, excluded_hosts = fleet._resolve_sample_scope(
+            destination="ilo-prod",
+            exclude_hosts=["h16001mac"],
+            exclusion_reason=reason,
+            hosts=hosts,
+        )
+        samples = empty_samples_for_hosts(self.now, active_hosts)
+        result = self.evaluate_prod_scope(
+            destination="ilo-prod",
+            hosts=active_hosts,
+            samples=samples,
+            excluded_hosts=excluded_hosts,
+        )
+
+        self.assertTrue(result["advisory_allowed"], result["reasons"])
+        self.assertEqual(set(result["sample_scope"]["configured_hosts"]), set(hosts))
+        self.assertEqual(set(result["sample_scope"]["requested_hosts"]), {"local", "ilo", "ilo-prod"})
+        self.assertEqual(set(result["sample_scope"]["sampled_hosts"]), {"local", "ilo", "ilo-prod"})
+        self.assertEqual(result["sample_scope"]["excluded_hosts"], [{"host": "h16001mac", "reason": reason}])
+        self.assertIn("2026-10-16", result["sample_scope"]["exclusion_authorization"])
+        self.assertIn("fresh Mac-offline proof", result["sample_scope"]["exclusion_authorization"])
+        self.assertFalse(result["sample_scope"]["full_fleet_sampled"])
+
+        with self.assertRaises(ValueError):
+            fleet._resolve_sample_scope(
+                destination="ilo-prod", exclude_hosts=["h16001mac"],
+                exclusion_reason=reason, hosts=fleet.DEFAULT_HOSTS,
+            )
+        for missing_reason in (None, "", " \t"):
+            with self.subTest(reason=missing_reason):
+                with self.assertRaises(ValueError):
+                    fleet._resolve_sample_scope(
+                        destination="ilo-prod", exclude_hosts=["h16001mac"],
+                        exclusion_reason=missing_reason, hosts=hosts,
+                    )
+
+        all_samples = empty_samples_for_hosts(self.now, hosts)
+        for bad_exclusion in (
+            {"unknown-host": reason},
+            {"local": reason},
+        ):
+            with self.subTest(exclusion=bad_exclusion):
+                invalid = self.evaluate_prod_scope(
+                    destination="ilo-prod", hosts=hosts, samples=all_samples,
+                    excluded_hosts=bad_exclusion,
+                )
+                self.assertFalse(invalid["advisory_allowed"])
+                self.assertIn("fleet-host-exclusion-not-authorized-for-this-scope", invalid["reasons"])
+
+        without_prod_flag_hosts = host_configs(include_ilo_prod=True)
+        no_flag = fleet.evaluate_fleet(
+            empty_samples_for_hosts(self.now, without_prod_flag_hosts),
+            destination="ilo-prod", requested_jobs=1,
+            hosts=without_prod_flag_hosts, now=self.now,
+            include_ilo_prod=False,
+            excluded_hosts={"h16001mac": reason},
+        )
+        self.assertFalse(no_flag["advisory_allowed"])
+        self.assertIn("fleet-host-exclusion-not-authorized-for-this-scope", no_flag["reasons"])
+
+        prod_missing_from_active_scope = {name: hosts[name] for name in ("local", "ilo")}
+        incomplete_exclusion = fleet.evaluate_fleet(
+            empty_samples_for_hosts(self.now, prod_missing_from_active_scope),
+            destination="ilo-prod", requested_jobs=1,
+            hosts=prod_missing_from_active_scope, now=self.now,
+            include_ilo_prod=True,
+            excluded_hosts={"h16001mac": reason},
+        )
+        self.assertFalse(incomplete_exclusion["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", incomplete_exclusion["reasons"])
+
+    def test_collect_once_samples_opted_in_ilo_prod_exactly_once(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        counts: Counter[str] = Counter()
+
+        def fake_sample(name: str, host: object, source: bytes) -> dict[str, object]:
+            counts[name] += 1
+            return {"host": name, "transport_complete": True}
+
+        result = fleet.collect_once(hosts, b"sampler bytes", sample_host=fake_sample)
+        self.assertEqual(set(result), set(hosts))
+        self.assertEqual(counts, Counter({name: 1 for name in hosts}))
+
+    def test_cli_requires_prod_opt_in_before_sampling_and_collects_four_when_enabled(self) -> None:
+        with mock.patch.object(fleet, "collect_once") as collect:
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    fleet.main(["--destination", "ilo-prod"])
+        self.assertEqual(error.exception.code, 2)
+        collect.assert_not_called()
+
+        now = dt.datetime.now(dt.timezone.utc)
+        captured_hosts: dict[str, dict[str, object]] = {}
+
+        def fake_collect(hosts: Mapping[str, Mapping[str, object]], source: bytes) -> dict[str, dict[str, object]]:
+            captured_hosts.update({name: dict(config) for name, config in hosts.items()})
+            return empty_samples_for_hosts(now, hosts)
+
+        stdout = io.StringIO()
+        with mock.patch.object(fleet, "collect_once", side_effect=fake_collect) as collect:
+            with contextlib.redirect_stdout(stdout):
+                return_code = fleet.main([
+                    "--destination", "local", "--include-ilo-prod",
+                    "--prod-target", "ilo-prod-test",
+                    "--prod-python", "/nix/store/test-python3",
+                ])
+        self.assertEqual(return_code, 0)
+        collect.assert_called_once()
+        self.assertEqual(set(captured_hosts), {"local", "ilo", "h16001mac", "ilo-prod"})
+        self.assertEqual(captured_hosts["ilo-prod"]["ssh_target"], "ilo-prod-test")
+        self.assertEqual(captured_hosts["ilo-prod"]["python"], "/nix/store/test-python3")
+        report = json.loads(stdout.getvalue())
+        self.assertTrue(report["advisory_allowed"], report["reasons"])
+        self.assertEqual(set(report["sample_scope"]["configured_hosts"]), set(captured_hosts))
+        self.assertTrue(report["sample_scope"]["full_fleet_sampled"])
 
     def test_exclusion_resolver_rejects_invalid_host_destination_and_reason(self) -> None:
         invalid = (
