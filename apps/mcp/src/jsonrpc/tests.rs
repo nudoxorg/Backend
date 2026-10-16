@@ -585,6 +585,8 @@ struct Fake {
     outline_error: Option<ClientError>,
     /// Exact source availability returned by the document/source boundary.
     document_override: Option<Document>,
+    /// Negative control: withhold an overridden document from the member projection.
+    omit_document_override_member: bool,
     /// Optional graph rows used to exercise the complete-page admission cap.
     graph_rows: Option<Box<[GraphQueryRow]>>,
     /// Synthetic typed query membership under real transport admission.
@@ -1019,7 +1021,7 @@ impl Engine for Fake {
                     ),
                 )
             }
-            Probe::OutlinePage { .. } => {
+            Probe::OutlinePage { path, .. } => {
                 if let Some(error) = self.outline_error.take() {
                     return Err(error);
                 }
@@ -1028,8 +1030,24 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
+                let mut members = vec![module_row(), declaration_row()];
+                // A source-availability override supplies a selected native
+                // document. Its owner must also be present in the fixture's
+                // otherwise complete member projection; omission is a real
+                // protocol failure, independent of optional source absence.
+                if let Some(document) = &self.document_override
+                    && !self.omit_document_override_member
+                    && !members.iter().any(|row| row.id == RowId::Symbol(document.symbol))
+                {
+                    members.push(Row::in_package(
+                        RowId::Symbol(document.symbol),
+                        snapshot(Vec::new()).root.basis(),
+                        package_key(path),
+                        self.document_coordinates.last().map_or(DECLARATION, String::as_str),
+                    ));
+                }
                 CommandReply::ProjectionPage(ProjectionPage {
-                    snapshot: snapshot(vec![module_row(), declaration_row()]),
+                    snapshot: snapshot(members),
                     terminal: PageTerminal::Complete,
                 })
             }
@@ -4357,9 +4375,17 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         "fn PAGE_FAULT_SIGNATURE()",
         backend_present::Language::Rust,
     ))
-    .with_notes(vec![Fault::usage(
-        "relations",
-        "MCP_SECTION_FAULT_SENTINEL",
+    .with_notes(vec![Fault::new(
+        backend_present::FaultSlug::Protocol,
+        backend_present::Operand::Path(PROJECT.to_owned()),
+        backend_present::Cause::new(
+            backend_present::CauseSlug::Unproven,
+            "MCP_SECTION_FAULT_SENTINEL",
+        ),
+        backend_present::Affordance::UseCommand {
+            name: "outline",
+            args: vec![PROJECT.to_owned()].into_boxed_slice(),
+        },
     )]);
     let answer = Answer::Page(Box::new(page));
     let mut server = ready(Fake::default());
@@ -4372,7 +4398,10 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
             McpInvocation::new(McpExposure::Direct, "backend.document", &Map::new()),
         )
         .expect("actual combined result projection");
-    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["isError"], true,
+        "failed required section is not full success"
+    );
     assert_eq!(
         result["structuredContent"]["identity"]["coordinate"],
         DECLARATION
@@ -4397,6 +4426,13 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         result["structuredContent"]["notes"][0]["detail"],
         "MCP_SECTION_FAULT_SENTINEL"
     );
+    assert_eq!(result["structuredContent"]["notes"][0]["slug"], "protocol");
+    assert_eq!(result["structuredContent"]["notes"][0]["cause"], "unproven");
+    assert_eq!(result["structuredContent"]["notes"][0]["operand"], PROJECT);
+    assert_eq!(
+        result["structuredContent"]["notes"][0]["call"]["arguments"]["path"],
+        PROJECT
+    );
     let decoded: backend_present::SummaryPageDto =
         serde_json::from_value(result["structuredContent"].clone())
             .expect("Summary page retains its typed public fault grammar");
@@ -4413,6 +4449,52 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
     assert!(text.contains("source-unavailable"));
     assert!(text.contains("this deployment has no source provider"));
     assert!(text.contains("MCP_SECTION_FAULT_SENTINEL"));
+}
+
+#[test]
+fn overridden_document_still_requires_its_owner_and_current_member_basis() {
+    for changed_basis in [false, true] {
+        let native = symbol_key("overridden-document-member-proof");
+        let basis = if changed_basis {
+            view_state_root(&[("changed".to_owned(), "source".to_owned())])
+        } else {
+            view_state_root(&[])
+        };
+        let document = Document::new(
+            native,
+            basis,
+            [Fragment::Text("RETAINED_PARTIAL_DOCUMENT".to_owned())],
+        );
+        let mut server = ready(Fake {
+            document_override: Some(document),
+            omit_document_override_member: !changed_basis,
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.document",
+            &json!({ "coordinate": DECLARATION, "detail": "full" }),
+        );
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["answer"], "page");
+        assert_eq!(
+            result["structuredContent"]["notes"][0]["slug"],
+            if changed_basis {
+                "wrong-basis"
+            } else {
+                "protocol"
+            }
+        );
+        if !changed_basis {
+            assert!(
+                result["structuredContent"]["notes"][0]["detail"]
+                    .as_str()
+                    .expect("cause")
+                    .contains("document owner is absent")
+            );
+        }
+        assert!(text_of(&result).contains("RETAINED_PARTIAL_DOCUMENT"));
+    }
 }
 
 #[test]

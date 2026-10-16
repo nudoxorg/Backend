@@ -19,9 +19,9 @@
 //! [`Engine`] built from canned library values, with no daemon, socket, clock,
 //! or filesystem anywhere.
 //!
-//! A probe that fails does not fail the command. It becomes a note on the page,
-//! because "I could not look" and "there are none" are different answers and a
-//! reader is owed the difference.
+//! A failed section probe remains a typed note on the useful page. Required
+//! read failures also classify that composite answer as failed; optional
+//! source/lane availability remains evidence about the available scope.
 
 use crate::assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, record_list,
@@ -264,6 +264,7 @@ impl Answer {
     pub fn fault(&self) -> Option<&Fault> {
         match self {
             Self::Product(product) => product.fault(),
+            Self::Page(page) => page.fault(),
             _ => None,
         }
     }
