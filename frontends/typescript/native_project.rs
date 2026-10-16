@@ -26,23 +26,37 @@ const MAX_DIRECTORY_DEPTH: usize = 32;
 const MAX_REQUESTS: usize = 131_072;
 const MAX_PATTERN_BYTES: usize = 512 * 1024;
 
+/// Source and compiler inputs resolved for one native TypeScript program.
 pub struct NativeProgram {
+    /// Canonical source paths and UTF-8 text included in the program.
     pub sources: BTreeMap<PathBuf, String>,
+    /// Embedded standard-library declaration names and source text.
     pub libraries: Vec<(String, &'static str)>,
+    /// Checker options resolved from the project's compiler configuration.
     pub checker: TszCheckerOptions,
+    /// Source module requests with their resolver outcomes.
     pub resolutions: Vec<NativeModuleResolution>,
+    /// Canonical source paths paired with their ESM or CommonJS format.
     pub file_formats: Vec<(PathBuf, TszProjectFileFormat)>,
     /// Stable native options, including resolver policy, retained in the recipe.
     pub options_identity: String,
+    /// Selected project roots that seed module resolution.
     pub root_names: Vec<PathBuf>,
+    /// Diagnostics produced while loading and resolving project configuration.
     pub program_diagnostics: Vec<crate::TszDiagnostic>,
 }
 
+/// Resolver metadata for one module request in a program source file.
 pub struct NativeModuleResolution {
+    /// Canonical path of the source file containing the request.
     pub importer: PathBuf,
+    /// Exact module specifier written in the source file.
     pub specifier: String,
+    /// Syntax form of the module request.
     pub kind: TszProjectModuleRequestKind,
+    /// Optional import or require mode selected for resolution.
     pub mode: Option<TszResolutionModeOverride>,
+    /// Resolved target path, or `None` when no target was resolved.
     pub target: Option<PathBuf>,
 }
 
@@ -143,7 +157,10 @@ pub fn build(
             .check_file_system_error()
             .map_err(|error| error.to_string())?;
         file_formats.push((path.clone(), format));
-        if path.extension().is_some_and(|extension| extension == "json") {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
             // A resolved JSON module is a real program member, not a TS
             // import-scanning input. The authority's existing native JSON
             // parse/bind path validates its syntax and the checker derives
