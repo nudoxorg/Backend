@@ -352,7 +352,11 @@ impl Session {
         }
         let revision = match remaining {
             Some(remaining) => {
-                self.revision_with_budget(remaining.saturating_sub(started.elapsed()))?
+                let remaining = remaining.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(ClientError::RemoteDeadlineExceeded);
+                }
+                self.revision_with_budget(remaining)?
             }
             None => self.revision()?,
         };
@@ -448,6 +452,9 @@ impl Session {
     ) -> Result<(), ClientError> {
         let started = std::time::Instant::now();
         self.check_request_context()?;
+        if remaining.is_some_and(|budget| budget.is_zero()) {
+            return Err(ClientError::RemoteDeadlineExceeded);
+        }
         if self.prepared_query.is_some() {
             return Ok(());
         }

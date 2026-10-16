@@ -2559,6 +2559,45 @@ fn retained_window_proofs_refuse_changed_arguments_credit_unknown_cursor_and_sto
     }
 }
 
+#[test]
+fn zero_window_read_budget_refuses_before_any_transport_even_without_request_context() {
+    let (owner, requests) = fixture();
+    let token = first_token(&owner, &requests, true, 4);
+    for prepared in [false, true] {
+        let mut resumed = session(&owner, &requests);
+        let next = resumed
+            .decode_page_continuation(&token)
+            .expect("validated input");
+        if !prepared {
+            resumed.prepared_query = None;
+        }
+        assert!(resumed.request_context.is_none());
+        let before = requests.lock().expect("requests").len();
+        assert_eq!(
+            resumed.prepare_query_window(delivery_window(4, 1), Some(next), Some(Duration::ZERO)),
+            Err(ClientError::RemoteDeadlineExceeded)
+        );
+        assert_eq!(
+            resumed.prepared_query.is_some(),
+            prepared,
+            "zero budget does not consume the proof"
+        );
+        let imported = backend_library::decode_command_body(
+            &decode_portable_body(&token).expect("canonical input"),
+        )
+        .expect("strict input command");
+        assert_eq!(
+            resumed.admit_query_continuation(imported, Some(Duration::ZERO)),
+            Err(ClientError::RemoteDeadlineExceeded)
+        );
+        assert_eq!(
+            requests.lock().expect("requests").len(),
+            before,
+            "default in-process transport ignores budgets, so admission must refuse before calling it"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A preparing read outlives its connection: the owner retires a connection
 // after its frame budget, and a long preparation is exactly what spends it.
