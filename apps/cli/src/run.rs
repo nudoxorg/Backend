@@ -328,14 +328,14 @@ mod graph_admission_tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn cli_graph_refusal_preserves_observed_attachment_input_and_original_scope() {
-        const PROBE: &str = "run::graph_admission_tests::cli_graph_refusal_probe";
+    fn cli_graph_adaptation_preserves_observed_attachment_input_and_original_scope() {
+        const PROBE: &str = "run::graph_admission_tests::cli_graph_adaptation_probe";
         for custom in [false, true] {
             let mut child =
                 std::process::Command::new(std::env::current_exe().expect("test executable"));
             child
                 .args(["--exact", PROBE, "--nocapture"])
-                .env("NUDOX_TEST_GRAPH_REFUSAL", "1");
+                .env("NUDOX_TEST_GRAPH_ADAPTATION", "1");
             if custom {
                 child.env(
                     backend_runtime::AUTHORITY_SECRET_ENV,
@@ -355,20 +355,43 @@ mod graph_admission_tests {
     }
     impl backend_client::CommandTransport for GraphTransport {
         fn request(&mut self, command: CommandDto) -> Result<ReplyDto, ClientError> {
+            let page = if let Command::Surface(SurfaceCommand::PackageGraphPage { request }) =
+                &command.command
+            {
+                let mut page = self.page.clone();
+                page.limit = request.limit;
+                page.rows = page
+                    .rows
+                    .iter()
+                    .take(usize::from(request.limit))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                assert!(
+                    page.admit_for(request).is_ok(),
+                    "synthetic page mismatch: request limit {}, page limit {}, row count {}",
+                    request.limit,
+                    page.limit,
+                    page.rows.len(),
+                );
+                page
+            } else {
+                self.page.clone()
+            };
             self.seen
                 .lock()
                 .expect("commands")
                 .push(command.command.clone());
             Ok(ReplyDto::new(
                 command.request_id,
-                CommandReply::Surface(SurfaceReply::PackageGraphPage(self.page.clone())),
+                CommandReply::Surface(SurfaceReply::PackageGraphPage(page)),
             ))
         }
     }
 
     #[test]
-    fn cli_graph_refusal_probe() {
-        if std::env::var("NUDOX_TEST_GRAPH_REFUSAL").is_err() {
+    fn cli_graph_adaptation_probe() {
+        if std::env::var("NUDOX_TEST_GRAPH_ADAPTATION").is_err() {
             return;
         }
         let base = std::env::temp_dir().join(format!("graph-refusal-probe-{}", std::process::id()));
@@ -378,13 +401,15 @@ mod graph_admission_tests {
             Some(base.join("owner.sock")),
         )
         .expect("uncreated frozen attachment");
-        let source =
-            PackageReference::parse(&format!("pkg:cargo/{}@1", "s".repeat(2000))).expect("source");
+        // Keep the source coordinate short enough to fit the published CLI
+        // operand cap when the oversized-output recovery command is rendered.
+        let source = PackageReference::parse("pkg:cargo/fixture@1").expect("source");
         let authority = PackageGraphSourceAuthority::Local([7; 32]);
         // Keep every coordinate within the 2 KiB package-URL admission cap.
-        // Five distinct complete rows still exceed the human preview budget;
-        // no malformed coordinate is needed to exercise output refusal.
-        let mut rows = (0..5)
+        // Two distinct, complete rows force the normal 5-to-2-to-1 page-size
+        // adaptation. The final one-row page fits the human preview budget;
+        // no malformed coordinate is needed to exercise that path.
+        let mut rows = (0..2)
             .map(|index| {
                 let target = format!("{}{index}", "t".repeat(2000));
                 PackageDependencyRecord::new_with_source_authority(
@@ -411,6 +436,7 @@ mod graph_admission_tests {
             })
             .collect::<Vec<_>>();
         rows.sort_unstable_by_key(|row| row.facts_version);
+        let source_key = PackageGraphSourceKey::new(source.clone(), authority);
         let mut request = PackageGraphPageRequest::new(
             source.clone(),
             PackageGraphDirection::Dependencies,
@@ -426,7 +452,7 @@ mod graph_admission_tests {
             catalog_snapshot: request.catalog_snapshot,
             package: source.clone(),
             direction: request.direction,
-            source: Some(PackageGraphSourceKey::new(source, authority)),
+            source: Some(source_key.clone()),
             limit: 5,
             knowledge: PackageGraphKnowledge::Known,
             rows: rows.into_boxed_slice(),
@@ -465,7 +491,7 @@ mod graph_admission_tests {
                 .set_request_context(Some(scope.clone()))
                 .expect("original request scope");
             let options = crate::options::Options::plain(crate::options::Format::Human);
-            let fault = execute_with_output_admission(
+            let answer = execute_with_output_admission(
                 &mut session,
                 &original,
                 Some(&paths),
@@ -474,12 +500,31 @@ mod graph_admission_tests {
                 context.as_ref(),
                 |answer| crate::render::admit_graph_answer(answer, &options),
             )
-            .expect_err("real complete human graph exceeds its preview budget");
-            assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);
+            .expect("one-row complete page fits after valid adaptive reduction");
+            let Answer::Product(view) = answer else {
+                panic!("complete graph product answer");
+            };
+            let final_page = view.package_graph_page().expect("complete graph page");
+            assert_eq!(final_page.rows.len(), 1);
+            assert_eq!(final_page.terminal, PackageGraphPageTerminal::Complete);
             assert_eq!(
                 *seen.lock().expect("exact commands"),
-                [Command::Surface(command.clone())],
-                "fixed graph input is neither resized nor replayed"
+                [
+                    Command::Surface(command.clone()),
+                    Command::Surface(SurfaceCommand::PackageGraphPage {
+                        request: PackageGraphPageRequest {
+                            limit: 2,
+                            ..request.clone()
+                        },
+                    }),
+                    Command::Surface(SurfaceCommand::PackageGraphPage {
+                        request: PackageGraphPageRequest {
+                            limit: 1,
+                            ..request.clone()
+                        },
+                    }),
+                ],
+                "the valid graph adapts at the published page-size sequence"
             );
             let restored = session.request_context().expect("restored original scope");
             assert_eq!(
@@ -488,32 +533,6 @@ mod graph_admission_tests {
                     .expect("same deadline"),
                 deadline
             );
-            if custom {
-                assert!(fault.affordance().shell().is_none());
-            } else {
-                let backend_present::Affordance::ReadPackageGraphJson {
-                    request: exact,
-                    detail,
-                    ..
-                } = fault.affordance()
-                else {
-                    panic!("complete JSON recovery affordance")
-                };
-                assert_eq!(exact.as_ref(), &request);
-                assert_eq!(*detail, backend_present::Detail::Summary);
-                let shell = fault
-                    .affordance()
-                    .shell()
-                    .expect("observed current executable");
-                assert_eq!(
-                    shell.contains(" --passive "),
-                    mode == backend_present::StartupRecoveryMode::Existing
-                );
-                assert!(shell.contains(" --format json "));
-                assert!(!shell.contains("authority.secret"));
-                assert!(!shell.contains("not-displayed-graph-authority"));
-                assert!(fault.affordance().tool_call().is_none());
-            }
             scope.cancel(backend_client::RequestCancellationReason::Explicit);
             assert_eq!(
                 session

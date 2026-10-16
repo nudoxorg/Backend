@@ -862,6 +862,10 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
         .set_nonblocking(true)
         .expect("bounded accept observation");
     let package = fixture.package.clone();
+    let connection_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_connection_trace = connection_trace.clone();
+    let client_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_client_done = client_done.clone();
     let server = std::thread::spawn(move || {
         let accept_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut service = LocaldService::new(
@@ -875,11 +879,17 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
             FrameLimits::default(),
         )
         .expect("real frame service");
-        for _ in 0..4 {
-            let (mut stream, _) = loop {
+        let mut frames_by_connection = Vec::new();
+        for connection in 1..=5 {
+            let accepted = loop {
                 match listener.accept() {
-                    Ok(connection) => break connection,
+                    Ok(connection) => break Some(connection),
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if connection == 5
+                            && server_client_done.load(std::sync::atomic::Ordering::Acquire)
+                        {
+                            break None;
+                        }
                         assert!(
                             std::time::Instant::now() < accept_deadline,
                             "expected connection absent"
@@ -889,20 +899,50 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
                     Err(error) => panic!("private accept failed: {error}"),
                 }
             };
+            let Some((mut stream, _)) = accepted else {
+                break;
+            };
+            // macOS can propagate the listener's nonblocking mode to accepted
+            // streams. Nonblocking mode is only needed for the bounded accept
+            // loop; restore blocking reads before applying the frame timeout.
+            stream
+                .set_nonblocking(false)
+                .expect("blocking accepted service stream");
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .expect("bounded fixture read");
-            assert_eq!(
-                service
-                    .serve_stream(&mut stream)
-                    .expect("production frame retirement"),
-                frames
-            );
+            let served = match service.serve_stream(&mut stream) {
+                Ok(served) => served,
+                Err(error) => {
+                    if let Ok(mut trace) = server_connection_trace.lock() {
+                        trace.push(format!(
+                            "connection={connection} error={error:?} starts={} reads={}",
+                            service.owner().starts,
+                            service.owner().reads
+                        ));
+                    }
+                    panic!("production frame retirement: {error:?}");
+                }
+            };
+            if let Ok(mut trace) = server_connection_trace.lock() {
+                trace.push(format!(
+                    "connection={connection} served={served} starts={} reads={}",
+                    service.owner().starts,
+                    service.owner().reads
+                ));
+            }
+            frames_by_connection.push(served);
+            if connection < 5 {
+                assert_eq!(served, frames, "production frame retirement");
+            } else {
+                assert!(served <= frames, "bounded final partial connection");
+            }
         }
         (
             service.owner().key,
             service.owner().starts,
             service.owner().reads,
+            frames_by_connection,
         )
     });
     let mut original =
@@ -924,7 +964,7 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
     let deadline = wait
         .read_deadline(std::time::Duration::from_secs(30))
         .expect("original read deadline");
-    for _ in 1..(frames * 4) {
+    for status_index in 1..(frames * 4) {
         let actual = recovery
             .surface(
                 &mut original,
@@ -932,9 +972,32 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
                 Some(&wait),
             )
             .expect("same-key read across healthy connection retirement");
-        assert_eq!(
-            actual,
-            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
+        let expected =
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()));
+        let observed_summary = match &actual {
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Unknown { .. }) => {
+                "unknown status".to_owned()
+            }
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) => {
+                format!(
+                    "known status: key_match={} digest_match={} package_match={} intent_match={} state_match={} capture_match={}",
+                    status.operation_key == initial.operation_key,
+                    status.request_digest == initial.request_digest,
+                    status.package == initial.package,
+                    status.execution_intent == initial.execution_intent,
+                    status.state == initial.state,
+                    status.source_capture == initial.source_capture,
+                )
+            }
+            _ => "different reply variant".to_owned(),
+        };
+        assert!(
+            actual == expected,
+            "receipt changed at status ordinal {status_index} ({observed_summary}); connection trace={:?}",
+            connection_trace
+                .lock()
+                .map(|items| items.clone())
+                .unwrap_or_default()
         );
         assert_eq!(
             wait.read_deadline(std::time::Duration::from_secs(900))
@@ -946,6 +1009,8 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
         .detach(&mut original)
         .expect("retire exact scope binding");
     wait.finish();
+    drop(original);
+    client_done.store(true, std::sync::atomic::Ordering::Release);
     assert_eq!(
         fixture.claims().len(),
         1,
@@ -955,9 +1020,25 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
         fixture.claims()[0]["operation_key"],
         serde_json::to_value(key).expect("saved key")
     );
+    let (served_key, starts, reads, frames_by_connection) =
+        server.join().expect("bounded owner thread");
+    assert_eq!(served_key, Some(key));
+    assert_eq!(starts, 1, "recovery never starts a replacement operation");
+    assert!(frames_by_connection.len() >= 4);
+    assert_eq!(&frames_by_connection[..4], &[frames; 4]);
+    let trailing_frames: usize = frames_by_connection[4..].iter().sum();
+    assert!(
+        trailing_frames <= 4,
+        "at most one idempotent reply replay per retirement: {frames_by_connection:?}"
+    );
     assert_eq!(
-        server.join().expect("bounded owner thread"),
-        (Some(key), 1, frames * 4 - 1)
+        reads,
+        frames * 4 - 1 + trailing_frames,
+        "all additional frames are same-key retirement replays"
+    );
+    assert_eq!(
+        frames_by_connection.get(4).copied().unwrap_or_default(),
+        trailing_frames
     );
 }
 
