@@ -580,6 +580,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszProjectQuerySessionError::MissingProjectModuleResolutions => {
                 F::NativeSessionMissingProjectModuleResolutions
             }
+            TszProjectQuerySessionError::ModuleResolution(_) => F::NativeSessionModuleResolution,
             TszProjectQuerySessionError::ExecutionCheckpointMismatch => {
                 F::NativeSessionExecutionCheckpointMismatch
             }
@@ -630,6 +631,7 @@ fn module_failure(error: &TszProjectModuleResolutionError, site: ModuleSite) -> 
             F::NativeModuleUnsupportedRequestKind
         }
         (ModuleSite::Admission, E::DuplicateRequest { .. }) => F::NativeModuleDuplicateRequest,
+        (ModuleSite::Admission, E::InvalidReference { .. }) => F::NativeModuleInvalidReference,
         (ModuleSite::ProjectCheck, E::InvalidVirtualPath { .. }) => {
             F::NativeProjectCheckModuleInvalidVirtualPath
         }
@@ -651,6 +653,9 @@ fn module_failure(error: &TszProjectModuleResolutionError, site: ModuleSite) -> 
         }
         (ModuleSite::ProjectCheck, E::DuplicateRequest { .. }) => {
             F::NativeProjectCheckModuleDuplicateRequest
+        }
+        (ModuleSite::ProjectCheck, E::InvalidReference { .. }) => {
+            F::NativeProjectCheckModuleInvalidReference
         }
     }
 }
@@ -688,6 +693,79 @@ fn stop_failure(reason: TszProjectExecutionStop, site: StopSite) -> F {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_module_refusals_retain_the_resolution_site_without_inventing_a_path_failure() {
+        use TszProjectModuleResolutionError as E;
+        let invalid_reference = E::InvalidReference {
+            importer_path: "/private/authority.secret.ts".into(),
+            offset: 17,
+        };
+        for (error, expected, tag) in [
+            (
+                TszAuthorityError::ModuleResolution(invalid_reference.clone()),
+                F::NativeModuleInvalidReference,
+                "typescript_native_module_invalid_reference",
+            ),
+            (
+                TszAuthorityError::ProjectCheck(TszProjectProgramCheckError::ModuleResolution(
+                    invalid_reference.clone(),
+                )),
+                F::NativeProjectCheckModuleInvalidReference,
+                "typescript_native_project_check_module_invalid_reference",
+            ),
+            (
+                TszAuthorityError::ProjectCheckerSession(
+                    TszProjectQuerySessionError::ModuleResolution(invalid_reference),
+                ),
+                F::NativeSessionModuleResolution,
+                "typescript_native_session_module_resolution",
+            ),
+        ] {
+            let kind = failure_kind(&PackageAuthorityError::TypeScriptTsz(error))
+                .expect("exact native refusal");
+            assert_eq!(kind, expected);
+            assert_eq!(kind.kind_tag(), tag);
+            assert!(!kind.is_cancelled());
+            assert!(!kind.is_program_execution_failure());
+            assert!(!kind.detail().contains("private"));
+            assert_ne!(kind, F::NativeModuleInvalidVirtualPath);
+            assert_ne!(kind, F::NativeSessionMissingProjectModuleResolutions);
+        }
+
+        // The session variant is a rejection of present resolution inputs,
+        // regardless of which nested validation failed. It is never absence.
+        for error in [
+            E::InvalidVirtualPath {
+                path: "/private/path".into(),
+            },
+            E::DuplicateProgramPath {
+                path: "/private/path".into(),
+            },
+            E::ImporterNotInProgram {
+                path: "/private/path".into(),
+            },
+            E::TargetNotInProgram {
+                path: "/private/path".into(),
+            },
+            E::EmptySpecifier,
+            E::EmptyExternalIdentity,
+            E::UnsupportedRequestKind {
+                syntax_kind: "private syntax".into(),
+            },
+            E::DuplicateRequest {
+                importer_path: "/private/path".into(),
+                specifier: "private specifier".into(),
+            },
+        ] {
+            assert_eq!(
+                native_failure(&TszAuthorityError::ProjectCheckerSession(
+                    TszProjectQuerySessionError::ModuleResolution(error),
+                )),
+                F::NativeSessionModuleResolution
+            );
+        }
+    }
 
     #[test]
     fn typescript_failure_retains_native_stop_site_and_reason() {
