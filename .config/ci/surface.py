@@ -631,7 +631,7 @@ def walk_search_pages(reference: dict, fetch_page, limit: int = 1) -> tuple[int,
         more = offset < len(expected)
         if page.get("more") is not more:
             raise RuntimeError("continuation: incorrect completeness flag")
-        token = page.get("nextCursor")
+        token = offered_cursor(page)
         if not more:
             if token is not None:
                 raise RuntimeError("continuation: exhausted page still offers a cursor")
@@ -734,12 +734,29 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     return times
 
 
+def offered_cursor(answer: dict) -> str | None:
+    """Read either public cursor representation, rejecting contradictory proofs."""
+    direct = answer.get("nextCursor")
+    executable = answer.get("continuation_call")
+    advertised = None
+    if executable is not None:
+        if not isinstance(executable, dict) or not isinstance(executable.get("arguments"), dict):
+            raise RuntimeError("snapshot continuation: malformed executable call")
+        advertised = executable["arguments"].get("cursor")
+    if direct is not None and advertised is not None and direct != advertised:
+        raise RuntimeError("snapshot continuation: contradictory offered tokens")
+    token = direct if direct is not None else advertised
+    if token is not None and (not isinstance(token, str) or not token):
+        raise RuntimeError("snapshot continuation: invalid offered token")
+    return token
+
+
 def require_continuation_reply(first: dict, following: dict, published_root: str) -> None:
     """Prove an offered token works through a fresh public client before normalizing it."""
-    token = first.get("nextCursor")
+    token = offered_cursor(first)
     if not isinstance(token, str) or not token or following.get("answer") != first.get("answer"):
         raise RuntimeError("snapshot continuation: missing token or changed answer kind")
-    if following.get("nextCursor") == token:
+    if offered_cursor(following) == token:
         raise RuntimeError("snapshot continuation: repeated cursor")
     if first["answer"] == "records":
         if first.get("more") is not True:
@@ -771,13 +788,21 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         more = next_page.get("more")
     else:
         raise RuntimeError("snapshot continuation: unsupported answer")
-    next_token = following.get("nextCursor")
+    next_token = offered_cursor(following)
     if not isinstance(more, bool) or (more and (not isinstance(next_token, str) or not next_token)) or (not more and next_token is not None):
         raise RuntimeError("snapshot continuation: dishonest continuation flag")
 
 
 def mcp_continuation_call(call: dict, first: dict) -> dict:
-    arguments = dict(call.get("arguments", {}), cursor=first["nextCursor"])
+    token = offered_cursor(first)
+    if token is None:
+        raise RuntimeError("snapshot continuation: no offered token")
+    executable = first.get("continuation_call")
+    if executable is not None:
+        if executable.get("name") != call["tool"] or executable["arguments"].get("cursor") != token:
+            raise RuntimeError("snapshot continuation: executable call changed tool or token")
+        return {"tool": executable["name"], "arguments": dict(executable["arguments"])}
+    arguments = dict(call.get("arguments", {}), cursor=token)
     if call["tool"] == "backend.outline":
         # MCP can reduce the first page to fit its response budget. Its
         # continuation is bound to that effective limit, not the omitted or
@@ -798,7 +823,7 @@ def normalize_continuations(value, proven_tokens: set[str]):
     if not isinstance(value, dict):
         return value
     result = {key: normalize_continuations(item, proven_tokens) for key, item in value.items()}
-    token = value.get("nextCursor")
+    token = offered_cursor(value)
     if token is not None:
         if not isinstance(token, str) or token not in proven_tokens:
             raise RuntimeError("snapshot continuation: unconsumed token cannot be normalized")
@@ -809,13 +834,21 @@ def normalize_continuations(value, proven_tokens: set[str]):
         size, width, estimated = (budget.get(key) for key in ("bytes", "bytesPerToken", "estimatedTokens"))
         if any(type(number) is not int for number in (size, width, estimated)) or width <= 0 or size < len(token.encode()) or estimated != (size + width - 1) // width:
             raise RuntimeError("snapshot continuation: invalid encoded-byte budget")
-        payload_size = size - len(token.encode())
+        advertised = value.get("continuation_call", {}).get("arguments", {}).get("cursor")
+        copies = int(value.get("nextCursor") == token) + int(advertised == token)
+        payload_size = size - copies * len(token.encode())
+        if payload_size < 0:
+            raise RuntimeError("snapshot continuation: cursor copies exceed encoded-byte budget")
         result["budget"] = dict(result["budget"])
         result["budget"].pop("bytes")
         result["budget"].pop("estimatedTokens")
         result["budget"].update(bytesExcludingCursor=payload_size,
                                 estimatedTokensExcludingCursor=(payload_size + width - 1) // width)
-        result["nextCursor"] = prefix + "-<live-validated>"
+        placeholder = prefix + "-<live-validated>"
+        if value.get("nextCursor") is not None:
+            result["nextCursor"] = placeholder
+        if advertised == token:
+            result["continuation_call"]["arguments"]["cursor"] = placeholder
     return result
 
 
@@ -837,7 +870,7 @@ def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
     raw_calls = answers.get("mcp", {}).get("calls", [])
     for identifier, (raw, projected) in enumerate(zip(raw_calls, normalized.get("mcp", {}).get("calls", [])), start=2):
         reply = raw["reply"]
-        if reply.get("structuredContent", {}).get("nextCursor") is None:
+        if offered_cursor(reply.get("structuredContent", {})) is None:
             continue
         budget = reply.get("_meta", {}).get("backend/wireBudget", {})
         # The interactive driver already validated the raw line length.
@@ -954,7 +987,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         if case.get("mcp"):
             def prove_session_outline(call, reply, exchange):
                 first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
-                token = first.get("nextCursor")
+                token = offered_cursor(first)
                 if call["tool"] != "backend.outline" or token is None:
                     return
                 following = exchange(mcp_continuation_call(call, first))
@@ -977,8 +1010,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
                     require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
                 first = reply.get("structuredContent", {})
-                if first.get("nextCursor") is not None and first["nextCursor"] not in proven_tokens:
-                    token = first["nextCursor"]
+                if offered_cursor(first) is not None and offered_cursor(first) not in proven_tokens:
+                    token = offered_cursor(first)
                     call = result["call"]
                     continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)
                     if continued["exit"] != 0 or len(continued["calls"]) != 1:

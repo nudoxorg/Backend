@@ -335,6 +335,35 @@ class SnapshotContinuationTests(unittest.TestCase):
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
 
+    def test_executable_only_cursor_is_consumed_before_normalization(self):
+        import copy
+        first = self.page("mcp2-long-portable-proof")
+        token = first.pop("nextCursor")
+        first["continuation_call"] = {"name": "backend.search", "arguments": {
+            "query": "Digest", "limit": 3, "cursor": token}}
+        call = {"tool": "backend.search", "arguments": {"query": "Digest", "limit": 9}}
+        self.assertEqual(surface.mcp_continuation_call(call, first), {
+            "tool": "backend.search", "arguments": first["continuation_call"]["arguments"]})
+        with self.assertRaisesRegex(RuntimeError, "unconsumed"):
+            surface.normalize_continuations(first, set())
+        actual = surface.normalize_continuations(first, {token})
+        self.assertNotIn("nextCursor", actual)
+        self.assertEqual(actual["continuation_call"]["arguments"]["cursor"], "mcp2-<live-validated>")
+        self.assertEqual(actual["budget"]["bytesExcludingCursor"], 100)
+        other = copy.deepcopy(first)
+        other["continuation_call"]["arguments"]["cursor"] = "mcp2-other-proof-length"
+        size = 100 + len(other["continuation_call"]["arguments"]["cursor"])
+        other["budget"].update(bytes=size, estimatedTokens=(size + 3) // 4)
+        self.assertEqual(actual, surface.normalize_continuations(other, {other["continuation_call"]["arguments"]["cursor"]}))
+        wrong = copy.deepcopy(first)
+        wrong["continuation_call"]["name"] = "backend.outline"
+        with self.assertRaisesRegex(RuntimeError, "changed tool"):
+            surface.mcp_continuation_call(call, wrong)
+        wrong = copy.deepcopy(first)
+        wrong["nextCursor"] = "mcp2-different-proof"
+        with self.assertRaisesRegex(RuntimeError, "contradictory"):
+            surface.normalize_continuations(wrong, {token, wrong["nextCursor"]})
+
     def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
         import copy
         import json
