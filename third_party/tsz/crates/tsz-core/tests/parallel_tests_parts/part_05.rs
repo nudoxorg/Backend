@@ -1075,68 +1075,90 @@ fn test_parse_and_bind_single_json_reports_property_value_violation() {
     assert_eq!(codes, vec![1328], "got: {:?}", result.parse_diagnostics);
 }
 
-/// tsc's JSON scanner treats `//` line comments as trivia. A commented line
-/// inside an object — the shape of a `tsconfig.json` with an explanatory
-/// comment — must stay clean, not report TS1327 by mis-reading `//` as an
-/// unquoted property name.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_line_comment_is_trivia() {
+fn test_parse_file_single_json_line_comment_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         "{\n  // comment\n  \"a\": 1\n}".to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
 
-/// A `/* */` block comment in property-name position is also trivia.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_leading_block_comment_is_trivia() {
+fn test_parse_file_single_json_leading_block_comment_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         r#"{ /* leading */ "a": 1 }"#.to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
 
-/// A trailing line comment after the closing `}` is trivia at object depth 0.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_trailing_line_comment_is_trivia() {
+fn test_parse_file_single_json_trailing_line_comment_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         "{ \"a\": 1 } // trailing line comment".to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
 
-/// A comment between a property's `:` and its value must be skipped *before*
-/// value classification — otherwise the `/` starts the value and draws TS1328
-/// (a different wrong answer), which is exactly the #16819 interaction the
-/// issue calls out.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_comment_between_key_and_value_is_trivia() {
+fn test_parse_file_single_json_comment_between_key_and_value_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         r#"{ "a": /* between key and value */ 1 }"#.to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
@@ -1206,51 +1228,68 @@ fn test_parse_file_single_json_escaped_quote_in_string_keeps_slashes_as_content(
     );
 }
 
-/// A commented-out property line — the practical case in a hand-maintained
-/// `tsconfig.json` — is trivia and leaves the real properties untouched.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_commented_out_property_line_is_trivia() {
+fn test_parse_file_single_json_commented_out_property_line_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         "{\n  // \"old\": 1,\n  \"new\": 2\n}".to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
 
-/// Mixed and adjacent line and block comments all resolve as a single run of
-/// trivia — the trivia skip loops until no comment or whitespace remains.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_mixed_comments_are_trivia() {
+fn test_parse_file_single_json_mixed_comments_are_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         "{ /* a */ // b\n \"x\": 1 }".to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }
 
-/// A block comment whose body contains structural bytes (`}`, `]`, `"`, `:`)
-/// must be consumed whole, so those bytes never desync the object/array state
-/// machine.
+/// Native JSON modules follow the linked value checker's strict JSON policy.
+/// This former trivia case must now retain a diagnostic; tsconfig JSONC uses
+/// its separate configuration parser and remains supported.
 #[test]
-fn test_parse_file_single_json_block_comment_body_is_not_structural() {
+fn test_parse_file_single_json_block_comment_body_is_diagnosed() {
     let result = parse_file_single(
         "settings.json".to_string(),
         r#"{ /* } ] " : */ "a": 1 }"#.to_string(),
     );
 
-    assert!(
-        result.parse_diagnostics.is_empty(),
-        "expected no diagnostics, got: {:?}",
+    assert_eq!(
+        result
+            .parse_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        vec![1012],
+        "native module validation must diagnose JSONC consistently with strict value typing: {:?}",
         result.parse_diagnostics
     );
 }

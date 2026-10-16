@@ -28,7 +28,7 @@ fn setup_untyped_package(fixture: &TempFixture) -> std::path::PathBuf {
 /// hit this false positive set `allowJs: true` (both named conformance
 /// fixtures do), so tests need a resolver that actually takes the primary
 /// `Ok(resolved_module)` branch for a `.js` file.
-fn allow_js_node_resolver() -> ModuleResolver {
+fn allow_js_node_resolver() -> ModuleResolver<'static> {
     let options = ResolvedCompilerOptions {
         module_resolution: Some(ModuleResolutionKind::Node16),
         module_suffixes: vec![String::new()],

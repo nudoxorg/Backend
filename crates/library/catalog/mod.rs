@@ -10,7 +10,6 @@ mod projection;
 mod subscription;
 
 pub use projection::QueryPageRecipe;
-pub(crate) use projection::outline_page_recipe;
 
 use crate::arrangement::{ProjectionArrangement, WorkCounters};
 use crate::{

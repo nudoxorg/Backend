@@ -47,8 +47,9 @@ pub(crate) fn build_sym_to_decl_indices(
 fn synthesize_json_source_file(
     file_name: &str,
     source_text: String,
-) -> (NodeArena, NodeIndex, Vec<ParseDiagnostic>) {
-    let parse_diagnostics = validate_json_syntax(&source_text);
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> Result<(NodeArena, NodeIndex, Vec<ParseDiagnostic>), tsz_common::ProjectExecutionStop> {
+    let parse_diagnostics = validate_json_syntax_with_checkpoint(&source_text, checkpoint)?;
 
     let mut arena = NodeArena::new();
     let end_pos = source_text.len() as u32;
@@ -63,7 +64,7 @@ fn synthesize_json_source_file(
             text: Arc::<str>::from(source_text),
             language_version: 99,
             language_variant: 0,
-            script_kind: 3,
+            script_kind: 6,
             is_declaration_file: false,
             has_no_default_lib: false,
             comments: Vec::new(),
@@ -74,7 +75,7 @@ fn synthesize_json_source_file(
         },
     );
 
-    (arena, source_file, parse_diagnostics)
+    Ok((arena, source_file, parse_diagnostics))
 }
 
 /// Build a parse-only [`ParseResult`] for a `.json` file without invoking the
@@ -82,7 +83,7 @@ fn synthesize_json_source_file(
 /// the `.json` skip in the bind paths.
 fn synthesize_json_parse_result(file_name: String, source_text: String) -> ParseResult {
     let (arena, source_file, parse_diagnostics) =
-        synthesize_json_source_file(&file_name, source_text);
+        synthesize_json_source_file(&file_name, source_text, None).expect("unmetered JSON scan cannot stop");
     ParseResult {
         file_name,
         source_file,
@@ -92,14 +93,23 @@ fn synthesize_json_parse_result(file_name: String, source_text: String) -> Parse
 }
 
 fn synthesize_json_bind_result(file_name: String, source_text: String) -> BindResult {
+    synthesize_json_bind_result_with_checkpoint(file_name, source_text, None)
+        .expect("unmetered JSON bind cannot stop")
+}
+
+fn synthesize_json_bind_result_with_checkpoint(
+    file_name: String,
+    source_text: String,
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> Result<BindResult, tsz_common::ProjectExecutionStop> {
     let (arena, source_file, parse_diagnostics) =
-        synthesize_json_source_file(&file_name, source_text);
+        synthesize_json_source_file(&file_name, source_text, checkpoint)?;
 
     let mut binder = BinderState::new();
     binder.set_debug_file(&file_name);
     binder.bind_source_file(&arena, source_file);
 
-    BindResult {
+    Ok(BindResult {
         file_name,
         source_file,
         arena: Arc::new(arena),
@@ -133,7 +143,7 @@ fn synthesize_json_bind_result(file_name: String, source_text: String) -> BindRe
         file_features: binder.file_features,
         semantic_defs: binder.semantic_defs,
         file_import_sources: binder.file_import_sources,
-    }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1600,7 +1610,7 @@ fn bind_file_with_optional_execution_checkpoint(
     // JSON module imports should be resolved during module resolution and
     // emit TS2732 if resolveJsonModule is false.
     if file_name.ends_with(".json") {
-        return Ok(synthesize_json_bind_result(file_name, source_text));
+        return synthesize_json_bind_result_with_checkpoint(file_name, source_text, checkpoint);
     }
 
     // Keep the work control borrowed by the parser state, so every token
