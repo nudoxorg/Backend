@@ -96,7 +96,7 @@ pub(super) fn prepare_scan_source(
         scan,
         workspace_snapshot,
     } = result;
-    let final_revision_fence = scan.revision_fence.clone();
+    let mut final_revision_fence = scan.revision_fence.clone();
     let cancellation = work.cancellation.clone();
     let relation = base_snapshot
         .relation::<BuiltinWorkspaceRelation>()
@@ -156,6 +156,25 @@ pub(super) fn prepare_scan_source(
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
         .map_err(BuiltinModelError)?;
+    // This first reuse contract covers a single native TS profile. Mixed-profile
+    // indexing keeps compiling until every retained closure can follow its async
+    // continuation through publication. No read-completeness state is invented.
+    let typescript_reuse = if live.len() == 1 && lost.is_empty() {
+        let profile = *live.first().expect("single live profile");
+        if matches!(profile, LanguageProfile::TypeScript(_)) {
+            let binding = selected_semantic_binding_for_snapshot(
+                base_snapshot, package, &label, coordinate, profile,
+            )?;
+            binding.and_then(|binding| compiler.typescript_snapshot_reuse(
+                source_root, profile, semantic_input_digest(&scan, profile), binding,
+                cancellation.as_ref(),
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // Persist candidate observations first. They fence compilation but remain
     // private to freshness and query paths until the combined product intent
     // commits.
@@ -300,7 +319,10 @@ pub(super) fn prepare_scan_source(
     }
     let dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
-    let profiles = if dirty.is_empty() {
+    let profiles = if let Some(proof) = typescript_reuse {
+        final_revision_fence.typescript_reuse = Some(proof);
+        PreparedScanProfiles::Reused
+    } else if dirty.is_empty() {
         PreparedScanProfiles::Reused
     } else {
         let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(

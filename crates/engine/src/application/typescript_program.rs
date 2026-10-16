@@ -97,6 +97,12 @@ pub(crate) struct TypeScriptProgramClosureWitness {
 }
 
 impl TypeScriptProgramClosureWitness {
+    fn retained_bytes(&self) -> usize {
+        self.resolver.retained_bytes()
+            .saturating_add(retained_slice_bytes(&self.compiler_accesses, ProgramAccess::retained_bytes))
+            .saturating_add(retained_slice_bytes(&self.directory_views, ProgramDirectoryView::retained_bytes))
+    }
+
     pub(crate) fn validate_current(
         &self,
         witness: &super::typescript_host::TypeScriptProjectWitness,
@@ -224,6 +230,70 @@ struct ProgramAccess {
     entries: Option<Vec<String>>,
 }
 
+// Conservative heap accounting, independent of the resolver's deduplicated
+// paths and the bridge's separate serialized-report/count bounds. Inline
+// elements are charged by their owning collection, including spare capacity.
+const RETAINED_ALLOCATION_OVERHEAD: usize = 32;
+
+fn retained_allocation_bytes(bytes: usize) -> usize {
+    bytes.saturating_add(if bytes == 0 { 0 } else { RETAINED_ALLOCATION_OVERHEAD })
+}
+
+fn retained_string_bytes(value: &String) -> usize {
+    retained_allocation_bytes(value.capacity())
+}
+
+fn retained_vec_bytes<T>(values: &Vec<T>, nested: impl Fn(&T) -> usize) -> usize {
+    values.iter().fold(
+        retained_allocation_bytes(values.capacity().saturating_mul(std::mem::size_of::<T>())),
+        |bytes, value| bytes.saturating_add(nested(value)),
+    )
+}
+
+fn retained_slice_bytes<T>(values: &[T], nested: impl Fn(&T) -> usize) -> usize {
+    values.iter().fold(
+        retained_allocation_bytes(values.len().saturating_mul(std::mem::size_of::<T>())),
+        |bytes, value| bytes.saturating_add(nested(value)),
+    )
+}
+
+fn retained_json_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) => 0,
+        // Also covers a serde_json build with arbitrary-precision number storage.
+        serde_json::Value::Number(number) => retained_allocation_bytes(number.to_string().len()),
+        serde_json::Value::String(text) => retained_string_bytes(text),
+        serde_json::Value::Array(values) => retained_vec_bytes(values, retained_json_bytes),
+        serde_json::Value::Object(values) => values.iter().fold(0usize, |bytes, (key, value)| {
+            // serde_json hides its map allocation layout. A conservative charge
+            // per entry covers tree/hash nodes, inline keys/values and slack.
+            bytes.saturating_add(1024).saturating_add(retained_string_bytes(key))
+                .saturating_add(retained_json_bytes(value))
+        }),
+    }
+}
+
+impl ProgramAccess {
+    fn retained_bytes(&self) -> usize {
+        let mut bytes = retained_string_bytes(&self.path);
+        for text in [&self.sha256, &self.realpath, &self.current_directory].into_iter().flatten() {
+            bytes = bytes.saturating_add(retained_string_bytes(text));
+        }
+        for values in [&self.extensions, &self.excludes, &self.includes, &self.entries].into_iter().flatten() {
+            bytes = bytes.saturating_add(retained_vec_bytes(values, retained_string_bytes));
+        }
+        bytes = bytes.saturating_add(retained_vec_bytes(&self.directory_view_paths, retained_string_bytes));
+        bytes = bytes.saturating_add(retained_vec_bytes(&self.directory_realpaths, |resolution| {
+            retained_string_bytes(&resolution.path).saturating_add(retained_string_bytes(&resolution.target))
+        }));
+        bytes = bytes.saturating_add(retained_vec_bytes(&self.matcher_arguments, |argument| match argument {
+            ProgramMatcherArgument::Value(value) => retained_json_bytes(value),
+            ProgramMatcherArgument::Undefined | ProgramMatcherArgument::Null => 0,
+        }));
+        bytes.saturating_add(self.matcher_replay_sha256.as_ref().map_or(0, |text| retained_allocation_bytes(text.len())))
+    }
+}
+
 /// Closed Compiler API filesystem operations retained in the authority ledger.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,6 +313,14 @@ struct ProgramDirectoryView {
     files: Vec<String>,
     directories: Vec<String>,
     read_succeeded: bool,
+}
+
+impl ProgramDirectoryView {
+    fn retained_bytes(&self) -> usize {
+        retained_string_bytes(&self.path)
+            .saturating_add(retained_vec_bytes(&self.files, retained_string_bytes))
+            .saturating_add(retained_vec_bytes(&self.directories, retained_string_bytes))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -988,6 +1066,12 @@ pub(crate) enum TypeScriptForestSourceMembership {
 #[derive(Debug)]
 pub(crate) struct TypeScriptForestClosureWitness(pub(crate) Vec<TypeScriptProgramClosureWitness>);
 impl TypeScriptForestClosureWitness {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>().saturating_add(
+            retained_vec_bytes(&self.0, TypeScriptProgramClosureWitness::retained_bytes),
+        )
+    }
+
     pub(crate) fn validate_current(
         &self,
         witness: &super::typescript_host::TypeScriptProjectWitness,
@@ -2743,6 +2827,46 @@ mod tests {
         matcher_path_list_digest, normalize_compiler_api_lib_names, validate_matcher_transcript,
     };
     use serde_json::json;
+
+    #[test]
+    fn retained_transcript_charges_duplicate_paths_capacity_and_nested_allocations() {
+        let mut access: ProgramAccess = serde_json::from_value(json!({
+            "kind": "file", "path": "/same/path.ts"
+        })).unwrap();
+        let before = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
+        let path_capacity = access.path.capacity();
+        access.path.reserve(4096);
+        let after = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
+        assert_eq!(after - before, access.path.capacity() - path_capacity,
+            "String spare capacity is owned even when its path value is unchanged");
+
+        access.matcher_arguments = vec![ProgramMatcherArgument::Value(json!({
+            "nested": ["**/*.ts", {"exclude": "node_modules/**"}]
+        }))];
+        access.directory_realpaths = vec![ProgramPathResolution {
+            path: "/lexical".into(), target: "/canonical".into(), succeeded: true,
+        }];
+        access.entries = Some(vec!["/same/path.ts".into()]);
+        access.matcher_replay_sha256 = Some("a".repeat(64).into_boxed_str());
+        let one = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
+        let duplicate = access.clone();
+        let duplicate_payload = duplicate.retained_bytes();
+        let accesses = [access, duplicate];
+        let two = super::retained_slice_bytes(&accesses, ProgramAccess::retained_bytes);
+        assert_eq!(two - one, std::mem::size_of::<ProgramAccess>() + duplicate_payload,
+            "deduplicating the resolver path cannot remove a separate retained access object");
+        assert!(one > after + 64, "matcher JSON and nested transcript values add owned bytes");
+
+        let mut view = ProgramDirectoryView {
+            path: "/same".into(), files: vec![], directories: vec![], read_succeeded: true,
+        };
+        let empty = view.retained_bytes();
+        view.files.reserve(8);
+        view.directories.push("child".into());
+        assert!(view.retained_bytes() >= empty + 8 * std::mem::size_of::<String>() + "child".len());
+        assert!(super::retained_slice_bytes(&[view], ProgramDirectoryView::retained_bytes)
+            >= std::mem::size_of::<ProgramDirectoryView>());
+    }
 
     #[test]
     fn compiler_text_receipts_remove_only_one_utf8_bom_and_refuse_other_encodings() {

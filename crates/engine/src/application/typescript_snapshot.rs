@@ -1,0 +1,403 @@
+//! Same-owner reuse of an exact selected native TSZ output, with its original read fences.
+//!
+//! This retains a bounded proof, not checker state or a durable completeness claim.
+//! A new owner, changed selection, or failed replay always requests compilation.
+
+use super::{Arc, AtomicBool, LocalCompilerClient, Ordering, Path, PathBuf, StagedSemanticPackage};
+use crate::application::typescript_host::TypeScriptProjectWitness;
+use crate::application::typescript_program::TypeScriptForestClosureWitness;
+use backend_semantic::vocabulary::LanguageProfile;
+
+const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+
+fn fits_retained_budget(host_bytes: usize, forest_bytes: usize) -> bool {
+    host_bytes.saturating_add(forest_bytes) <= MAX_RETAINED_BYTES
+}
+
+#[derive(Default)]
+pub(super) struct TypeScriptSnapshotCache {
+    // One root/profile only. Eviction can only lose the opportunity to reuse.
+    entry: Option<TypeScriptSnapshotReuse>,
+}
+
+/// Opaque compiler-produced fence for one exact selected native TypeScript output.
+/// Clones retain the same proof through source preparation and final product admission.
+#[derive(Clone)]
+pub struct TypeScriptSnapshotReuse {
+    entry: Arc<Entry>,
+}
+
+struct Entry {
+    root: PathBuf,
+    profile: LanguageProfile,
+    input: [u8; 32],
+    binding: [u8; 32],
+    alive: Arc<AtomicBool>,
+    host: Arc<TypeScriptProjectWitness>,
+    forest: Arc<TypeScriptForestClosureWitness>,
+}
+
+impl TypeScriptSnapshotReuse {
+    /// Replays the compiler's original complete native filesystem observation ledger.
+    /// No stale or partial ledger is promoted to current authority by a digest match.
+    #[must_use]
+    pub fn is_current(&self, cancelled: Option<&AtomicBool>) -> bool {
+        let active = || {
+            self.entry.alive.load(Ordering::Acquire)
+                && !cancelled.is_some_and(|flag| flag.load(Ordering::Acquire))
+        };
+        active() && self.entry.forest.validate_current(&self.entry.host).is_ok() && active()
+    }
+}
+
+impl LocalCompilerClient {
+    /// Returns a replayed fence only for the exact output currently selected by the caller.
+    /// The result must also be checked at final product selection.
+    pub fn typescript_snapshot_reuse(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        binding: [u8; 32],
+        cancelled: &AtomicBool,
+    ) -> Option<TypeScriptSnapshotReuse> {
+        let proof = self.shared.typescript_snapshot.lock().ok()?.entry.clone()?;
+        let entry = &proof.entry;
+        if entry.root != root
+            || entry.profile != profile
+            || entry.input != input
+            || entry.binding != binding
+            || !Arc::ptr_eq(&entry.alive, &self.shared.alive)
+        {
+            return None;
+        }
+        proof.is_current(Some(cancelled)).then_some(proof)
+    }
+
+    /// Remembers only an actual native compiler read closure for its exact selected output.
+    /// The binding comparison prevents associating a producer fence with another output.
+    pub fn remember_typescript_snapshot(
+        &self,
+        root: &Path,
+        input: [u8; 32],
+        selected_binding: [u8; 32],
+        staged: &StagedSemanticPackage,
+    ) {
+        if !self.is_ready() || selected_binding != *staged.binding_facts().identity.as_ref() {
+            return;
+        }
+        // This exact output has superseded the previous selection. Retire a
+        // predecessor even when the new result is ineligible for reuse, so a
+        // transient outcome cannot recover an older eligibility decision.
+        if let Ok(mut cache) = self.shared.typescript_snapshot.lock() {
+            if cache.entry.as_ref().is_some_and(|proof| {
+                proof.entry.root == root && proof.entry.profile == staged.profile()
+            }) {
+                cache.entry = None;
+            }
+        } else {
+            return;
+        }
+        let Some((host, forest)) = staged.typescript_snapshot_witness(root) else {
+            return;
+        };
+        // Ledger accounting includes captured source bytes and retained path/directory
+        // metadata. The native host adds its separately retained raw config candidates.
+        let Some(host_bytes) = host.retained_native_bytes() else {
+            return;
+        };
+        if !fits_retained_budget(host_bytes, forest.retained_bytes()) {
+            return;
+        }
+        if let Ok(mut cache) = self.shared.typescript_snapshot.lock() {
+            cache.entry = Some(TypeScriptSnapshotReuse {
+                entry: Arc::new(Entry {
+                    root: root.to_path_buf(),
+                    profile: staged.profile(),
+                    input,
+                    binding: selected_binding,
+                    alive: Arc::clone(&self.shared.alive),
+                    host,
+                    forest,
+                }),
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::ToolchainProbeLimits;
+    use crate::application::typescript_host::TypeScriptProjectHost;
+    use crate::application::{
+        LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
+        LocalCompilerTimeout, LocalPackageRootSet, LocalToolchainSet,
+        PackageAuthorityConfiguration, PackageSource, PackageSourceSet,
+    };
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::vocabulary::{Stage, TypeScriptSource};
+    use backend_store::journal::PublicationLimits;
+    use std::{
+        fs,
+        num::NonZeroUsize,
+        sync::Mutex,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    const MAIN: &str = "import { value } from 'dep'; import type { Missing } from './missing'; import type { Leaf } from './not-yet/leaf'; export const result: number = value;";
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("tsz-snapshot-{}-{nonce}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            let fixture = Self(root.canonicalize().unwrap());
+            fixture.write("tsconfig.json", r#"{"extends":"./base.json","compilerOptions":{"noLib":true,"types":[],"moduleResolution":"Bundler","module":"ESNext"},"include":["src/**/*"]}"#);
+            fixture.write("base.json", r#"{"compilerOptions":{"strict":true}}"#);
+            fixture.write("src/main.ts", MAIN);
+            fixture.write(
+                "node_modules/dep/package.json",
+                r#"{"name":"dep","exports":{".":{"types":"./index.d.ts"}}}"#,
+            );
+            fixture.write("node_modules/dep/index.d.ts", "export const value: number;");
+            fixture
+        }
+        fn write(&self, path: &str, contents: &str) {
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        fn compile(&self) -> StagedSemanticPackage {
+            self.compile_sources(false)
+        }
+        fn compile_sources(&self, excluded_source: bool) -> StagedSemanticPackage {
+            let host = TypeScriptProjectHost::direct(
+                None,
+                ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
+                    .unwrap(),
+            );
+            let cancelled = AtomicBool::new(false);
+            let artifacts = self.0.join("artifacts");
+            let journal = self.0.join("journal");
+            let work = self.0.join("native-work");
+            fs::create_dir_all(&work).unwrap();
+            let mut scratch = LocalCompilerScratch::with_fragment_capacity(
+                NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+            )
+            .unwrap();
+            let mut compiler = LocalCompiler::create_with_package_authority(
+                LocalCompilerConfig {
+                    toolchains: LocalToolchainSet::validate(&[]).unwrap(),
+                    artifact_directory: &artifacts,
+                    journal_directory: &journal,
+                    native_work_directory: &work,
+                    control: LocalCompilerControl {
+                        timeout: LocalCompilerTimeout::new(Duration::from_secs(30)).unwrap(),
+                        cancelled: &cancelled,
+                    },
+                },
+                LocalPackageRootSet::EMPTY,
+                PackageAuthorityConfiguration {
+                    typescript_project_host: Some(&host),
+                    ..PackageAuthorityConfiguration::UNAVAILABLE
+                },
+                PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+                &mut scratch,
+            )
+            .unwrap();
+            let request = PackageCompileRequest::new(
+                GenerateTarget {
+                    correlation: CorrelationId(1),
+                    profile: profile(),
+                    stage: Stage::LowerIr,
+                },
+                PackageUrl::try_from("pkg:npm/snapshot-fixture@1.0.0".to_owned()).unwrap(),
+            )
+            .unwrap();
+            let mut sources = vec![PackageSource::new("src/main.ts", MAIN).unwrap()];
+            if excluded_source {
+                const EXCLUDED: &str = "export const excluded = 1;";
+                self.write("excluded.ts", EXCLUDED);
+                sources.push(PackageSource::new("excluded.ts", EXCLUDED).unwrap());
+            }
+            sources.sort_unstable_by(|left, right| left.relative_path().cmp(right.relative_path()));
+            compiler
+                .compile_package_sources_staged(
+                    PackageSourceSet::new(&request, &self.0, &sources).unwrap(),
+                    &mut |_| {},
+                )
+                .unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn profile() -> LanguageProfile {
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript)
+    }
+    fn client() -> LocalCompilerClient {
+        LocalCompilerClient {
+            shared: Arc::new(super::super::request_lease_tests::shared()),
+            client_id: 1,
+            last_image: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn retained_budget_rejects_the_full_charge_and_saturates_on_overflow() {
+        assert!(fits_retained_budget(MAX_RETAINED_BYTES - 1, 1));
+        assert!(!fits_retained_budget(MAX_RETAINED_BYTES - 1, 2));
+        assert!(!fits_retained_budget(usize::MAX, 1));
+    }
+
+    #[test]
+    fn native_snapshot_preserves_configured_source_exclusions() {
+        let fixture = Fixture::new();
+        let staged = fixture.compile_sources(true);
+        assert_eq!(staged.coverage_gaps().len(), 1);
+        assert_eq!(staged.coverage_gaps()[0].cause(),
+            crate::application::PackageSourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram);
+        let owner = client();
+        let binding = *staged.binding_facts().identity.as_ref();
+        owner.remember_typescript_snapshot(&fixture.0, [1; 32], binding, &staged);
+        assert!(
+            owner
+                .typescript_snapshot_reuse(
+                    &fixture.0,
+                    profile(),
+                    [1; 32],
+                    binding,
+                    &AtomicBool::new(false),
+                )
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn native_snapshot_requires_same_owner_input_and_exact_selected_output() {
+        let fixture = Fixture::new();
+        let staged = fixture.compile();
+        let binding = *staged.binding_facts().identity.as_ref();
+        let owner = client();
+        let cancelled = AtomicBool::new(false);
+        let input = [0x61; 32];
+        owner.remember_typescript_snapshot(&fixture.0, input, [0x62; 32], &staged);
+        assert!(
+            owner
+                .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
+                .is_none()
+        );
+        owner.remember_typescript_snapshot(&fixture.0, input, binding, &staged);
+        let proof = owner
+            .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
+            .unwrap();
+        assert!(proof.is_current(None));
+        assert!(
+            owner
+                .typescript_snapshot_reuse(&fixture.0, profile(), [0x63; 32], binding, &cancelled)
+                .is_none()
+        );
+        assert!(
+            owner
+                .typescript_snapshot_reuse(&fixture.0, profile(), input, [0x64; 32], &cancelled)
+                .is_none()
+        );
+        assert!(
+            client()
+                .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
+                .is_none()
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(!proof.is_current(Some(&cancelled)));
+        owner.shared.alive.store(false, Ordering::Release);
+        assert!(!proof.is_current(None));
+    }
+
+    #[test]
+    fn native_snapshot_replays_dependencies_config_globs_and_negative_reads_at_final_admission() {
+        for mutation in [
+            "source",
+            "removed-source",
+            "created-source",
+            "negative",
+            "negative-parent",
+            "config",
+            "dependency",
+            "exports",
+        ] {
+            let fixture = Fixture::new();
+            let staged = fixture.compile();
+            let binding = *staged.binding_facts().identity.as_ref();
+            let owner = client();
+            owner.remember_typescript_snapshot(&fixture.0, [1; 32], binding, &staged);
+            let proof = owner
+                .typescript_snapshot_reuse(
+                    &fixture.0,
+                    profile(),
+                    [1; 32],
+                    binding,
+                    &AtomicBool::new(false),
+                )
+                .expect("actual producer fence is current before mutation");
+            match mutation {
+                "source" => fixture.write("src/main.ts", "export const changed = 2;"),
+                "removed-source" => fs::remove_file(fixture.0.join("src/main.ts")).unwrap(),
+                "created-source" => fixture.write("src/new.ts", "export const newFile = 1;"),
+                "negative" => fixture.write("src/missing.ts", "export interface Missing {}"),
+                "negative-parent" => {
+                    fixture.write("src/not-yet/leaf.ts", "export interface Leaf {}")
+                }
+                "config" => fixture.write("base.json", r#"{"compilerOptions":{"strict":false}}"#),
+                "dependency" => {
+                    fixture.write("node_modules/dep/index.d.ts", "export const value: string;")
+                }
+                "exports" => fixture.write(
+                    "node_modules/dep/package.json",
+                    r#"{"name":"dep","exports":{".":{"types":"./other.d.ts"}}}"#,
+                ),
+                _ => unreachable!(),
+            }
+            assert!(
+                !proof.is_current(None),
+                "final admission must reject {mutation}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_snapshot_rejects_retargeted_dependency_realpath() {
+        let fixture = Fixture::new();
+        fixture.write("deps/one.d.ts", "export const value: number;");
+        fixture.write("deps/two.d.ts", "export const value: number;");
+        let link = fixture.0.join("node_modules/dep/index.d.ts");
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(fixture.0.join("deps/one.d.ts"), &link).unwrap();
+        let staged = fixture.compile();
+        let owner = client();
+        let binding = *staged.binding_facts().identity.as_ref();
+        owner.remember_typescript_snapshot(&fixture.0, [1; 32], binding, &staged);
+        let proof = owner
+            .typescript_snapshot_reuse(
+                &fixture.0,
+                profile(),
+                [1; 32],
+                binding,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(fixture.0.join("deps/two.d.ts"), &link).unwrap();
+        assert!(!proof.is_current(None));
+    }
+}

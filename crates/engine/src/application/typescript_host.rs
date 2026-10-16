@@ -389,6 +389,16 @@ pub(crate) struct ValidatedTypeScriptHost<'a> {
 }
 
 impl TypeScriptResolverWitness {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        // Admission tracks path/directory payload bytes, but not every duplicate
+        // map key or tree node. Charge duplicate payload plus generous per-node
+        // and per-directory-entry storage as well as all owned source bytes.
+        self.observations.retained_metadata_bytes.saturating_mul(2)
+            .saturating_add(self.observations.observation_count().saturating_mul(1024))
+            .saturating_add(self.observations.directory_entries.saturating_mul(256))
+            .saturating_add(usize::try_from(self.observations.loaded_source_bytes).unwrap_or(usize::MAX))
+    }
+
     pub(crate) const fn digest(&self) -> &[u8; 32] {
         &self.digest
     }
@@ -1611,6 +1621,54 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    pub(crate) fn is_native_for_root(&self, root: &Path) -> bool {
+        matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            && self.project_root.as_ref() == root
+    }
+
+    /// Conservative payload and allocation accounting for the native-only cache.
+    /// Native hosts retain no Compiler API invocation or resource-bundle payload.
+    pub(crate) fn retained_native_bytes(&self) -> Option<usize> {
+        if !matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            || self.resource_proof.is_some() || !self.typescript_files.is_empty()
+        {
+            return None;
+        }
+        let path_bytes = |path: &Path| path.as_os_str().as_encoded_bytes().len();
+        let snapshots = |files: &[FileSnapshot]| files.iter().fold(0usize, |bytes, file| {
+            bytes.saturating_add(std::mem::size_of::<FileSnapshot>())
+                .saturating_add(path_bytes(&file.path))
+        });
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(path_bytes(&self.project_root))
+            .saturating_add(self.home_root.as_deref().map_or(0, path_bytes))
+            .saturating_add(path_bytes(&self.module_root))
+            .saturating_add(path_bytes(&self.workspace_root))
+            .saturating_add(snapshots(&self.files));
+        if let Some(workspace) = &self.workspace {
+            bytes = bytes.saturating_add(path_bytes(&workspace.root))
+                .saturating_add(snapshots(&workspace.files));
+        }
+        for config in &self.config_candidates {
+            bytes = bytes.saturating_add(std::mem::size_of::<TypeScriptConfigInput>())
+                .saturating_add(config.bytes.len()).saturating_add(path_bytes(&config.path));
+            for path in config.extends.iter().chain(&config.references) {
+                bytes = bytes.saturating_add(std::mem::size_of::<Box<Path>>())
+                    .saturating_add(path_bytes(path));
+            }
+        }
+        for path in self.config_paths.iter().chain(&self.selected_build_config_paths) {
+            bytes = bytes.saturating_add(std::mem::size_of::<Box<Path>>())
+                .saturating_add(path_bytes(path));
+        }
+        for (path, file) in self.loaded_source_files.lock().ok()?.iter() {
+            // Charge both paths plus a conservative per-entry tree allocation.
+            bytes = bytes.saturating_add(1024).saturating_add(path.capacity())
+                .saturating_add(path_bytes(&file.path));
+        }
+        Some(bytes)
+    }
+
     fn selection_fingerprint(&self) -> [u8; 32] {
         let Some(proof) = &self.resource_proof else {
             return self.fingerprint;
