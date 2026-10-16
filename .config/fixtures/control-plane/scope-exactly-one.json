@@ -35,6 +35,7 @@
       "vendor/gpui_ce_macos": "vendored-source",
       "vendor/gpui_ce_platform": "vendored-source",
       "vendor/gpui_ce_scheduler": "vendored-source",
+      "vendor/accesskit_atspi_common": "vendored-source",
       "vendor/pyrefly_config_native_1_2": "vendored-source",
       "vendor/ra_ap_hir_def": "vendored-source",
       "vendor/ra_ap_project_model": "vendored-source",
@@ -56,8 +57,7 @@
       "tests/test_fleet_capacity_census.py",
       "tests/test_linux_proc_race.py",
       "tests/test_nix_runtime_overlay_guard.py",
-      "tools/observe-rust-ra-reads.sh",
-      "vendor/accesskit_atspi_common/README.md"
+      "tools/observe-rust-ra-reads.sh"
     ]
   },
   "cases": [

@@ -230,7 +230,8 @@ in
           repo/frontends/rust/fixtures/toml_pin \
           repo/apps/desktop/tests/fixtures/browse_tree
         cp -r ${../scripts}/. repo/.config/scripts/
-        cp ${../ci/linux.nu} ${../ci/lib.nu} repo/.config/ci/
+        cp ${../ci/linux.nu} repo/.config/ci/linux.nu
+        cp ${../ci/lib.nu} repo/.config/ci/lib.nu
         cp ${../../frontends/rust/fixtures/toml_pin/Cargo.lock} repo/frontends/rust/fixtures/toml_pin/Cargo.lock
         cp ${../../apps/desktop/tests/fixtures/browse_tree/Cargo.lock} repo/apps/desktop/tests/fixtures/browse_tree/Cargo.lock
         cp ${../../tests/cargo-shared-cache.sh} repo/tests/cargo-shared-cache.sh
