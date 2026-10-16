@@ -335,6 +335,35 @@ class SnapshotContinuationTests(unittest.TestCase):
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
 
+    def test_executable_only_cursor_is_consumed_before_normalization(self):
+        import copy
+        first = self.page("mcp2-long-portable-proof")
+        token = first.pop("nextCursor")
+        first["continuation_call"] = {"name": "backend.search", "arguments": {
+            "query": "Digest", "limit": 3, "cursor": token}}
+        call = {"tool": "backend.search", "arguments": {"query": "Digest", "limit": 9}}
+        self.assertEqual(surface.mcp_continuation_call(call, first), {
+            "tool": "backend.search", "arguments": first["continuation_call"]["arguments"]})
+        with self.assertRaisesRegex(RuntimeError, "unconsumed"):
+            surface.normalize_continuations(first, set())
+        actual = surface.normalize_continuations(first, {token})
+        self.assertNotIn("nextCursor", actual)
+        self.assertEqual(actual["continuation_call"]["arguments"]["cursor"], "mcp2-<live-validated>")
+        self.assertEqual(actual["budget"]["bytesExcludingCursor"], 100)
+        other = copy.deepcopy(first)
+        other["continuation_call"]["arguments"]["cursor"] = "mcp2-other-proof-length"
+        size = 100 + len(other["continuation_call"]["arguments"]["cursor"])
+        other["budget"].update(bytes=size, estimatedTokens=(size + 3) // 4)
+        self.assertEqual(actual, surface.normalize_continuations(other, {other["continuation_call"]["arguments"]["cursor"]}))
+        wrong = copy.deepcopy(first)
+        wrong["continuation_call"]["name"] = "backend.outline"
+        with self.assertRaisesRegex(RuntimeError, "changed tool"):
+            surface.mcp_continuation_call(call, wrong)
+        wrong = copy.deepcopy(first)
+        wrong["nextCursor"] = "mcp2-different-proof"
+        with self.assertRaisesRegex(RuntimeError, "contradictory"):
+            surface.normalize_continuations(wrong, {token, wrong["nextCursor"]})
+
     def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
         import copy
         import json
@@ -887,6 +916,48 @@ class CIEvidenceTests(unittest.TestCase):
         value = surface.bounded_text("α" * 10000, 8192)
         self.assertLessEqual(len(value.encode("utf-8")), 8192)
         self.assertIn("full detail retained", value)
+
+
+class IncrementalCaseVerdictTests(unittest.TestCase):
+    def test_completed_case_is_visible_before_later_case_aborts_without_final_packet(self):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        stdout = io.StringIO()
+        class InterruptedExecutor:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def map(self, function, cases):
+                yield ({"performance": {"seconds": {}}}, 0.1, None)
+                records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
+                           for line in stdout.getvalue().splitlines()
+                           if line.startswith("SURFACE-CASE-EVIDENCE ")]
+                self_test.assertEqual(records[0]["case"], "first")
+                self_test.assertEqual(records[0]["verdict"]["state"], "passed")
+                raise RuntimeError("later case interrupted")
+
+        self_test = self
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [
+                {"name": "first", "kind": "cli-contract"},
+                {"name": "later", "kind": "cli-contract"},
+            ]}))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", InterruptedExecutor), \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(RuntimeError, "later case interrupted"):
+                    surface.compare_cases(args, argparse.ArgumentParser())
+            self.assertFalse(packet.exists(), "partial verdicts cannot stand in for full acceptance")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,8 @@
 //! its authenticated directory reference, alongside the existing line base.
 
 use super::relation::{
-    Container, DeclarationKind, ProductFileRef, ProductSourceRecord, ProductSourceRelation,
-    SourceDeclaration, SourceLanguage, SourceLocation, product_source_file_key,
+    Container, DeclarationKind, ProductFileRef, ProductSourceRecord, SourceDeclaration,
+    SourceLanguage, SourceLocation, product_source_file_key,
 };
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_compile::{

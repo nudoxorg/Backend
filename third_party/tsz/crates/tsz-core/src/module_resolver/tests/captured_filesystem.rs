@@ -52,6 +52,54 @@ fn resolve_dotted(
 }
 
 #[test]
+fn rewrite_relative_import_extensions_preserve_dotted_names_and_module_suffixes() {
+    let fs = MemoryFileSystem::new("/virtual/workspace");
+    fs.add_dir("/virtual/workspace/src");
+    for declaration_extension in ["d.ts", "d.mts", "d.cts"] {
+        fs.add_file(
+            format!("/virtual/workspace/src/app.{declaration_extension}"),
+            "export const wrongBasename = true;",
+        );
+        fs.add_file(
+            format!("/virtual/workspace/src/app.component.{declaration_extension}"),
+            "export const unsuffixed = true;",
+        );
+        fs.add_file(
+            format!("/virtual/workspace/src/app.component.native.{declaration_extension}"),
+            "export const preferred = true;",
+        );
+    }
+
+    let options = ResolvedCompilerOptions {
+        module_resolution: Some(ModuleResolutionKind::Bundler),
+        rewrite_relative_import_extensions: true,
+        module_suffixes: vec![".native".to_string(), String::new()],
+        ..Default::default()
+    };
+    let mut resolver = ModuleResolver::with_file_system(&options, &fs);
+    for (source_extension, declaration_extension) in
+        [("ts", "d.ts"), ("mts", "d.mts"), ("cts", "d.cts")]
+    {
+        let specifier = format!("./app.component.{source_extension}");
+        let resolved = resolver
+            .resolve_with_kind_checked(
+                &specifier,
+                Path::new("/virtual/workspace/src/main.ts"),
+                Span::new(0, specifier.len() as u32),
+                ImportKind::EsmImport,
+            )
+            .expect("captured filesystem")
+            .expect("rewritten declaration resolves");
+        assert_eq!(
+            resolved.resolved_path,
+            PathBuf::from(format!(
+                "/virtual/workspace/src/app.component.native.{declaration_extension}"
+            ))
+        );
+    }
+}
+
+#[test]
 fn dotted_basenames_append_source_extensions_in_implicit_resolution_modes() {
     let fs = MemoryFileSystem::new("/virtual/workspace");
     fs.add_dir("/virtual/workspace/src");

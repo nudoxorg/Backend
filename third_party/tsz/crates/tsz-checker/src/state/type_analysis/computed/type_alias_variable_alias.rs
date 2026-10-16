@@ -1591,6 +1591,16 @@ impl<'a> CheckerState<'a> {
 
                 if configured {
                     let export_name = import_name.as_deref().unwrap_or(escaped_name);
+                    // JSON has a value-shaped default export rather than a
+                    // declaration in its binder's export table. Resolve it
+                    // from this exact selected file before absent-member
+                    // recovery; a module-name lookup could pick another site.
+                    if export_name == "default"
+                        && let Some(target) = configured_target
+                        && let Some(json_type) = self.json_module_type_for_file(target)
+                    {
+                        return (json_type, Vec::new());
+                    }
                     if let Some(target) = configured_exports
                         .as_ref()
                         .and_then(|exports| exports.get(export_name))

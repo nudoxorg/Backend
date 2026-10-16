@@ -703,4 +703,54 @@ mod tests {
         assert_eq!(decoded.outcome(), record.outcome());
         assert!(decoded.compiler_failure().is_none());
     }
+
+    #[test]
+    fn capture_relation_refuses_history_keys_before_they_can_saturate_profile_discovery() {
+        use crate::publication::binding::CompilationBindingIdentity;
+        use backend_semantic::vocabulary::{
+            LanguageProfile, PackageUrl, PythonVersion, TypeScriptSource,
+        };
+        let package =
+            backend_library::PackageReference::parse("/capture-history-fence").expect("local");
+        let key = |coordinate: &str, profile| {
+            ProductSemanticPublicationKey::new(
+                package.clone(),
+                PackageUrl::parse(coordinate.to_owned()).expect("coordinate"),
+                profile,
+            )
+            .expect("selected key")
+        };
+        let ts = key(
+            "pkg:npm/a@1",
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        );
+        let py = key(
+            "pkg:pypi/z@1",
+            LanguageProfile::Python(PythonVersion::Python314),
+        );
+        // Publication history keys are valid in PSP, but never valid in PSC2.
+        // This models the early-profile history saturation ordering without
+        // inventing an admitted malformed capture relation or a native owner.
+        for selected in [&ts, &py] {
+            let mut bytes = Vec::new();
+            ProductSemanticCaptureRelation::encode_key(selected, &mut bytes);
+            assert_eq!(
+                ProductSemanticCaptureRelation::decode_key(&bytes).expect("selected PSC2 key"),
+                *selected
+            );
+        }
+        let record = capture_record(None);
+        assert!(record.operation_key().is_none(), "legacy unkeyed control");
+        for index in 0_u8..16 {
+            let history =
+                ts.for_generation(CompilationBindingIdentity::from_encoded_bytes(&[index]));
+            let mut bytes = Vec::new();
+            ProductSemanticPublicationRelation::encode_key(&history, &mut bytes);
+            assert!(ProductSemanticPublicationRelation::decode_key(&bytes).is_ok());
+            assert!(
+                ProductSemanticCaptureRelation::decode_key(&bytes).is_err(),
+                "history row {index} cannot be counted as an unkeyed current profile"
+            );
+        }
+    }
 }

@@ -1810,6 +1810,7 @@ fn probe_registry_roots_on_a_real_owner() {
             "profile",
             SurfaceCommand::PackageProfile {
                 package: to.clone(),
+                compiler_outcome: None,
             },
         ),
     ] {

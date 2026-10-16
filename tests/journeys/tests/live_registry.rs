@@ -1320,6 +1320,7 @@ fn unconfigured_registry_is_an_explicit_typed_empty_state() {
     let profile = session
         .surface(SurfaceCommand::PackageProfile {
             package: PackageReference::parse(&coordinate).expect("unconfigured package reference"),
+                compiler_outcome: None,
         })
         .expect("unconfigured package profile");
     let SurfaceReply::PackageProfile {
@@ -1559,6 +1560,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
             &endpoint,
             SurfaceCommand::PackageProfile {
                 package: PackageReference::parse(&coordinate).expect("package reference"),
+                compiler_outcome: None,
             },
         );
         assert_profile_json(&profile, &coordinate);
@@ -1603,6 +1605,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
             &workspace,
             SurfaceCommand::PackageProfile {
                 package: PackageReference::parse(&coordinate).expect("MCP package reference"),
+                compiler_outcome: None,
             },
         );
         assert_mcp_profile(&mcp, &coordinate);

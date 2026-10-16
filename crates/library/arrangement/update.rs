@@ -133,7 +133,7 @@ impl ProjectionArrangement {
                         unscoped_symbols.push(row.id);
                     }
                     let key = name_key(row);
-                    if !is_synthetic_result_slot(row, |id| view.row(id)) {
+                    if !is_synthetic_result_slot(row, |id| view.row_ref(id)) {
                         names.push(key.clone());
                         for gram in search_grams(&key.normalized) {
                             name_postings.push(NamePostingKey {
@@ -318,9 +318,9 @@ impl ProjectionArrangement {
         let old_name = old.filter(|row| matches!(row.id, RowId::Symbol(_)));
         let new_name = new.filter(|row| matches!(row.id, RowId::Symbol(_)));
         let old_searchable =
-            old_name.filter(|row| !is_synthetic_result_slot(row, |id| base.row(id)));
+            old_name.filter(|row| !is_synthetic_result_slot(row, |id| base.row_ref(id)));
         let new_searchable =
-            new_name.filter(|row| !is_synthetic_result_slot(row, |id| view.row(id)));
+            new_name.filter(|row| !is_synthetic_result_slot(row, |id| view.row_ref(id)));
         next.names = Some(update_unit(
             names,
             old_searchable.map(name_key),
@@ -615,17 +615,16 @@ fn name_key(row: &Row) -> NameKey {
 /// `row_at` looks the parent up in whichever view `row` itself was read
 /// from (the pre-delta base for an old row, the current view for a new
 /// one), so an incremental update and a full rebuild agree.
-fn is_synthetic_result_slot(row: &Row, row_at: impl Fn(RowId) -> Option<Row>) -> bool {
+fn is_synthetic_result_slot<'row>(row: &Row, row_at: impl Fn(RowId) -> Option<&'row Row>) -> bool {
     row.kind == Some(DeclarationKind::Variable)
         && row
             .parent
             .and_then(|parent| row_at(RowId::Symbol(parent)))
             .is_some_and(|parent_row| {
-                name_key(&parent_row).normalized == name_key(row).normalized
-                    && matches!(
-                        parent_row.kind,
-                        Some(DeclarationKind::Function | DeclarationKind::Method)
-                    )
+                matches!(
+                    parent_row.kind,
+                    Some(DeclarationKind::Function | DeclarationKind::Method)
+                ) && name_key(parent_row).normalized == name_key(row).normalized
             })
 }
 
@@ -635,6 +634,61 @@ mod tests {
     use super::*;
     use backend_flow::{Epoch, Frontier, Time};
     use backend_version::{ClosedRelationScope, ScopeRoot};
+
+    #[test]
+    fn result_slot_classification_borrows_parent_without_copying_document() {
+        let basis = crate::Basis::new(
+            crate::view_state_root(b"borrowed-parent"),
+            crate::object_version(b"borrowed-parent"),
+        );
+        let parent_symbol = crate::symbol_key("borrowed-parent");
+        let parent = Row::new(RowId::Symbol(parent_symbol), basis, "fixture::compute")
+            .with_kind(DeclarationKind::Function)
+            .with_document(vec![crate::Fragment::Text("captured prose ".repeat(8192))]);
+        let child = Row::new(
+            RowId::Symbol(crate::symbol_key("borrowed-result")),
+            basis,
+            "fixture::compute",
+        )
+        .with_parent(parent_symbol)
+        .with_kind(DeclarationKind::Variable);
+        let mut classified = false;
+        let borrowed = allocation_counter::measure(|| {
+            classified =
+                is_synthetic_result_slot(&child, |id| (id == parent.id).then_some(&parent));
+        });
+        let mut owned_parent = None;
+        let owned = allocation_counter::measure(|| {
+            owned_parent = Some(parent.clone());
+        });
+        assert!(classified);
+        assert!(owned_parent.is_some());
+        assert!(
+            borrowed.bytes_total < 1024,
+            "classifying a result slot must not copy its parent's document: {borrowed:?}"
+        );
+        assert!(
+            owned.bytes_total > 64 * 1024,
+            "copying the same parent is a positive allocation control: {owned:?}"
+        );
+        eprintln!(
+            "borrowed_parent_allocations borrowed={borrowed:?} owned_positive_control={owned:?}"
+        );
+
+        let class_parent = parent.clone().with_kind(DeclarationKind::Class);
+        let non_callable = allocation_counter::measure(|| {
+            classified = is_synthetic_result_slot(&child, |_| Some(&class_parent));
+        });
+        assert!(!classified);
+        assert_eq!(non_callable, allocation_counter::AllocationInfo::default());
+        let field = child.clone().with_kind(DeclarationKind::Field);
+        assert!(!is_synthetic_result_slot(&field, |_| Some(&parent)));
+        let parameter = Row::new(child.id, basis, "fixture::value")
+            .with_parent(parent_symbol)
+            .with_kind(DeclarationKind::Variable);
+        assert!(!is_synthetic_result_slot(&parameter, |_| Some(&parent)));
+        assert!(!is_synthetic_result_slot(&child, |_| None));
+    }
 
     #[test]
     fn unit_runs_preserve_canonical_roots_and_strict_duplicate_admission() {

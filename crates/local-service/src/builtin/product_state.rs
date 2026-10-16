@@ -614,7 +614,7 @@ impl ProductState {
                     "semantic version history requires compiler publication authority".to_owned(),
                 );
             }
-            SurfaceCommand::PackageProfile { package } => (
+            SurfaceCommand::PackageProfile { package, .. } => (
                 profile(view, catalog, catalog_index, &package, workspace)?,
                 false,
             ),
@@ -3488,6 +3488,7 @@ fn profile(
         versions: ordered.rows.len() as u64,
         candidate_authority,
         source_metadata,
+        compiler_outcomes: None,
     })
 }
 

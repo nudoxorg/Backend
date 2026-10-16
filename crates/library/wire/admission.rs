@@ -946,6 +946,40 @@ pub fn admit_surface_reply(
             .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
     }
     admit_index_reply(command, reply)?;
+    if let crate::SurfaceCommand::PackageProfile {
+        package,
+        compiler_outcome,
+    } = command
+    {
+        let compiler_outcomes = match (compiler_outcome, reply) {
+            (Some(_), crate::SurfaceReply::PackageCompilerOutcomes(outcomes)) => Some(outcomes),
+            (
+                None,
+                crate::SurfaceReply::PackageProfile {
+                    compiler_outcomes, ..
+                },
+            ) => compiler_outcomes.as_ref(),
+            _ => {
+                return Err(ReplyAdmissionError::Protocol(
+                    "package profile reply changed read mode".to_owned(),
+                ));
+            }
+        };
+        match compiler_outcomes {
+            Some(outcomes) => outcomes
+                .admit_request(package, compiler_outcome.as_ref())
+                .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?,
+            None if compiler_outcome.is_some()
+                || matches!(package, crate::PackageReference::Local(_)) =>
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "current compiler outcomes are missing from local package profile reply"
+                        .to_owned(),
+                ));
+            }
+            None => {}
+        }
+    }
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)
         && !tree.request_binding().is_some_and(|binding| {

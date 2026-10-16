@@ -8,7 +8,7 @@ use super::super::{
     decode, extensions_decode,
     fault::{FullSemanticImageFault, FullSemanticImageField},
     wire::{
-        FullDirectoryEntry, FullDirectoryKind, FullImageLayout, RANGE_ROW_BYTES,
+        FullDirectoryEntry, FullDirectoryKind, FullImageLayout, RANGE_ROW_BYTES, SCHEMA_NAME_SPANS,
         SPARSE_BINDING_ROW_BYTES, get_u32,
     },
 };
@@ -46,6 +46,15 @@ pub(super) fn validate_extensions(
         };
         for fact in 0..facts.count {
             let value = extension_value(bytes, facts, fact)?;
+            if facts_kind == FullDirectoryKind::ClangFacts
+                && layout.schema < SCHEMA_NAME_SPANS
+                && value.len() != extensions_decode::LEGACY_CLANG_FACT_BYTES
+            {
+                return Err(FullSemanticImageFault::Schema {
+                    expected: SCHEMA_NAME_SPANS,
+                    observed: layout.schema,
+                });
+            }
             extensions_decode::validate(
                 u8::try_from(plane_index).map_err(|_| FullSemanticImageFault::LengthOverflow {
                     field: FullSemanticImageField::ExtensionFacts,
@@ -92,6 +101,24 @@ pub(super) fn validate_extensions(
             }
             previous = Some((entity, fact));
             let entity_row = decode::entity(bytes, layout, entity)?;
+            if language_for_extension(plane_index) == crate::ir::Language::Clang {
+                let value = extension_value(bytes, facts, fact)?;
+                let clang = extensions_decode::clang(value, fact, counts)?;
+                if let Some(name_span) = clang.declared_name {
+                    let contained = entity_row.source.is_some_and(|extent| {
+                        extent.file() == name_span.file()
+                            && extent.start() <= name_span.start()
+                            && name_span.end() <= extent.end()
+                    });
+                    if !contained {
+                        return Err(FullSemanticImageFault::SourceSpan {
+                            row: entity,
+                            start: name_span.start(),
+                            end: name_span.end(),
+                        });
+                    }
+                }
+            }
             if entity_row.authority.language_extension != FactAvailability::Captured {
                 return Err(FullSemanticImageFault::Authority {
                     row: entity,
