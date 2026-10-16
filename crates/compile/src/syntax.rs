@@ -887,13 +887,10 @@ fn clang_macro_roles(root: Node<'_>, source: &[u8]) -> (BTreeSet<Vec<u8>>, BTree
             let replacement = node
                 .child_by_field_name("value")
                 .and_then(|value| source.get(value.byte_range()))
-                .map(|value| {
-                    value
-                        .iter()
-                        .copied()
-                        .filter(|byte| !byte.is_ascii_whitespace())
-                        .collect()
-                })
+                // Internal whitespace separates preprocessor tokens. Removing
+                // it would turn `no except` into `noexcept`, or join two
+                // identifiers into an otherwise proven macro alias.
+                .map(|value| value.trim_ascii().to_vec())
                 .unwrap_or_default();
             definitions
                 .entry(name.to_vec())
