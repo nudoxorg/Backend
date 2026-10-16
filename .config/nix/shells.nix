@@ -23,6 +23,21 @@ let
       corpus
       ;
   };
+  # The artifact-driven T2 shell runs the pinned native compilers as packages,
+  # so their setup hooks populate NIX_* flags when the shell starts. Avoid
+  # building and reading a duplicate captured setup environment for this shell;
+  # command wrappers and checks retain the default captured environment.
+  surfaceBaseEnv =
+    (import ./corpus-env.nix {
+      inherit
+        pkgs
+        tools
+        toolchains
+        corpus
+        ;
+      captureNativeCompilerShellEnv = false;
+    })
+    // tools.linuxGraphicsEnvironment;
   # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
   baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
   common = baseEnv // {
@@ -316,7 +331,7 @@ let
   # T2 runtime only: reuse T1 binaries, with native compiler authorities.
   # Corpus selection is the harness's job; do not fetch the legacy deep corpus.
   surface = pkgs.mkShell (
-    builtins.removeAttrs baseEnv [
+    builtins.removeAttrs surfaceBaseEnv [
       "NUDOX_RUST_CORPUS_DIR"
       "NUDOX_TYPESCRIPT_CORPUS_DIR"
       "NUDOX_PYTHON_CORPUS_DIR"

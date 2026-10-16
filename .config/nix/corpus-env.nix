@@ -8,6 +8,7 @@
   tools,
   toolchains,
   corpus,
+  captureNativeCompilerShellEnv ? true,
 }:
 let
   inherit (tools) compilers;
@@ -194,4 +195,4 @@ in
 // optionalOracleEnv
 // optionalRoslynEnv
 // optionalCorpusEnv
-// nativeCompilerShellEnvVars
+// (if captureNativeCompilerShellEnv then nativeCompilerShellEnvVars else { })
