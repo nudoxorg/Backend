@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "task": "W3 source review of T2 surface answer candidates",
+  "review_head": "d47d7a3fa5500c8e103c1909afe7d4801ca3575a",
+  "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+  "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
+  "snapshot_baseline": "tests/surface/snapshots/python-itsdangerous.json at review_head",
+  "scope": "Pinned-source review of answer deltas only. No candidate snapshot, runtime output, source, or performance baseline was changed.",
+  "performance_policy": {
+    "action": "Preserve the existing golden performance object exactly when applying any reviewed answer-only update; do not copy candidate performance measurements or alter bands.",
+    "candidate_measurements": "The candidate performance object differs from the golden in every case. It is a separate sample, not a reviewed baseline update.",
+    "baseline_object_sha256": "516b5cecdca012706cb638928d04932ade23f35b6a671b4c658a9ab472e9218d",
+    "baseline_measurements": "cpu 5.99 -> 3.67s; peak RSS 368208 -> 366536 KiB; CLI add 7.38 -> 6.20s.",
+    "candidate_performance_differs": true
+  },
+  "limits": [
+    "No Cargo build/test, Nix build, or native replay was run.",
+    "Source evidence validates semantic categories and authored paths; it does not derive exact ranked result order or truncated counts.",
+    "No current-head T2 pass or performance-band pass is claimed."
+  ],
+  "source_tree_manifest_method": "SHA-256 over sorted relative file path, NUL, per-file SHA-256, newline records for every file in the pinned source tree.",
+  "case": "python-itsdangerous",
+  "source": {
+    "coordinate": "pypi:itsdangerous@2.2.0",
+    "pin_location": ".config/nix/corpus-pins.json:914",
+    "source_tree": "/nix/store/rynbql3g0q2yhj29lys5ix9scj7j88dr-nudox-surface-python-itsdangerous-2.2.0",
+    "file_count": 46,
+    "source_tree_manifest_sha256": "d78fe7f742bd1dbe30eb4811a677cd74ea83bddf237fbb7434d54437ca23c3e2",
+    "evidence": {
+      "src/itsdangerous/signer.py": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "src/itsdangerous/serializer.py": "3e67700032ea912c902d9d2338a0200ec016e24fc7d13940ef5122df3d02e5a2",
+      "src/itsdangerous/url_safe.py": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+    }
+  },
+  "answer_delta": {
+    "outline_roots": "93 -> 138; old struct roots reclassify as classes; candidate roots include 29 class, 14 function, 25 variable, 70 import records. Declaration cap stays 200.",
+    "search": "Signer remains 25 records; URLSafeSerializer 4 -> 5.",
+    "source_support": "AST parsing of the pinned tree finds 29 classes, 98 methods and 18 top-level functions across production and tests. The selected implementation has authored Signer/HMACAlgorithm types in signer.py, Serializer in serializer.py, and URLSafeSerializer classes in url_safe.py. Import declarations are present in the pinned files. This supports class/method classification and confirms additional import/class records are grounded in real source.",
+    "preserved": "Package identity, CLI/MCP query set, Signer capped result count, and 200 declaration cap remain stable.",
+    "unresolved": "The 45-root net increase and candidate function count are not explained by source categories alone; exact import/reference eligibility, ordering, and truncated outline membership need runtime diff review."
+  },
+  "decision": "Source supports class/method reclassification and confirms the added record families have source declarations. Do not infer that all 138 roots are correct from counts alone; answer-only consideration requires runtime diff review and exact performance-baseline preservation."
+}
