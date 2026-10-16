@@ -1,0 +1,55 @@
+{
+  "reviewer_scope": "Independent source and answer review of the Linux Java JSR-305 candidate. Snapshot answers only were refreshed; its performance object was preserved exactly. No product code, test, or performance limits were changed.",
+  "decision": "accept",
+  "candidate": {
+    "path": "tests/surface/snapshots/java-jsr305.json",
+    "sha256": "7951f63268e44996feaf2ed0394725f5753ae18bc4f086423f94e57d180745d1",
+    "source_commit": "de9f6c8d81c8fa8b003472eda717c9c94fafd0a3",
+    "artifact_manifest_sha256": "6175f2607a01b173a6707b004c7d804694eb3740fa6865836c2925bc20aad089",
+    "run": 1,
+    "runtime_log": "/tmp/de9-java-jsr305-r1.log"
+  },
+  "pinned_source": {
+    "coordinate": "maven:com.google.code.findbugs:jsr305@3.0.2",
+    "archive_url": "https://repo1.maven.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2-sources.jar",
+    "expected_sri": "sha256-HJ6F4nLQcIxqWR3HSCjHFgMFO0jMda6DzOVpEqKqBjs=",
+    "observed_sri": "sha256-HJ6F4nLQcIxqWR3HSCjHFgMFO0jMda6DzOVpEqKqBjs=",
+    "observed_sha256": "1c9e85e272d0708c6a591dc74828c71603053b48cc75ae83cce56912a2aa063b",
+    "archive_entries": 37,
+    "java_source_files": 31,
+    "captured_project_java_files": 31,
+    "captured_tree_equal_to_archive_java_files": true,
+    "evidence": "Downloaded the public pinned sources archive to /tmp and verified its SHA-256 SRI against .config/nix/corpus-pins.json; extracted Java path sets and per-file SHA-256 digests exactly match /tmp/nudox-surface/java-jsr305/project."
+  },
+  "answer_review": {
+    "outline": {
+      "declarations_unchanged": 126,
+      "nonmodule_roots_unchanged": 31,
+      "source_checked_kind_changes": "All 30 root annotation declarations are public @interface types and now render as interface. javax.annotation.meta.When is declared enum and remains enum. Nested Checker declarations are source-declared classes and now render as class; methods including annotation elements and Checker constructors/members now render as method. Enum constants use variant kinds.",
+      "budget_change": "Bytes increase 28196 -> 28258 (estimated tokens 7049 -> 7065) follows the changed visible kind spellings/outline serialization."
+    },
+    "packages": {
+      "assessment": "The candidate reports ready with 375 indexed rows and a new view revision after a successful index publication. This is consistent with the run log reporting one complete native profile; it is an answer refresh, not a performance claim."
+    },
+    "search": {
+      "assessment": "Both CLI searches now report semantic coverage complete alongside exact, names, and graph. Qualified source-backed hits carry Java language, expected file path, and source line. The additional Nonnull hit for forConstantValue is the method at Nonnull.java:26; Nullable-related annotation hits match the corresponding @interface declarations. Pathless external name-lane hits remain explicitly unknown and are not presented as source-backed Java hits."
+    },
+    "mcp": {
+      "assessment": "MCP outline/search answers track the same source-backed kinds and locations as CLI. backend.call appears in the captured current registered-tool list (MCP_REGISTERED_CALL_TOOL in crates/present/mcp_invocation.rs); it is a current API inventory change, not a JSR-305 declaration."
+    }
+  },
+  "performance_preservation": {
+    "snapshot_performance_object_preserved": true,
+    "candidate_run_performance_used": false,
+    "assessment": "The old snapshot performance object was copied through unchanged. Candidate timings were not used to update measurements or tolerances."
+  },
+  "validation": {
+    "archive_hash_and_extracted_java_tree_verified": true,
+    "candidate_answers_compared_against_pinned_source_and_projection": true,
+    "cargo_or_ci_run": false
+  },
+  "limitations": [
+    "This review accepts answer content only. The candidate is run 1; performance calibration and official exact-head T2 status are unchanged and not implied by this snapshot update."
+  ],
+  "reviewer": "Codex / GPT-6 Luna, independent pinned-source/result review"
+}
