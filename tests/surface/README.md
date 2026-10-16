@@ -127,10 +127,11 @@ artifact consumer must match this reviewed candidate before merge.
 
 ## Public CLI contract cases (W1.3)
 
-The `cli-usage` case runs 14 selectable assertions against the exact published
-CLI: root/add help, misspelled command, unknown option, missing coordinate and
-alias coordinate, out-of-range and unsupported page bounds, invalid passive
-search/compile intent, and absent-owner passive health/status. Assertions retain
+The `cli-usage` case runs 18 selectable scenarios against the exact published
+CLI: root/add help, 14 typed refusal cases (including misspelled command,
+unknown option, missing coordinate and alias coordinate, out-of-range and
+unsupported page bounds, and invalid passive search/compile intent), plus
+absent-owner passive health/status. Assertions retain
 exit codes, offending operands, actionable diagnostics and JSON/human/Markdown
 stream contracts. Passive recovery is parsed and executed only inside a shell
 function that prints its arguments, verifying hostile literal paths without
