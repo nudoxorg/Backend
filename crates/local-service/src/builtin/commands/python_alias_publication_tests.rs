@@ -6,7 +6,7 @@ use backend_engine::driver::{
     CompileControl, CompileRequest, CompileScratch, DeclarationScope, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use backend_engine::{RowId, SemanticConfidence, SemanticLinkKind, ViewRoot, package_key};
+use backend_engine::{RowId, SemanticConfidence, ViewRoot, package_key};
 use backend_frontend_python::legacy::checker::DefinitionTarget;
 use backend_frontend_python::legacy::{
     CheckerReport, DeclarationKind, Span, SymbolOutcome, SymbolResolution, extract,
@@ -26,14 +26,23 @@ const PATH: &str = "pkg/client.py";
 const SOURCE: &str = concat!(
     "# 🐍 captured source bytes\r\n",
     "from unavailable_publication_fixture import first as ｃｏｐｙ\r\n",
-    "before = copy\r\n",
+    "before = [copy]\r\n",
     "from unavailable_publication_fixture import second as copy\r\n",
-    "after = copy\r\n",
+    "after = [copy]\r\n",
     "from unavailable_publication_fixture import third as copy, fourth as copy\r\n",
-    "final = copy\r\n",
+    "final = [copy]\r\n",
 );
 
-fn supplied_image(source: &str, uses: &[(&str, usize)]) -> Result<Vec<u8>, String> {
+struct SuppliedImage {
+    bytes: Vec<u8>,
+    targets: Vec<DeclarationIdentity>,
+}
+
+fn supplied_image(
+    source: &str,
+    uses: &[(&str, usize)],
+    relation: LinkKind,
+) -> Result<SuppliedImage, String> {
     let syntax = extract(source.as_bytes(), PythonVersion::Python314)
         .map_err(|error| format!("{error:?}"))?;
     let sites = syntax
@@ -48,12 +57,25 @@ fn supplied_image(source: &str, uses: &[(&str, usize)]) -> Result<Vec<u8>, Strin
         .iter()
         .map(|(statement, site)| {
             let start = source.find(statement).ok_or("missing fixture use")? + statement.len() - 4;
+            let span = Span {
+                start: start as u32,
+                end: start as u32 + 4,
+            };
+            assert!(syntax.occurrences.iter().any(|occurrence| {
+                occurrence.span == span
+                    && occurrence.kind == backend_frontend_python::legacy::OccurrenceKind::NameRead
+                    && occurrence.owner == syntax.identity
+            }));
+            assert_eq!(
+                syntax.annotations.iter().any(|annotation| {
+                    annotation.span.start <= span.start && annotation.span.end >= span.end
+                }),
+                relation == LinkKind::TypeReference,
+                "bare-name alias assignments and runtime list reads have different existing classification"
+            );
             Ok(SymbolResolution {
                 target: "copy".into(),
-                span: Span {
-                    start: start as u32,
-                    end: start as u32 + 4,
-                },
+                span,
                 outcome: SymbolOutcome::Definition {
                     target: DefinitionTarget {
                         relative_path: PATH.into(),
@@ -107,10 +129,71 @@ fn supplied_image(source: &str, uses: &[(&str, usize)]) -> Result<Vec<u8>, Strin
         },
     )
     .map_err(|error| format!("{error:?}"))?;
+    let targets = owned_use_targets(&compiled.ir, &syntax, &report, uses, &sites, relation)?;
     let mut bytes =
         vec![0; full_semantic_image_len(&compiled.ir).map_err(|error| error.to_string())?];
     encode_full_semantic_image(&compiled.ir, &mut bytes).map_err(|error| error.to_string())?;
-    Ok(bytes)
+    Ok(SuppliedImage { bytes, targets })
+}
+
+fn owned_use_targets(
+    ir: &backend_semantic::ir::Ir,
+    syntax: &backend_frontend_python::legacy::ModuleFacts,
+    report: &CheckerReport,
+    uses: &[(&str, usize)],
+    sites: &[Span],
+    relation: LinkKind,
+) -> Result<Vec<DeclarationIdentity>, String> {
+    // Retain exact owned-IR targets before encoding. Canonical image order is
+    // identity order, not Ruff/source order, so indexing reopened aliases by
+    // the report's source-site index would silently choose a different row.
+    let mut targets = Vec::with_capacity(report.symbols.len());
+    for (symbol, (_, site)) in report.symbols.iter().zip(uses) {
+        let occurrences = ir
+            .link_occurrences()
+            .filter_map(|(_, occurrence)| {
+                occurrence
+                    .source
+                    .filter(|source| {
+                        source.start() == symbol.span.start && source.end() == symbol.span.end
+                    })
+                    .map(|_| occurrence)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(occurrences.len(), 1, "one exact owned use");
+        let link = ir.link(occurrences[0].link).ok_or("owned use link")?;
+        assert_eq!(link.kind, relation);
+        assert_eq!(
+            ir.entity(link.from).ok_or("owned use owner")?.kind,
+            ItemKind::Module,
+            "the captured top-level use is owned by its module"
+        );
+        assert_eq!(
+            occurrences[0].confidence,
+            backend_semantic::ir::Confidence::Compiler
+        );
+        let LinkTarget::Local(target) = link.target else {
+            return Err("supplied exact definition lost its local target".into());
+        };
+        let alias = ir.entity(target).ok_or("owned alias target")?;
+        assert_eq!(alias.kind, ItemKind::Alias);
+        assert_eq!(
+            alias.authority.publication,
+            DeclarationPublicationRole::PrimaryOwned
+        );
+        let declaration = syntax
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name_span == sites[*site])
+            .ok_or("supplied target declaration")?;
+        let captured = alias.source.ok_or("owned alias source extent")?;
+        assert_eq!(
+            (captured.start(), captured.end()),
+            (declaration.span.start, declaration.span.end)
+        );
+        targets.push(alias.version.identity());
+    }
+    Ok(targets)
 }
 
 fn activated_view(bytes: &[u8]) -> Result<ViewRoot, String> {
@@ -190,14 +273,13 @@ fn assert_owned_alias_rows(
         );
     }
     if source.contains("ｃｏｐｙ") {
-        let first = view
-            .row_ref(RowId::Symbol(view_build::semantic_symbol(
-                package,
-                aliases[0].version.identity(),
-            )))
-            .ok_or("normalized import row")?;
         assert!(
-            first.label.ends_with("::ｃｏｐｙ"),
+            aliases.iter().any(|alias| view
+                .row_ref(RowId::Symbol(view_build::semantic_symbol(
+                    package,
+                    alias.version.identity()
+                )))
+                .is_some_and(|row| row.label.ends_with("::ｃｏｐｙ"))),
             "normalization must not replace captured source spelling"
         );
     }
@@ -208,17 +290,32 @@ fn assert_public_alias_targets(
     source: &str,
     uses: &[(&str, usize)],
     count: usize,
+    relation: LinkKind,
 ) -> Result<(), String> {
-    let bytes = supplied_image(source, uses)?;
+    let supplied = supplied_image(source, uses, relation)?;
+    let bytes = supplied.bytes;
     let image = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
     let view = activated_view(&bytes)?;
     let package = package_key("fixture");
     let aliases = assert_owned_alias_rows(&image, &view, source, count)?;
+    assert!(
+        supplied.targets.iter().all(|identity| aliases
+            .iter()
+            .any(|alias| alias.version.identity() == *identity)),
+        "every exact owned target survives canonical image admission"
+    );
     let module = image
         .canonical_entities()
         .find(|entity| entity.kind == ItemKind::Module)
         .ok_or("module use owner")?;
     let module_symbol = view_build::semantic_symbol(package, module.version.identity());
+    assert!(view.row_ref(RowId::Symbol(module_symbol)).is_some());
+    assert_eq!(
+        semantic_entity_for_symbol(&image, package, module_symbol)
+            .map_err(|error| error.to_string())?,
+        Some(module.id),
+        "the actual use owner remains admitted by publication lookup"
+    );
     let paths = BTreeSet::from([PATH.to_owned()]);
     let edges = project_semantic_graph_relations_from_bytes(
         &[&bytes],
@@ -230,26 +327,26 @@ fn assert_public_alias_targets(
         &paths,
     )
     .map_err(|error| error.to_string())?;
-    let expected = uses
+    let expected = supplied
+        .targets
         .iter()
-        .map(|(_, index)| {
-            RowId::Symbol(view_build::semantic_symbol(
-                package,
-                aliases[*index].version.identity(),
-            ))
-        })
+        .map(|identity| RowId::Symbol(view_build::semantic_symbol(package, *identity)))
         .collect::<BTreeSet<_>>();
+    assert_eq!(
+        expected.len(),
+        uses.len(),
+        "distinct supplied binding sites stay distinct"
+    );
     assert_eq!(
         edges
             .iter()
-            .filter(|edge| edge.relation == SemanticLinkKind::Reads)
+            .filter(|edge| edge.relation == semantic_link_kind(relation))
             .map(|edge| edge.to)
             .collect::<BTreeSet<_>>(),
         expected
     );
-    for (statement, index) in uses {
-        let alias = &aliases[*index];
-        let target = view_build::semantic_symbol(package, alias.version.identity());
+    for ((statement, _), identity) in uses.iter().zip(&supplied.targets) {
+        let target = view_build::semantic_symbol(package, *identity);
         let facts =
             project_reference_facts_from_bytes(&[&bytes], &view, package, target, &paths, &[])
                 .map_err(|error| error.to_string())?;
@@ -259,10 +356,10 @@ fn assert_public_alias_targets(
         );
         let start = source.find(statement).ok_or("use")? + statement.len() - 4;
         assert!(facts.iter().any(|fact| fact.site == module_symbol
-            && fact.relation == SemanticLinkKind::Reads
+            && fact.relation == semantic_link_kind(relation)
             && fact.evidence.confidence == SemanticConfidence::Compiler
             && matches!(&fact.target, backend_engine::SemanticLinkTarget::Local { declaration }
-                if *declaration == semantic_declaration_identity(alias.version.identity()))
+                if *declaration == semantic_declaration_identity(*identity))
             && fact.evidence.source.as_ref().is_some_and(
                 |span| span.start as usize == start && span.end as usize == start + 4
             )));
@@ -272,15 +369,36 @@ fn assert_public_alias_targets(
 
 #[test]
 fn authored_python_aliases_remain_public_query_graph_and_reference_targets() -> Result<(), String> {
-    let single = "from unavailable_publication_fixture import first as copy\nbefore = copy\n";
-    assert_public_alias_targets(single, &[("before = copy", 0)], 1)?;
+    let single = "from unavailable_publication_fixture import first as copy\nbefore = [copy]\n";
+    assert_public_alias_targets(single, &[("before = [copy", 0)], 1, LinkKind::Reads)?;
+    // Preserve the original bare-name cases: the established frontend marks
+    // these potential alias assignments as TypeReference, not runtime Reads.
+    let bare_single = single.replace("[copy]", "copy");
     assert_public_alias_targets(
-        SOURCE,
+        &bare_single,
+        &[("before = copy", 0)],
+        1,
+        LinkKind::TypeReference,
+    )?;
+    let bare_source = SOURCE.replace("[copy]", "copy");
+    assert_public_alias_targets(
+        &bare_source,
         &[
             ("before = copy", 0),
             ("after = copy", 1),
             ("final = copy", 3),
         ],
         4,
+        LinkKind::TypeReference,
+    )?;
+    assert_public_alias_targets(
+        SOURCE,
+        &[
+            ("before = [copy", 0),
+            ("after = [copy", 1),
+            ("final = [copy", 3),
+        ],
+        4,
+        LinkKind::Reads,
     )
 }
