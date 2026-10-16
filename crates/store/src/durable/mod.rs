@@ -34,6 +34,7 @@ mod gc;
 mod layout;
 mod membership_lease;
 mod nodes;
+mod object_batch;
 mod objects;
 mod publication;
 mod publication_api;
@@ -62,6 +63,7 @@ pub use nodes::{
     OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,
     TreeReadStats, TreeWriteStats,
 };
+pub use object_batch::{MAX_OBJECT_BATCH_OBJECTS, ObjectBatchWriteReceipt};
 pub use objects::{ObjectWriteReceipt, VerifiedObjectView};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
@@ -191,9 +193,14 @@ fn hex(bytes: &Hash) -> String {
 }
 
 fn sync_directory(path: &Path) -> Result<(), StoreError> {
-    backend_platform::durability::open_directory(path)
+    let result = backend_platform::durability::open_directory(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error(&error))
+        .map_err(|error| io_error(&error));
+    #[cfg(test)]
+    if result.is_ok() {
+        object_batch::record_directory_flush(path);
+    }
+    result
 }
 
 fn io_error(error: &std::io::Error) -> StoreError {
