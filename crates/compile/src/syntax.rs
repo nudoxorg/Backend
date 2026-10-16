@@ -34,6 +34,7 @@ use crate::{
 };
 pub use backend_semantic::vocabulary::Language as SourceLanguage;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt,
     num::NonZeroU32,
@@ -780,21 +781,46 @@ impl SyntaxFrontend {
         parser
             .set_language(&variant.language)
             .map_err(|error| SyntaxError::Parser(error.to_string()))?;
-        let tree = parser.parse(source, None).ok_or(SyntaxError::Cancelled)?;
+        // C-family export macros between `class`/`struct` and the declared
+        // name are legal source, but tree-sitter-cpp treats the macro as the
+        // type name and loses the actual record. Mask only the token proven
+        // by that malformed AST shape. The copy keeps byte offsets identical;
+        // every declaration excerpt still comes from `text`, the original
+        // source bytes.
+        let parse_source = if self.language == SourceLanguage::Clang {
+            clang_export_macro_parse_source(source, &variant.language, &mut parser)?
+        } else {
+            Cow::Borrowed(source)
+        };
+        let tree = parser
+            .parse(parse_source.as_ref(), None)
+            .ok_or(SyntaxError::Cancelled)?;
         if tree.root_node().has_error() {
             return Err(SyntaxError::MalformedSource(self.language));
         }
         // Items an item-position macro declares live in re-parses of its
         // argument; they are captured with the file's own tree so one
         // containment decision covers both.
-        let nested = macro_items(self.language, &variant.language, &mut parser, &tree, source)?;
+        let nested = macro_items(
+            self.language,
+            &variant.language,
+            &mut parser,
+            &tree,
+            parse_source.as_ref(),
+        )?;
         let mut cursor = QueryCursor::new();
         let trees = SourceTrees {
             main: &tree,
             nested: &nested,
         };
-        let captured =
-            captured_in_trees(self.language, variant, &trees, &mut cursor, source, text)?;
+        let captured = captured_in_trees(
+            self.language,
+            variant,
+            &trees,
+            &mut cursor,
+            parse_source.as_ref(),
+            text,
+        )?;
         Ok(SourceAnalysis {
             language: self.language,
             content: typed_of::<InputContentSchema>(source),
@@ -814,7 +840,288 @@ impl SyntaxFrontend {
             .find(|variant| variant.supports(&extension))
             .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))
     }
+}
 
+/// Returns a same-length parse view with only proven C/C++ export tokens
+/// blanked. The source bytes remain the authority for names, excerpts and
+/// locations; this view only lets the grammar see the record shape that the
+/// source spells. If the grammar cannot prove a unique macro/name/body
+/// arrangement, the original bytes are parsed unchanged.
+fn clang_export_macro_parse_source<'source>(
+    source: &'source [u8],
+    language: &Language,
+    parser: &mut Parser,
+) -> Result<Cow<'source, [u8]>, SyntaxError> {
+    let raw = parser.parse(source, None).ok_or(SyntaxError::Cancelled)?;
+    let mut masks = Vec::new();
+    let (export_macros, syntax_macros) = clang_macro_roles(raw.root_node(), source);
+    clang_export_macro_masks(raw.root_node(), source, &export_macros, &mut masks);
+    clang_macro_usage_masks(
+        raw.root_node(),
+        source,
+        &syntax_macros,
+        &export_macros,
+        &mut masks,
+    );
+    if masks.is_empty() {
+        return Ok(Cow::Borrowed(source));
+    }
+    let mut parse_source = source.to_vec();
+    for (start, end) in masks {
+        parse_source[start..end].fill(b' ');
+    }
+    parser
+        .set_language(language)
+        .map_err(|error| SyntaxError::Parser(error.to_string()))?;
+    Ok(Cow::Owned(parse_source))
+}
+
+fn clang_macro_roles(
+    root: Node<'_>,
+    source: &[u8],
+) -> (BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>) {
+    let mut definitions = BTreeMap::<Vec<u8>, BTreeSet<Vec<u8>>>::new();
+    fn visit(node: Node<'_>, source: &[u8], definitions: &mut BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>) {
+        if node.kind() == "preproc_def"
+            && let Some(name) = node.child_by_field_name("name")
+            && let Some(name) = source.get(name.byte_range())
+        {
+            let aliases = node
+                .child_by_field_name("value")
+                .and_then(|value| source.get(value.byte_range()))
+                .map(|value| {
+                    value
+                        .split(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+                        .filter(|token| !token.is_empty())
+                        .map(<[u8]>::to_vec)
+                        .collect()
+                })
+                .unwrap_or_default();
+            definitions.insert(name.to_vec(), aliases);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, definitions);
+        }
+    }
+    visit(root, source, &mut definitions);
+
+    let is_export_marker = |token: &[u8]| {
+        [b"_API".as_slice(), b"_EXPORT", b"_EXPORTS", b"_PUBLIC", b"_IMPORT", b"_IMPORTS"]
+            .iter()
+            .any(|suffix| token.ends_with(suffix))
+            || [
+                b"__declspec".as_slice(),
+                b"__attribute__",
+                b"dllexport",
+                b"dllimport",
+                b"visibility",
+            ]
+            .contains(&token)
+    };
+    let mut exports = definitions
+        .iter()
+        .filter(|(name, aliases)| is_export_marker(name) || aliases.iter().any(|alias| is_export_marker(alias)))
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let before = exports.len();
+        for (name, aliases) in &definitions {
+            if aliases.iter().any(|alias| exports.contains(alias)) {
+                exports.insert(name.clone());
+            }
+        }
+        if exports.len() == before {
+            break;
+        }
+    }
+    let syntax_marker = |token: &[u8]| {
+        [
+            b"override".as_slice(),
+            b"noexcept",
+            b"__attribute__",
+            b"__declspec",
+            b"deprecated",
+        ]
+        .contains(&token)
+    };
+    let mut syntax = definitions
+        .iter()
+        .filter(|(name, aliases)| {
+            exports.contains(*name)
+                || [b"_OVERRIDE".as_slice(), b"_NOEXCEPT", b"_DEPRECATED"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+                || aliases.iter().any(|alias| syntax_marker(alias))
+        })
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let before = syntax.len();
+        for (name, aliases) in &definitions {
+            if aliases.iter().any(|alias| syntax.contains(alias)) {
+                syntax.insert(name.clone());
+            }
+        }
+        if syntax.len() == before {
+            break;
+        }
+    }
+    (exports, syntax)
+}
+
+fn clang_macro_usage_masks(
+    node: Node<'_>,
+    source: &[u8],
+    syntax_macros: &BTreeSet<Vec<u8>>,
+    export_macros: &BTreeSet<Vec<u8>>,
+    masks: &mut Vec<(usize, usize)>,
+) {
+    if matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "field_identifier" | "namespace_identifier"
+    )
+        && let Some(token) = source.get(node.byte_range())
+        && (syntax_macros.contains(token) || export_macros.contains(token))
+        && !is_preprocessor_directive_token(node)
+        && !is_clang_export_macro_site(node, source, export_macros)
+    {
+        masks.push((node.start_byte(), node.end_byte()));
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        clang_macro_usage_masks(child, source, syntax_macros, export_macros, masks);
+    }
+}
+
+fn is_clang_export_macro_site(
+    node: Node<'_>,
+    source: &[u8],
+    export_macros: &BTreeSet<Vec<u8>>,
+) -> bool {
+    let Some(record) = node.parent() else {
+        return false;
+    };
+    let Some(function) = record.parent() else {
+        return false;
+    };
+    if function.kind() != "function_definition" {
+        return false;
+    }
+    let (Some(record), Some(declared_name), Some(body)) = (
+        function.child_by_field_name("type"),
+        function.child_by_field_name("declarator"),
+        function.child_by_field_name("body"),
+    ) else {
+        return false;
+    };
+    function.child_by_field_name("type") == Some(record)
+        && record.child_by_field_name("name") == Some(node)
+        && matches!(record.kind(), "class_specifier" | "struct_specifier")
+        && declared_name.kind() == "identifier"
+        && body.kind() == "compound_statement"
+        && is_clang_export_macro(record, node, declared_name, body, source, export_macros)
+}
+
+fn is_preprocessor_directive_token(mut node: Node<'_>) -> bool {
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "preproc_def" || parent.kind() == "preproc_function_def" {
+            return true;
+        }
+        if parent.kind().starts_with("preproc_")
+            && ["name", "condition", "path"]
+                .iter()
+                .filter_map(|field| parent.child_by_field_name(field))
+                .any(|field| field.start_byte() <= node.start_byte() && field.end_byte() >= node.end_byte())
+        {
+            return true;
+        }
+        node = parent;
+    }
+    false
+}
+
+fn clang_export_macro_masks(
+    node: Node<'_>,
+    source: &[u8],
+    export_macros: &BTreeSet<Vec<u8>>,
+    masks: &mut Vec<(usize, usize)>,
+) {
+    if node.kind() == "function_definition"
+        && let Some(record) = node.child_by_field_name("type")
+        && matches!(record.kind(), "class_specifier" | "struct_specifier")
+        && let Some(macro_name) = record.child_by_field_name("name")
+        && let Some(declared_name) = node.child_by_field_name("declarator")
+        && let Some(body) = node.child_by_field_name("body")
+        && declared_name.kind() == "identifier"
+        && body.kind() == "compound_statement"
+        && is_clang_export_macro(
+            record,
+            macro_name,
+            declared_name,
+            body,
+            source,
+            export_macros,
+        )
+    {
+        masks.push((macro_name.start_byte(), macro_name.end_byte()));
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        clang_export_macro_masks(child, source, export_macros, masks);
+    }
+}
+
+fn is_clang_export_macro(
+    record: Node<'_>,
+    macro_name: Node<'_>,
+    declared_name: Node<'_>,
+    body: Node<'_>,
+    source: &[u8],
+    export_macros: &BTreeSet<Vec<u8>>,
+) -> bool {
+    if macro_name.kind() != "type_identifier" {
+        return false;
+    }
+    let Some(record_prefix) = source.get(record.start_byte()..macro_name.start_byte()) else {
+        return false;
+    };
+    let keyword = if record.kind() == "class_specifier" {
+        b"class".as_slice()
+    } else {
+        b"struct".as_slice()
+    };
+    if !record_prefix.starts_with(keyword)
+        || !record_prefix[keyword.len()..]
+            .iter()
+            .all(u8::is_ascii_whitespace)
+    {
+        return false;
+    }
+    let Some(macro_bytes) = source.get(macro_name.byte_range()) else {
+        return false;
+    };
+    if !export_macros.contains(macro_bytes) {
+        return false;
+    }
+    let Some(macro_gap) = source.get(macro_name.end_byte()..declared_name.start_byte()) else {
+        return false;
+    };
+    if !macro_gap.iter().all(u8::is_ascii_whitespace) {
+        return false;
+    }
+    let Some(declaration_gap) = source.get(declared_name.end_byte()..body.start_byte()) else {
+        return false;
+    };
+    let declaration_gap = declaration_gap
+        .iter()
+        .copied()
+        .skip_while(u8::is_ascii_whitespace)
+        .collect::<Vec<_>>();
+    declaration_gap.is_empty() || declaration_gap[0] == b':'
+}
+
+impl SyntaxFrontend {
     /// Projects deduplicated captures into bounded declarations.
     ///
     /// Containment is resolved against the complete capture set rather than
