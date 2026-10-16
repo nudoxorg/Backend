@@ -337,6 +337,52 @@ struct RootWitness {
 }
 
 impl RootWitness {
+    fn matches_capture(
+        &self,
+        root: &Root,
+        control: PythonProjectControl<'_>,
+    ) -> Result<bool, CheckerError> {
+        self.matches_capture_with(root, || checkpoint(control))
+    }
+
+    fn matches_capture_with(
+        &self,
+        root: &Root,
+        mut check: impl FnMut() -> Result<(), CheckerError>,
+    ) -> Result<bool, CheckerError> {
+        check()?;
+        if self.kind != root.kind
+            || self.original != root.original
+            || self.directories != root.directories
+            || self.members.len() != root.members.len()
+        {
+            return Ok(false);
+        }
+        for ((path, digest, length, compiled), member) in self.members.iter().zip(&root.members) {
+            check()?;
+            if path != &member.path {
+                return Ok(false);
+            }
+            let expected = match &member.payload {
+                MemberPayload::Source(bytes) => {
+                    let mut hasher = blake3::Hasher::new();
+                    for block in bytes.chunks(64 * 1024) {
+                        check()?;
+                        hasher.update(block);
+                    }
+                    (*hasher.finalize().as_bytes(), bytes.len() as u64, false)
+                }
+                MemberPayload::Compiled { digest, length } => (*digest, *length, true),
+            };
+            check()?;
+            if (*digest, *length, *compiled) != expected {
+                return Ok(false);
+            }
+        }
+        check()?;
+        Ok(true)
+    }
+
     fn from_root(root: &Root) -> Self {
         Self {
             kind: root.kind,
@@ -1144,8 +1190,8 @@ impl PythonEnvironmentCapture {
             control,
         )?;
         for root in &self.environment.roots {
-            if capture_root_witness(&root.original, root.kind, control)?
-                != RootWitness::from_root(root)
+            if !capture_root_witness(&root.original, root.kind, control)?
+                .matches_capture(root, control)?
             {
                 return Err(project_error(
                     "",
@@ -2478,6 +2524,21 @@ mod tests {
         )?;
         let new_work = measure.take();
         assert_eq!(current, RootWitness::from_root(&old));
+        assert!(current.matches_capture(&old, control(&cancelled))?);
+        let late_cancelled = AtomicBool::new(false);
+        let mut checks = 0;
+        let stopped = current.matches_capture_with(&old, || {
+            checks += 1;
+            if checks == 4 {
+                late_cancelled.store(true, Ordering::Release);
+            }
+            checkpoint(control(&late_cancelled))
+        });
+        assert!(matches!(stopped, Err(CheckerError::Cancelled { .. })));
+        assert_eq!(
+            checks, 4,
+            "stop before hashing the next captured source block"
+        );
         assert!(old_work.payload_buffer_capacity >= 32 * 65537);
         assert_eq!(new_work.payload_buffer_capacity, 0);
         assert_eq!(old_work.root_walks, 32);
@@ -2499,6 +2560,7 @@ mod tests {
         let stream = |kind| capture_root_witness(root, kind, control(&cancelled));
         let kind = PythonDependencyRootKind::SitePackages;
         let expected = RootWitness::from_root(&capture(kind)?);
+        let original_capture = capture(kind)?;
         assert_eq!(stream(kind)?, expected);
         for (name, bytes) in [
             ("package/__init__.py", b"value = 2\n".as_slice()),
@@ -2508,6 +2570,7 @@ mod tests {
             let original = std::fs::read(&path)?;
             std::fs::write(&path, bytes)?;
             assert_ne!(stream(kind)?, expected);
+            assert!(!stream(kind)?.matches_capture(&original_capture, control(&cancelled))?);
             assert_eq!(stream(kind)?, RootWitness::from_root(&capture(kind)?));
             std::fs::write(path, original)?;
         }
@@ -2558,6 +2621,16 @@ mod tests {
             ),
             Err(CheckerError::Cancelled { .. })
         ));
+        let old = capture_root(
+            root,
+            PythonDependencyRootKind::SitePackages,
+            control(&AtomicBool::new(false)),
+        )?;
+        let expected = RootWitness::from_root(&old);
+        assert!(matches!(
+            expected.matches_capture(&old, control(&cancelled)),
+            Err(CheckerError::Cancelled { .. })
+        ));
         cancelled.store(false, Ordering::Release);
         let expired = PythonProjectControl {
             cancelled: &cancelled,
@@ -2565,6 +2638,10 @@ mod tests {
         };
         assert!(matches!(
             capture_root_witness(root, PythonDependencyRootKind::SitePackages, expired),
+            Err(CheckerError::Deadline { .. })
+        ));
+        assert!(matches!(
+            expected.matches_capture(&old, expired),
             Err(CheckerError::Deadline { .. })
         ));
         for budget in [
