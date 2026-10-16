@@ -152,17 +152,55 @@ case "${CI:-}" in
     if [ -z "${CI_HEAD_SHA:-}" ] && [ -f "$reserve_file" ]; then
       @python3@ - "$reserve_file" "$workspace_root" <<'PY' || exit 75
 import pathlib
-import shutil
+import os
+import stat
 import sys
+
+def disk_volume(path):
+    before = path.lstat()
+    if not stat.S_ISDIR(before.st_mode) or path.resolve(strict=True) != path:
+        raise ValueError(f'disk path is not a canonical nonsymlink directory: {path}')
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError(f'disk path changed before open: {path}')
+        usage = os.fstatvfs(fd)
+        after = path.lstat()
+        if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino) or path.resolve(strict=True) != path:
+            raise ValueError(f'disk path changed during observation: {path}')
+        return opened.st_dev, usage.f_bavail * usage.f_frsize
+    finally:
+        os.close(fd)
 
 try:
     reserve = int(pathlib.Path(sys.argv[1]).read_text().strip())
     if reserve < 1:
         raise ValueError('reserve must be positive')
-    available = shutil.disk_usage(sys.argv[2]).free // (1024 ** 3)
-    if available < reserve:
-        raise ValueError(f'{available} GiB free; {reserve} GiB reserved for CI')
-except (OSError, ValueError) as error:
+    ci_path = pathlib.Path('/srv/ci')
+    if ci_path.resolve(strict=False) != ci_path:
+        raise ValueError('CI disk path has a symlink component')
+    try:
+        ci_path.lstat()
+    except FileNotFoundError:
+        if ci_path.resolve(strict=False) != ci_path:
+            raise ValueError('absent CI disk path changed to a symlink component')
+        try:
+            ci_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError('CI disk path appeared during observation')
+        # No CI directory retains the existing workspace-filesystem fence,
+        # including worktrees on a volume distinct from the host root.
+        ci_path = pathlib.Path(sys.argv[2]).resolve(strict=True)
+    device, available = disk_volume(ci_path)
+    reserved_bytes = reserve * 1024 ** 3
+    print(f'nudox cargo: CI disk reserve path={ci_path} device={device} '
+          f'available_bytes={available} reserved_bytes={reserved_bytes} reserve_file={sys.argv[1]}', file=sys.stderr)
+    if available < reserved_bytes:
+        raise ValueError(f'{available} bytes free on {ci_path}; {reserved_bytes} bytes reserved for CI')
+except (OSError, ValueError, RuntimeError) as error:
     print(f'nudox cargo: build deferred to preserve CI disk headroom: {error}', file=sys.stderr)
     sys.exit(75)
 PY
