@@ -326,6 +326,18 @@ impl Session {
                 return Ok(continuation);
             }
         };
+        self.admit_query_continuation(imported, None)
+    }
+
+    /// Re-admits the exact next command, whether it arrived in a portable
+    /// token or was retained from an admitted page on an earlier connection.
+    fn admit_query_continuation(
+        &mut self,
+        imported: CommandDto,
+        remaining: Option<Duration>,
+    ) -> Result<PageContinuation, ClientError> {
+        let started = std::time::Instant::now();
+        self.check_request_context()?;
         let cursor = match &imported.command {
             Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
                 page.continuation().map(PageContinuation::cursor)
@@ -338,7 +350,12 @@ impl Session {
                 "query token has invalid continuation metadata".to_owned(),
             ));
         }
-        let revision = self.revision()?;
+        let revision = match remaining {
+            Some(remaining) => {
+                self.revision_with_budget(remaining.saturating_sub(started.elapsed()))?
+            }
+            None => self.revision()?,
+        };
         let owner = revision.cursor();
         let certificate = imported
             .certificate()
@@ -407,8 +424,62 @@ impl Session {
                 ));
             }
         }
+        // A prepared command belongs to one connection. Keep the validated
+        // input proof in the existing bounded owner state too, so replacing
+        // that connection does not discard a cold imported continuation.
+        let retained = RetainedContinuation {
+            certificate: certificate.clone(),
+            owner,
+            next_request: Some(imported.clone()),
+        };
         self.prepared_query = Some(CommandDto::new(1, imported.command).with_certificate(fresh));
+        self.continuations.clear();
+        self.continuations.insert(cursor, retained);
         Ok(PageContinuation::from_cursor(cursor))
+    }
+
+    /// Only an exact retained next command can promote a cursor to adaptive
+    /// delivery. A cursor alone is never authority for a new page recipe.
+    pub(super) fn prepare_query_window(
+        &mut self,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+        remaining: Option<Duration>,
+    ) -> Result<(), ClientError> {
+        let started = std::time::Instant::now();
+        self.check_request_context()?;
+        if self.prepared_query.is_some() {
+            return Ok(());
+        }
+        let Some(continuation) = continuation else {
+            return Ok(());
+        };
+        let request = self
+            .continuations
+            .get(&continuation.cursor())
+            .and_then(|retained| retained.next_request.clone());
+        let Some(request) = request else {
+            return if window.is_windowed() {
+                Err(ClientError::Protocol(
+                    "adaptive catalog continuation omitted its retained query proof".to_owned(),
+                ))
+            } else {
+                // Keep the fixed-width API for old peers without an exported
+                // next command. Its existing owner/cursor admission still runs.
+                Ok(())
+            };
+        };
+        let admitted = self.admit_query_continuation(
+            request,
+            remaining.map(|budget| budget.saturating_sub(started.elapsed())),
+        )?;
+        if admitted != continuation {
+            self.prepared_query = None;
+            return Err(ClientError::Protocol(
+                "retained query proof changed its continuation".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn resume_prepared_outline(
