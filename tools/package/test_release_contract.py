@@ -167,9 +167,17 @@ class FakeGitHub(release.GitHub):
         self.uploaded = {}
         self.asset_data = {}
         self.calls = []
+        self.tag_reference = {
+            "ref": "refs/tags/checkpoint-test",
+            "object": {"type": "commit", "sha": "a" * 40},
+        }
 
     def api(self, path, method="GET", body=None):
         self.calls.append((path, method, body))
+        if path.startswith("/git/ref/tags/"):
+            return self.tag_reference
+        if path.startswith("/git/tags/"):
+            raise AssertionError("unexpected annotated tag lookup")
         if method == "POST":
             self.release = {"id": 42, "tag_name": body["tag_name"], "assets": [], "draft": True, "prerelease": body["prerelease"], "body": body["body"]}
         elif method == "PATCH":
@@ -196,6 +204,81 @@ class FakeGitHub(release.GitHub):
 
 
 class CandidateTests(unittest.TestCase):
+    def verify_tag_pair(self, github, forgejo_sha="a" * 40):
+        tag = "checkpoint-test"
+        outputs = [
+            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
+            f"{forgejo_sha}\trefs/tags/{tag}\n",
+        ]
+        with patch.object(release.subprocess, "check_output", side_effect=outputs):
+            release.require_published_source_tag(Path("/fixture/source"), tag, "a" * 40, github)
+
+    def test_release_tag_preflight_requires_both_canonical_and_distribution_refs(self):
+        absent = FakeGitHub()
+        with patch.object(release.subprocess, "check_output", side_effect=[
+            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
+            subprocess.CalledProcessError(2, ["git", "ls-remote"]),
+        ]):
+            with self.assertRaisesRegex(ValueError, "canonical Forgejo release tag is absent"):
+                release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, absent)
+        self.assertEqual(absent.calls, [], "missing canonical refs must be refused before GitHub is queried")
+
+        foreign_forgejo = FakeGitHub()
+        with self.assertRaisesRegex(ValueError, "Forgejo release tag does not resolve"):
+            self.verify_tag_pair(foreign_forgejo, "b" * 40)
+        self.assertEqual(foreign_forgejo.calls, [], "a foreign canonical tag must be refused before GitHub is queried")
+
+        foreign_github = FakeGitHub()
+        foreign_github.tag_reference["object"]["sha"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "GitHub distribution tag does not resolve"):
+            self.verify_tag_pair(foreign_github)
+        self.assertEqual([call[0] for call in foreign_github.calls], ["/git/ref/tags/checkpoint-test"])
+
+        absent_github = FakeGitHub()
+
+        def missing_reference(path, method="GET", body=None):
+            absent_github.calls.append((path, method, body))
+            raise urllib.error.HTTPError("https://api.github.com/example", 404, "missing", {}, None)
+
+        with patch.object(absent_github, "api", side_effect=missing_reference), patch.object(
+            release.subprocess,
+            "check_output",
+            side_effect=[
+                "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
+                "a" * 40 + "\trefs/tags/checkpoint-test\n",
+            ],
+        ):
+            with self.assertRaises(urllib.error.HTTPError):
+                release.require_published_source_tag(
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40, absent_github
+                )
+        self.assertEqual([call[0] for call in absent_github.calls], ["/git/ref/tags/checkpoint-test"])
+
+        correct = FakeGitHub()
+        self.verify_tag_pair(correct)
+        self.assertEqual([call[0] for call in correct.calls], ["/git/ref/tags/checkpoint-test"])
+
+    def test_release_tag_preflight_resolves_annotated_github_tag(self):
+        github = FakeGitHub()
+        github.tag_reference["object"] = {"type": "tag", "sha": "b" * 40}
+
+        def api(path, method="GET", body=None):
+            github.calls.append((path, method, body))
+            if path == "/git/ref/tags/checkpoint-test":
+                return github.tag_reference
+            if path == "/git/tags/" + "b" * 40:
+                return {"object": {"type": "commit", "sha": "a" * 40}}
+            raise AssertionError(f"unexpected GitHub tag API request: {path}")
+
+        with patch.object(github, "api", side_effect=api), patch.object(release.subprocess, "check_output", side_effect=[
+            "https://dev.nudox.org/Nudox/Backend.git\n",
+            "a" * 40 + "\trefs/tags/checkpoint-test^{}\n",
+        ]):
+            release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, github)
+        self.assertEqual([call[0] for call in github.calls], [
+            "/git/ref/tags/checkpoint-test", "/git/tags/" + "b" * 40,
+        ])
+
     def test_diagnostic_linux_validation_checks_package_without_claiming_native_qa(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = linux_diagnostic_package(directory)

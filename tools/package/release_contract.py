@@ -630,6 +630,60 @@ class GitHub:
                 raise ValueError("published release is missing an expected asset; use a new version")
 
 
+def require_published_source_tag(source, tag, source_sha, github):
+    """Require the canonical Forgejo tag and GitHub distribution tag to pin source_sha."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", tag) or not re.fullmatch(r"[a-f0-9]{40}", source_sha):
+        raise ValueError("release tag or source revision is invalid")
+
+    source = Path(source)
+    origin = subprocess.check_output(
+        ["git", "-C", str(source), "remote", "get-url", "origin"], text=True
+    ).strip()
+    parsed = urllib.parse.urlparse(origin)
+    if not (
+        parsed.scheme in {"ssh", "https"}
+        and parsed.hostname == "dev.nudox.org"
+        and parsed.path.rstrip("/").removesuffix(".git").casefold() == "/nudox/backend"
+    ):
+        raise ValueError("release source origin is not the canonical Forgejo Backend repository")
+    try:
+        refs = subprocess.check_output(
+            ["git", "-C", str(source), "ls-remote", "--exit-code", "origin",
+             f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ValueError("canonical Forgejo release tag is absent or unreadable") from error
+    forgejo_objects = {}
+    for line in refs.splitlines():
+        fields = line.split("\t", 1)
+        if len(fields) == 2 and fields[1] in {f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"}:
+            forgejo_objects[fields[1]] = fields[0]
+    forgejo_sha = forgejo_objects.get(f"refs/tags/{tag}^{{}}", forgejo_objects.get(f"refs/tags/{tag}"))
+    if forgejo_sha != source_sha:
+        raise ValueError("canonical Forgejo release tag does not resolve to the candidate source revision")
+
+    reference = github.api("/git/ref/tags/" + urllib.parse.quote(tag, safe=""))
+    if reference.get("ref") != f"refs/tags/{tag}":
+        raise ValueError("GitHub distribution tag reference is missing or does not match")
+    target = reference.get("object", {})
+    for _ in range(8):
+        object_type = target.get("type")
+        object_sha = target.get("sha")
+        if not isinstance(object_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", object_sha):
+            raise ValueError("GitHub distribution tag has an invalid target")
+        if object_type == "commit":
+            if object_sha != source_sha:
+                raise ValueError("GitHub distribution tag does not resolve to the candidate source revision")
+            return
+        if object_type != "tag":
+            raise ValueError("GitHub distribution tag does not resolve to a commit")
+        annotated = github.api("/git/tags/" + object_sha)
+        target = annotated.get("object", {})
+    raise ValueError("GitHub distribution tag has too many annotated-tag layers")
+
+
 def check_fast(revision, platform="macos"):
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token:
@@ -794,6 +848,7 @@ def main():
                 args.candidate_tag = f'v{manifest["version"]}-rc.{args.rc}-{manifest["platform"]}'
             if not args.candidate_tag:
                 raise ValueError("candidate staging requires --candidate-tag")
+            require_published_source_tag(args.source, args.candidate_tag, manifest["source_sha"], github)
             github.publish(args.candidate, args.candidate_tag, False, args.platform, draft_only=args.action == "stage")
         else:
             if not all((args.promotion_host, args.promotion_key, args.known_hosts)):
@@ -801,6 +856,7 @@ def main():
             metadata = public_metadata(require_versioned=True)
             if metadata.get("schema") != 1 or set(metadata.get("platforms", {})) != {"macos", "linux-x64", "linux-arm64", "windows"}:
                 raise ValueError("platform-specific auth routing must be deployed before publishing")
+            require_published_source_tag(args.source, "v" + manifest["version"], manifest["source_sha"], github)
             github.publish(args.candidate, "v" + manifest["version"], True, args.platform)
             promote(manifest, args.promotion_host, args.promotion_key, args.known_hosts)
     result = {"action": args.action, "version": manifest["version"], "source_sha": manifest["source_sha"], "sha256": manifest["sha256"]}
