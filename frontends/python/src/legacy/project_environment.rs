@@ -467,21 +467,24 @@ impl MaterializedPythonEnvironment {
         &self,
         control: PythonProjectControl<'_>,
     ) -> Result<(), CheckerError> {
-        for (root, path, digest, length) in &self.files {
-            checkpoint(control)?;
-            let bytes = super::project::read_environment_input(
-                root,
-                Path::new(path),
-                control,
-                MAX_FILE_BYTES as u64,
-            )?
-            .ok_or_else(|| project_error("", "private dependency member disappeared"))?;
-            if bytes.len() as u64 != *length || blake3::hash(&bytes).as_bytes() != digest {
-                return Err(project_error(
-                    "",
-                    "private dependency member changed during native execution",
-                ));
+        for members in self.files.chunk_by(|left, right| left.0 == right.0) {
+            let mut session = super::project::EnvironmentReadSession::open(&members[0].0, control)?;
+            // Materialization retains canonical root/member ordering. Borrow
+            // those exact admitted paths; do not construct a second payload
+            // tree merely to compare its bytes after the native transaction.
+            for (_, path, digest, length) in members {
+                checkpoint(control)?;
+                let observed = session
+                    .digest(Path::new(path), control, MAX_FILE_BYTES as u64)?
+                    .ok_or_else(|| project_error("", "private dependency member disappeared"))?;
+                if observed != (*length, *digest) {
+                    return Err(project_error(
+                        "",
+                        "private dependency member changed during native execution",
+                    ));
+                }
             }
+            session.finish(control)?;
         }
         checkpoint(control)
     }
@@ -2428,6 +2431,38 @@ mod tests {
             ],
             interpreter: Some(interpreter),
         }
+    }
+
+    #[test]
+    fn private_environment_revalidation_checks_every_root_and_exact_member_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let mut input = transport_environment();
+        input.roots[1].members.push(Member {
+            path: "stdlib_member.py".into(),
+            payload: MemberPayload::Source(b"answer: int = 42\n".to_vec()),
+        });
+        let capture = PythonEnvironmentCapture::admit(input, control(&cancelled))?;
+        let private = capture.materialize(&root.path, control(&cancelled))?;
+        private.validate_current(control(&cancelled))?;
+        for (directory, relative, _, _) in &private.files {
+            let path = directory.join(relative);
+            let bytes = std::fs::read(&path)?;
+            // Equal extent cannot hide a changed digest, including in the
+            // second root after the first root's complete session succeeded.
+            let mut changed = bytes.clone();
+            changed[0] ^= 1;
+            std::fs::write(&path, changed)?;
+            assert!(private.validate_current(control(&cancelled)).is_err());
+            std::fs::write(&path, &bytes)?;
+            private.validate_current(control(&cancelled))?;
+            std::fs::remove_file(&path)?;
+            assert!(private.validate_current(control(&cancelled)).is_err());
+            std::fs::write(&path, &bytes)?;
+        }
+        private.validate_current(control(&cancelled))?;
+        Ok(())
     }
 
     #[test]
