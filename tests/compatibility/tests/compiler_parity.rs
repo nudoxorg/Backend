@@ -50,7 +50,7 @@ const FIXTURES: &[OracleFixture] = &[
         source: include_bytes!("../fixtures/parity/go.go"),
         frontend: backend_frontend_go::syntax_frontend,
         declarations: &[
-            ("Service", DeclarationKind::Type),
+            ("Service", DeclarationKind::Interface),
             ("Worker", DeclarationKind::Type),
             ("Execute", DeclarationKind::Function),
         ],
