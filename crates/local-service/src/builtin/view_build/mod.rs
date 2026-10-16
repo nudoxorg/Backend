@@ -21,6 +21,9 @@ mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
 mod kinds;
+mod native_sites;
+#[cfg(test)]
+mod native_sites_tests;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
@@ -475,6 +478,7 @@ pub fn execute() {}
             stale,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(
             &view,
@@ -592,6 +596,7 @@ pub fn execute() {}
             stale: false,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(&view, &project, profile, &mut sink)
             .map_err(|error| error.to_string())?;

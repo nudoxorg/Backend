@@ -29,8 +29,9 @@ use super::{
     typed_decode,
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
-        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_TYPED_NAMES,
-        SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES, get_u32,
+        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_NAME_SPANS,
+        SCHEMA_TYPED_NAMES, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        get_u32,
     },
 };
 
@@ -121,7 +122,11 @@ fn validate_signature_carrier_roles(
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
-        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
+        SCHEMA_CARRIER_ROLES
+            | SCHEMA_CARRIER_BINDINGS
+            | SCHEMA_TYPED_NAMES
+            | super::wire::SCHEMA_PUBLICATION_ROLES
+            | SCHEMA_NAME_SPANS
     ) || layout.entry(FullDirectoryKind::SignatureCarrierRoles).count == 0
     {
         return Ok(());

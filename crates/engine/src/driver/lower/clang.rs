@@ -987,7 +987,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 _ => fact,
             };
             let ordinal = push(self.facts, fact)?;
-            self.record_pushed(index, ordinal, declaration);
+            self.record_pushed(index, ordinal, declaration)?;
             if declaration.kind == DeclarationKind::Enumeration {
                 for candidate in 0..declarations.len() {
                     if self.representative.get(candidate).copied().flatten() != Some(candidate) {
@@ -1123,13 +1123,55 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Records one pushed declaration: its lane ordinal by declaration
     /// index and its USR identity for later nominal and owner resolution.
-    fn record_pushed(&mut self, index: usize, ordinal: u32, declaration: &DeclarationFact) {
+    fn record_pushed(
+        &mut self,
+        index: usize,
+        ordinal: u32,
+        declaration: &DeclarationFact,
+    ) -> Result<(), ClangCollectError> {
         if let Some(slot) = self.ordinals.get_mut(index) {
             *slot = Some(ordinal);
         }
         if let Some(identity) = declaration.identity {
             self.identities.push((identity, ordinal));
         }
+        if let Some(name) = declaration.name {
+            // The native projector always holds the actual entered bytes.
+            // Database and direct-authority callers need not allocate their
+            // FactSet through the request planner; absence is not an empty file.
+            let source_len = u32::try_from(self.source.len()).map_err(|_| {
+                lane_terminal(self.facts, 0, FactFault::SourceSpan {
+                    entity: ordinal,
+                    start: name.start,
+                    end: name.end,
+                    source_len: u32::MAX,
+                })
+            })?;
+            let valid = self.facts.primary_source_len.is_none_or(|entered| entered == source_len)
+                && name.start < name.end
+                && declaration.span.start <= name.start
+                && name.end <= declaration.span.end
+                && name.end <= source_len;
+            if !valid || self.facts.name_spans.get_mut(ordinal as usize).is_none() {
+                return Err(lane_terminal(
+                    self.facts,
+                    0,
+                    FactFault::SourceSpan {
+                        entity: ordinal,
+                        start: name.start,
+                        end: name.end,
+                        source_len,
+                    },
+                ));
+            }
+            if let Some(slot) = self.facts.name_spans.get_mut(ordinal as usize) {
+                *slot = Some(crate::driver::types::SourceSpanFact {
+                    start: name.start,
+                    end: name.end,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// True when one declaration's authoritative owner is a function-like
@@ -1307,7 +1349,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             ))
             .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1336,7 +1378,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .attach(SemanticFact::new(kind, name, constructor(kind)))
             .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1407,7 +1449,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             }
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1456,7 +1498,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             None => fact,
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1571,7 +1613,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 }
             };
             let ordinal = push(self.facts, fact)?;
-            self.record_pushed(*candidate, ordinal, parameter);
+            self.record_pushed(*candidate, ordinal, parameter)?;
             signature_children.push(ordinal);
         }
 
@@ -1684,7 +1726,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             _ => fact,
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         // The synthetic result carrier is contained by its function exactly
         // like a real parameter. Binding the already-minted function ordinal
         // keeps the carriers of two same-named, same-return-typed overloads
@@ -2452,6 +2494,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             },
             templates: TypeParameterListId::new(template_start),
             includes,
+            declared_name: None,
         })
     }
 
