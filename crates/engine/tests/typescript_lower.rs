@@ -8447,7 +8447,9 @@ fn authored_parameter_properties_and_anonymous_callables_own_rows_but_type_carri
             .ir
             .entity(item.id())
             .ok_or_else(|| io::Error::other("entity"))?;
-        if [b"ArticlesService".as_slice(), b"Renamed".as_slice()].contains(&item.name())
+        if [b"ArticlesService".as_slice(), b"Renamed".as_slice()]
+            .iter()
+            .any(|name| item.name() == *name)
             && item.kind() == ItemKind::Reexport
         {
             let span = item
@@ -8457,7 +8459,7 @@ fn authored_parameter_properties_and_anonymous_callables_own_rows_but_type_carri
                 .declarations()
                 .iter()
                 .find(|site| {
-                    site.name().as_bytes() == item.name()
+                    item.name() == site.name().as_bytes()
                         && site.kind() == backend_compile::DeclarationKind::Import
                 })
                 .ok_or_else(|| io::Error::other("import syntax"))?;
