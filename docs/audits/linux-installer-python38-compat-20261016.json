@@ -1,0 +1,75 @@
+{
+  "schema": "nudox.linux-installer-python38-publication-audit.v1",
+  "published_at": "2026-10-16T08:35:26-04:00",
+  "release": {
+    "id": 18,
+    "tag": "nudox-diagnostic-installer-20261016-py38",
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/tag/nudox-diagnostic-installer-20261016-py38",
+    "draft": false,
+    "prerelease": true
+  },
+  "source_fix_commit": "48eefb63445bcd3a8967089d47d37bb190dcb204",
+  "repair": "Replaced Python 3.9-only Path.is_relative_to containment call in the pinned Linux installer with equivalent Path.parents containment; no archive, manifest, or platform payload changed.",
+  "assets": [
+    {
+      "name": "install-shell-e4e3a7c70ee4d81f.sh",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261016-py38/install-shell-e4e3a7c70ee4d81f.sh",
+      "http_status": 200,
+      "bytes": 5955,
+      "sha256": "e4e3a7c70ee4d81f4509d19c36a7ab1c8bbbcbb5509e11535eceff1609e10ca3",
+      "anonymous_full_body_readback": true
+    },
+    {
+      "name": "install-forgejo-bootstrap-7558db53fd2820c3.py",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261016-py38/install-forgejo-bootstrap-7558db53fd2820c3.py",
+      "http_status": 200,
+      "bytes": 13428,
+      "sha256": "7558db53fd2820c3879a048a6f1c39f02f7464a4ef1c8cb88aa4d089aeda59b7",
+      "anonymous_full_body_readback": true
+    },
+    {
+      "name": "install-linux-x64-d2c568159507fd3c.py",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261016-py38/install-linux-x64-d2c568159507fd3c.py",
+      "http_status": 200,
+      "bytes": 49968,
+      "sha256": "d2c568159507fd3c6e57d11c25c91edbbe1940852b364261253327b8edc0b103",
+      "anonymous_full_body_readback": true
+    },
+    {
+      "name": "preview-channel.json",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261016-py38/preview-channel.json",
+      "http_status": 200,
+      "bytes": 3226,
+      "sha256": "79036ed97630c10b1f4faba2ae30a1faa5e7bc576a2414952a7cae151fec52ca",
+      "anonymous_full_body_readback": true
+    }
+  ],
+  "channel": {
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261016-py38/preview-channel.json",
+    "production_ready": false,
+    "linux": {
+      "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
+      "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "archive_sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+      "archive_bytes": 133556631,
+      "manifest_sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24",
+      "manifest_bytes": 698,
+      "historical_failure_notes_retained": true
+    },
+    "macos_arm64": {
+      "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
+      "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+      "installer_sha256": "82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25",
+      "archive_sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+      "archive_bytes": 70309994
+    }
+  },
+  "verification": {
+    "public_full_body_readbacks_match_expected_hashes": true,
+    "source_review": "CPython 3.12.14; Python 3.8 syntax parse; simulated missing Path.is_relative_to; descendant/escape/linked-parent checks",
+    "real_cpython_3_8_run": false,
+    "installer_activation": false,
+    "fresh_install_or_app_acceptance": false,
+    "current_native_trio_claimed": false
+  }
+}
