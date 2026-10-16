@@ -191,7 +191,35 @@ fn discovery_refuses_missing_duplicate_wrong_profile_reason_and_source_basis() {
     );
     let mut over_limit = original.clone();
     if let PackageCompilerOutcomes::Summary { source_capture, .. } = &mut over_limit {
-        source_capture.profiles = vec![source_capture.profiles[0].clone(); 17].into_boxed_slice();
+        let profiles: Vec<SemanticLanguageProfile> = (0..8)
+            .flat_map(|family| (0..8).map(move |dialect| [family, dialect]))
+            .filter_map(|bytes| serde_json::from_value(serde_json::json!(bytes)).ok())
+            .filter(|profile: &SemanticLanguageProfile| profile.profile().is_ok())
+            .take(17)
+            .collect();
+        assert_eq!(
+            profiles.len(),
+            17,
+            "use distinct already-admitted canonical dialects"
+        );
+        let first = source_capture.profiles[0].clone();
+        source_capture.profiles = profiles
+            .into_iter()
+            .map(|profile| IndexOperationSourceProfile {
+                profile,
+                ..first.clone()
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let mut at_limit = source_capture.clone();
+        at_limit.profiles = at_limit.profiles[..16].to_vec().into_boxed_slice();
+        at_limit
+            .admit()
+            .expect("same exact tuples and strict order fit at sixteen");
+        assert!(
+            source_capture.admit().is_err(),
+            "only the count exceeds the bound"
+        );
     }
     assert!(
         over_limit.admit().is_err(),
@@ -294,6 +322,54 @@ fn full_read_rejects_undiscovered_selector_and_registry_selector_before_dispatch
             Some(&PackageCompilerOutcomeRead::Diagnostic(selector)),
         )
         .expect("typed stale, not a substitute diagnostic");
+    assert!(stale.admit_request(&package, None).is_err());
+    assert!(
+        stale
+            .admit_request(&package, Some(&PackageCompilerOutcomeRead::Current))
+            .is_err(),
+        "current discovery carries no basis that can be stale"
+    );
+    for reason in [
+        PackageCompilerOutcomesUnavailable::ProjectNotSelected,
+        PackageCompilerOutcomesUnavailable::CaptureNotRecorded,
+        PackageCompilerOutcomesUnavailable::CaptureNotCurrent,
+        PackageCompilerOutcomesUnavailable::ProfileNotRefused,
+        PackageCompilerOutcomesUnavailable::DiagnosticNotRecorded,
+        PackageCompilerOutcomesUnavailable::CaptureIncomplete,
+    ] {
+        let unavailable = PackageCompilerOutcomes::Unavailable {
+            package: package.clone(),
+            reason,
+        };
+        let current_allowed = !matches!(
+            reason,
+            PackageCompilerOutcomesUnavailable::ProfileNotRefused
+                | PackageCompilerOutcomesUnavailable::DiagnosticNotRecorded
+        );
+        let diagnostic_allowed = matches!(
+            reason,
+            PackageCompilerOutcomesUnavailable::ProfileNotRefused
+                | PackageCompilerOutcomesUnavailable::DiagnosticNotRecorded
+                | PackageCompilerOutcomesUnavailable::CaptureIncomplete
+        );
+        assert_eq!(
+            unavailable
+                .admit_request(&package, Some(&PackageCompilerOutcomeRead::Current))
+                .is_ok(),
+            current_allowed,
+            "{reason:?}"
+        );
+        assert_eq!(
+            unavailable
+                .admit_request(
+                    &package,
+                    Some(&PackageCompilerOutcomeRead::Diagnostic(selector))
+                )
+                .is_ok(),
+            diagnostic_allowed,
+            "{reason:?}"
+        );
+    }
 }
 
 #[test]
@@ -321,6 +397,27 @@ fn package_profile_correlates_explicit_capture_mode_and_preserves_registry_absen
     );
     let capture = R::PackageCompilerOutcomes(summary.clone());
     admit_surface_reply(&current, &capture).expect("explicit read family");
+    let C::PackageProfile { package, .. } = &current else {
+        panic!("request")
+    };
+    let stale = R::PackageCompilerOutcomes(PackageCompilerOutcomes::Stale {
+        package: package.clone(),
+    });
+    assert!(
+        admit_surface_reply(&current, &stale).is_err(),
+        "basis-free discovery cannot claim a stale selector"
+    );
+    let diagnostic = C::PackageProfile {
+        package: package.clone(),
+        compiler_outcome: Some(PackageCompilerOutcomeRead::Diagnostic(
+            PackageCompilerOutcomeSelector {
+                basis: [99; 32],
+                profile: SemanticLanguageProfile::from_name("python").expect("closed"),
+            },
+        )),
+    };
+    admit_surface_reply(&diagnostic, &stale)
+        .expect("the exact old diagnostic selection can be stale");
     assert!(
         admit_surface_reply(&default, &capture).is_err(),
         "explicit reads cannot erase default packaging fields"

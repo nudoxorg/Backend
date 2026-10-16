@@ -218,7 +218,17 @@ impl PackageCompilerOutcomes {
                 Self::Diagnostic {
                     selector: observed, ..
                 } => selector != Some(observed),
-                _ => false,
+                Self::Stale { .. } => selector.is_none(),
+                Self::Unavailable { reason, .. } => match reason {
+                    PackageCompilerOutcomesUnavailable::ProjectNotSelected
+                    | PackageCompilerOutcomesUnavailable::CaptureNotRecorded
+                    | PackageCompilerOutcomesUnavailable::CaptureNotCurrent => selector.is_some(),
+                    PackageCompilerOutcomesUnavailable::ProfileNotRefused
+                    | PackageCompilerOutcomesUnavailable::DiagnosticNotRecorded => {
+                        selector.is_none()
+                    }
+                    PackageCompilerOutcomesUnavailable::CaptureIncomplete => false,
+                },
             }
         {
             return Err(ProductAdmissionError::IndexOperationShape);
