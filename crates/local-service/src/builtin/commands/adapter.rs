@@ -5758,7 +5758,7 @@ impl CommandAdapter {
                 package,
                 compiler_outcome: Some(read)
             } => {
-                crate::builtin::commands::package_profile::read(
+                super::package_profile::read(
                     &daemon.engine().daemon().owner().snapshot(),
                     &self.index_operations,
                     &package,
@@ -6206,7 +6206,7 @@ impl CommandAdapter {
                             compiler_outcomes, ..
                         },
                     ) = (&surface, &mut reply) {
-                        *compiler_outcomes = crate::builtin::commands::package_profile::read(
+                        *compiler_outcomes = super::package_profile::read(
                             &daemon.engine().daemon().owner().snapshot(),
                             &self.index_operations,
                             package,
@@ -6742,6 +6742,7 @@ mod tests {
         BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET, SemanticDeployment, builtin_dispatcher,
         forge_gateway::ForgeGateway, genesis, profile_descriptor, publish_builtin_view,
     };
+    use crate::builtin::commands::package_profile;
     use crate::process::{ForgeAuthentication, ForgeConfig};
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -8694,12 +8695,12 @@ mod tests {
             assert_eq!(partial.source_capture.profiles.len(), 2);
             assert_eq!(partial.refused_profiles.len(), 1);
             let package_ref=backend_library::PackageReference::parse(label.clone()).expect("local");
-            let discovered=crate::builtin::commands::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,None).expect("current unkeyed partial captures").expect("local");
+            let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,None).expect("current unkeyed partial captures").expect("local");
             let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };
             assert_eq!(source_capture.profiles,partial.source_capture.profiles);
             assert_eq!(refusals.len(),1,"published Python and refused TS remain separate");
             let backend_library::PackageCompilerDiagnostic::Retained { read }=&refusals[0].diagnostic else { panic!("retained TS failure") };
-            let full=crate::builtin::commands::package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,Some(read)).expect("exact full failure").expect("local");
+            let full=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,Some(read)).expect("exact full failure").expect("local");
             let backend_library::PackageCompilerOutcomes::Diagnostic { refusal,.. }=full else { panic!("diagnostic") };
             assert_eq!(refusal,partial.refused_profiles[0],"reuse the exact typed refused fact");
             assert_eq!(
@@ -10624,7 +10625,7 @@ mod tests {
             });
             assert!(
                 matches!(
-                    crate::builtin::commands::package_profile::read(
+                    package_profile::read(
                         &daemon.engine().daemon().owner().snapshot(),
                         &adapter.index_operations,
                         &package,
@@ -10655,7 +10656,7 @@ mod tests {
             panic!("retained status")
         };
         let snapshot = daemon.engine().daemon().owner().snapshot();
-        let outcomes = crate::builtin::commands::package_profile::read(
+        let outcomes = package_profile::read(
             &snapshot,
             &adapter.index_operations,
             &status.package,
@@ -10682,7 +10683,7 @@ mod tests {
         let mut retained = 0;
         for refused in refusals {
             if let Diagnostic::Retained { read } = &refused.diagnostic {
-                let full = crate::builtin::commands::package_profile::read(
+                let full = package_profile::read(
                     &snapshot,
                     &adapter.index_operations,
                     &status.package,
@@ -10701,7 +10702,7 @@ mod tests {
                 wrong.basis[0] ^= 1;
                 let wrong = backend_library::PackageCompilerOutcomeRead::Diagnostic(wrong);
                 assert!(matches!(
-                    crate::builtin::commands::package_profile::read(
+                    package_profile::read(
                         &snapshot,
                         &adapter.index_operations,
                         &status.package,
@@ -10716,7 +10717,7 @@ mod tests {
         assert!(retained > 0, "real compiler refusal remains retrievable");
         let other = backend_library::PackageReference::parse("/wrong-package").expect("local");
         assert!(matches!(
-            crate::builtin::commands::package_profile::read(&snapshot, &adapter.index_operations, &other, None)
+            package_profile::read(&snapshot, &adapter.index_operations, &other, None)
                 .expect("wrong package"),
             Some(Outcomes::Unavailable {
                 reason: backend_library::PackageCompilerOutcomesUnavailable::ProjectNotSelected,
@@ -11080,7 +11081,7 @@ mod tests {
             assert_current_compiler_outcomes(adapter, daemon, next);
             assert!(
                 matches!(
-                    crate::builtin::commands::package_profile::read(
+                    package_profile::read(
                         &daemon.engine().daemon().owner().snapshot(),
                         &adapter.index_operations,
                         &package,

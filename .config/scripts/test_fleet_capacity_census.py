@@ -199,6 +199,157 @@ class FleetAdmissionTests(unittest.TestCase):
             self.samples = copy.deepcopy(original);resources = self.ci_volume();mutate(resources)
             self.assertIn("ilo:ci-disk-resources-invalid", self.report()["reasons"])
 
+    def test_default_both_keeps_the_original_idle_ci_reserve_refusal(self):
+        self.ci_volume(ci=60)
+        report = self.report()
+        self.assertEqual(report, self.report(destination_output_volume="both"))
+        self.assertFalse(report["advisory_allowed"])
+        self.assertEqual(report["reasons"], ["destination-ci-disk-below-reserve"])
+        self.assertEqual(report["destination_storage_guard"]["output_volume"], "both")
+        self.assertTrue(report["destination_storage_guard"]["ci_reserve_enforced"])
+        # Existing legacy samples with no CI observations keep their default
+        # policy. An explicit scoped route may not claim such missing proof.
+        for field in (*fleet.CI_DISK_FIELDS, "root_disk_reserved_bytes"):
+            self.resources("ilo").pop(field, None)
+        self.assertTrue(self.report()["advisory_allowed"])
+        self.assertFalse(self.report(destination_output_volume="root")["advisory_allowed"])
+
+    def test_root_only_distinct_devices_match_actual_native34_storage_shape(self):
+        resources = self.ci_volume()
+        resources.update(root_disk_device=66309, ci_disk_device=66304,
+                         root_disk_available_bytes=26847457280,
+                         ci_disk_available_bytes=60109139968,
+                         available_memory_bytes=47306072064)
+        before = copy.deepcopy(self.samples)
+        report = self.report(destination_output_volume="root")
+        self.assertTrue(report["advisory_allowed"], report["reasons"])
+        self.assertEqual(report["reasons"], [])
+        self.assertEqual(report["destination_storage_guard"], {
+            "output_volume": "root", "root_floor_enforced": True,
+            "root_reserve_enforced": True, "ci_reserve_enforced": False,
+            "ci_reserve_skipped_distinct_root_output": True,
+            "fresh_device_evidence_valid": True, "same_device": False,
+        })
+        self.assertEqual(self.samples, before, "policy never edits native observations")
+        self.assertEqual(report["raw_samples"], before)
+        self.assertFalse(report["slot_reserved"])
+        self.assertTrue(report["managed_host_permit_required"])
+        resources["root_disk_available_bytes"] = 16 * fleet.GIB - 1
+        self.assertIn("destination-root-disk-below-16-gib-or-missing",
+                      self.report(destination_output_volume="root")["reasons"])
+
+    def test_root_only_same_device_or_absent_ci_path_preserves_all_reserves(self):
+        for path in ("/srv/ci", "/"):
+            with self.subTest(path=path):
+                resources = self.ci_volume(root=74, ci=74, same_device=True, path=path)
+                report = self.report(destination_output_volume="root")
+                self.assertFalse(report["advisory_allowed"])
+                self.assertIn("destination-root-disk-below-ci-reserve", report["reasons"])
+                self.assertIn("destination-ci-disk-below-reserve", report["reasons"])
+                self.assertTrue(report["destination_storage_guard"]["ci_reserve_enforced"])
+                self.assertFalse(report["destination_storage_guard"]["ci_reserve_skipped_distinct_root_output"])
+                resources.update(root_disk_available_bytes=80 * fleet.GIB, ci_disk_available_bytes=80 * fleet.GIB)
+                self.assertTrue(self.report(destination_output_volume="root")["advisory_allowed"])
+        self.ci_volume(root=74, ci=100, same_device=True)
+        self.assertIn("destination-root-disk-below-ci-reserve",
+                      self.report(destination_output_volume="root")["reasons"])
+
+    def test_ci_route_keeps_ci_reserve_and_root_floor(self):
+        resources = self.ci_volume(ci=60)
+        report = self.report(destination_output_volume="ci")
+        self.assertFalse(report["advisory_allowed"])
+        self.assertEqual(report["reasons"], ["destination-ci-disk-below-reserve"])
+        self.assertTrue(report["destination_storage_guard"]["ci_reserve_enforced"])
+        self.assertFalse(report["destination_storage_guard"]["ci_reserve_skipped_distinct_root_output"])
+        resources.update(ci_disk_available_bytes=80 * fleet.GIB,
+                         root_disk_available_bytes=16 * fleet.GIB - 1)
+        self.assertIn("destination-root-disk-below-16-gib-or-missing",
+                      self.report(destination_output_volume="ci")["reasons"])
+
+    def test_explicit_routes_require_complete_unmodified_device_evidence(self):
+        original = copy.deepcopy(self.samples)
+        mutations = [lambda r, field=field: r.pop(field) for field in
+                     (*fleet.CI_DISK_FIELDS, "root_disk_reserved_bytes", "root_disk_available_bytes")]
+        mutations += [lambda r, field=field, value=value: r.update({field: value})
+                      for field in ("root_disk_device", "ci_disk_device")
+                      for value in (True, -1, None, "66309", 66309.0)]
+        mutations += [lambda r: r.update(ci_disk_path="/tmp/ci"),
+                      lambda r: r.update(root_disk_reserved_bytes=fleet.GIB)]
+        for route in ("root", "ci"):
+            for index, mutate in enumerate(mutations):
+                with self.subTest(route=route, mutation=index):
+                    self.samples = copy.deepcopy(original)
+                    resources = self.ci_volume(ci=60)
+                    mutate(resources)
+                    report = self.report(destination_output_volume=route)
+                    self.assertFalse(report["advisory_allowed"])
+                    self.assertIn("destination-output-volume-device-evidence-invalid-or-missing", report["reasons"])
+                    self.assertFalse(report["destination_storage_guard"]["fresh_device_evidence_valid"])
+                    self.assertFalse(report["destination_storage_guard"]["ci_reserve_skipped_distinct_root_output"])
+        self.samples = copy.deepcopy(original)
+        self.assertFalse(self.report(destination_output_volume="ci")["advisory_allowed"])
+
+    def test_root_route_cannot_bypass_freshness_memory_jobs_or_host_capacity(self):
+        original = copy.deepcopy(self.samples)
+        for kind in ("stale", "incomplete", "memory", "capacity"):
+            with self.subTest(kind=kind):
+                self.samples = copy.deepcopy(original)
+                self.ci_volume(ci=60)
+                if kind == "stale":
+                    self.resources("ilo")["sampled_at_utc"] = (self.now - dt.timedelta(seconds=31)).isoformat()
+                elif kind == "incomplete":
+                    self.samples["ilo"]["census"]["resource_snapshot_complete"] = False
+                elif kind == "memory":
+                    self.resources("ilo")["available_memory_bytes"] = 8 * fleet.GIB - 1
+                else:
+                    self.groups("ilo", 8)
+                report = self.report(destination_output_volume="root")
+                self.assertFalse(report["advisory_allowed"])
+                if kind in ("stale", "incomplete"):
+                    self.assertFalse(report["destination_storage_guard"]["ci_reserve_skipped_distinct_root_output"])
+        self.samples = copy.deepcopy(original)
+        self.ci_volume(ci=60)
+        report = fleet.evaluate_fleet(self.samples, destination="ilo", requested_jobs=5,
+                                      now=self.now, destination_output_volume="root")
+        self.assertFalse(report["advisory_allowed"])
+        self.assertIn("requested-cargo-jobs-outside-1-through-4", report["reasons"])
+
+    def test_invalid_output_routes_fail_closed_and_remain_json_safe(self):
+        self.ci_volume(ci=60)
+        for route in (None, True, 1, "Root", "tmp", "", [], {}):
+            with self.subTest(route=route):
+                report = self.report(destination_output_volume=route)
+                self.assertFalse(report["advisory_allowed"])
+                self.assertIn("destination-output-volume-invalid", report["reasons"])
+                self.assertIn("destination-ci-disk-below-reserve", report["reasons"])
+                self.assertIsNone(report["destination_storage_guard"]["output_volume"])
+                self.assertFalse(report["destination_storage_guard"]["ci_reserve_skipped_distinct_root_output"])
+                json.dumps(report)
+
+    def test_cli_passes_the_explicit_route_and_rejects_unknown_route_before_sampling(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        self.ci_volume(ci=60)
+        evaluate = fleet.evaluate_fleet
+        def evaluate_at_sample_time(samples, **options):
+            return evaluate(samples, now=self.now, **options)
+        for route, expected_exit in (("root", 0), ("ci", 75), ("both", 75)):
+            output = io.StringIO()
+            with self.subTest(route=route), \
+                 patch.object(fleet, "collect_once", return_value=self.samples) as collect, \
+                 patch.object(fleet, "evaluate_fleet", side_effect=evaluate_at_sample_time) as admission, \
+                 contextlib.redirect_stdout(output):
+                self.assertEqual(fleet.main(["--destination", "ilo", "--destination-output-volume", route]), expected_exit)
+                collect.assert_called_once()
+                self.assertEqual(admission.call_args.kwargs["destination_output_volume"], route)
+            self.assertEqual(json.loads(output.getvalue())["destination_storage_guard"]["output_volume"], route)
+        with patch.object(fleet, "collect_once") as collect, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                fleet.main(["--destination", "ilo", "--destination-output-volume", "tmp"])
+            self.assertEqual(error.exception.code, 2)
+            collect.assert_not_called()
+
     def test_fleet_capacity_includes_the_proposed_workload(self):
         self.groups("local", 5)
         self.groups("ilo", 7)

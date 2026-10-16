@@ -1175,7 +1175,7 @@ impl Checker {
             source: cause,
         })?;
         let run = self.run_in(&work, profile, source);
-        match std::fs::remove_dir_all(&work) {
+        match fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
             Err(cause) => match run {
@@ -1253,7 +1253,7 @@ impl Checker {
                 staged.join(source_relative)
             } else {
                 let file = staged.join(package_entry_file(profile, declaration_file));
-                std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                fs::write(&file, source).map_err(|cause| CheckerError::Work {
                     phase: "prepare",
                     source: cause,
                 })?;
@@ -1274,7 +1274,7 @@ impl Checker {
             }?;
             Ok(declaration_report(report, declaration_file))
         })();
-        match std::fs::remove_dir_all(&work) {
+        match fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
             Err(cause) => match run {
@@ -1330,7 +1330,7 @@ impl Checker {
                 staged.join(source_relative)
             } else {
                 let file = staged.join(package_entry_file(profile, declaration_file));
-                std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                fs::write(&file, source).map_err(|cause| CheckerError::Work {
                     phase: "prepare",
                     source: cause,
                 })?;
@@ -1339,7 +1339,7 @@ impl Checker {
             let report = self.run_explicit_file(invocation, &work, &file)?;
             Ok(declaration_report(report, declaration_file))
         })();
-        match std::fs::remove_dir_all(&work) {
+        match fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
             Err(cause) => match run {
@@ -1374,7 +1374,7 @@ impl Checker {
             source: cause,
         })?;
         let run = self.run_program_in(&work, program, profile, source);
-        match std::fs::remove_dir_all(&work) {
+        match fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
             Err(cause) => match run {
@@ -1394,7 +1394,7 @@ impl Checker {
         source: &[u8],
     ) -> Result<Report, CheckerError> {
         let file = work.join(source_file(profile));
-        std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+        fs::write(&file, source).map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1421,7 +1421,7 @@ impl Checker {
         source: &[u8],
     ) -> Result<Report, CheckerError> {
         let file = work.join(source_file(profile));
-        std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+        fs::write(&file, source).map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1440,13 +1440,13 @@ impl Checker {
         })?;
         let run = (|| {
             let file = work.join(source_file(profile));
-            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+            fs::write(&file, source).map_err(|cause| CheckerError::Work {
                 phase: "prepare",
                 source: cause,
             })?;
             self.run_explicit_file(invocation, &work, &file)
         })();
-        match std::fs::remove_dir_all(&work) {
+        match fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
             Err(cause) => match run {
@@ -1737,7 +1737,7 @@ fn stage_package(
     declaration_file: &mut bool,
     selected_file_seen: &mut bool,
 ) -> Result<(), CheckerError> {
-    let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+    let metadata = fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
         phase: "stage metadata",
         source: cause,
     })?;
@@ -1747,11 +1747,11 @@ fn stage_package(
             source: std::io::Error::other("package root is not a directory"),
         });
     }
-    std::fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+    fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
         phase: "stage directory",
         source: cause,
     })?;
-    for entry in std::fs::read_dir(source).map_err(|cause| CheckerError::Work {
+    for entry in fs::read_dir(source).map_err(|cause| CheckerError::Work {
         phase: "stage directory",
         source: cause,
     })? {
@@ -1768,7 +1768,7 @@ fn stage_package(
         let file_name = entry.file_name();
         let target = destination.join(&file_name);
         let relative = current_relative.join(&file_name);
-        let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+        let metadata = fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
             phase: "stage metadata",
             source: cause,
         })?;
@@ -1805,7 +1805,7 @@ fn stage_package(
             }
             let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
             let mut bytes = Vec::new();
-            std::fs::File::open(&child)
+            fs::File::open(&child)
                 .map_err(|cause| CheckerError::Work {
                     phase: "stage read",
                     source: cause,
@@ -1841,7 +1841,7 @@ fn stage_package(
                 *selected_file_seen = true;
             }
             budget.check(bytes.len())?;
-            std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+            fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
                 phase: "stage write",
                 source: cause,
             })?;
