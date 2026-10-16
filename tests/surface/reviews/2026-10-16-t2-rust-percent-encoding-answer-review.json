@@ -50,7 +50,7 @@
     "preserved": "Package identity, complete outline extent, query set, and root identity remain stable.",
     "unresolved": "AsciiSet CLI and both MCP search queries are paginated; MCP outline is also paginated. Preserve more/cursor metadata and do not treat page counts as totals. Pathless type/external records and exact ranking are captured runtime output rather than source-derived. The pre-existing `crate` module node is unchanged from the golden."
   },
-  "decision": "Source review supports the authored records and cfg(test)/method-category changes. The complete 169-declaration CLI outline is source-backed. Candidate answers are suitable for snapshot composition only with pagination state preserved for AsciiSet/MCP and the old golden performance object/bands retained exactly. No current-head T2 or performance pass is claimed.",
+  "decision": "Accept answer-only correction after independent source/category and captured-record review. Preserve all original performance measurements and bands; exact-head runtime acceptance remains pending.",
   "capture_review": {
     "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
     "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
@@ -125,7 +125,7 @@
         "src/ascii_set.rs:172-173"
       ],
       "candidate_delta_from_golden": {
-        "declarations": "125→169 (net +44)",
+        "declarations": "125\u2192169 (net +44)",
         "new_test_module_roots": 2,
         "source_backed_test_only_additions": 42,
         "function_to_method_kind_reclassifications": 16,
@@ -145,5 +145,11 @@
       "candidate_metrics_present": true,
       "action": "Preserve the existing golden performance object and bands exactly; candidate measurements are a separate sample."
     }
+  },
+  "snapshot_update": {
+    "answer_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+    "candidate_sha256": "6922df2aec6f37cb39039f9271cc0b8362eb3ee88fe1e09582180ff669a516a9",
+    "performance_object_sha256_preserved": "19a0186682eee7971ceca6af996fd4154667ad25ce41925ee55dc8ae7f315215",
+    "ordering": "Preserve captured deterministic current-product order without inferring relevance optimality or completeness from capped/paginated records."
   }
 }

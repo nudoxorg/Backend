@@ -49,9 +49,9 @@
     "search": "DoChan 3 -> 2; Weighted 25 -> 20.",
     "source_support": "Record-level review checked every one of the 200 capped outline nodes against the pinned Go source: 16 file/module roots resolve to actual files, and all remaining nodes match their source categories and names. All 13 path-and-line search records match exact source lines. The DoChan function-to-method shift is supported by its receiver declaration; Weighted interface/type/field records match the benchmark source.",
     "preserved": "Package identity, query set, answer category and declaration cap remain stable.",
-    "unresolved": "DoChan changed 3→2 rows and Weighted 25→20. Pathless/external identities and exact ranking are not source-verifiable. Preserve these only as captured runtime output; do not infer completeness from counts. Both outlines are truncated or paginated, so keep their page/cap metadata."
+    "unresolved": "DoChan changed 3\u21922 rows and Weighted 25\u219220. Pathless/external identities and exact ranking are not source-verifiable. Preserve these only as captured runtime output; do not infer completeness from counts. Both outlines are truncated or paginated, so keep their page/cap metadata."
   },
-  "decision": "Source review supports the authored records and declaration-kind changes in the candidate. Candidate answers are usable for snapshot composition only with the captured cap/page state preserved, the pathless-record limits made explicit, and the old golden performance object/bands retained exactly. No current-head T2 or performance pass is claimed.",
+  "decision": "Accept answer-only correction after independent source/category and captured-record review. Preserve all original performance measurements and bands; exact-head runtime acceptance remains pending.",
   "capture_review": {
     "candidate_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
     "candidate_artifact_manifest_sha256": "7b72c49ea10cabc9f8254710cbe00a27002953ddf7fd9690607cdf6cd7836608",
@@ -131,5 +131,11 @@
       "candidate_metrics_present": true,
       "action": "Preserve the existing golden performance object and bands exactly; candidate measurements are a separate sample."
     }
+  },
+  "snapshot_update": {
+    "answer_source_sha": "a1c0c97d349463052795c9ec2a9b187d4b3c4546",
+    "candidate_sha256": "c52efc4de08f16efe2720620142a579e0ee0d575d886261f3db4a7320be792a7",
+    "performance_object_sha256_preserved": "72b0fe4d09d5cd29a9d8a1d58ab9faac8160d69b00856500e993f5a33515f31b",
+    "ordering": "Preserve captured deterministic current-product order without inferring relevance optimality or completeness from capped/paginated records."
   }
 }
