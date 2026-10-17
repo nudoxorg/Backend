@@ -888,6 +888,7 @@ pub(super) fn visit_staged_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestValue as _;
 
     #[derive(Debug)]
     enum TestFailure {
@@ -921,9 +922,15 @@ mod tests {
         }
     }
 
+    impl From<String> for TestFailure {
+        fn from(error: String) -> Self {
+            Self::Io(std::io::Error::other(error))
+        }
+    }
+
     struct Directory(std::path::PathBuf);
     impl Directory {
-        fn new() -> Self {
+        fn new() -> Result<Self, String> {
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let directory = std::env::temp_dir().join(format!(
                 "nudox-staged-test-{}-{}",
@@ -936,8 +943,8 @@ mod tests {
                 use std::os::unix::fs::DirBuilderExt as _;
                 builder.mode(0o700);
             }
-            builder.create(&directory).unwrap();
-            Self(directory)
+            builder.create(&directory).test_value()?;
+            Ok(Self(directory))
         }
         fn path(&self) -> &std::path::Path {
             &self.0
@@ -958,27 +965,27 @@ mod tests {
             source_capture: [4; 32],
         }
     }
-    fn pool() -> StagePool {
-        StagePool::new(
+    fn pool() -> Result<StagePool, String> {
+        Ok(StagePool::new(
             1,
             1024 * 1024,
             32,
-            StagePool::metadata_required(32).unwrap(),
-        )
+            StagePool::metadata_required(32).test_value()?,
+        ))
     }
     fn budget() -> ArtifactBudget {
         ArtifactBudget::new(32, 33, 1024 * 1024, PAGE_BYTES, 1024)
     }
 
     #[test]
-    fn stage_admission_charges_the_entire_bounded_queue_before_reading() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+    fn stage_admission_charges_the_entire_bounded_queue_before_reading() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
         let pages = 64;
-        let former = ClosureCompositionBudget::metadata_bytes_for(pages + 1).unwrap()
+        let former = ClosureCompositionBudget::metadata_bytes_for(pages + 1).test_value()?
             + PAGE_BYTES * 8
             + pages * size_of::<ObjectId>() * 4;
-        let required = StagePool::metadata_required(pages).unwrap();
+        let required = StagePool::metadata_required(pages).test_value()?;
         assert_eq!(required - former, PAGE_BATCH * (PAGE_BYTES + PAGE_HEADER));
         let pool = StagePool::new(1, 8 * 1024 * 1024, pages, former);
         assert!(matches!(
@@ -987,16 +994,17 @@ mod tests {
         ));
         let admitted = pool.with_limits(1, 8 * 1024 * 1024, pages, required);
         assert!(admitted.begin(&store, basis(), 4 * 1024 * 1024).is_ok());
-        assert!(store.head().unwrap().is_none());
+        assert!(store.head().test_value()?.is_none());
+        Ok(())
     }
 
-    fn batch_pool() -> StagePool {
-        StagePool::new(
+    fn batch_pool() -> Result<StagePool, String> {
+        Ok(StagePool::new(
             2,
             64 * 1024 * 1024,
             128,
-            StagePool::metadata_required(128).unwrap(),
-        )
+            StagePool::metadata_required(128).test_value()?,
+        ))
     }
 
     #[test]
@@ -1009,14 +1017,14 @@ mod tests {
         if let Some(path) = std::env::var_os(CHILD_DIRECTORY) {
             let store = FileStore::open(path, 1024 * 1024)?;
             let objects = storage_pages(1);
-            match batch_pool().write_objects(&store, &objects) {
+            match batch_pool()?.write_objects(&store, &objects) {
                 Err(StoreError::Corrupt) => std::process::exit(77),
                 Err(_) => std::process::exit(78),
                 Ok(()) => std::process::exit(79),
             }
         }
 
-        let directory = Directory::new();
+        let directory = Directory::new()?;
         let store = FileStore::open(directory.path(), 1024 * 1024)?;
         let quota = store.root().join("staged-ingest-quota");
         std::fs::create_dir_all(quota.join("members"))?;
@@ -1087,37 +1095,41 @@ mod tests {
             STAGE_EVENTS.with_borrow_mut(|events| *events = None);
         }
     }
-    fn markers(store: &FileStore) -> usize {
+    fn markers(store: &FileStore) -> Result<usize, String> {
         let path = store.root().join("staged-ingest-quota/members");
         if !path.exists() {
-            return 0;
+            return Ok(0);
         }
-        std::fs::read_dir(path).unwrap().count()
+        Ok(std::fs::read_dir(path).test_value()?.count())
     }
-    fn present(store: &FileStore, objects: &[TypedObject]) -> usize {
-        objects
-            .iter()
-            .filter(|object| store.contains_object(object.id()).unwrap())
-            .count()
+    fn present(store: &FileStore, objects: &[TypedObject]) -> Result<usize, String> {
+        let mut count = 0;
+        for object in objects {
+            if store.contains_object(object.id()).test_value()? {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     #[test]
-    fn batch_quota_scans_and_barriers_are_amortized_without_skipping_markers() {
-        let individual_directory = Directory::new();
-        let individual = FileStore::open(individual_directory.path(), 1024 * 1024).unwrap();
-        let batched_directory = Directory::new();
-        let batched = FileStore::open(batched_directory.path(), 1024 * 1024).unwrap();
-        let pool = batch_pool();
+    fn batch_quota_scans_and_barriers_are_amortized_without_skipping_markers() -> Result<(), String>
+    {
+        let individual_directory = Directory::new()?;
+        let individual = FileStore::open(individual_directory.path(), 1024 * 1024).test_value()?;
+        let batched_directory = Directory::new()?;
+        let batched = FileStore::open(batched_directory.path(), 1024 * 1024).test_value()?;
+        let pool = batch_pool()?;
         let objects = storage_pages(PAGE_BATCH);
         reset_stage(None);
         let _reset = ResetStage;
         for object in &objects {
             pool.write_objects(&individual, std::slice::from_ref(object))
-                .unwrap();
+                .test_value()?;
         }
         let prior = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
         reset_stage(None);
-        pool.write_objects(&batched, &objects).unwrap();
+        pool.write_objects(&batched, &objects).test_value()?;
         let now = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
         let count =
             |events: &[StagePhase], phase| events.iter().filter(|value| **value == phase).count();
@@ -1140,70 +1152,73 @@ mod tests {
                 StagePhase::ObjectsDurable
             ]
         );
-        assert_eq!(markers(&individual), PAGE_BATCH);
-        assert_eq!(markers(&batched), PAGE_BATCH);
-        assert_eq!(present(&batched, &objects), PAGE_BATCH);
-        assert!(batched.head().unwrap().is_none());
+        assert_eq!(markers(&individual)?, PAGE_BATCH);
+        assert_eq!(markers(&batched)?, PAGE_BATCH);
+        assert_eq!(present(&batched, &objects)?, PAGE_BATCH);
+        assert!(batched.head().test_value()?.is_none());
         eprintln!(
             "staged_batch_actual_work objects={PAGE_BATCH} individual_quota_scans={PAGE_BATCH} batch_quota_scans=1 individual_marker_directory_flushes={} batch_marker_directory_flushes=3",
             PAGE_BATCH * 3
         );
+        Ok(())
     }
 
     #[test]
-    fn failed_marker_barriers_never_name_a_cas_member() {
+    fn failed_marker_barriers_never_name_a_cas_member() -> Result<(), String> {
         for fault in [
             StagePhase::QuotaScanned,
             StagePhase::MarkerFilesFlushed(PAGE_BATCH),
             StagePhase::MarkerDirectoryFlushed,
             StagePhase::MarkersDurable,
         ] {
-            let directory = Directory::new();
-            let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-            let pool = batch_pool();
+            let directory = Directory::new()?;
+            let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+            let pool = batch_pool()?;
             let objects = storage_pages(PAGE_BATCH);
             reset_stage(Some(fault));
             let _reset = ResetStage;
             assert!(pool.write_objects(&store, &objects).is_err());
-            assert_eq!(present(&store, &objects), 0);
+            assert_eq!(present(&store, &objects)?, 0);
             assert_eq!(
-                markers(&store),
+                markers(&store)?,
                 if fault == StagePhase::QuotaScanned {
                     0
                 } else {
                     PAGE_BATCH
                 }
             );
-            assert!(store.head().unwrap().is_none());
+            assert!(store.head().test_value()?.is_none());
             reset_stage(None);
-            pool.write_objects(&store, &objects).unwrap();
-            assert_eq!(present(&store, &objects), PAGE_BATCH);
-            assert_eq!(markers(&store), PAGE_BATCH);
+            pool.write_objects(&store, &objects).test_value()?;
+            assert_eq!(present(&store, &objects)?, PAGE_BATCH);
+            assert_eq!(markers(&store)?, PAGE_BATCH);
         }
+        Ok(())
     }
 
     #[test]
-    fn full_and_partial_batches_preserve_exact_stream_and_manifest_identity() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = batch_pool();
+    fn full_and_partial_batches_preserve_exact_stream_and_manifest_identity() -> Result<(), String>
+    {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = batch_pool()?;
         let source = (0..PAGE_BYTES * (PAGE_BATCH * 2 + 5) + 17)
             .map(|n| (n % 251) as u8)
             .collect::<Vec<_>>();
         let facts = vec![37; PAGE_BYTES + 3];
         let stage = || {
-            let mut writer = pool.begin(&store, basis(), 16 * 1024 * 1024).unwrap();
+            let mut writer = pool.begin(&store, basis(), 16 * 1024 * 1024).test_value()?;
             writer
                 .append(EvidenceKind::RawSource, &mut source.as_slice())
-                .unwrap();
+                .test_value()?;
             writer
                 .append(EvidenceKind::CompleteFacts, &mut facts.as_slice())
-                .unwrap();
-            writer.finish().unwrap()
+                .test_value()?;
+            writer.finish().test_value()
         };
         reset_stage(None);
         let _reset = ResetStage;
-        let staged = stage();
+        let staged = stage()?;
         let events = STAGE_EVENTS.with_borrow(|events| events.clone().unwrap_or_default());
         assert_eq!(
             events
@@ -1227,15 +1242,15 @@ mod tests {
                 Ok(())
             },
         )
-        .unwrap();
+        .test_value()?;
         assert_eq!(retained[0], source);
         assert_eq!(retained[2], facts);
         assert!(retained[1].is_empty());
-        assert_eq!(markers(&store), PAGE_BATCH * 2 + 9);
+        assert_eq!(markers(&store)?, PAGE_BATCH * 2 + 9);
         let manifest = staged.manifest_id;
         let closure = staged.receipt.receipt().closure();
         drop(staged);
-        let replay = stage();
+        let replay = stage()?;
         assert_eq!(replay.manifest_id, manifest);
         assert_eq!(replay.receipt.receipt().closure(), closure);
         let mut stale = basis();
@@ -1251,27 +1266,29 @@ mod tests {
             ),
             Err(StoreError::WrongBase)
         ));
-        assert!(store.head().unwrap().is_none());
+        assert!(store.head().test_value()?.is_none());
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn partial_cas_failure_retains_physical_quota_and_retry_does_not_double_charge() {
+    fn partial_cas_failure_retains_physical_quota_and_retry_does_not_double_charge()
+    -> Result<(), String> {
         use std::os::unix::fs::MetadataExt as _;
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = batch_pool();
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = batch_pool()?;
         let objects = storage_pages(PAGE_BATCH);
         reset_stage(Some(StagePhase::MarkersDurable));
         let _reset = ResetStage;
         assert!(pool.write_objects(&store, &objects).is_err());
-        assert_eq!(markers(&store), PAGE_BATCH);
-        assert_eq!(present(&store, &objects), 0);
+        assert_eq!(markers(&store)?, PAGE_BATCH);
+        assert_eq!(present(&store, &objects)?, 0);
         // Model the exact interrupted state produced by the store batch's
         // first-link crash test: all markers durable, only one CAS member.
-        store.write_object(&objects[0]).unwrap();
+        store.write_object(&objects[0]).test_value()?;
         reset_stage(None);
-        let cold = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let cold = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
         let id = objects[0]
             .id()
             .as_bytes()
@@ -1280,13 +1297,18 @@ mod tests {
             .collect::<String>();
         let allocation =
             std::fs::metadata(cold.root().join("objects").join(format!("{id}.object")))
-                .unwrap()
+                .test_value()?
                 .blocks()
                 * 512;
-        let tight = StagePool::new(1, allocation, 64, StagePool::metadata_required(64).unwrap());
-        tight.write_objects(&cold, &objects[..1]).unwrap();
+        let tight = StagePool::new(
+            1,
+            allocation,
+            64,
+            StagePool::metadata_required(64).test_value()?,
+        );
+        tight.write_objects(&cold, &objects[..1]).test_value()?;
         assert_eq!(
-            markers(&cold),
+            markers(&cold)?,
             1,
             "only absent objects lose accounting markers"
         );
@@ -1294,19 +1316,20 @@ mod tests {
             tight.write_objects(&cold, &objects[1..2]),
             Err(StoreError::Bounds)
         ));
-        assert_eq!(present(&cold, &objects), 1);
-        assert_eq!(markers(&cold), 1);
-        assert!(cold.head().unwrap().is_none());
+        assert_eq!(present(&cold, &objects)?, 1);
+        assert_eq!(markers(&cold)?, 1);
+        assert!(cold.head().test_value()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_failed_durable_batch_poison_is_affine_and_never_issues_a_closure() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = batch_pool();
+    fn a_failed_durable_batch_poison_is_affine_and_never_issues_a_closure() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = batch_pool()?;
         reset_stage(Some(StagePhase::ObjectsDurable));
         let _reset = ResetStage;
-        let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+        let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).test_value()?;
         assert!(
             writer
                 .append(
@@ -1315,21 +1338,23 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(markers(&store), PAGE_BATCH);
+        assert_eq!(markers(&store)?, PAGE_BATCH);
         assert!(matches!(writer.finish(), Err(StoreError::Corrupt)));
         reset_stage(None);
-        let retry = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+        let retry = pool.begin(&store, basis(), 4 * 1024 * 1024).test_value()?;
         drop(retry);
         assert_eq!(
-            markers(&store),
+            markers(&store)?,
             PAGE_BATCH,
             "dropping the affine writer does not release physical quota"
         );
-        assert!(store.head().unwrap().is_none());
+        assert!(store.head().test_value()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn cancelled_stream_before_or_after_a_full_batch_cannot_publish_partial_evidence() {
+    fn cancelled_stream_before_or_after_a_full_batch_cannot_publish_partial_evidence()
+    -> Result<(), String> {
         struct CancelAfter {
             remaining: usize,
         }
@@ -1345,10 +1370,10 @@ mod tests {
             }
         }
         for pages in [PAGE_BATCH - 1, PAGE_BATCH + 1] {
-            let directory = Directory::new();
-            let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-            let pool = batch_pool();
-            let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).unwrap();
+            let directory = Directory::new()?;
+            let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+            let pool = batch_pool()?;
+            let mut writer = pool.begin(&store, basis(), 4 * 1024 * 1024).test_value()?;
             assert!(
                 writer
                     .append(
@@ -1360,34 +1385,35 @@ mod tests {
                     .is_err()
             );
             let durable = if pages < PAGE_BATCH { 0 } else { PAGE_BATCH };
-            assert_eq!(markers(&store), durable);
+            assert_eq!(markers(&store)?, durable);
             assert!(matches!(writer.finish(), Err(StoreError::Corrupt)));
             assert!(pool.begin(&store, basis(), 4 * 1024 * 1024).is_ok());
-            assert!(store.head().unwrap().is_none());
+            assert!(store.head().test_value()?.is_none());
         }
+        Ok(())
     }
 
     #[test]
-    fn interruption_before_closure_keeps_manifest_retry_exact() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = batch_pool();
+    fn interruption_before_closure_keeps_manifest_retry_exact() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = batch_pool()?;
         reset_stage(Some(StagePhase::BeforeClosure));
         let _reset = ResetStage;
-        let mut writer = pool.begin(&store, basis(), 64).unwrap();
+        let mut writer = pool.begin(&store, basis(), 64).test_value()?;
         writer
             .append(EvidenceKind::RawSource, &mut &[7, 8, 9][..])
-            .unwrap();
+            .test_value()?;
         assert!(writer.finish().is_err());
-        assert_eq!(markers(&store), 2);
-        assert!(store.head().unwrap().is_none());
+        assert_eq!(markers(&store)?, 2);
+        assert!(store.head().test_value()?.is_none());
         reset_stage(None);
-        let mut writer = pool.begin(&store, basis(), 64).unwrap();
+        let mut writer = pool.begin(&store, basis(), 64).test_value()?;
         writer
             .append(EvidenceKind::RawSource, &mut &[7, 8, 9][..])
-            .unwrap();
-        let staged = writer.finish().unwrap();
-        assert_eq!(markers(&store), 2);
+            .test_value()?;
+        let staged = writer.finish().test_value()?;
+        assert_eq!(markers(&store)?, 2);
         visit_staged(
             &store,
             staged.manifest_id,
@@ -1396,23 +1422,24 @@ mod tests {
             budget(),
             |_, _| Ok(()),
         )
-        .unwrap();
-        assert!(store.head().unwrap().is_none());
+        .test_value()?;
+        assert!(store.head().test_value()?.is_none());
+        Ok(())
     }
     #[test]
-    fn exact_stream_domains_replay_and_cold_reopen() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = pool();
+    fn exact_stream_domains_replay_and_cold_reopen() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = pool()?;
         let payload = vec![42; PAGE_BYTES * 2 + 3];
-        let mut writer = pool.begin(&store, basis(), 512 * 1024).unwrap();
+        let mut writer = pool.begin(&store, basis(), 512 * 1024).test_value()?;
         writer
             .append(EvidenceKind::RawSource, &mut payload.as_slice())
-            .unwrap();
+            .test_value()?;
         writer
             .append(EvidenceKind::CompleteFacts, &mut payload.as_slice())
-            .unwrap();
-        let staged = writer.finish().unwrap();
+            .test_value()?;
+        let staged = writer.finish().test_value()?;
         let manifest_id = staged.manifest_id;
         let closure = staged.receipt.receipt().closure();
         let mut got = [Vec::new(), Vec::new(), Vec::new()];
@@ -1427,44 +1454,45 @@ mod tests {
                 Ok(())
             },
         )
-        .unwrap();
+        .test_value()?;
         assert_eq!(got[0], payload);
         assert_eq!(got[2], payload);
         assert!(got[1].is_empty());
         drop(staged);
-        let mut replay = pool.begin(&store, basis(), 512 * 1024).unwrap();
+        let mut replay = pool.begin(&store, basis(), 512 * 1024).test_value()?;
         // Arbitrary producer write boundaries do not alter canonical pages.
         replay
             .append(EvidenceKind::RawSource, &mut &payload[..5])
-            .unwrap();
+            .test_value()?;
         replay
             .append(EvidenceKind::RawSource, &mut &payload[5..])
-            .unwrap();
+            .test_value()?;
         replay
             .append(EvidenceKind::CompleteFacts, &mut payload.as_slice())
-            .unwrap();
-        let replay = replay.finish().unwrap();
+            .test_value()?;
+        let replay = replay.finish().test_value()?;
         assert_eq!(replay.manifest_id, manifest_id);
         assert_eq!(replay.receipt.receipt().closure(), closure);
         drop(replay);
-        let cold = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let cold = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
         let pin = cold
             .reopen_pinned_stored_closure(ArtifactClosureClaim::from_id(closure), budget())
-            .unwrap();
-        visit_staged(&cold, manifest_id, &pin, basis(), budget(), |_, _| Ok(())).unwrap();
+            .test_value()?;
+        visit_staged(&cold, manifest_id, &pin, basis(), budget(), |_, _| Ok(())).test_value()?;
         let mut stale = basis();
         stale.owner_epoch += 1;
         assert!(matches!(
             visit_staged(&cold, manifest_id, &pin, stale, budget(), |_, _| Ok(())),
             Err(StoreError::WrongBase)
         ));
+        Ok(())
     }
     #[test]
-    fn reservations_partial_failure_and_release() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = pool();
-        let mut writer = pool.begin(&store, basis(), 8).unwrap();
+    fn reservations_partial_failure_and_release() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = pool()?;
+        let mut writer = pool.begin(&store, basis(), 8).test_value()?;
         assert!(matches!(
             pool.begin(&store, basis(), 8),
             Err(StoreError::Bounds)
@@ -1477,47 +1505,50 @@ mod tests {
         assert!(pool.begin(&store, basis(), 8).is_ok());
         // Staging never writes FileStore's selected HEAD.
         assert!(!directory.path().join("HEAD").exists());
+        Ok(())
     }
     #[test]
-    fn reconfigured_limits_preserve_existing_affine_reservations() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let initial = StagePool::new(2, 100, 32, StagePool::metadata_required(32).unwrap());
-        let held = initial.begin(&store, basis(), 50).unwrap();
-        let changed = initial.with_limits(2, 60, 32, StagePool::metadata_required(32).unwrap());
+    fn reconfigured_limits_preserve_existing_affine_reservations() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let initial = StagePool::new(2, 100, 32, StagePool::metadata_required(32).test_value()?);
+        let held = initial.begin(&store, basis(), 50).test_value()?;
+        let changed =
+            initial.with_limits(2, 60, 32, StagePool::metadata_required(32).test_value()?);
         assert!(matches!(
             changed.begin(&store, basis(), 20),
             Err(StoreError::Bounds)
         ));
         drop(held);
         assert!(changed.begin(&store, basis(), 20).is_ok());
+        Ok(())
     }
     #[test]
-    fn duplicate_wrong_kind_missing_member_and_extra_member_fail_closed() {
-        let directory = Directory::new();
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        let pool = pool();
-        let mut writer = pool.begin(&store, basis(), 100).unwrap();
+    fn duplicate_wrong_kind_missing_member_and_extra_member_fail_closed() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        let pool = pool()?;
+        let mut writer = pool.begin(&store, basis(), 100).test_value()?;
         writer
             .append(EvidenceKind::RawSource, &mut &[1, 2, 3][..])
-            .unwrap();
-        let staged = writer.finish().unwrap();
-        let manifest = store.read_object(staged.manifest_id).unwrap();
-        let (_, mut chains) = decode_manifest(manifest.bytes()).unwrap();
+            .test_value()?;
+        let staged = writer.finish().test_value()?;
+        let manifest = store.read_object(staged.manifest_id).test_value()?;
+        let (_, mut chains) = decode_manifest(manifest.bytes()).test_value()?;
         let page_id = store
             .artifact_sink(budget())
             .verify_closure_member(
                 staged.receipt.receipt().closure(),
                 UntrustedObjectId::from_bytes(chains[0].tail),
             )
-            .unwrap()
-            .unwrap()
+            .test_value()?
+            .test_value()?
             .object_id();
         // Same physical page cannot fill two evidence domains.
         chains[2] = chains[0];
         let forged_manifest = store
             .write_object(&typed::<StagedManifest>(&encode_manifest(basis(), chains)))
-            .unwrap();
+            .test_value()?;
         let compose = |ids: &[ObjectId]| {
             let mut edits = ids
                 .iter()
@@ -1533,12 +1564,12 @@ mod tests {
                         33,
                         33,
                         1024 * 1024,
-                        StagePool::metadata_required(32).unwrap(),
+                        StagePool::metadata_required(32).test_value()?,
                     ),
                 )
-                .unwrap()
+                .test_value()
         };
-        let forged = compose(&[forged_manifest, page_id]);
+        let forged = compose(&[forged_manifest, page_id])?;
         assert!(matches!(
             visit_staged(
                 &store,
@@ -1550,7 +1581,7 @@ mod tests {
             ),
             Err(StoreError::Corrupt)
         ));
-        let missing = compose(&[staged.manifest_id]);
+        let missing = compose(&[staged.manifest_id])?;
         assert!(matches!(
             visit_staged(
                 &store,
@@ -1562,7 +1593,7 @@ mod tests {
             ),
             Err(StoreError::Corrupt)
         ));
-        let extra = compose(&[staged.manifest_id, page_id, forged_manifest]);
+        let extra = compose(&[staged.manifest_id, page_id, forged_manifest])?;
         assert!(matches!(
             visit_staged(
                 &store,
@@ -1588,11 +1619,11 @@ mod tests {
                 .path()
                 .join("objects")
                 .join(format!("{name}.object"));
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            let mut bytes = std::fs::read(&path).unwrap();
-            *bytes.last_mut().unwrap() ^= 1;
-            std::fs::write(&path, bytes).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).test_value()?;
+            let mut bytes = std::fs::read(&path).test_value()?;
+            *bytes.last_mut().test_value()? ^= 1;
+            std::fs::write(&path, bytes).test_value()?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).test_value()?;
             assert!(
                 visit_staged(
                     &store,
@@ -1605,33 +1636,34 @@ mod tests {
                 .is_err()
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn crash_after_unselected_page_is_invisible() {
+    fn crash_after_unselected_page_is_invisible() -> Result<(), String> {
         const CHILD_DIRECTORY: &str = "NUDOX_STAGED_TEST_CRASH_DIRECTORY";
         if let Some(directory) = std::env::var_os(CHILD_DIRECTORY) {
-            let store = FileStore::open(directory, 1024 * 1024).unwrap();
+            let store = FileStore::open(directory, 1024 * 1024).test_value()?;
             let mut writer = StagePool::new(
                 1,
                 8 * 1024 * 1024,
                 64,
-                StagePool::metadata_required(64).unwrap(),
+                StagePool::metadata_required(64).test_value()?,
             )
             .begin(&store, basis(), 4 * 1024 * 1024)
-            .unwrap();
+            .test_value()?;
             writer
                 .append(
                     EvidenceKind::RawSource,
                     &mut &vec![17; PAGE_BYTES * PAGE_BATCH][..],
                 )
-                .unwrap();
+                .test_value()?;
             // Deliberately skip Rust destructors: OS lease release and cold
             // store recovery must suffice, with no selected partial state.
             std::process::exit(77);
         }
-        let directory = Directory::new();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let directory = Directory::new()?;
+        let output = std::process::Command::new(std::env::current_exe().test_value()?)
             .args([
                 "--exact",
                 "builtin::staged_intent::tests::crash_after_unselected_page_is_invisible",
@@ -1639,7 +1671,7 @@ mod tests {
             ])
             .env(CHILD_DIRECTORY, directory.path())
             .output()
-            .unwrap();
+            .test_value()?;
         assert_eq!(
             output.status.code(),
             Some(77),
@@ -1647,20 +1679,20 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
-        assert!(store.head().unwrap().is_none());
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        assert!(store.head().test_value()?.is_none());
         let mut writer = StagePool::new(
             1,
             8 * 1024 * 1024,
             64,
-            StagePool::metadata_required(64).unwrap(),
+            StagePool::metadata_required(64).test_value()?,
         )
         .begin(&store, basis(), 512 * 1024)
-        .unwrap();
+        .test_value()?;
         writer
             .append(EvidenceKind::RawSource, &mut &vec![17; PAGE_BYTES][..])
-            .unwrap();
-        let staged = writer.finish().unwrap();
+            .test_value()?;
+        let staged = writer.finish().test_value()?;
         visit_staged(
             &store,
             staged.manifest_id,
@@ -1669,8 +1701,9 @@ mod tests {
             budget(),
             |_, _| Ok(()),
         )
-        .unwrap();
-        assert!(store.head().unwrap().is_none());
+        .test_value()?;
+        assert!(store.head().test_value()?.is_none());
+        Ok(())
     }
 }
 
