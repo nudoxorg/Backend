@@ -1,12 +1,13 @@
 use super::super::{
     BuiltinModelError, BuiltinSemanticRelation, IndexedSources, MAX_REBUILD_BYTES,
     MAX_REBUILD_PACKAGES, WorkspaceSnapshot, activate_semantic_publication,
+    check_search_preparation,
 };
 use super::MAX_SEMANTIC_DOCUMENT_BYTES;
 use super::MAX_SEMANTIC_QUERY_ROWS;
 use super::call_join::{
-    ProjectCallableIndex, foreign_display_name, join_project_call, join_project_field,
-    join_native_typescript_target, join_project_mention, join_project_value, project_paths_for_package,
+    ProjectCallableIndex, foreign_display_name, join_native_typescript_target, join_project_call,
+    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::compiled_source_path;
 use super::identity::{
@@ -22,6 +23,7 @@ use backend_semantic::ir::{
     SemanticImageView, SemanticReader as _,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
 
 pub(in crate::builtin) fn semantic_query_corpus(
     snapshot: &WorkspaceSnapshot,
@@ -30,6 +32,18 @@ pub(in crate::builtin) fn semantic_query_corpus(
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::image_rows::ImageRowResidence,
 ) -> Result<backend_extension_trustfall::SemanticQueryCorpus, BuiltinModelError> {
+    semantic_query_corpus_controlled(snapshot, compiler, sources, generations, image_rows, None)
+}
+
+pub(in crate::builtin) fn semantic_query_corpus_controlled(
+    snapshot: &WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    sources: &IndexedSources,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut super::image_rows::ImageRowResidence,
+    cancelled: Option<&AtomicBool>,
+) -> Result<backend_extension_trustfall::SemanticQueryCorpus, BuiltinModelError> {
+    check_search_preparation(cancelled, "corpus-start")?;
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
             "workspace package rows exceed the semantic query bound".to_owned(),
@@ -37,6 +51,7 @@ pub(in crate::builtin) fn semantic_query_corpus(
     }
     let mut facts = Vec::with_capacity(sources.projects.len());
     for project in sources.projects.values() {
+        check_search_preparation(cancelled, "corpus-project")?;
         let package_scope = match sources.cargo_aliases.get(&project.package.to_bytes()) {
             Some(cargo_aliases) => {
                 backend_extension_trustfall::PackageScopeEvidence::with_cargo_aliases(
@@ -71,17 +86,21 @@ pub(in crate::builtin) fn semantic_query_corpus(
         &mut facts,
         generations,
         image_rows,
-        &mut exact_sites,
+        (&mut exact_sites, cancelled),
     )?;
-    let mut structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
-    structural_plan.unify_exact_sites(sources, &exact_sites)?;
-    append_structural_query_facts(sources, &structural_plan, &mut facts)?;
+    check_search_preparation(cancelled, "corpus-structural-plan")?;
+    let mut structural_plan =
+        StructuralProjectionPlan::of_controlled(sources, &complete, cancelled)?;
+    check_search_preparation(cancelled, "corpus-structural-unify")?;
+    structural_plan.unify_exact_sites_controlled(sources, &exact_sites, cancelled)?;
+    append_structural_query_facts_controlled(sources, &structural_plan, &mut facts, cancelled)?;
+    check_search_preparation(cancelled, "corpus-admit")?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
             "workspace semantic query facts exceed their row bound".to_owned(),
         ));
     }
-    backend_extension_trustfall::SemanticQueryCorpus::admit_with_limits(
+    let corpus = backend_extension_trustfall::SemanticQueryCorpus::admit_with_limits(
         snapshot.root(),
         facts,
         backend_extension_trustfall::Limits {
@@ -92,7 +111,9 @@ pub(in crate::builtin) fn semantic_query_corpus(
             ..backend_extension_trustfall::Limits::default()
         },
     )
-    .map_err(|error| BuiltinModelError(error.to_string()))
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
+    check_search_preparation(cancelled, "corpus-complete")?;
+    Ok(corpus)
 }
 
 fn append_compiler_query_facts(
@@ -102,22 +123,29 @@ fn append_compiler_query_facts(
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::image_rows::ImageRowResidence,
-    exact_sites: &mut super::exact_sites::ExactDeclarationSites,
+    preparation: (
+        &mut super::exact_sites::ExactDeclarationSites,
+        Option<&AtomicBool>,
+    ),
 ) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError>
 {
+    let (exact_sites, cancelled) = preparation;
+    check_search_preparation(cancelled, "semantic-open")?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
-    let available = super::SourceAvailability::of(sources)?;
+    let available = super::SourceAvailability::of_controlled(sources, cancelled)?;
     let mut complete = BTreeSet::new();
     let mut pending = Vec::new();
     let mut package_profile_scopes = BTreeMap::<_, BTreeMap<_, _>>::new();
     let mut after = None;
     loop {
+        check_search_preparation(cancelled, "semantic-page")?;
         let page = relation
             .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
             .map_err(|error| BuiltinModelError(format!("read semantic query page: {error}")))?;
         for (key, record) in page.entries() {
+            check_search_preparation(cancelled, "semantic-row")?;
             if !key.is_selected() {
                 continue;
             }
@@ -164,8 +192,9 @@ fn append_compiler_query_facts(
         after = Some(next);
     }
 
-    let opened = open_query_publications(&pending)?;
+    let opened = open_query_publications(&pending, cancelled)?;
     for publication in &opened {
+        check_search_preparation(cancelled, "semantic-publication")?;
         if publication
             .images
             .iter()
@@ -174,25 +203,28 @@ fn append_compiler_query_facts(
             complete.remove(&(publication.package.to_bytes(), publication.profile));
         }
     }
-    let sites = super::semantic::StructuralSites::of(sources)?;
+    let sites = super::semantic::StructuralSites::of_controlled(sources, cancelled)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
     let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();
     let mut package_views =
         BTreeMap::<backend_engine::PackageKey, Vec<&SemanticImageView<'_>>>::new();
     for publication in &opened {
+        check_search_preparation(cancelled, "semantic-publication")?;
         package_paths
             .entry(publication.package)
             .or_insert_with(|| project_paths_for_package(sources, publication.package));
         let published = package_published.entry(publication.package).or_default();
         let views = package_views.entry(publication.package).or_default();
         for image in &publication.images {
+            check_search_preparation(cancelled, "semantic-image")?;
             published.extend(image.identities.iter().copied());
             views.push(&image.view);
         }
     }
     let mut package_indexes = BTreeMap::<backend_engine::PackageKey, ProjectCallableIndex>::new();
     for (package, views) in &package_views {
+        check_search_preparation(cancelled, "semantic-index")?;
         let profiles = package_profile_scopes.get(package).ok_or_else(|| {
             BuiltinModelError("selected query publication has no profile scope".to_owned())
         })?;
@@ -221,6 +253,7 @@ fn append_compiler_query_facts(
     let empty_paths = BTreeSet::new();
     let empty_published = BTreeSet::new();
     for publication in &opened {
+        check_search_preparation(cancelled, "semantic-publication")?;
         let package = publication.package;
         let label = publication.label;
         let coordinate = publication.coordinate;
@@ -229,6 +262,7 @@ fn append_compiler_query_facts(
         let published = package_published.get(&package).unwrap_or(&empty_published);
         let callable_index = package_indexes.get(&package);
         for opened_image in &publication.images {
+            check_search_preparation(cancelled, "semantic-facts-image")?;
             let image = &opened_image.view;
             let caller_path = &opened_image.path;
             let session = DocumentationSession::new(image);
@@ -243,17 +277,37 @@ fn append_compiler_query_facts(
                 opened_image.source,
             )?;
             let declarations = declarations.iter().collect::<Vec<_>>();
-            let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
-            let locations = super::retained_locations::RetainedLocations::for_entities(profile, image, &session, &declarations, &kinds.exact).map_err(BuiltinModelError)?;
+            let kinds = super::semantic::entity_kinds_controlled(
+                profile,
+                image,
+                &session,
+                &declarations,
+                cancelled,
+            )?;
+            let locations = super::retained_locations::RetainedLocations::for_entities_controlled(
+                profile,
+                image,
+                &session,
+                &declarations,
+                &kinds.exact,
+                cancelled,
+            )
+            .map_err(BuiltinModelError)?;
             for (identity, binding) in &kinds.exact {
-                exact_sites.record(package, caller_path, *binding,
-                    RowId::Symbol(super::identity::semantic_symbol(package, *identity)));
+                check_search_preparation(cancelled, "semantic-exact-site")?;
+                exact_sites.record(
+                    package,
+                    caller_path,
+                    *binding,
+                    RowId::Symbol(super::identity::semantic_symbol(package, *identity)),
+                );
             }
             let identities = &opened_image.identities;
             let image_digest = opened_image.digest;
             let mut external_targets =
                 BTreeMap::<String, (ExternalTargetIdentity, ExternalId)>::new();
             for entity in session.publication_entities() {
+                check_search_preparation(cancelled, "semantic-entity")?;
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -296,6 +350,7 @@ fn append_compiler_query_facts(
                     .transpose()?;
                 let mut related = Vec::new();
                 for (_, link) in image.links_from(entity.entity.id) {
+                    check_search_preparation(cancelled, "semantic-link")?;
                     match link.target {
                         LinkTarget::Local(target) => {
                             let Some(target) = image.entity(target) else {
@@ -390,8 +445,10 @@ fn append_compiler_query_facts(
                 // link names its own row (`project_image_rows`); the corpus
                 // covers the view exactly, so each gets its external fact.
                 for (identity, external) in &content.documentation_targets {
+                    check_search_preparation(cancelled, "semantic-documentation-link")?;
                     if let Some(index) = callable_index
-                        && join_native_typescript_target(image, *external, index, &published)?.is_some()
+                        && join_native_typescript_target(image, *external, index, &published)?
+                            .is_some()
                     {
                         continue;
                     }
@@ -399,7 +456,17 @@ fn append_compiler_query_facts(
                         .entry(query_external_id(package, image_digest, *identity))
                         .or_insert((*identity, *external));
                 }
-                related.sort_unstable();
+                check_search_preparation(cancelled, "semantic-sort")?;
+                if cancelled.is_some() {
+                    super::super::query::controlled_sort::sort_unstable_by_in_place_checked(
+                        &mut related,
+                        Ord::cmp,
+                        &mut || check_search_preparation(cancelled, "semantic-sort-step"),
+                    )?;
+                } else {
+                    related.sort_unstable();
+                }
+                check_search_preparation(cancelled, "semantic-sorted")?;
                 related.dedup();
                 facts.push(backend_extension_trustfall::SemanticQueryFact::new(
                     backend_extension_trustfall::SemanticQueryEvidence::Compiler(
@@ -427,6 +494,7 @@ fn append_compiler_query_facts(
                 ));
             }
             for (id, (target, external)) in external_targets {
+                check_search_preparation(cancelled, "semantic-external")?;
                 if !ids.insert(id.clone()) {
                     return Err(BuiltinModelError(
                         "semantic query publication contains a duplicate external target identity"
@@ -494,11 +562,14 @@ struct OpenedQueryPublication<'a> {
 
 fn open_query_publications<'a>(
     pending: &'a [PendingQueryPublication],
+    cancelled: Option<&AtomicBool>,
 ) -> Result<Vec<OpenedQueryPublication<'a>>, BuiltinModelError> {
     let mut opened = Vec::with_capacity(pending.len());
     for publication in pending {
+        check_search_preparation(cancelled, "semantic-open-publication")?;
         let mut images = Vec::new();
         for bytes in publication.activated.images() {
+            check_search_preparation(cancelled, "semantic-open-image")?;
             let view = bytes.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
@@ -507,6 +578,7 @@ fn open_query_publications<'a>(
             let mut identities = BTreeSet::new();
             let session = DocumentationSession::new(&view);
             for entity in session.publication_entities() {
+                check_search_preparation(cancelled, "semantic-entity")?;
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic query declaration: {error}"))
                 })?;
@@ -544,7 +616,18 @@ pub(super) fn append_structural_query_facts(
     structural_plan: &StructuralProjectionPlan,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<(), BuiltinModelError> {
+    append_structural_query_facts_controlled(sources, structural_plan, facts, None)
+}
+
+fn append_structural_query_facts_controlled(
+    sources: &IndexedSources,
+    structural_plan: &StructuralProjectionPlan,
+    facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), BuiltinModelError> {
+    check_search_preparation(cancelled, "structural-start")?;
     for (file_key, record) in &sources.files {
+        check_search_preparation(cancelled, "structural-file")?;
         let file = record
             .file_fields()
             .ok_or_else(|| BuiltinModelError("expected structural source file".to_owned()))?;
@@ -565,6 +648,7 @@ pub(super) fn append_structural_query_facts(
         }
         let mut index = 0usize;
         super::structural::visit_complete_declarations(sources, record, |declaration| {
+            check_search_preparation(cancelled, "structural-declaration")?;
             let prepared = structural_plan.declaration(*file_key, index)?;
             if prepared.compiler_twin {
                 index = index.checked_add(1).ok_or_else(|| {

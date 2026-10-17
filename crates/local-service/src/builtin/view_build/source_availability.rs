@@ -33,9 +33,18 @@ enum ArtifactSource {
 
 impl SourceAvailability {
     pub(in crate::builtin) fn of(sources: &IndexedSources) -> Result<Self, BuiltinModelError> {
+        Self::of_controlled(sources, None)
+    }
+
+    pub(in crate::builtin) fn of_controlled(
+        sources: &IndexedSources,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        super::super::check_search_preparation(cancelled, "source-availability")?;
         let mut identities = BTreeMap::new();
         let mut required_profiles = BTreeMap::<_, BTreeSet<_>>::new();
         for (file_key, record) in &sources.files {
+            super::super::check_search_preparation(cancelled, "source-availability-file")?;
             let file = record.file_fields().ok_or_else(|| {
                 BuiltinModelError("artifact source frontier contains a non-file row".to_owned())
             })?;
