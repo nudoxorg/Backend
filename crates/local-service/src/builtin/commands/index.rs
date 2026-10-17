@@ -6337,23 +6337,26 @@ mod typescript_snapshot_input_tests {
     use std::fs;
 
     #[test]
-    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition() {
-        let directory = crate::test_support::private_temp_dir("tsz-input-partition").unwrap();
+    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition() -> Result<(), String>
+    {
+        use crate::test_support::TestValue as _;
+        let directory = crate::test_support::private_temp_dir("tsz-input-partition").test_value()?;
         let root = directory.path();
-        fs::write(root.join("a.ts"), "export const a = 1;").unwrap();
-        fs::write(root.join("b.ts"), "export const b = 2;").unwrap();
-        let text = root.to_str().unwrap();
-        let cold = ingest::scan_project(text, [27; 32], &BTreeMap::new()).unwrap();
+        fs::write(root.join("a.ts"), "export const a = 1;").test_value()?;
+        fs::write(root.join("b.ts"), "export const b = 2;").test_value()?;
+        let text = root.to_str().test_value()?;
+        let cold = ingest::scan_project(text, [27; 32], &BTreeMap::new()).test_value()?;
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
         let input = semantic_input_digest(&cold, profile);
         let rows = cold.files.iter().cloned().collect();
-        let warm = ingest::scan_project(text, [27; 32], &rows).unwrap();
+        let warm = ingest::scan_project(text, [27; 32], &rows).test_value()?;
         assert!(warm.compiler_sources.is_empty());
         assert_eq!(warm.reused_compiler_files.len(), 2);
         assert_eq!(input, semantic_input_digest(&warm, profile));
-        fs::write(root.join("a.ts"), "export const a = 'changed';").unwrap();
-        let changed = ingest::scan_project(text, [27; 32], &rows).unwrap();
+        fs::write(root.join("a.ts"), "export const a = 'changed';").test_value()?;
+        let changed = ingest::scan_project(text, [27; 32], &rows).test_value()?;
         assert_ne!(input, semantic_input_digest(&changed, profile));
+        Ok(())
     }
 }
 

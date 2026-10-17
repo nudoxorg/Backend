@@ -2429,7 +2429,8 @@ mod python_native_call_tests {
     }
 
     #[test]
-    fn native_python_record_call_joins_class_without_retargeting_constructor() {
+    fn native_python_record_call_joins_class_without_retargeting_constructor() -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let root = tempfile::tempdir().expect("isolated native producer fixture");
         let package_root = root.path().join("project");
         fs::create_dir_all(package_root.join("src/requests")).expect("package source root");
@@ -2468,15 +2469,14 @@ mod python_native_call_tests {
             .map(|(path, source)| OwnedPackageSource::new(path, source).expect("captured source"))
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        let environment =
-            backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
-                &package_root,
-                backend_frontend_python::legacy::checker::PythonProjectControl {
-                    cancelled: &std::sync::atomic::AtomicBool::new(false),
-                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
-                },
-            )
-            .expect("explicit absent installed environment witness");
+        let environment = backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+            &package_root,
+            backend_frontend_python::legacy::checker::PythonProjectControl {
+                cancelled: &std::sync::atomic::AtomicBool::new(false),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
+            },
+        )
+        .expect("explicit absent installed environment witness");
         let staged = client
             .compile_package_sources_staged(
                 OwnedPackageSourceSet::new(request, package_root, sources)
@@ -2497,8 +2497,7 @@ mod python_native_call_tests {
             })
             .collect::<Vec<_>>();
         let views = images.iter().collect::<Vec<_>>();
-        let index =
-            ProjectCallableIndex::build_from_views(&views).expect("actual declaration index");
+        let index = ProjectCallableIndex::build_from_views(&views).expect("actual declaration index");
         let paths = modules.iter().map(|(path, _)| path.to_string()).collect();
         let model_paths = BTreeSet::from(["src/requests/models.py".to_owned()]);
         let class = index
@@ -2510,11 +2509,15 @@ mod python_native_call_tests {
         assert_ne!(class, constructor);
         assert_eq!(index.resolve(&model_paths, "Request"), None);
         let published = BTreeSet::from([class, constructor]);
-        let caller = images
-            .iter()
-            .find(|image| compiled_source_path(image).unwrap() == "src/requests/sessions.py")
-            .expect("actual caller image");
-        let expected_start = modules[2].1.rfind("Request()").unwrap() as u32;
+        let mut caller = None;
+        for image in &images {
+            if compiled_source_path(image).test_value()? == "src/requests/sessions.py" {
+                caller = Some(image);
+                break;
+            }
+        }
+        let caller = caller.expect("actual caller image");
+        let expected_start = modules[2].1.rfind("Request()").test_value()? as u32;
         let mut observed_calls = 0;
         for (_, link) in caller.canonical_links() {
             let LinkTarget::External(external) = link.target else {
@@ -2562,6 +2565,7 @@ mod python_native_call_tests {
             observed_calls += 1;
         }
         assert_eq!(observed_calls, 1, "native class binding must be present");
+        Ok(())
     }
 
     #[test]

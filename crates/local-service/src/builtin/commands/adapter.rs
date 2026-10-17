@@ -8780,7 +8780,9 @@ mod tests {
     }
 
     #[test]
-    fn native_typescript_partial_coverage_pages_preserve_actual_causes_across_cold_owner_restart() {
+    fn native_typescript_partial_coverage_pages_preserve_actual_causes_across_cold_owner_restart()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         use backend_library::{
             PackageCompilerCoverage as Availability, PackageCompilerOutcomeRead as Read,
             PackageCompilerOutcomes as Outcomes,
@@ -8805,10 +8807,10 @@ mod tests {
             ("playwright.config.ts", "export const tooling = 3;"),
         ] {
             let path = Path::new(&label).join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, source).unwrap();
+            fs::create_dir_all(path.parent().test_value()?).test_value()?;
+            fs::write(path, source).test_value()?;
         }
-        fixture.adapter.as_mut().unwrap().compiler =
+        fixture.adapter.as_mut().test_value()?.compiler =
             backend_engine::application::LocalCompilerHost::new(
                 MixedNativeEnvironment(fixture.root.0.join("compiler-coverage-native")),
                 backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
@@ -8826,7 +8828,7 @@ mod tests {
             adapter.poll_deferred(daemon);
             std::thread::yield_now();
         }
-        let package = backend_library::PackageReference::parse(label).unwrap();
+        let package = backend_library::PackageReference::parse(label).test_value()?;
         let mut retained = None;
         let mut original_rows = None;
         for epoch in 0..2 {
@@ -8839,8 +8841,8 @@ mod tests {
                 &package,
                 None,
             )
-            .unwrap()
-            .unwrap();
+            .test_value()?
+            .test_value()?;
             let Outcomes::Summary {
                 refusals,
                 coverage,
@@ -8856,10 +8858,19 @@ mod tests {
             );
             assert_eq!(source_capture.profiles.len(), 1);
             assert_eq!(source_capture.profiles[0].source_count, 3);
-            assert!(matches!(source_capture.profiles[0].state,
-                backend_library::IndexOperationSemanticProfileState::Published {
-                    coverage: backend_library::IndexOperationSemanticCoverage::Partial {completed:1,total:3},..
-                }), "publication must retain the genuine TSZ partial outcome: {source_capture:?}");
+            assert!(
+                matches!(
+                    source_capture.profiles[0].state,
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        coverage: backend_library::IndexOperationSemanticCoverage::Partial {
+                            completed: 1,
+                            total: 3
+                        },
+                        ..
+                    }
+                ),
+                "publication must retain the genuine TSZ partial outcome: {source_capture:?}"
+            );
             let [Availability::Retained { read: first }] =
                 coverage.as_deref().expect("new producer coverage list")
             else {
@@ -8873,7 +8884,9 @@ mod tests {
             } else {
                 retained = Some(*first);
             }
-            let Read::Coverage(first_selector)=first else{panic!("copyable coverage read kind")};
+            let Read::Coverage(first_selector) = first else {
+                panic!("copyable coverage read kind")
+            };
             let mut next = Some(*first);
             let mut rows = Vec::new();
             while let Some(request) = next {
@@ -8884,15 +8897,15 @@ mod tests {
                     &package,
                     Some(&request),
                 )
-                .unwrap()
-                .unwrap();
-                reply.admit_request(&package, Some(&request)).unwrap();
+                .test_value()?
+                .test_value()?;
+                reply.admit_request(&package, Some(&request)).test_value()?;
                 let Outcomes::Coverage { page, .. } = reply else {
                     panic!("exact coverage page")
                 };
                 assert_eq!((page.source_count, page.completed), (3, 1));
                 assert_eq!(page.rows.len(), 1);
-                assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
+                assert!(serde_json::to_vec(&page).test_value()?.len() <= 4096);
                 rows.extend(page.rows);
                 next = page.next;
                 assert!(rows.len() <= 3, "bounded continuation does not repeat rows");
@@ -8931,7 +8944,7 @@ mod tests {
                             &package,
                             Some(&request)
                         )
-                        .unwrap(),
+                        .test_value()?,
                         Some(Outcomes::Stale { .. })
                     ),
                     "old/foreign read {changed} never retargets"
@@ -8941,6 +8954,7 @@ mod tests {
                 fixture = fixture.reopen();
             }
         }
+        Ok(())
     }
 
     fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
@@ -12787,7 +12801,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache() {
+    fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         // This is an executed BEM2 protocol fixture, never a genuine model claim.
         let producer =
             crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
@@ -12885,9 +12901,15 @@ mod tests {
                 1,
                 "warm query completes in its next normal poll"
             );
-            let wire: serde_json::Value =
-                serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("warm reply"))
-                    .expect("wire");
+            let wire: serde_json::Value = serde_json::from_slice(
+                &replies
+                    .into_iter()
+                    .next()
+                    .test_value()?
+                    .1
+                    .expect("warm reply"),
+            )
+            .expect("wire");
             assert_eq!(wire["request_id"], id);
             assert_eq!(wire["semantic_search"]["status"], "available");
             assert!(adapter.remote_semantic.local_preparation().is_none());
@@ -12902,14 +12924,16 @@ mod tests {
             !selected.load(Ordering::Acquire),
             "abandonment and warm requests do not cancel shared work"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure() {
-        let producer =
-            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
-                .expect("protocol fixture activation");
+    fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
+        let producer = crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
+            .expect("protocol fixture activation");
         let runtime = producer.provision.runtime().expect("runtime");
         let mut fixture = AdapterFixture::new();
         let (changed_package, changed_label) = fixture.add_target();
@@ -12947,7 +12971,7 @@ mod tests {
             &replies
                 .into_iter()
                 .next()
-                .unwrap()
+                .test_value()?
                 .1
                 .expect("deadline reply"),
         )
@@ -12979,12 +13003,19 @@ mod tests {
         );
         let replies = adapter.poll_deferred(daemon);
         assert_eq!(replies.len(), 1);
-        let wire: serde_json::Value =
-            serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("stale reply"))
-                .expect("wire");
+        let wire: serde_json::Value = serde_json::from_slice(
+            &replies
+                .into_iter()
+                .next()
+                .test_value()?
+                .1
+                .expect("stale reply"),
+        )
+        .expect("wire");
         assert_eq!(wire["reply"]["data"]["kind"], "wrong_basis");
         assert!(adapter.semantic_search_replies.is_empty());
         assert_eq!(runtime.memory_budget().used(), baseline);
+        Ok(())
     }
 
     #[test]

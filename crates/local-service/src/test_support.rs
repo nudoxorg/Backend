@@ -52,3 +52,32 @@ pub(crate) fn socket_path(label: &str) -> PathBuf {
         Path::new("/tmp").join(leaf)
     }
 }
+
+/// Turns a required fixture observation into a fallible test step.
+///
+/// Owns the diagnostic so borrowed errors (including poisoned lock guards) do
+/// not escape the operation that failed. Unlike an unwrap, this propagates to
+/// the test harness and preserves the original fixture call site.
+#[cfg(test)]
+pub(crate) trait TestValue<T> {
+    #[track_caller]
+    fn test_value(self) -> Result<T, String>;
+}
+
+#[cfg(test)]
+impl<T, E: std::fmt::Debug> TestValue<T> for Result<T, E> {
+    #[track_caller]
+    fn test_value(self) -> Result<T, String> {
+        let caller = std::panic::Location::caller();
+        self.map_err(|error| format!("{caller}: {error:?}"))
+    }
+}
+
+#[cfg(test)]
+impl<T> TestValue<T> for Option<T> {
+    #[track_caller]
+    fn test_value(self) -> Result<T, String> {
+        let caller = std::panic::Location::caller();
+        self.ok_or_else(|| format!("{caller}: required fixture value is absent"))
+    }
+}

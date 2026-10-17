@@ -117,13 +117,19 @@ mod tests {
         }
     }
     #[test]
-    fn indexed_coverage_pages_admit_each_profile_once_and_do_not_revisit_prior_rows() {
+    fn indexed_coverage_pages_admit_each_profile_once_and_do_not_revisit_prior_rows()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let residence = CoverageResidence::default();
         let loads = Cell::new(0);
         let source_checks = Cell::new(0);
         let catalog = || {
             loads.set(loads.get() + 1);
-            let source=*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"spec").as_ref();
+            let source =
+                *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"spec",
+                )
+                .as_ref();
             SourceCoverageManifest::new(
                 [7; 32],
                 [1, 0],
@@ -135,8 +141,7 @@ mod tests {
                         path: format!("src/{i:05}.spec.ts"),
                         source,
                         byte_len: 4,
-                        cause:
-                            SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                        cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
                     })
                     .collect(),
             )
@@ -146,16 +151,16 @@ mod tests {
         };
         // Discovery may load separate published profiles. The exact selector
         // subsequently touches only its selected immutable catalog and row.
-        residence.get_or_load(key(1), catalog).unwrap();
-        residence.get_or_load(key(2), catalog).unwrap();
+        residence.get_or_load(key(1), catalog).test_value()?;
+        residence.get_or_load(key(2), catalog).test_value()?;
         for offset in [0, 2048, 4095, 2048] {
             let value = residence
                 .get_or_load(key(1), || {
                     panic!("warm page must not decode/hash any catalog again")
                 })
-                .unwrap()
-                .unwrap();
-            let row = &value.catalog().unwrap().rows()[offset];
+                .test_value()?
+                .test_value()?;
+            let row = &value.catalog().test_value()?.rows()[offset];
             source_checks.set(source_checks.get() + 1);
             assert_eq!(row.path(), format!("src/{offset:05}.spec.ts"));
         }
@@ -167,19 +172,25 @@ mod tests {
         );
         let mut changed = key(1);
         changed.closure[0] ^= 1;
-        residence.get_or_load(changed, catalog).unwrap();
+        residence.get_or_load(changed, catalog).test_value()?;
         assert_eq!(loads.get(), 3, "changed authority cannot reuse old catalog");
-        let state = residence.state.lock().unwrap();
+        let state = residence.state.lock().test_value()?;
         assert!(state.bytes <= MAX_BYTES && state.entries.len() <= MAX_ENTRIES);
+        Ok(())
     }
     #[test]
     fn immutable_coverage_residence_bounds_large_catalog_bytes_and_never_aliases_selected_authority()
-     {
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let residence = CoverageResidence::default();
         let loads = Cell::new(0);
         let make = || {
             loads.set(loads.get() + 1);
-            let source=*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"spec").as_ref();
+            let source =
+                *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"spec",
+                )
+                .as_ref();
             SourceCoverageManifest::new(
                 [7; 32],
                 [1, 0],
@@ -191,8 +202,7 @@ mod tests {
                         path: format!("src/{i:05}{}.spec.ts", "x".repeat(400)),
                         source,
                         byte_len: 4,
-                        cause:
-                            SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                        cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
                     })
                     .collect(),
             )
@@ -201,10 +211,10 @@ mod tests {
             .map_err(|e| BuiltinModelError(e.into()))
         };
         for namespace in 1..9 {
-            residence.get_or_load(key(namespace), make).unwrap();
+            residence.get_or_load(key(namespace), make).test_value()?;
         }
         {
-            let state = residence.state.lock().unwrap();
+            let state = residence.state.lock().test_value()?;
             assert!(state.bytes <= MAX_BYTES);
             assert!(
                 state.entries.len() < 8,
@@ -212,7 +222,7 @@ mod tests {
             );
         }
         let before = loads.get();
-        residence.get_or_load(key(1), make).unwrap();
+        residence.get_or_load(key(1), make).test_value()?;
         assert_eq!(loads.get(), before + 1, "an evicted key is reauthenticated");
         for field in 0..7 {
             let mut changed = key(1);
@@ -226,12 +236,13 @@ mod tests {
                 _ => changed.input[0] ^= 1,
             };
             let before = loads.get();
-            residence.get_or_load(changed, make).unwrap();
+            residence.get_or_load(changed, make).test_value()?;
             assert_eq!(
                 loads.get(),
                 before + 1,
                 "authority facet {field} must not hit another catalog"
             );
         }
+        Ok(())
     }
 }

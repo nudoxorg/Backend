@@ -2192,9 +2192,11 @@ mod tests {
     }
 
     #[test]
-    fn native_freshness_requires_current_package_source_even_with_same_input_digest() {
+    fn native_freshness_requires_current_package_source_even_with_same_input_digest()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         if !run_with_explicit_clang_fixture() {
-            return;
+            return Ok(());
         }
         use super::super::profile::capture_basis_for_snapshot;
         use super::super::semantic_authority::{SelectedSemanticPublicationKey, SemanticAuthority};
@@ -2207,24 +2209,24 @@ mod tests {
             semantic_capture_relation,
         };
 
-        fn open_owner(path: &std::path::Path) -> super::super::ProductDaemon {
+        fn open_owner(path: &std::path::Path) -> Result<super::super::ProductDaemon, String> {
             let profile =
-                super::super::profile_descriptor(super::super::BuiltinProfile::Product).unwrap();
+                super::super::profile_descriptor(super::super::BuiltinProfile::Product).test_value()?;
             let dispatcher = super::super::builtin_dispatcher(
                 Some(super::super::ECHO_AUTHORITY_SECRET),
                 profile,
                 60_000,
             )
-            .unwrap();
+            .test_value()?;
             crate::Locald::open_with_dispatcher_and_registry(
                 path,
                 super::super::BuiltinModel,
-                super::super::genesis().unwrap(),
+                super::super::genesis().test_value()?,
                 dispatcher,
                 backend_engine::DaemonConfig::default(),
-                super::super::product_relation_registry().unwrap(),
+                super::super::product_relation_registry().test_value()?,
             )
-            .unwrap()
+            .test_value()
         }
         let fixture = super::open_generation_fixture().expect("actual native compiler fixture");
         let staged = fixture
@@ -2233,10 +2235,10 @@ mod tests {
         let workspace = tempfile::Builder::new()
             .prefix("native-source-freshness-")
             .tempdir()
-            .unwrap();
-        crate::test_support::make_private(workspace.path()).unwrap();
-        let mut daemon = open_owner(workspace.path());
-        let mut authority = SemanticAuthority::open(workspace.path()).unwrap();
+            .test_value()?;
+        crate::test_support::make_private(workspace.path()).test_value()?;
+        let mut daemon = open_owner(workspace.path())?;
+        let mut authority = SemanticAuthority::open(workspace.path()).test_value()?;
         let key = fixture.key();
         let claim = admit_staged_candidate(&mut authority, key, &staged, 2);
         let marker = marker_intent(
@@ -2252,16 +2254,16 @@ mod tests {
             .commit_product_selection_changes(vec![(key.clone(), claim)], Vec::new(), || {
                 super::super::commands::commit_builtin_intent(&mut daemon, 1, &marker)
             })
-            .unwrap();
+            .test_value()?;
         let before = daemon.engine().daemon().owner().snapshot();
         let source = before
             .relation::<super::super::BuiltinWorkspaceRelation>()
-            .unwrap();
+            .test_value()?;
         let project = source
             .lookup(&key.package_key().to_bytes())
-            .unwrap()
-            .unwrap();
-        let source_version = project.project_fields().unwrap().source_version;
+            .test_value()?
+            .test_value()?;
+        let source_version = project.project_fields().test_value()?.source_version;
         let files = super::super::profile::resolve_project_file_keys(
             key.package_key().to_bytes(),
             &project,
@@ -2271,9 +2273,10 @@ mod tests {
                     .map_err(|error| super::super::BuiltinModelError(error.to_string()))
             },
         )
-        .unwrap();
+        .test_value()?;
         let input_digest = *staged.input_witness().input_root();
-        let capture = SemanticSourceCapture::new(None, source_version, input_digest, 1, 2).unwrap();
+        let capture =
+            SemanticSourceCapture::new(None, source_version, input_digest, 1, 2).test_value()?;
         let prior = SemanticPublicationVersion::new(SemanticPublicationCoverage::Complete, claim);
         let pending = BuiltinIntent::index_with_capture(
             key.package_key(),
@@ -2288,17 +2291,17 @@ mod tests {
                 compiler_failure: None,
             }],
         )
-        .unwrap()
-        .with_capture_basis(capture_basis_for_snapshot(&before).unwrap())
-        .unwrap();
-        super::super::commands::commit_builtin_intent(&mut daemon, 2, &pending).unwrap();
+        .test_value()?
+        .with_capture_basis(capture_basis_for_snapshot(&before).test_value()?)
+        .test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 2, &pending).test_value()?;
         let pending_snapshot = daemon.engine().daemon().owner().snapshot();
         let pending_record = semantic_capture_relation(&pending_snapshot)
-            .unwrap()
-            .unwrap()
+            .test_value()?
+            .test_value()?
             .lookup(key)
-            .unwrap()
-            .unwrap();
+            .test_value()?
+            .test_value()?;
         let selected = ProductSemanticPublicationRecord::Published {
             coverage: SemanticPublicationCoverage::Complete,
             claim,
@@ -2322,24 +2325,24 @@ mod tests {
                 compiler_failure: None,
             }],
         )
-        .unwrap()
-        .with_capture_basis(capture_basis_for_snapshot(&pending_snapshot).unwrap())
-        .unwrap();
-        super::super::commands::commit_builtin_intent(&mut daemon, 3, &published).unwrap();
+        .test_value()?
+        .with_capture_basis(capture_basis_for_snapshot(&pending_snapshot).test_value()?)
+        .test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 3, &published).test_value()?;
         let current = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             authority
                 .freshness(
                     &current,
-                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    SelectedSemanticPublicationKey::new(key).test_value()?,
                     claim
                 )
-                .unwrap(),
+                .test_value()?,
             SemanticVersionFreshness::Current { input_digest }
         );
         let versions =
             super::super::commands::semantic_versions(&daemon, key.package(), None, &mut authority)
-                .unwrap();
+                .test_value()?;
         assert!(versions.iter().any(|record| record.selected
             && record.freshness == SemanticVersionFreshness::Current { input_digest }));
 
@@ -2348,7 +2351,7 @@ mod tests {
             [0xA5; 32],
             files.clone(),
         )
-        .unwrap();
+        .test_value()?;
         let source_only = BuiltinIntent::index_with_semantics(
             key.package_key(),
             key.package().as_str(),
@@ -2358,40 +2361,42 @@ mod tests {
             }],
             Vec::new(),
         )
-        .unwrap();
-        super::super::commands::commit_builtin_intent(&mut daemon, 4, &source_only).unwrap();
+        .test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 4, &source_only).test_value()?;
         let changed = daemon.engine().daemon().owner().snapshot();
         let unchanged_capture = semantic_capture_relation(&changed)
-            .unwrap()
-            .unwrap()
+            .test_value()?
+            .test_value()?
             .lookup(key)
-            .unwrap()
-            .unwrap();
+            .test_value()?
+            .test_value()?;
         assert_eq!(unchanged_capture.capture().input_digest(), &input_digest);
         assert_eq!(
             changed
                 .relation::<super::super::BuiltinSemanticRelation>()
-                .unwrap()
+                .test_value()?
                 .lookup(key)
-                .unwrap(),
+                .test_value()?,
             Some(selected.clone())
         );
         assert_eq!(
             authority
                 .freshness(
                     &changed,
-                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    SelectedSemanticPublicationKey::new(key).test_value()?,
                     claim
                 )
-                .unwrap(),
+                .test_value()?,
             SemanticVersionFreshness::Unverified
         );
         let versions =
             super::super::commands::semantic_versions(&daemon, key.package(), None, &mut authority)
-                .unwrap();
+                .test_value()?;
         assert!(
-            versions.iter().any(|record| record.selected
-                && record.freshness == SemanticVersionFreshness::Unverified)
+            versions
+                .iter()
+                .any(|record| record.selected
+                    && record.freshness == SemanticVersionFreshness::Unverified)
         );
 
         let remove = BuiltinIntent::remove_project_with_semantics(
@@ -2401,17 +2406,17 @@ mod tests {
             &[],
             Vec::new(),
         )
-        .unwrap();
-        super::super::commands::commit_builtin_intent(&mut daemon, 5, &remove).unwrap();
+        .test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 5, &remove).test_value()?;
         let removed = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             authority
                 .freshness(
                     &removed,
-                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    SelectedSemanticPublicationKey::new(key).test_value()?,
                     claim
                 )
-                .unwrap(),
+                .test_value()?,
             SemanticVersionFreshness::Unverified
         );
         let final_root = removed.root();
@@ -2422,31 +2427,30 @@ mod tests {
         drop(before);
         drop(authority);
         drop(daemon);
-        let cold = open_owner(workspace.path());
-        let mut cold_authority = SemanticAuthority::open(workspace.path()).unwrap();
+        let cold = open_owner(workspace.path())?;
+        let mut cold_authority = SemanticAuthority::open(workspace.path()).test_value()?;
         let snapshot = cold.engine().daemon().owner().snapshot();
         assert_eq!(snapshot.root(), final_root);
         assert_eq!(
             cold_authority
                 .freshness(
                     &snapshot,
-                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    SelectedSemanticPublicationKey::new(key).test_value()?,
                     claim
                 )
-                .unwrap(),
+                .test_value()?,
             SemanticVersionFreshness::Unverified
         );
-        let versions = super::super::commands::semantic_versions(
-            &cold,
-            key.package(),
-            None,
-            &mut cold_authority,
-        )
-        .unwrap();
+        let versions =
+            super::super::commands::semantic_versions(&cold, key.package(), None, &mut cold_authority)
+                .test_value()?;
         assert!(
-            versions.iter().any(|record| record.selected
-                && record.freshness == SemanticVersionFreshness::Unverified)
+            versions
+                .iter()
+                .any(|record| record.selected
+                    && record.freshness == SemanticVersionFreshness::Unverified)
         );
+        Ok(())
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! reason. Counting entries would pass for a vector that reports the wrong
 //! shape entirely, which is exactly the defect these tests exist to pin.
 
+use crate::test_support::TestValue as _;
 use super::{ActivatedProfiles, SemanticTally};
 use backend_engine::builtin::{
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
@@ -286,7 +287,8 @@ fn missing_native_authority_with_a_published_sibling_is_a_settled_gap() {
 }
 
 #[test]
-fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_moving() {
+fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_moving()
+-> Result<(), String> {
     for reason in [
         SemanticUnavailableReason::Rejected,
         SemanticUnavailableReason::Cancelled,
@@ -305,7 +307,7 @@ fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_movi
                 ),
                 &ActivatedProfiles::new(),
             )
-            .unwrap();
+            .test_value()?;
         // A sibling profile that is still pending is work that is genuinely
         // moving. The lane reads as indexing until it settles, and the refusal
         // is reported the moment nothing else is in flight. The project row
@@ -320,7 +322,7 @@ fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_movi
                 ),
                 &ActivatedProfiles::new(),
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(
             moving.coverage(),
             vec![
@@ -344,10 +346,12 @@ fn native_refusal_is_not_masked_by_optional_embeddings_once_nothing_else_is_movi
             ]
         );
     }
+    Ok(())
 }
 
 #[test]
-fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture() {
+fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture()
+-> Result<(), String> {
     use backend_engine::builtin::{ProductSemanticCaptureOutcome, SemanticPublicationVersion};
     let key = selected_key("retained");
     let selected = published(b"retained-complete");
@@ -364,7 +368,7 @@ fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture
             Some(ProductSemanticCaptureOutcome::Pending { prior: Some(prior) }),
             &active,
         )
-        .unwrap();
+        .test_value()?;
     assert_eq!(
         pending.coverage(),
         vec![
@@ -389,14 +393,18 @@ fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture
                 Some(ProductSemanticCaptureOutcome::Failed { prior, reason }),
                 &active,
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(
             failed.coverage(),
             vec![
                 ViewCoverage::Complete,
                 ViewCoverage::Unavailable {
                     lane: Lane::Semantic,
-                    reason: if reason == SemanticUnavailableReason::Rejected { Reason::Incomplete } else { Reason::Unconfigured }
+                    reason: if reason == SemanticUnavailableReason::Rejected {
+                        Reason::Incomplete
+                    } else {
+                        Reason::Unconfigured
+                    }
                 }
             ]
         );
@@ -406,10 +414,11 @@ fn retained_complete_generation_does_not_certify_a_new_pending_or_failed_capture
         published(b"retained-complete"),
         "qualifying freshness must not discard retained evidence"
     );
+    Ok(())
 }
 
 #[test]
-fn published_capture_requires_exact_selected_claim_and_coverage() {
+fn published_capture_requires_exact_selected_claim_and_coverage() -> Result<(), String> {
     use backend_engine::builtin::ProductSemanticCaptureOutcome;
     let key = selected_key("correlated");
     let selected = published(b"selected");
@@ -455,21 +464,22 @@ fn published_capture_requires_exact_selected_claim_and_coverage() {
             }),
             &activated(&[&key]),
         )
-        .unwrap();
-    assert_eq!(
-        observed.coverage(),
-        vec![ViewCoverage::Complete]
-    );
+        .test_value()?;
+    assert_eq!(observed.coverage(), vec![ViewCoverage::Complete]);
+    Ok(())
 }
 
 #[test]
-fn published_partial_scope_is_settled_usable_and_never_a_failure() {
+fn published_partial_scope_is_settled_usable_and_never_a_failure() -> Result<(), String> {
     use backend_engine::builtin::{PartialSemanticCoverage, ProductSemanticCaptureOutcome};
     use std::num::NonZeroU32;
     let key = selected_key("partial");
     let coverage = SemanticPublicationCoverage::Partial(
-        PartialSemanticCoverage::new(NonZeroU32::new(1).unwrap(), NonZeroU32::new(2).unwrap())
-            .unwrap(),
+        PartialSemanticCoverage::new(
+            NonZeroU32::new(1).test_value()?,
+            NonZeroU32::new(2).test_value()?,
+        )
+        .test_value()?,
     );
     let record = ProductSemanticPublicationRecord::Published {
         coverage,
@@ -486,7 +496,7 @@ fn published_partial_scope_is_settled_usable_and_never_a_failure() {
             }),
             &activated(&[&key]),
         )
-        .unwrap();
+        .test_value()?;
     // A publication whose authority checked only part of the declared scope
     // is readable. It is reported as a settled gap, not as an unavailable
     // lane, and never as a fraction that tells the reader to wait.
@@ -511,10 +521,12 @@ fn published_partial_scope_is_settled_usable_and_never_a_failure() {
         super::publication_row_state(&record),
         backend_engine::RowState::Ready
     );
+    Ok(())
 }
 
 #[test]
-fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fails() {
+fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fails()
+-> Result<(), String> {
     use backend_engine::RowState;
     use backend_engine::builtin::ProductSemanticCaptureOutcome;
     let usable = selected_key("usable");
@@ -530,7 +542,7 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
             }),
             &activated(&[&usable]),
         )
-        .unwrap();
+        .test_value()?;
     mixed
         .observe_current(
             &refused,
@@ -540,7 +552,7 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
             }),
             &ActivatedProfiles::new(),
         )
-        .unwrap();
+        .test_value()?;
     assert_eq!(
         mixed.coverage(),
         vec![
@@ -562,7 +574,7 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
                 }),
                 &ActivatedProfiles::new(),
             )
-            .unwrap();
+            .test_value()?;
     }
     assert_eq!(
         total.coverage(),
@@ -591,10 +603,12 @@ fn a_refused_profile_beside_a_published_one_is_partial_and_only_total_refusal_fa
             assert_eq!(merged, expected, "{first:?} then {second:?}");
         }
     }
+    Ok(())
 }
 
 #[test]
-fn current_capture_scope_ignores_history_and_preserves_optional_embedding_controls() {
+fn current_capture_scope_ignores_history_and_preserves_optional_embedding_controls()
+-> Result<(), String> {
     use backend_engine::builtin::ProductSemanticCaptureOutcome;
     let key = selected_key("scope-controls");
     let selected = published(b"scope-controls");
@@ -609,7 +623,7 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             }),
             &ActivatedProfiles::new(),
         )
-        .unwrap();
+        .test_value()?;
     assert_eq!(
         observed,
         SemanticTally::default(),
@@ -625,7 +639,7 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             }),
             &activated(&[&key]),
         )
-        .unwrap();
+        .test_value()?;
     assert_eq!(observed.coverage(), vec![ViewCoverage::Complete]);
     let mut pending = SemanticTally::default();
     pending
@@ -635,7 +649,7 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             Some(ProductSemanticCaptureOutcome::Pending { prior: None }),
             &activated(&[&key]),
         )
-        .unwrap();
+        .test_value()?;
     assert_eq!(
         pending.coverage(),
         vec![
@@ -647,6 +661,7 @@ fn current_capture_scope_ignores_history_and_preserves_optional_embedding_contro
             }
         ]
     );
+    Ok(())
 }
 
 #[test]
@@ -690,10 +705,11 @@ fn legacy_package_scope_never_treats_missing_native_authority_as_ready() {
 /// unavailable for work that was asked for, and ready exactly when the lane is
 /// complete or settled with gaps. A pair outside that table is a lie.
 #[test]
-fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
+fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() -> Result<(), String> {
     use backend_engine::RowState;
     use backend_engine::builtin::{
-        PartialSemanticCoverage, ProductSemanticCaptureOutcome as Outcome, SemanticPublicationVersion,
+        PartialSemanticCoverage, ProductSemanticCaptureOutcome as Outcome,
+        SemanticPublicationVersion,
     };
     use std::num::NonZeroU32;
     let prior = SemanticPublicationVersion::new(
@@ -701,8 +717,11 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
         claim(b"agreement-prior"),
     );
     let gaps = SemanticPublicationCoverage::Partial(
-        PartialSemanticCoverage::new(NonZeroU32::new(1).unwrap(), NonZeroU32::new(2).unwrap())
-            .unwrap(),
+        PartialSemanticCoverage::new(
+            NonZeroU32::new(1).test_value()?,
+            NonZeroU32::new(2).test_value()?,
+        )
+        .test_value()?,
     );
     let outcomes = |seed: &[u8]| {
         vec![
@@ -732,7 +751,7 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
     let mut checked = 0_usize;
     for count in 1..=3_usize {
         let choices = outcomes(b"agreement").len();
-        for code in 0..choices.pow(u32::try_from(count).unwrap()) {
+        for code in 0..choices.pow(u32::try_from(count).test_value()?) {
             let mut tally = SemanticTally::default();
             let mut row: Option<RowState> = None;
             let mut remainder = code;
@@ -750,7 +769,7 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
                 };
                 tally
                     .observe_current(&key, selected.as_ref(), Some(outcome), &activated(&[&key]))
-                    .unwrap();
+                    .test_value()?;
                 let state = super::capture_row_state(outcome);
                 row = Some(row.map_or(state, |prior| super::merge_package_state(prior, state)));
             }
@@ -759,7 +778,7 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
                 .iter()
                 .copied()
                 .find(|entry| super::is_semantic_lane(*entry));
-            let row = row.unwrap();
+            let row = row.test_value()?;
             let agrees = match (row, lane) {
                 (RowState::Loading, Some(ViewCoverage::Partial { .. })) => true,
                 (RowState::Failed, Some(ViewCoverage::Unavailable { reason, .. })) => {
@@ -776,4 +795,5 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() {
         }
     }
     assert_eq!(checked, 7 + 49 + 343);
+    Ok(())
 }
