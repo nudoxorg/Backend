@@ -4760,6 +4760,75 @@ fn native_tsz_declaration_coordinate(
     fields.into_iter().next()
 }
 
+/// Import aliases may denote a value or a type. The importing spelling never
+/// chooses that role: only the terminal TSZ symbol's unique stable declaration
+/// in this admitted program can supply it. Callable overload selection keeps
+/// the existing implementation rule above; merged non-callable declarations
+/// remain unresolved rather than borrowing one same-named declaration.
+fn native_tsz_import_declaration_coordinate(
+    binder: &TszBinderState,
+    symbol: TszSymbolId,
+    program_files: &[TszBoundFile],
+) -> Option<NativeTszDeclarationCoordinate> {
+    if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, program_files, false) {
+        return Some(target);
+    }
+    let symbol = binder.symbols.get(symbol)?;
+    let ([declaration], [stable]) = (
+        symbol.declarations.as_slice(),
+        symbol.stable_declarations.as_slice(),
+    ) else {
+        return None;
+    };
+    let file = program_files.get(usize::try_from(stable.file_idx).ok()?)?;
+    let arena = &file.arena;
+    if stable.pos >= stable.end || arena.pos_end_at(*declaration) != Some((stable.pos, stable.end)) {
+        return None;
+    }
+    let node = arena.get(*declaration)?;
+    let (name, kind) = if let Some(class) = arena.get_class(node) {
+        (class.name, EntityKind::Record)
+    } else if let Some(interface) = arena.get_interface(node) {
+        (interface.name, EntityKind::Trait)
+    } else if let Some(alias) = arena.get_type_alias(node) {
+        (alias.name, EntityKind::Alias)
+    } else if let Some(enumeration) = arena.get_enum(node) {
+        (enumeration.name, EntityKind::Enum)
+    } else if let Some(module) = arena.get_module(node) {
+        (module.name, EntityKind::Module)
+    } else if let Some(variable) = arena.get_variable_declaration(node) {
+        let kind = if arena.is_const_variable_declaration(*declaration) {
+            EntityKind::Constant
+        } else {
+            EntityKind::Static
+        };
+        (variable.name, kind)
+    } else {
+        return None;
+    };
+    // Destructured/export-assignment carriers do not prove a named target.
+    let identifier = arena.get_identifier_at(name)?;
+    let (name_start, name_end) = arena.pos_end_at(name)?;
+    if identifier.escaped_text.is_empty()
+        || name_start < stable.pos
+        || name_start >= name_end
+        || name_end > stable.end
+    {
+        return None;
+    }
+    let source = arena.get_source_file_at(file.source_file)?;
+    source.text.get(name_start as usize..name_end as usize)?;
+    Some(NativeTszDeclarationCoordinate {
+        file_index: stable.file_idx,
+        path: file.file_name.clone(),
+        source_identity: *ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes()),
+        declaration_start: stable.pos,
+        declaration_end: stable.end,
+        name_start,
+        kind,
+    })
+}
+
 pub(crate) fn collect_with_tsz<'source, 'session>(
     profile: TypeScriptSource,
     source: &'source [u8],
@@ -6256,6 +6325,44 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             return Ok(());
         }
         let arena = &bound_file.arena;
+        // The syntax pass retains import placeholders until the admitted
+        // project can resolve them. Upgrade both the written alias site and
+        // its bare references, including type/value reads outside a call.
+        // An exact existing import occurrence is required; unrelated same-name
+        // identifiers cannot acquire another module's declaration authority.
+        let mut identifiers = HashMap::<(u32, u32), Option<TszNodeIndex>>::new();
+        for (raw_node, _) in arena.nodes.iter().enumerate() {
+            let Ok(raw_node) = u32::try_from(raw_node) else { continue; };
+            let identifier = TszNodeIndex(raw_node);
+            if arena.get_identifier_at(identifier).is_none() { continue; }
+            let Some((start, end)) = arena.pos_end_at(identifier) else { continue; };
+            identifiers.entry((start, end)).and_modify(|previous| {
+                if *previous != Some(identifier) { *previous = None; }
+            }).or_insert(Some(identifier));
+        }
+        for index in 0..self.facts.occurrence_len {
+            let occurrence = self.facts.occurrences[index];
+            if occurrence.confidence != OccurrenceConfidence::Import { continue; }
+            let owner = self.facts.occurrence_owners[index];
+            let Some(base) = self.decl_starts.get(owner as usize).copied() else { continue; };
+            let (Some(start), Some(end)) = (
+                base.checked_add(occurrence.span.start), base.checked_add(occurrence.span.end),
+            ) else { continue; };
+            let Some(&Some(identifier)) = identifiers.get(&(start, end)) else { continue; };
+            let Some(resolved) = checker.resolve_project_identifier_with_owner(identifier) else {
+                continue;
+            };
+            let Some(target_binder) = checker.ctx.get_binder_for_file(resolved.owner_file_idx) else {
+                continue;
+            };
+            let Some(target) = native_tsz_import_declaration_coordinate(
+                target_binder, resolved.symbol_id, program_files,
+            ) else { continue; };
+            self.commit_native_tsz_occurrence(
+                owner, Span::new(start, end), occurrence.kind, target,
+                current_file_index, program_identity,
+            )?;
+        }
         let mut called_member_accesses = std::collections::HashSet::<u32>::new();
         for (raw_node, node) in arena.nodes.iter().enumerate() {
             if node.kind != TszSyntaxKind::CALL_EXPRESSION {
@@ -12331,6 +12438,110 @@ describe('suite', () => {\n\
             2,
             "each call site has one exact target, without a global name-only guess"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_named_import_sites_and_bare_uses_keep_exact_local_targets() -> Result<(), LaneError> {
+        use backend_compile::SourceBindingIdentity;
+        let scheduler = "export interface Workout { name: string; }\nexport function generateSchedule(request: Workout): string { return request.name; }\nexport const scheduleVersion = 1;\n";
+        let navbar = "export default class NavBar {}\n";
+        let caller = "import { generateSchedule, Workout as ImportedWorkout, scheduleVersion } from '@/lib/scheduler';\nimport NavBar from '@/components/NavBar';\nimport { remote } from 'vendor';\nexport function POST(request: ImportedWorkout) { const run = generateSchedule; const component = NavBar; return run(request) + scheduleVersion; }\nexport function shadow(generateSchedule: number) { return generateSchedule; }\n";
+        let path = "src/app/api/[[...v1]]/route.ts";
+        let resolutions = [
+            module_resolution(path, "@/lib/scheduler", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "src/lib/scheduler.ts".to_owned() }),
+            module_resolution(path, "@/components/NavBar", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "src/components/NavBar.ts".to_owned() }),
+            module_resolution(path, "vendor", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("src/lib/scheduler.ts", scheduler), ("src/components/NavBar.ts", navbar), (path, caller)],
+            &resolutions,
+        )?;
+        let project = authority.project().ok_or(LaneError::Missing("import project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let facts = collect_native_tsz_file(project, path, caller)?;
+        let syntax = backend_frontend_typescript::syntax_frontend()
+            .map_err(|_| LaneError::Missing("syntax frontend"))?
+            .analyze(std::path::Path::new(path), caller.as_bytes())
+            .map_err(|_| LaneError::Missing("syntax analysis"))?;
+        for name in ["generateSchedule", "ImportedWorkout", "scheduleVersion", "NavBar"] {
+            let imports = syntax.declarations().iter().filter(|row| row.name() == name).collect::<Vec<_>>();
+            assert_eq!(imports.len(), 1, "one written import binding: {name}");
+            let SourceBindingIdentity::Exact(capture) = imports[0].binding_identity() else {
+                panic!("exact import source capture");
+            };
+            assert_eq!((0..facts.len()).filter(|&index| {
+                facts.names[index] == name.as_bytes()
+                    && facts.kinds[index] == EntityKind::Reexport
+                    && facts.provenance.source_spans()[index]
+                        .is_some_and(|span| (span.start, span.end) == capture.owner())
+            }).count(), 1, "one compiler binding at the exact statement extent: {name}");
+        }
+        for (name, expected_path, kind) in [
+            ("generateSchedule", "src/lib/scheduler.ts", EntityKind::Function),
+            ("ImportedWorkout", "src/lib/scheduler.ts", EntityKind::Trait),
+            ("scheduleVersion", "src/lib/scheduler.ts", EntityKind::Constant),
+            ("NavBar", "src/components/NavBar.ts", EntityKind::Record),
+        ] {
+            let binding = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
+                && facts.kinds[index] == EntityKind::Reexport).expect("import binding");
+            let imported = (0..facts.occurrence_len).filter(|&index| {
+                facts.occurrence_owners[index] == binding as u32
+                    && facts.occurrences[index].kind == ReferenceKind::Import
+            }).collect::<Vec<_>>();
+            assert_eq!(imported.len(), 1, "one import edge for {name}");
+            let index = imported[0];
+            assert_eq!(facts.occurrences[index].confidence, OccurrenceConfidence::Oracle);
+            let slot = facts.occurrence_source_coordinate_slot[index].expect("native source target");
+            let coordinate = TypeScriptSourceCoordinate::decode(&facts.foreign_source_coordinate_text[slot as usize])
+                .expect("typed native coordinate");
+            assert_eq!(coordinate.path, expected_path);
+            let OccurrenceTarget::Foreign(key) = facts.occurrences[index].target else { panic!("cross-file target"); };
+            assert_eq!(key.kind, Some(kind));
+            assert!(staged_tsz_coordinates(&facts)?.iter().any(|(reference, path, _, _, _, _)|
+                *reference != ReferenceKind::Import && path == expected_path), "bare source use for {name}");
+        }
+        let remote = (0..facts.len()).find(|&index| facts.names[index] == b"remote").expect("external binding");
+        assert!((0..facts.occurrence_len).any(|index| {
+            facts.occurrence_owners[index] == remote as u32
+                && facts.occurrences[index].confidence == OccurrenceConfidence::Import
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Foreign(key)
+                    if matches!(key.origin, ForeignOrigin::Package(_)))
+        }), "unresolved modules retain their external operand");
+        let shadow = caller.rfind("generateSchedule;").expect("shadow reference") as u32;
+        assert!((0..facts.occurrence_len).any(|index| {
+            let owner = facts.occurrence_owners[index] as usize;
+            facts.provenance.source_spans()[owner].is_some_and(|span|
+                span.start + facts.occurrences[index].span.start == shadow)
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Local(_))
+        }), "a same-spelled local parameter never borrows the import's target");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_type_only_imports_do_not_guess_merged_or_overloaded_targets() -> Result<(), LaneError> {
+        let dependency = "export interface Workout { name: string; }\nexport interface Merged { first: number; }\nexport interface Merged { second: number; }\nexport declare function pick(value: string): string;\nexport declare function pick(value: number): number;\n";
+        let caller = "import type { Workout, Merged } from '@/models';\nimport { pick } from '@/models';\nexport function take(value: Workout, merged: Merged) { return pick; }\n";
+        let resolutions = [module_resolution("caller.ts", "@/models", TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File { path: "models.ts".to_owned() })];
+        let authority = native_tsz_project_with_resolutions(
+            &[("models.ts", dependency), ("caller.ts", caller)], &resolutions,
+        )?;
+        let project = authority.project().ok_or(LaneError::Missing("type-only import project"))?;
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        for (name, exact) in [("Workout", true), ("Merged", false), ("pick", false)] {
+            let fact = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
+                && facts.kinds[index] == EntityKind::Reexport).expect("real import binding");
+            let edge = (0..facts.occurrence_len).find(|&index| facts.occurrence_owners[index] == fact as u32
+                && facts.occurrences[index].kind == ReferenceKind::Import).expect("written import edge");
+            assert_eq!(facts.occurrence_source_coordinate_slot[edge].is_some(), exact,
+                "only a singular exact declaration supplies the import target: {name}");
+            assert_eq!(facts.occurrences[edge].confidence,
+                if exact { OccurrenceConfidence::Oracle } else { OccurrenceConfidence::Import });
+        }
         Ok(())
     }
 
