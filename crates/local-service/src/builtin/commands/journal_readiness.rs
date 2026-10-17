@@ -48,6 +48,11 @@ enum Wake {
     Close,
     #[cfg(test)]
     Barrier(mpsc::SyncSender<()>),
+    #[cfg(test)]
+    Hold {
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +143,7 @@ pub(super) struct JournalReadiness {
     watcher: Option<RecommendedWatcher>,
     observations: Option<mpsc::Receiver<Observation>>,
     worker: Option<JoinHandle<()>>,
+    closing: Arc<AtomicBool>,
     selected: Readiness,
     reconciled: Option<Reconciliation>,
     explicit_retry: Arc<()>,
@@ -210,6 +216,8 @@ impl JournalReadiness {
             changed.watch_healthy.store(false, Ordering::Release);
         }
         let worker_changed = changed.clone();
+        let closing = Arc::new(AtomicBool::new(false));
+        let worker_closing = Arc::clone(&closing);
         #[cfg(test)]
         let reader_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         #[cfg(test)]
@@ -219,11 +227,20 @@ impl JournalReadiness {
             .spawn(move || {
                 let mut journal = IndexOperationJournal::open(path.clone());
                 while let Ok(wake) = wakes.recv() {
+                    if worker_closing.load(Ordering::Acquire) {
+                        break;
+                    }
                     match wake {
                         Wake::Close => break,
                         #[cfg(test)]
                         Wake::Barrier(ready) => {
                             let _ = ready.send(());
+                            continue;
+                        }
+                        #[cfg(test)]
+                        Wake::Hold { entered, release } => {
+                            let _ = entered.send(());
+                            let _ = release.recv();
                             continue;
                         }
                         Wake::Changed => {}
@@ -259,6 +276,7 @@ impl JournalReadiness {
             watcher,
             observations: Some(observations),
             worker: Some(worker),
+            closing,
             selected: Readiness::Unknown(Unknown::AwaitingChange),
             reconciled: None,
             explicit_retry: Arc::new(()),
@@ -450,15 +468,60 @@ impl JournalReadiness {
         }
     }
 
-    pub(super) fn close(&mut self) {
-        self.watcher.take();
-        // Release a possibly full completion slot before joining the worker.
+    #[cfg(test)]
+    pub(super) fn hold_reader(&mut self) -> mpsc::SyncSender<()> {
+        self.reader_barrier();
+        let (entered, receipt) = mpsc::sync_channel(1);
+        let (release, gate) = mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut hold = Wake::Hold {
+            entered,
+            release: gate,
+        };
+        loop {
+            match self.changed.wake.try_send(hold) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(returned)) => hold = returned,
+                Err(mpsc::TrySendError::Disconnected(_)) => panic!("reader disconnected"),
+            }
+            assert!(std::time::Instant::now() < deadline, "reader hold queued");
+            self.poll();
+            std::thread::yield_now();
+        }
+        loop {
+            self.poll();
+            match receipt.try_recv() {
+                Ok(()) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => panic!("reader hold disconnected"),
+            }
+            assert!(std::time::Instant::now() < deadline, "reader is held");
+            std::thread::yield_now();
+        }
+        release
+    }
+
+    /// Stop observations and wake the reader without waiting for its native I/O.
+    pub(super) fn request_close(&mut self) {
+        self.closing.store(true, Ordering::Release);
+        // Release a possibly full completion slot before any worker joins.
         self.observations.take();
+        // A full slot already wakes the reader; it checks closing before work.
+        let _ = self.changed.wake.try_send(Wake::Close);
+        self.selected = Readiness::Unknown(Unknown::Closed);
+    }
+
+    #[cfg(test)]
+    pub(super) fn cancellation_for_test(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.closing)
+    }
+
+    pub(super) fn close(&mut self) {
+        self.request_close();
+        self.watcher.take();
         if let Some(worker) = self.worker.take() {
-            let _ = self.changed.wake.send(Wake::Close);
             let _ = worker.join();
         }
-        self.selected = Readiness::Unknown(Unknown::Closed);
     }
 }
 

@@ -306,8 +306,17 @@ fn places(endpoint: &Path, project: &Path) -> Places {
     // Find the RelationLabel enum through the product's own read path.
     let mut session = Session::connect(endpoint).expect("session");
     let reply = session.search("RelationLabel", 50).expect("search");
-    let (coordinate, alias_coordinate, source_line) = match reply.reply {
-        CommandReply::Search(result) => {
+    // This read locates exact named route targets; it does not prove that
+    // full lexical or semantic search has finished preparing.
+    let result = match reply.reply {
+        CommandReply::Search(result) => result,
+        CommandReply::PublishedNameSearch(page) => {
+            assert!(page.readiness.is_consistent());
+            page.snapshot
+        }
+        other => panic!("search answered {other:?}"),
+    };
+    let (coordinate, alias_coordinate, source_line) = {
             let rows = result.root.rows();
             let page = rows.iter().find(|row| {
                 row.label.ends_with("::RelationLabel")
@@ -319,8 +328,6 @@ fn places(endpoint: &Path, project: &Path) -> Places {
             let alias = rows.iter().find(|row| row.label.ends_with("::lib.rs:103::RelationLabel"))
                 .map(|row| row.label.clone());
             (page.0, alias, page.1)
-        }
-        other => panic!("search answered {other:?}"),
     };
     let package = PackageId::new(project.to_str().expect("utf-8")).expect("package");
     let page_route = |coordinate: &str, package: &PackageId| Route::Symbol(SymbolRoute {
@@ -371,6 +378,8 @@ fn replace_find_fixture(endpoint: &Path, project: &Path, prior: VersionedRoot) -
         let mut subscription = backend_client::LocalSubscriptionTransport::connect(endpoint).expect("replacement subscription");
         let (_, revision) = subscription.bootstrap_root().expect("replacement root");
         let current = VersionedRoot::from_revision(1, revision, 0);
+        // This replacement gate deliberately waits for full-search replies;
+        // a names-only partial page cannot prove corpus-wide absence.
         let old_absent = matches!(session.search("RelationLabel", 50).map(|reply| reply.reply),
             Ok(CommandReply::Search(page)) if page.root.rows().iter().all(|row| !row.label.ends_with("::RelationLabel")));
         let new_present = matches!(session.search("ReplacementLabel", 50).map(|reply| reply.reply),

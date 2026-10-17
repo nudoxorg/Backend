@@ -730,3 +730,26 @@ fn source_preparation_rejects_a_self_consistent_foreign_range_before_any_success
         }
     }
 }
+
+#[test]
+fn default_versions_credit_is_shared_and_two_complete_descriptors_need_one_owner_read() -> Result<(), String> {
+    let credit=backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT;
+    assert_eq!(credit,8);
+    let card=super::super::tools::catalog_tool("backend.semantic_versions").expect("registered schema");
+    assert_eq!(card["inputSchema"]["properties"]["limit"]["default"],credit);
+    for exposure in [McpExposure::Direct,McpExposure::RegisteredCall] {
+        for detail in [Detail::Summary,Detail::Standard,Detail::Full] {
+            let mut server=ready(Fake{semantic_versions_total:Some(2),..Fake::default()});
+            let response=request(&mut server,"tools/call",&exposure.expose_call(json!({"name":"backend.semantic_versions","arguments":{"package":captured().package.as_str(),"detail":detail.name()}})));
+            assert_context_bounded(&response);
+            assert!(wire_tokens(&response).map_err(|error|format!("{error:?}"))?<=MCP_CL100K_TOKEN_LIMIT);
+            assert_eq!(response["jsonrpc"],"2.0");assert_eq!(response["id"],9);assert!(response.get("error").is_none());
+            let result=&response["result"];assert_eq!(result["isError"],false,"{response}");
+            let actual:SemanticVersionsPage=serde_json::from_value(result["structuredContent"]["semantic_data"]["value"].clone()).expect("complete typed descriptors");
+            assert_eq!(actual,page(credit,0,2,8));assert_eq!(actual.entries.len(),2);assert!(!actual.more);assert!(actual.complete);assert!(actual.next_cursor.is_none());
+            assert!(result["structuredContent"].get("continuation_call").is_none());
+            assert!(matches!(&server.product.surface_commands[..],[SurfaceCommand::SemanticVersions{limit,cursor:None,..}] if *limit==credit));
+        }
+    }
+    Ok(())
+}

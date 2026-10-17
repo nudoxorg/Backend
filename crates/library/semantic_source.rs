@@ -17,6 +17,7 @@ pub use reference::{
     SemanticSourceReference, VerifiedSemanticSourceReference,
 };
 pub use versions::{
+    DEFAULT_SEMANTIC_VERSIONS_LIMIT,
     SemanticVersionDescriptor, SemanticVersionsCursor, SemanticVersionsCursorClaims,
     SemanticVersionsPage, VerifiedSemanticVersionsCursor,
 };

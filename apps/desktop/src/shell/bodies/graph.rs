@@ -89,6 +89,8 @@ pub(crate) struct Map {
     focus_on_mount: Option<GraphMountFocus>,
     mounted_focus: Option<GraphMountFocus>,
     route: Option<Route>,
+    /// The Reader Place actually being painted, including a pending departure.
+    reading: Option<crate::navigation::presentation::VisitId>,
     /// Route entry has already been consumed; independent of scene node ids.
     route_consumed: bool,
     presentation_visit: VisitIdentity,
@@ -325,16 +327,7 @@ impl Map {
                 &root,
                 window,
                 |map, owner, request: &GraphViewRequest, window, cx| {
-                    let snapshot = map.links.snapshot(cx);
-                    if owner.read(cx).graph_view_generation() == request.sequence
-                        && snapshot.route() == &request.route
-                        && request.root.authority() == request.authority
-                        && snapshot.key().authority() == request.authority
-                        && snapshot.overlay().is_none()
-                        && request.attachment.as_ref().is_some_and(|attachment| {
-                            map.links.store.read(cx).admits_owner_attachment(attachment)
-                        })
-                        && map.links.store.read(cx).graph_view_eligibility() == request.selection
+                    if request.admits(owner.read(cx).graph_view_generation(), map.links.store.read(cx))
                         && map.visible
                     {
                         // Focus events publish through the GPUI effect queue.
@@ -376,6 +369,7 @@ impl Map {
             focus_on_mount: None,
             mounted_focus: None,
             route: None,
+            reading: None,
             route_consumed: false,
             presentation_visit: VisitIdentity::default(),
             retained_presentation: None,
@@ -697,6 +691,7 @@ impl Map {
     pub(crate) fn show(
         &mut self,
         route: &Route,
+        reading: crate::navigation::presentation::VisitId,
         source: Option<&crate::model::pages::SymbolRef>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -728,6 +723,7 @@ impl Map {
             self.invalidate_open();
             self.error = None;
         }
+        self.reading = Some(reading);
         self.visible = true;
         if arriving {
             self.publish_focus(cx);
@@ -737,7 +733,10 @@ impl Map {
         };
         self.presented_visit = Some(PresentationVisit {
             identity: self.presentation_visit.clone(),
-            reading: self.links.snapshot(cx).session().reading.current.id,
+            // While the destination is pending, Reader still paints its
+            // departing Place. Its visit belongs to this graph route; the
+            // current snapshot may already name the destination's visit.
+            reading,
             route: route.clone(),
             preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
         });
@@ -1364,12 +1363,12 @@ impl Map {
         let snapshot = self.links.snapshot(cx);
         if route_symbol(snapshot.route()).as_ref() == Some(&symbol) {
             if let Some(route) = snapshot.route().with_view(target.view()) {
-                self.links.dispatch(Intent::Navigate(route), cx);
+                self.links.dispatch_graph_navigation(route, cx);
             }
         } else if let Some(route) =
             crate::shell::kit::symbol_view_route(package.as_str(), &symbol, target.view(), line)
         {
-            self.links.dispatch(Intent::Navigate(route), cx);
+            self.links.dispatch_graph_navigation(route, cx);
         }
     }
 }
@@ -1703,12 +1702,14 @@ impl Render for Map {
         // asynchronous replacement reads. A later user choice already
         // invalidated the receipt, so this cannot manufacture a fresh claim.
         self.park_retired_focus(window, cx);
-        if let Some((scene, identities, coverage)) = self.ready_scene.take() {
-            let snapshot = self.links.snapshot(cx);
+        if let Some(reading) = self.reading
+            && let Some(route) = self.route.clone()
+            && let Some((scene, identities, coverage)) = self.ready_scene.take()
+        {
             let visit = PresentationVisit {
                 identity: self.presentation_visit.clone(),
-                reading: snapshot.session().reading.current.id,
-                route: snapshot.route().clone(),
+                reading,
+                route,
                 preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
             };
             let restored = self.retained_presentation.take().and_then(|packet| packet.restore(&visit, &scene, &identities));
@@ -1740,15 +1741,21 @@ impl Render for Map {
                         });
                     });
                 }));
+                let graph_id = cx.entity_id();
                 graph.on_peek_action(Rc::new(move |node, action, window, cx| {
                     let Some(map) = peek_owner.upgrade() else {
                         return;
                     };
+                    if map.read(cx).graph.as_ref().is_none_or(|graph| graph.entity_id() != graph_id) { return; }
                     let basis = map.read(cx).callback_basis(cx);
                     let Some(attachment) = map.read(cx).links.store.read(cx).current_owner_attachment() else { return; };
                     window.defer(cx, move |window, cx| {
                         map.update(cx, |map, cx| {
-                            if map.visible && map.callback_current(&basis, cx)
+                            // Retained pinned cards deliberately act while
+                            // their map is hidden. They still belong to this
+                            // exact scene and cannot target its replacement.
+                            if map.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
+                                && map.callback_current(&basis, cx)
                                 && map.links.store.read(cx).admits_owner_attachment(&attachment) {
                                 map.peek_action(node, action, window, cx);
                             }
@@ -1780,8 +1787,9 @@ impl Render for Map {
         let route = self.route.clone();
         if self.visible
             && let Some(route) = route
+            && let Some(reading) = self.reading
         {
-            self.show(&route, None, window, cx);
+            self.show(&route, reading, None, window, cx);
         }
         // Rebind controls to this exact mounted visit. Previously captured
         // callbacks retain their older predicate and cannot adopt a later visit.

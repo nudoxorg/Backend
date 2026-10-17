@@ -4372,3 +4372,7 @@ mod native_hint_receipt_tests {
         assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("remount-hint-sentinel"));
     }
 }
+
+#[cfg(test)]
+#[path = "graph_navigation_queue_tests.rs"]
+mod graph_navigation_queue_tests;

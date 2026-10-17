@@ -1007,6 +1007,9 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
 
 #[gpui::test]
 fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut TestAppContext) {
+    // Paint witnesses are opt-in. Enable tracing before the first cached frame
+    // so both the initial words and their ordinary replacement are observable.
+    cx.update(|cx| cx.set_global(gpui::TextTrace));
     let route = Route::Symbol(SymbolRoute {
         project: None, package: crate::core::PackageId::new(PACKAGE).expect("package"),
         id: Coordinate::new(CONTINUE).expect("constant"), at: None, view: View::Page, line: None, selected: None,
@@ -1016,6 +1019,13 @@ fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut Tes
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     let symbol = SymbolRef::new(CONTINUE).expect("open constant");
     let key = PageKey::Symbol(symbol.clone());
+    rig.draw();
+    rig.cx.update(|window, _| {
+        assert!(window.painted_texts().iter().any(|text| text.text.to_string().contains("Before publication.")),
+            "the exact initial source is mounted before the renewal");
+        assert!(!window.painted_texts().iter().any(|text| text.text.to_string().contains("After publication.")),
+            "the replacement words cannot precede the real renewal");
+    });
     let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
     let count = reads.count(&key);
     let rendered = rig.counts().reader;
@@ -1039,11 +1049,17 @@ fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut Tes
         assert_eq!(window.a11y_frame_number(), frame, "the effect boundary still holds both notifications");
     });
     rig.cx.run_until_parked();
+    // Service queued notifications, then draw the ordinary platform frame.
+    // Unlike repaint(), draw() does not refresh cached views: Resource must
+    // invalidate the mounted Reader itself before the new words can paint.
+    rig.draw();
     assert!(rig.counts().reader > rendered, "GraphFocus cannot snapshot away the queued Resource movement");
     rig.cx.update(|window, _| {
         assert!(window.a11y_frame_number() > frame);
         assert!(window.painted_texts().iter().any(|text| text.text.to_string().contains("After publication.")),
             "ordinary page landing replaces the mounted words without refresh, Back or navigation");
+        assert!(!window.painted_texts().iter().any(|text| text.text.to_string().contains("Before publication.")),
+            "the mounted replacement cannot retain the earlier words");
     });
     rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(Arc::ptr_eq(&before, &store.snapshot()));

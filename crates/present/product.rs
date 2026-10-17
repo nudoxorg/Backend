@@ -821,6 +821,20 @@ impl ProductView {
         crate::shell::command("package-graph", &arguments)
     }
 
+    /// Copy the native page's effective credit as well as its opaque cursor.
+    /// A first-page resize must not leave CLI continuations using the default.
+    #[must_use]
+    pub fn semantic_versions_cli_continuation(&self, detail: crate::Detail) -> Option<String> {
+        let ProductSemanticData::VersionsPage(page) = self.semantic_data()? else { return None; };
+        let cursor = page.next_cursor.as_ref()?;
+        let credit = cursor.claims().ok()?.limit;
+        crate::shell::command("semantic-versions", &[
+            page.package.as_str().to_owned(), "--limit".to_owned(), credit.to_string(),
+            "--cursor".to_owned(), cursor.as_str().to_owned(),
+            "--detail".to_owned(), detail.name().to_owned(),
+        ])
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -1300,6 +1314,9 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     "discovery complete"
                 }
             ));
+            if let Some(credit) = page.next_cursor.as_ref().and_then(|cursor|cursor.claims().ok()).map(|claims|claims.limit) {
+                if let Some(note) = &mut view.note { note.push_str(&format!(" The continuation keeps page bound {credit}.")); }
+            }
             view.owner_cursor = page.next_cursor.clone().map(|cursor| {
                 CursorProjection::projected(
                     ContinuationCursor::SemanticVersions(cursor.clone()),
@@ -5057,3 +5074,7 @@ mod tests {
 #[cfg(test)]
 #[path = "project_lockfile_tests.rs"]
 mod project_lockfile_tests;
+
+#[cfg(test)]
+#[path = "package_metadata_cause_tests.rs"]
+mod package_metadata_cause_tests;

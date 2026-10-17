@@ -2,7 +2,7 @@ use super::super::read_package_sources;
 use super::super::view_build;
 use super::super::view_build::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
+    join_native_typescript_target, join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
@@ -385,6 +385,10 @@ fn semantic_link_row_id(
             ))
         }
         LinkTarget::External(external) => {
+            if let Some(identity) = join_native_typescript_target(image, external, callable_index, published)? {
+                let row_id = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, identity));
+                return Ok(view.row_ref(row_id).map(|_| row_id));
+            }
             if matches!(link_kind, LinkKind::Calls | LinkKind::MethodCall) {
                 let identity = if let Some(identity) = foreign_package_call_retarget(
                     image,
@@ -818,7 +822,11 @@ fn project_opened_reference_facts(
                 let LinkTarget::External(external) = link.target else {
                     continue;
                 };
-                let identity = if matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
+                let identity = if let Some(identity) = join_native_typescript_target(
+                    &image, external, &callable_index, &published,
+                )? {
+                    Some(identity)
+                } else if matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
                     if let Some(identity) = foreign_package_call_retarget(
                         &image,
                         external,
@@ -1856,24 +1864,43 @@ mod project_call_tests {
     }
 
     #[test]
-    fn structural_graph_union_keeps_selected_semantic_confidence_and_adds_only_missing_edges() {
+    fn structural_graph_union_keeps_selected_semantic_confidence_and_adds_only_missing_edges()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let from = RowId::Symbol(backend_engine::symbol_key("pkg::from"));
         let to = RowId::Symbol(backend_engine::symbol_key("pkg::to"));
         let missing = RowId::Symbol(backend_engine::symbol_key("pkg::missing"));
-        for confidence in [None, Some(backend_engine::SemanticConfidence::Compiler), Some(backend_engine::SemanticConfidence::Heuristic)] {
-            let selected = GraphRelation { confidence, ..GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls) };
+        for confidence in [
+            None,
+            Some(backend_engine::SemanticConfidence::Compiler),
+            Some(backend_engine::SemanticConfidence::Heuristic),
+        ] {
+            let selected = GraphRelation {
+                confidence,
+                ..GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls)
+            };
             let mut relations = BTreeSet::from([selected]);
-            super::extend_structural_graph_relations(&mut relations, [
-                GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls)
-                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
-                GraphRelation::new(from, missing, backend_engine::SemanticLinkKind::Calls)
-                    .with_confidence(backend_engine::SemanticConfidence::Syntactic),
-            ]);
+            super::extend_structural_graph_relations(
+                &mut relations,
+                [
+                    GraphRelation::new(from, to, backend_engine::SemanticLinkKind::Calls)
+                        .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+                    GraphRelation::new(from, missing, backend_engine::SemanticLinkKind::Calls)
+                        .with_confidence(backend_engine::SemanticConfidence::Syntactic),
+                ],
+            );
             assert_eq!(relations.len(), 2);
             assert!(relations.contains(&selected));
-            assert_eq!(relations.iter().find(|relation| relation.to == missing).unwrap().confidence,
-                Some(backend_engine::SemanticConfidence::Syntactic));
+            assert_eq!(
+                relations
+                    .iter()
+                    .find(|relation| relation.to == missing)
+                    .test_value()?
+                    .confidence,
+                Some(backend_engine::SemanticConfidence::Syntactic)
+            );
         }
+        Ok(())
     }
 
     fn relation_targets(relations: &BTreeSet<GraphRelation>, from: RowId) -> Vec<RowId> {

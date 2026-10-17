@@ -352,7 +352,7 @@ impl<'a> CheckerContext<'a> {
         None
     }
 
-    fn project_library_symbol_and_arena(
+    pub(super) fn project_library_symbol_and_arena(
         &self,
         symbol: SymbolId,
     ) -> Option<(&tsz_binder::Symbol, &NodeArena)> {

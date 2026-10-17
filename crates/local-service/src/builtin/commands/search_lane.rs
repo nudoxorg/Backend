@@ -182,17 +182,23 @@ impl SearchLane {
                     let corpus = projection.admit_corpus(
                         snapshot.root(),
                         || {
-                            let read = || super::super::read_indexed_sources(&snapshot);
+                            let read = || {
+                                super::super::read_indexed_sources_controlled(
+                                    &snapshot,
+                                    Some(&control),
+                                )
+                            };
                             diagnostic::measure(source_phase, read)
                         },
                         |sources| {
                             let admit = || {
-                                super::super::view_build::semantic_query_corpus(
+                                super::super::view_build::semantic_query_corpus_controlled(
                                     &snapshot,
                                     &capture.compiler,
                                     &sources,
                                     &mut generations,
                                     &mut image_rows,
+                                    Some(&control),
                                 )
                             };
                             diagnostic::measure(corpus_phase, admit)
@@ -203,7 +209,13 @@ impl SearchLane {
                             Some(diagnostic::Generations::capture(&generations));
                         observation.corpus = corpus.as_ref().ok().map(diagnostic::Corpus::capture);
                     }
-                    let corpus = corpus.map_err(Failure::Capture)?;
+                    let corpus = corpus.map_err(|error| {
+                        if control.load(Ordering::Acquire) {
+                            Failure::Cancelled
+                        } else {
+                            Failure::Capture(error)
+                        }
+                    })?;
                     if control.load(Ordering::Acquire) {
                         return Err(Failure::Cancelled);
                     }
@@ -315,18 +327,32 @@ impl SearchLane {
         })
     }
 
+    /// Signal retirement before joining any other owner lane. Native work can
+    /// observe cancellation while those independent workers are being joined.
+    pub(super) fn request_close(&mut self) {
+        self.closed = true;
+        if let Some((_, _, cancelled)) = &self.selected {
+            cancelled.store(true, Ordering::Release);
+        }
+        if let Some(active) = &self.active {
+            active.cancelled.store(true, Ordering::Release);
+        }
+    }
+
     /// Retirement is joined. Shutdown may wait for a native commit already in
     /// progress; the active control loop and cancellation never perform it.
     pub(super) fn close(&mut self) {
-        self.closed = true;
-        if let Some((_, _, cancelled)) = self.selected.take() {
-            cancelled.store(true, Ordering::Release);
-        }
+        self.request_close();
+        drop(self.selected.take());
         if let Some(active) = self.active.take() {
-            active.cancelled.store(true, Ordering::Release);
             drop(active.completed);
             let _ = active.worker.join();
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn active_cancellation(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.active.as_ref().expect("active preparation").cancelled)
     }
 
     #[cfg(test)]

@@ -814,8 +814,12 @@ impl Reader {
         self.map.as_ref().is_some_and(|map| map.read(cx).focused(cx))
     }
 
-    pub(crate) fn open_graph_current(&mut self, target: bodies::graph::OpenView, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
+    /// Enter the graph controller after releasing the Reader borrow. Opening
+    /// captures the live Reader departure through Links before queueing the
+    /// exact navigation, so this must not hold a Reader update lease.
+    pub(crate) fn open_graph_current(reader: &Entity<Self>, target: bodies::graph::OpenView, window: &mut Window, cx: &mut App) {
+        let map = reader.read(cx).map.clone();
+        if let Some(map) = map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
     }
 
     #[cfg(test)]
@@ -3069,7 +3073,7 @@ impl Render for Reader {
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
             let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| map.show(&current.route, source.as_ref(), window, cx));
+            map.update(cx, |map, cx| map.show(&current.route, current.visit, source.as_ref(), window, cx));
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);

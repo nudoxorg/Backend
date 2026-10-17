@@ -67,6 +67,30 @@ impl Reader {
 }
 
 impl Engine for Reader {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<backend_library::PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.calls.push("members");
+        if self.members_fail {
+            return Err(ClientError::Protocol(
+                "DigestMismatch MEMBER_PROOF_REFUSED".to_owned(),
+            ));
+        }
+        let request = PageRequest::new(document.basis, QueryLimit::new(limit).expect("credit"));
+        let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+        let mut owner = DocumentQuery::selected(document.symbol, document.basis);
+        if let Some(source) = document.source_basis() {
+            owner = owner.with_source_basis(source);
+        }
+        let page = self
+            .catalog
+            .members_page(owner, request)
+            .expect("exact selected member page");
+        Ok(ReplyDto::new(3, CommandReply::ProjectionPage(page)))
+    }
     fn revision(&mut self) -> Result<backend_library::ViewStateRoot, ClientError> {
         Ok(self.catalog.revision_root())
     }

@@ -51,6 +51,8 @@ impl UnixCommandTransport {
             .map_err(|error| ClientError::Io(error.to_string()))?
             .unwrap_or(self.io_timeout);
         let initial = ceiling.map_or(initial, |remaining| initial.min(remaining));
+        // Published-name continuations do only bounded current-arrangement
+        // reads; they never wait for corpus preparation or owe a search ticket.
         let opted_in = self.peer.is_some() && matches!(&request.command, Command::Search(_));
         let wrapped = if opted_in {
             Some(

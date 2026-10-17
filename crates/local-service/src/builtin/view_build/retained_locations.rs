@@ -38,6 +38,25 @@ impl<'a> RetainedLocations<'a> {
             backend_compile::SourceBinding,
         >,
     ) -> Result<Self, String> {
+        Self::for_entities_controlled(profile, reader, session, declarations, exact, None)
+    }
+
+    pub(super) fn for_entities_controlled<Reader: SemanticReader + ?Sized>(
+        profile: LanguageProfile,
+        reader: &Reader,
+        session: &backend_engine::application::DocumentationSession<'_, Reader>,
+        declarations: &[&'a SourceDeclaration],
+        exact: &std::collections::BTreeMap<
+            backend_semantic::ir::DeclarationIdentity,
+            backend_compile::SourceBinding,
+        >,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        let checkpoint = |point| {
+            super::super::check_search_preparation(cancelled, point)
+                .map_err(|error| error.to_string())
+        };
+        checkpoint("retained-start")?;
         if !matches!(profile, LanguageProfile::TypeScript(_)) {
             return Ok(Self {
                 windows: Vec::new(),
@@ -45,6 +64,7 @@ impl<'a> RetainedLocations<'a> {
         }
         let mut required = Vec::new();
         for entity in session.publication_entities() {
+            checkpoint("retained-entity")?;
             let entity = entity.map_err(|error| error.to_string())?;
             if exact.contains_key(&entity.entity.version.identity()) {
                 continue;
@@ -61,39 +81,55 @@ impl<'a> RetainedLocations<'a> {
                 }
             }
         }
-        Ok(Self::build(profile, declarations, Some(&required)))
+        Self::build(profile, declarations, Some(&required), cancelled)
     }
 
     #[cfg(test)]
-    pub(super) fn of(profile: LanguageProfile, declarations: &[&'a SourceDeclaration]) -> Self {
-        Self::build(profile, declarations, None)
+    pub(super) fn of(
+        profile: LanguageProfile,
+        declarations: &[&'a SourceDeclaration],
+    ) -> Result<Self, String> {
+        Self::build(profile, declarations, None, None)
     }
 
     fn build(
         profile: LanguageProfile,
         declarations: &[&'a SourceDeclaration],
         required: Option<&[(u32, u32)]>,
-    ) -> Self {
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        let checkpoint = |point| {
+            super::super::check_search_preparation(cancelled, point)
+                .map_err(|error| error.to_string())
+        };
+        checkpoint("retained-build")?;
         let mut windows = Vec::new();
         if !matches!(profile, LanguageProfile::TypeScript(_)) {
-            return Self { windows };
+            return Ok(Self { windows });
         }
         if required.is_some_and(<[(u32, u32)]>::is_empty) {
-            return Self { windows };
+            return Ok(Self { windows });
         }
         let Ok(frontend) = backend_frontend_typescript::syntax_frontend() else {
-            return Self { windows };
+            return Ok(Self { windows });
         };
         for site in declarations {
+            checkpoint("retained-site")?;
             let SourceBindingIdentity::Exact(capture) = site.binding_identity() else {
                 continue;
             };
-            if required.is_some_and(|spans| {
-                !spans
-                    .iter()
-                    .any(|(start, end)| capture.owner().0 <= *start && *end <= capture.owner().1)
-            }) {
-                continue;
+            if let Some(spans) = required {
+                let mut covered = false;
+                for (start, end) in spans {
+                    checkpoint("retained-required-span")?;
+                    if capture.owner().0 <= *start && *end <= capture.owner().1 {
+                        covered = true;
+                        break;
+                    }
+                }
+                if !covered {
+                    continue;
+                }
             }
             if site.source_excerpt().extent() != Some(SourceExcerptExtent::Complete) {
                 continue;
@@ -109,13 +145,16 @@ impl<'a> RetainedLocations<'a> {
                     "class __NudoxRetainedSourceContext__ {\n".len(),
                 ),
             ] {
+                checkpoint("retained-parse")?;
                 let Ok(analysis) = frontend.analyze(
                     std::path::Path::new(site.location().path()),
                     input.as_bytes(),
                 ) else {
                     continue;
                 };
+                checkpoint("retained-parsed")?;
                 for candidate in analysis.declarations().iter() {
+                    checkpoint("retained-candidate")?;
                     if candidate.name() != site.name() || candidate.kind() != site.kind() {
                         continue;
                     }
@@ -176,7 +215,8 @@ impl<'a> RetainedLocations<'a> {
                 });
             }
         }
-        Self { windows }
+        checkpoint("retained-complete")?;
+        Ok(Self { windows })
     }
 
     pub(super) fn place<Reader: SemanticReader + ?Sized>(
@@ -277,7 +317,7 @@ mod tests {
                 .analyze(std::path::Path::new(path), source.as_bytes())
                 .map_err(|e| e.to_string())?;
             let declarations = analysis.declarations().iter().collect::<Vec<_>>();
-            let locations = RetainedLocations::of(PROFILE, &declarations);
+            let locations = RetainedLocations::of(PROFILE, &declarations)?;
             let field_start = source.find(field).ok_or("frozen field")?;
             let parameter_start = field_start + field.find(parameter).ok_or("binding")?;
             for (start, end, text) in [
@@ -323,7 +363,7 @@ mod tests {
             .analyze(std::path::Path::new(path), source.as_bytes())
             .map_err(|e| e.to_string())?;
         let sites = analysis.declarations().iter().collect::<Vec<_>>();
-        let locations = RetainedLocations::of(PROFILE, &sites);
+        let locations = RetainedLocations::of(PROFILE, &sites)?;
         for (needle, line) in [("service: LeftType", 3), ("service: RightType", 6)] {
             let start = source.find(needle).ok_or("binding")?;
             let placement = locations
@@ -361,7 +401,7 @@ mod tests {
         let start = source.find("service: LeftType").ok_or("binding")? as u32;
         for unavailable in [&shifted, &legacy, &truncated] {
             assert!(
-                RetainedLocations::of(PROFILE, &[unavailable])
+                RetainedLocations::of(PROFILE, &[unavailable])?
                     .place_span(path, start, start + 7)
                     .is_none()
             );
@@ -390,7 +430,7 @@ mod multiline_anchor_tests {
         let locations = RetainedLocations::of(
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             &sites,
-        );
+        )?;
         for (needle, line) in [("Foo", 3), ("Renamed", 4), ("holder", 7), ("child = 1", 8)] {
             let start = source.find(needle).ok_or("source needle")?;
             let placement = locations
@@ -403,8 +443,9 @@ mod multiline_anchor_tests {
             RetainedLocations::build(
                 LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 &sites,
-                Some(&[])
-            )
+                Some(&[]),
+                None,
+            )?
             .windows
             .is_empty()
         );
@@ -635,6 +676,103 @@ mod cold_projection_tests {
                 .any(|fact| fact.presentation().name == "ArticlesService"),
             "the structural import twin contributes no duplicate search identity"
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[test]
+    fn cancelled_retained_excerpt_walk_cannot_return_partial_locations() -> Result<(), String> {
+        let profile =
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        let source = (0..128)
+            .map(|index| format!("export function run{index}() {{ return {index}; }}\n"))
+            .collect::<String>();
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new("retained.ts"), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let sites = analysis.declarations().iter().collect::<Vec<_>>();
+        let (sources, _) = super::super::tests::cross_file_sources(&[(
+            "retained.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )])?;
+        let record = &sources.files.first().ok_or("captured source file")?.1;
+        let expected = super::super::structural::complete_declarations_for_file(&sources, record)
+            .map_err(|error| error.to_string())?;
+        let declaration_token = Arc::new(AtomicBool::new(false));
+        {
+            let _cancel = crate::builtin::cancel_search_preparation_after(
+                "materialize-declaration",
+                64,
+                Arc::clone(&declaration_token),
+            );
+            let error = super::super::structural::complete_declarations_for_file_controlled(
+                &sources,
+                record,
+                Some(&declaration_token),
+            )
+            .err()
+            .ok_or("cancelled declaration collection returned a partial file")?;
+            assert!(error.to_string().contains("search preparation cancelled"));
+            assert!(declaration_token.load(Ordering::Acquire));
+        }
+        declaration_token.store(false, Ordering::Release);
+        assert_eq!(
+            super::super::structural::complete_declarations_for_file_controlled(
+                &sources,
+                record,
+                Some(&declaration_token)
+            )
+            .map_err(|error| error.to_string())?,
+            expected
+        );
+        let baseline = RetainedLocations::build(profile, &sites, None, None)?;
+        assert!(!baseline.windows.is_empty());
+        let token = Arc::new(AtomicBool::new(true));
+        assert!(RetainedLocations::build(profile, &sites, None, Some(&token)).is_err());
+        for (point, visits) in [
+            ("retained-site", 64),
+            ("retained-parse", 4),
+            ("retained-candidate", 64),
+        ] {
+            token.store(false, Ordering::Release);
+            let _cancel =
+                crate::builtin::cancel_search_preparation_after(point, visits, Arc::clone(&token));
+            let error = RetainedLocations::build(profile, &sites, None, Some(&token))
+                .err()
+                .ok_or("cancelled excerpt walk returned partial locations")?;
+            assert!(
+                error.contains("search preparation cancelled"),
+                "{point}: {error}"
+            );
+            assert!(
+                token.load(Ordering::Acquire),
+                "real excerpt walk reached {point}"
+            );
+        }
+        token.store(false, Ordering::Release);
+        let resumed = RetainedLocations::build(profile, &sites, None, Some(&token))?;
+        assert_eq!(resumed.windows.len(), baseline.windows.len());
+        for (actual, expected) in resumed.windows.iter().zip(&baseline.windows) {
+            assert_eq!(
+                (actual.path, actual.text, actual.origin, actual.start_line),
+                (
+                    expected.path,
+                    expected.text,
+                    expected.origin,
+                    expected.start_line
+                )
+            );
+        }
         Ok(())
     }
 }

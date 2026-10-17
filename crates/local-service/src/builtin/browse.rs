@@ -117,6 +117,11 @@ impl ObservationControl {
         Instant::now() >= self.deadline
     }
 
+    /// Remaining portion of the same absolute budget, including queue wait.
+    pub(super) fn remaining_budget(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
     #[cfg(test)]
     pub(super) fn expire_for_test(&self) {
         self.force_expired.store(true, Ordering::Release);

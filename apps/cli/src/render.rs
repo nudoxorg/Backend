@@ -78,8 +78,8 @@ pub(crate) fn try_answer_with_cursor(
     }
 }
 
-/// Admits the complete selected native graph under the actual CLI format,
-/// without preview truncation hiding an edge or continuation. Other commands
+/// Admits complete selected native pages under the actual CLI format,
+/// without preview truncation hiding a row, edge or continuation. Other commands
 /// retain their existing response policy.
 pub(crate) fn admit_graph_answer(answer: &Answer, options: &Options) -> Result<(), Fault> {
     let mut text = match options.format() {

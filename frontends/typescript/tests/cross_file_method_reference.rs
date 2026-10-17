@@ -22,21 +22,21 @@ fn cross_file_method_reference_uses_the_spelled_import() -> Result<(), CheckerEr
     )
     .expect("write workout.service.ts");
     let weeks = dir.join("weeks.ts");
-    let source = b"import { WorkoutService } from \"./workout.service\";\nexport function sync(service: WorkoutService) { service.setNote(); }\n";
-    std::fs::write(&weeks, source).expect("write weeks.ts");
+    let source = "import { WorkoutService } from \"./workout.service\";\nexport function sync(service: WorkoutService) { service.setNote(); }\n";
+    std::fs::write(&weeks, source.as_bytes()).expect("write weeks.ts");
 
     // Use the real bounded package authority and its selected checker seam.
     // Missing runtime/SDK remains a typed failure; this test never installs or
     // silently substitutes a floating TypeScript release.
     let report = Checker::default().run_in_package_at(
         backend_semantic::vocabulary::TypeScriptSource::TypeScript,
-        source,
+        source.as_bytes(),
         &dir,
         Path::new("weeks.ts"),
     );
     std::fs::remove_dir_all(&dir).expect("remove fixture directory");
     let report = report?;
-    let _bound = CheckerIndex::bind(&report, core::str::from_utf8(source).unwrap())?;
+    let _bound = CheckerIndex::bind(&report, source)?;
     let setnote = report
         .references
         .iter()

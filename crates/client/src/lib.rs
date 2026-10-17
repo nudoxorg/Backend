@@ -1445,6 +1445,25 @@ impl Session {
                 .as_ref()
                 .or(self.request_context.as_ref()),
         )?;
+        // A cursor issued by the useful name stage cannot be sent as a full
+        // Search command, even after richer search becomes ready. Reopen the
+        // retained exact next command with the existing owner/proof admission.
+        if self.prepared_query.is_none()
+            && continuation.is_some_and(|continuation| {
+                self.continuations.get(&continuation.cursor())
+                    .and_then(|retained| retained.next_request.as_ref())
+                    .is_some_and(|request| matches!(&request.command, Command::SearchPublishedNames(_)))
+            })
+        {
+            let limit = QueryLimit::new(limit).ok_or_else(|| {
+                ClientError::Protocol("query limit is outside its bound".to_owned())
+            })?;
+            self.prepare_query_window(
+                backend_library::QueryWindow::fixed(limit),
+                continuation,
+                Some(deadline.remaining()?),
+            )?;
+        }
         if self.prepared_query.is_some() {
             return self.resume_prepared_query_with_budget(
                 "Search",
@@ -1606,6 +1625,47 @@ impl Session {
             }
         };
         self.send_success(command, Some(certificate))
+    }
+
+    /// Reads only the admitted document owner's immediate members at its exact
+    /// immutable source. A revision change refuses this composite read rather
+    /// than re-resolving its coordinate or substituting a new owner.
+    ///
+    /// # Errors
+    /// Returns owner, transport, source-basis or continuation admission failures.
+    pub fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        if revision.root != document.basis {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::WrongBasis {
+                    expected: document.basis.into(),
+                    observed: revision.root.into(),
+                },
+            ));
+        }
+        let source = self.admitted_source_basis()?;
+        if document.source_basis() != Some(source)
+            || !document.selection.as_ref().is_some_and(|selection| {
+                selection.symbol() == document.symbol && selection.source() == source
+            })
+        {
+            return Err(ClientError::StaleCursor);
+        }
+        // A bounded owner revision supplies a root commitment, not the full
+        // relation preimage needed to serialize a source Basis. Check that
+        // admitted source locally, then retain it for reply admission below.
+        let owner = DocumentQuery::selected(document.symbol, document.basis);
+        let certificate = selected_symbol_certificate(revision.certificate, document.symbol);
+        let page = page_request(document.basis, limit, continuation)?;
+        self.send_success(
+            Command::MembersPage { owner, page },
+            Some(self.page_certificate(certificate, continuation)),
+        )
     }
 
     /// Reads a graph window while retaining the exact selected ID and optional label.
@@ -2497,6 +2557,17 @@ impl Session {
         self.request_result(result)
     }
 
+    fn admitted_source_basis(&self) -> Result<backend_library::Basis, ClientError> {
+        let owner = self.admitted_owner.ok_or(ClientError::StaleCursor)?;
+        Ok(backend_library::Basis {
+            root: owner.root(),
+            object: self.admitted_source.ok_or(ClientError::StaleCursor)?,
+            branch: owner.branch(),
+            log: owner.log(),
+            schema: owner.schema(),
+        })
+    }
+
     fn send_success_with_budget(
         &mut self,
         command: Command,
@@ -2504,6 +2575,9 @@ impl Session {
         remaining: Option<Duration>,
     ) -> Result<ReplyDto, ClientError> {
         let started = std::time::Instant::now();
+        let members_source = matches!(&command, Command::MembersPage { .. })
+            .then(|| self.admitted_source_basis())
+            .transpose()?;
         let selected_assertion = selected_coordinate_assertion(&command, certificate.as_ref())?;
         // A small graph page may legitimately omit its center. Authenticate
         // that selected row through a document at this already admitted source,
@@ -2532,10 +2606,11 @@ impl Session {
                 center
             } else {
                 let document = self.send_success_with_budget(
-                    Command::Document(
-                        DocumentQuery::addressed(assertion.symbol, source.root)
-                            .with_source_basis(source),
-                    ),
+                    // The owner revision is a bounded commitment, not the
+                    // complete relation preimage required to encode a Basis.
+                    // Pin the ordinary document request to that revision and
+                    // compare its admitted reply to the full source below.
+                    Command::Document(DocumentQuery::addressed(assertion.symbol, source.root)),
                     certificate.clone(),
                     remaining.map(|budget| budget.saturating_sub(started.elapsed())),
                 )?;
@@ -2547,6 +2622,7 @@ impl Session {
         let portable = matches!(
             &command,
             Command::Search(_)
+                | Command::SearchPublishedNames(_)
                 | Command::Name(_)
                 | Command::GraphQuery(_)
                 | Command::GraphPage { .. }
@@ -2562,6 +2638,9 @@ impl Session {
         })?;
         if let Some(assertion) = selected_assertion {
             assertion.admit_payload(&reply, pinned_center.as_ref())?;
+        }
+        if let Some(source) = members_source {
+            admit_member_page_source(&reply, source)?;
         }
         self.remember_continuation(&reply, pinned_center);
         if let Some((command, Some(certificate))) = portable {
@@ -2598,6 +2677,11 @@ impl Session {
     ) {
         let terminal = match &reply.reply {
             CommandReply::ProjectionPage(page) => page.terminal,
+            CommandReply::PublishedNameSearch(page) => {
+                page.snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+                    PageTerminal::More(PageContinuation::from_cursor(cursor))
+                })
+            }
             CommandReply::GraphQueryPage(page) => page.terminal,
             CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => {
                 snapshot.next.map_or(PageTerminal::Complete, |cursor| {
@@ -2696,6 +2780,21 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         bytes.push(high << 4 | low);
     }
     Some(bytes)
+}
+
+fn admit_member_page_source(
+    reply: &ReplyDto,
+    source: backend_library::Basis,
+) -> Result<(), ClientError> {
+    let CommandReply::ProjectionPage(page) = &reply.reply else {
+        return Err(ClientError::Protocol(
+            "member page changed reply shape".to_owned(),
+        ));
+    };
+    if page.snapshot.root.basis() != source {
+        return Err(ClientError::StaleCursor);
+    }
+    Ok(())
 }
 
 fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {

@@ -1,0 +1,307 @@
+{
+  "corpus_commit": "52a53b5b91810314dd37d3468b9f2b2f86f7926f",
+  "corpus_tree": "4796a129a87dbb0bf4da14cb2a5c93c34c812625",
+  "source_root": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase",
+  "source_capture_version": "374dd413e22328222420998ed6fa6aed0249ce7d05400e57bfdbd10469a2d1ac",
+  "input_digest": "d8775fe22daf39cc8449cc1d5f27b957abb61e3884c4c2a1f695bcfdfca779e1",
+  "profile": [
+    1,
+    0
+  ],
+  "source_count": 45,
+  "source_bytes": 1266249,
+  "capture_proof_sha256": "f32efd352e6b8a6c9a02603f0adbf02ae6ebdf3b7e92afc988a77433b22dbab3",
+  "borrowed_full_source_inventory_sha256": "2b036c46b650e40731a94bada162338949409a070968213e34d09605501a395f",
+  "sources": [
+    {
+      "path": "plugins/jsvm/internal/types/generated/types.d.ts",
+      "bytes": 766861,
+      "sha256": "a1bf4dfbb780099a2605764f3899234b7b47335f27f3f4e2600f9ecdbfbee098",
+      "content_version": "1239f50fd8c123f44d714c4bfee974b1c2cad7cb9f581c9f32f73e71dfe35200"
+    },
+    {
+      "path": "ui/public/libs/prism/prism.min.js",
+      "bytes": 51414,
+      "sha256": "06bb44cab25ade5cccbe6458e4604a850cd4c3ee07fb15a20ccf3498dd4195ed",
+      "content_version": "f62fd70d5ef97fac63c3431fc4fcace0693fd7016397f7cde468a038928c6279"
+    },
+    {
+      "path": "ui/public/libs/tinymce/icons/default/icons.min.js",
+      "bytes": 69427,
+      "sha256": "df42e91e6e15da0ab50513280cba33c8fb6d4e0fbdb4d8edaf3d39209d8d6d18",
+      "content_version": "ca93a61e753409a1d9de4a7f7b9dbc5a0a02c7b1d95a9247becadbaa02aed46b"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/anchor/plugin.min.js",
+      "bytes": 2692,
+      "sha256": "442754f9050b6b1379fd24f210b5b55f8b990c3a25ead899d6f1a9f07f82016e",
+      "content_version": "40e4be8ded87de58e8e8dd37e5aa2c03f11a0e3a5bceebba683839235e879329"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/autolink/plugin.min.js",
+      "bytes": 3243,
+      "sha256": "67a2958870cb40e9f22a056d8a8f997985197e5f6cb0c7bafbd3fbc7a3abcffd",
+      "content_version": "6f196b0571eefb6aa405751b0ec1a4723356b845e9b4c77140ff006bcd1edc40"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/autoresize/plugin.min.js",
+      "bytes": 2520,
+      "sha256": "9909581ef6e880407281de176f951910ee52b384d7129179e4383cbb5d53fc79",
+      "content_version": "3710711a2e11810bae5f948ffba477ecc518759e460ff58877f3019f242648a7"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/autosave/plugin.min.js",
+      "bytes": 3328,
+      "sha256": "75b4d073fb176b52f98cd6aa1697dc61115dd63f28e64424a6ad82340f4d0365",
+      "content_version": "2c3222efe5665cbea82f5735e9e8a34c981c5a0fd4f0485dcafafcdc670a6290"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/code/plugin.min.js",
+      "bytes": 877,
+      "sha256": "d6ecbcc3ba539d321acd282dd1523bc92ec69b996d246489c47622dc528e4998",
+      "content_version": "39a9e2fb6e6b6334e5991be2180dca7eacda4cbd62e69d78488059ea8e1581ac"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/codesample/plugin.min.js",
+      "bytes": 48279,
+      "sha256": "81d1a9d6fb19fef3afbb3448cf86d5e4b254ad8f9bd36dd1aef028710a8956c9",
+      "content_version": "c818fb1e27885b5dffee7ef7017cce54b19133c98e18820bada3bd05c2555a7a"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/directionality/plugin.min.js",
+      "bytes": 4582,
+      "sha256": "077587b98839175b1b6addea68cd317c8307b7971117e81fc46797e733c2f286",
+      "content_version": "faa7b6aa4dddbfa29116895780fc9fc707fb7127410561a62e327f7a0a4750a7"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/fullscreen/plugin.min.js",
+      "bytes": 15597,
+      "sha256": "6433624a48a76f5258fc0eb7bd5435cf79528ca7e884b0577e03d31eac866ac7",
+      "content_version": "e0a456da377d91cac4722bb559ac1f0c256d3602e338ccc046649ec15656c7a5"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/image/plugin.min.js",
+      "bytes": 19574,
+      "sha256": "f1a9fdb7576b15a0f748f65e58fd8cd45cee996d12254dc46161946a9c7df20d",
+      "content_version": "fab0e7598477de49fdb7851b2f353e9e17099546cdedfd4a83572cf1a75ce062"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/importcss/plugin.min.js",
+      "bytes": 4067,
+      "sha256": "823cc1113d0d6913ca389f9b8bee39ec3ca0c07d5a18004019243a2d349e00ad",
+      "content_version": "d945c33b124a6b99d8edc581855771afc638557d50080d337768780975d97050"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/insertdatetime/plugin.min.js",
+      "bytes": 3038,
+      "sha256": "5e117c004b6b78ef063f2d5eb2c5066fcebd194dd3c05f1ea184c58ed3bb6d31",
+      "content_version": "acac0023c99c7a71b7d1f9b8c6727ddc6abc87e760ef38c8487dc0b87ff813a9"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/link/plugin.min.js",
+      "bytes": 15839,
+      "sha256": "35294f3de6032e37d50263bdad8f8e4959abe891f6fcdf80a0cbcd28a68bb777",
+      "content_version": "45eb7e6dc81c1b59615f7b8a1cd261e01eb2406afb6940814b70be1d8c3c2e1b"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/lists/plugin.min.js",
+      "bytes": 28124,
+      "sha256": "fa2032a229234168a334f04d565df4377be6613d12d3af97c4c21c2ab4543c71",
+      "content_version": "857e22d9b0e8ee2123aa408277fbe9943f7e9391cfbb57ac6cf80bc838a6b1ad"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/media/plugin.min.js",
+      "bytes": 17304,
+      "sha256": "957d331a4a5f2ef877e2db95e6beaac47fd665b3041108c363fc857d363e62f8",
+      "content_version": "6bcdb1a984f537814a7be6fd8a7ca66abf6fd6116cd90f20648020c3c3c58a5d"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/nonbreaking/plugin.min.js",
+      "bytes": 1571,
+      "sha256": "dd6967fc7dc20e01ffe19233aa373affc3732a04f66fe1657331a3a3b7801d96",
+      "content_version": "96bf18b771535456936d98f44337b5927a221052986474c5f4b840761c39f6eb"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/pagebreak/plugin.min.js",
+      "bytes": 1646,
+      "sha256": "b94d15c520729fe03e54c37934b7e1bbcbce2ede6e49e7e0fa6b1f87845b48da",
+      "content_version": "dfd16f3234f79a5d7d35e956b35eea586ab7e09de8928333c80a553ac00497bc"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/preview/plugin.min.js",
+      "bytes": 1718,
+      "sha256": "d40e1324e43b5655db6622456fb9e66c704d05ebecaf0f692e39002fee6e1211",
+      "content_version": "1d8a9419548263af24106160f1afe19080fab5dbd29293c62346fc84ee63d9c4"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/quickbars/plugin.min.js",
+      "bytes": 5197,
+      "sha256": "4073bb8ece0605ac4a69666d1672bbc323065e1c6c66e84289b8d15b9a823468",
+      "content_version": "e0e403d3c53834d2d7fb4d8514657832dee0c2b7ebbd4d2c476ca9b39b976bd5"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/save/plugin.min.js",
+      "bytes": 1592,
+      "sha256": "72355a2fb763dc3fcef37c84aa8f38b5d4e0729439797b15bb041cef64ce608d",
+      "content_version": "0dff8bc23529718b32d0f3a5eaaf3ef6fe92c0fbfebbf1e620ea77fcb1086984"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/searchreplace/plugin.min.js",
+      "bytes": 13375,
+      "sha256": "333124d12f89e7924ad9e4046a0419d3bd76c1b6cb4426f69589ede1d700c521",
+      "content_version": "1ebfeeb852d55b1c4743a1980411e6b6f34d3ede71ddd42343723fbe7c6437a9"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/table/plugin.min.js",
+      "bytes": 47838,
+      "sha256": "4563f2b2c1d48afcc0e5459abb90d7604d303effcea28d9507ea2b082bae4462",
+      "content_version": "de9cb149d2e6c5df41738f325b4c2851a5598b7fdb715cd0ea170cde8ab3cc58"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/template/plugin.min.js",
+      "bytes": 8414,
+      "sha256": "e0909d4a14749da0872c2fe37fd0e1aac7e44752879e716a974980bc7f23708a",
+      "content_version": "7b6c35fa60fa09fa5e0009f8658ca32d2ca29d98653a1035a2110caec7956c7d"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/visualblocks/plugin.min.js",
+      "bytes": 1230,
+      "sha256": "2b8014c9b4bd4b4527881daf73ab962f90d4a09878c8864891e6eca0405b6336",
+      "content_version": "497bb3b6de0e586641c2cb366d4fd0d4a1311d667abbe3f4b3f80fbcec9b5713"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/visualchars/plugin.min.js",
+      "bytes": 5869,
+      "sha256": "10dcb5e984032ed0ec85d6d17e4ffa222d0c550a4c7b3f3c18391471f9a567ab",
+      "content_version": "d74dd2524f244e288b33681745210a33746de919cd6da9e919dd27cc7ec05ee1"
+    },
+    {
+      "path": "ui/public/libs/tinymce/plugins/wordcount/plugin.min.js",
+      "bytes": 12034,
+      "sha256": "b7f5f857351ec250b9a62f0dcde10441a70a4f0d2a3732f970bbb0a6c164bef4",
+      "content_version": "935b18e713ebb963ea884b61b1acbf6098e93d652d3bf05cb5d6a059f6adfdec"
+    },
+    {
+      "path": "ui/public/libs/tinymce/skins/content/default/content.js",
+      "bytes": 1252,
+      "sha256": "0bc8db5002fcd0420e57dbc9f2c2d9e85b752fb64b465f316c2ee914b59886c0",
+      "content_version": "e9eb06eb0f0c92f2401dd575be677a8722b016a52f5f99087cc5bd4794654c0f"
+    },
+    {
+      "path": "ui/src/actions/scrollend.js",
+      "bytes": 1516,
+      "sha256": "2b1bfccce3699eed3b4de9c5075202328de6c5695e16aee75bbe405b96b2bb6b",
+      "content_version": "dba294bddd1b69caca0f6797b455b968bb4830f33c70e281e9024d1fb1b8f49f"
+    },
+    {
+      "path": "ui/src/actions/tooltip.js",
+      "bytes": 5872,
+      "sha256": "a419993f4d56b2557ed0e2bd750fbb79f7db98c99c958bbf22943806a456dc7b",
+      "content_version": "612b86d73112adf07171f56ac5820b29ca6371fc9a6d3b0fc4d56ce764a95da1"
+    },
+    {
+      "path": "ui/src/autocomplete.worker.js",
+      "bytes": 1105,
+      "sha256": "d8e32dd35b5bc8676c00534535fd1ebd7a14fe035b2123bfc2a32d93fa8baac2",
+      "content_version": "2a8de3bd72c5d6af9e4382bdbaa79b3f96e89498de7a0a9a0cf7c09a1b62b83a"
+    },
+    {
+      "path": "ui/src/main.js",
+      "bytes": 119,
+      "sha256": "7d8142e6777a896ab01e36cbc4fbdee0f8289a52bfedb7f5744029306c47a358",
+      "content_version": "0a4b7b9070bcbe637cc11cb491abcfd2d5224a68da9272468f2c2f98675b7fd4"
+    },
+    {
+      "path": "ui/src/mimes.js",
+      "bytes": 9592,
+      "sha256": "946a5dde22f8082a7b083bf577bcb65195f9e96b541a506b0c100485ad9eaf1e",
+      "content_version": "edf42aa066b9c67a45835ae3514e255feb46d4a02976d8bbe978858dc4b4330f"
+    },
+    {
+      "path": "ui/src/providers.js",
+      "bytes": 4519,
+      "sha256": "17766f96ad108c0a25ef8d751f5dde5e48b120d842ceb24100e7a2c3192f77de",
+      "content_version": "a68d99e8674d25504742f792e10fd7201a09bd09fc3c16446f0010d9026d3514"
+    },
+    {
+      "path": "ui/src/routes.js",
+      "bytes": 5492,
+      "sha256": "a8ba564ab193361445d2175097cf63302e1eb937d8c8e086c1fb5b08b7463d20",
+      "content_version": "8c7ce787faf873a0d7d48ce608c7b2138eb6301281107d56a2cd35fe83670c27"
+    },
+    {
+      "path": "ui/src/stores/app.js",
+      "bytes": 165,
+      "sha256": "927295a8a285bb8082021207af3ff527da226a0517b48343220f3b7ca031077a",
+      "content_version": "599a9e3608b3e7861f64ba5f85ec36a5075a4b4315940daf2ae25e9fad1f394f"
+    },
+    {
+      "path": "ui/src/stores/collections.js",
+      "bytes": 3520,
+      "sha256": "aa139413977dcb898dcc057491a1ec99f47a4eb774c2c27da5e4d9dec270f5eb",
+      "content_version": "b22772c3a0856f35fa31b64726ab1171bf6361f8eea9e0a388709293d4c6f5ed"
+    },
+    {
+      "path": "ui/src/stores/confirmation.js",
+      "bytes": 601,
+      "sha256": "6a8466b77b3da77203b9366a9c7927f005c2b182e2308c3b202a436eeaf7bca1",
+      "content_version": "784918e36bcd3c05e836527a68ec8ca3da44e4954131738bccff5ede02ee73c5"
+    },
+    {
+      "path": "ui/src/stores/errors.js",
+      "bytes": 649,
+      "sha256": "12412750ef297f255dc6381c5eeeb8caccfc8fc258b650ffdaadcf298c7e1124",
+      "content_version": "5d019c2d9f72ed8ac1e744f7356aeba243cab72e52087f5c57cae57c606f1fa7"
+    },
+    {
+      "path": "ui/src/stores/superuser.js",
+      "bytes": 178,
+      "sha256": "5c371586ba995f4dc9d9fa2288939eda25fe3044e5d2cfc9fa9a2c158c5ce7d7",
+      "content_version": "dcc8add1d7e7956035a52308998a0f69fa3e997119d143c0603da643c3c96f33"
+    },
+    {
+      "path": "ui/src/stores/toasts.js",
+      "bytes": 1881,
+      "sha256": "323da9fda6f483dbfa92a55e06f25f89b0fd5faff8693f0eb285d7c519de2f8c",
+      "content_version": "e06a93d7f8f96cadeda3eeb001b3175a820ec3eece861db61053e95e86749f8b"
+    },
+    {
+      "path": "ui/src/utils/ApiClient.js",
+      "bytes": 4077,
+      "sha256": "cf26dffcd86581e53aea7de1a18d550784f07029039c0e28df99026278af3076",
+      "content_version": "a6e6408d18008882f31262fb22615a5d82d0a5540edaa3fe0d8ce7daeec5fc61"
+    },
+    {
+      "path": "ui/src/utils/CommonHelper.js",
+      "bytes": 67703,
+      "sha256": "9efb81fde204cef3ec6510184b323c891f44f6aa189a4bd9a8eab368d6e39646",
+      "content_version": "d6dee7789299760f68a6c50017f6cab90dfe580e2efa6d5e4bbf7775ce8fe53a"
+    },
+    {
+      "path": "ui/vite.config.js",
+      "bytes": 758,
+      "sha256": "72b49fed260203476507fe515afdfe5cd7eff5af9840a164d5f0c9e43d867dd2",
+      "content_version": "b0628391e929533af378d2a22198d2f289bd42f07859ade0a231566c9e661f21"
+    }
+  ],
+  "configs": [
+    {
+      "path": "ui/package-lock.json",
+      "bytes": 72829,
+      "sha256": "b3b1b60fad518d65068a48336d5891f46794f8ea4f8d5dc9aabcbe7867fb90af",
+      "content_version": "ba8125a1ee662b1768d50a9fdf1bdb81640b100efc327709aaae77c6b4a20b32"
+    },
+    {
+      "path": "ui/package.json",
+      "bytes": 1088,
+      "sha256": "5349e1897559a5560300625d805c3c76da191233250e29ecc9c9db85cf8d9d7e",
+      "content_version": "560571579e7f34d9860234e3a21d1c590d7420eed915b4f396fc7edf59c0ddd3"
+    },
+    {
+      "path": "ui/vite.config.js",
+      "bytes": 758,
+      "sha256": "72b49fed260203476507fe515afdfe5cd7eff5af9840a164d5f0c9e43d867dd2",
+      "content_version": "b0628391e929533af378d2a22198d2f289bd42f07859ade0a231566c9e661f21"
+    }
+  ]
+}

@@ -456,6 +456,7 @@ fn identity_for(limits: SourceAdmissionLimits) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestValue as _;
 
     #[test]
     fn defaults_admit_large_project_and_generated_file_without_widening_in_flight() {
@@ -472,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_identity_tracks_every_effective_limit() {
+    fn policy_identity_tracks_every_effective_limit() -> Result<(), String> {
         let first = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
             .expect("default policy is valid");
         let mut changed = SourceAdmissionLimits::default();
@@ -482,22 +483,24 @@ mod tests {
         assert_eq!(
             first.identity(),
             SourceAdmissionPolicy::new(first.limits())
-                .unwrap()
+                .test_value()?
                 .identity()
         );
+        Ok(())
     }
 
     #[test]
-    fn validated_policy_rejects_in_flight_budget_smaller_than_two_files() {
+    fn validated_policy_rejects_in_flight_budget_smaller_than_two_files() -> Result<(), String> {
         let mut limits = SourceAdmissionLimits::default();
         limits.max_file_source_bytes = 8 * 1024 * 1024;
         limits.max_in_flight_source_bytes = 15 * 1024 * 1024;
-        let error = SourceAdmissionPolicy::new(limits).unwrap_err();
+        let error = SourceAdmissionPolicy::new(limits).err().test_value()?;
         assert!(error.to_string().contains("in-flight source bytes"));
+        Ok(())
     }
 
     #[test]
-    fn actual_read_length_and_policy_bound_tokens_and_zero_byte_records() {
+    fn actual_read_length_and_policy_bound_tokens_and_zero_byte_records() -> Result<(), String> {
         let mut limits = SourceAdmissionLimits::default();
         limits.max_file_source_bytes = 64;
         limits.max_project_source_bytes = 128;
@@ -505,19 +508,20 @@ mod tests {
         limits.max_in_flight_source_bytes = 128;
         limits.max_project_record_bytes = 4096;
         limits.max_encoded_record_bytes = 4096;
-        let policy = SourceAdmissionPolicy::new(limits).unwrap();
+        let policy = SourceAdmissionPolicy::new(limits).test_value()?;
         let mut ledger = SourceAdmissionLedger::default();
-        let zero = policy.admit_actual_file(0).unwrap();
-        ledger.admit(policy, zero, 48, true).unwrap();
+        let zero = policy.admit_actual_file(0).test_value()?;
+        ledger.admit(policy, zero, 48, true).test_value()?;
         assert_eq!(ledger.source_bytes(), 0);
         assert_eq!(ledger.retained_compiler_bytes(), 0);
         assert_eq!(ledger.records(), 1);
         assert_eq!(ledger.encoded_record_bytes(), 48);
         assert!(policy.admit_actual_file(65).is_err());
+        Ok(())
     }
 
     #[test]
-    fn project_record_and_retention_budgets_are_independent() {
+    fn project_record_and_retention_budgets_are_independent() -> Result<(), String> {
         let mut limits = SourceAdmissionLimits::default();
         limits.max_file_source_bytes = 64;
         limits.max_project_source_bytes = 128;
@@ -525,73 +529,88 @@ mod tests {
         limits.max_in_flight_source_bytes = 128;
         limits.max_project_record_bytes = 4096;
         limits.max_encoded_record_bytes = 4096;
-        let policy = SourceAdmissionPolicy::new(limits).unwrap();
+        let policy = SourceAdmissionPolicy::new(limits).test_value()?;
         let mut ledger = SourceAdmissionLedger::default();
-        let source = policy.admit_actual_file(40).unwrap();
-        let error = ledger.admit(policy, source, 48, true).unwrap_err();
+        let source = policy.admit_actual_file(40).test_value()?;
+        let error = ledger.admit(policy, source, 48, true).err().test_value()?;
         assert!(error.to_string().contains("retained compiler source bytes"));
         assert_eq!(ledger.records(), 0, "rejected files are not charged");
         ledger
-            .admit(policy, policy.admit_actual_file(40).unwrap(), 48, false)
-            .unwrap();
+            .admit(
+                policy,
+                policy.admit_actual_file(40).test_value()?,
+                48,
+                false,
+            )
+            .test_value()?;
         assert_eq!(ledger.source_bytes(), 40);
         assert_eq!(ledger.retained_compiler_bytes(), 0);
+        Ok(())
     }
 
     #[test]
-    fn configured_preflight_reports_exact_boundary_and_record_count() {
-        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).unwrap();
+    fn configured_preflight_reports_exact_boundary_and_record_count() -> Result<(), String> {
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).test_value()?;
         let limit = policy.limits().max_project_source_bytes;
         assert!(policy.admit_preflight(limit, 1).is_ok());
-        let error = policy.admit_preflight(limit + 1, 1).unwrap_err();
+        let error = policy.admit_preflight(limit + 1, 1).err().test_value()?;
         assert!(error.to_string().contains("project source bytes"));
         let error = policy
             .admit_preflight(0, policy.limits().max_project_records + 1)
-            .unwrap_err();
+            .err()
+            .test_value()?;
         assert!(error.to_string().contains("project source records"));
+        Ok(())
     }
 
     #[test]
-    fn project_preflight_does_not_charge_the_compiler_subset_budget() {
+    fn project_preflight_does_not_charge_the_compiler_subset_budget() -> Result<(), String> {
         let mut limits = SourceAdmissionLimits::default();
         limits.max_project_source_bytes = 128;
         limits.max_retained_compiler_source_bytes = 32;
         limits.max_in_flight_source_bytes = 128;
         limits.max_file_source_bytes = 64;
-        let policy = SourceAdmissionPolicy::new(limits).unwrap();
+        let policy = SourceAdmissionPolicy::new(limits).test_value()?;
 
         assert!(policy.admit_preflight(96, 2).is_ok());
         let mut ledger = SourceAdmissionLedger::default();
         ledger
-            .admit(policy, policy.admit_actual_file(40).unwrap(), 48, false)
-            .unwrap();
+            .admit(
+                policy,
+                policy.admit_actual_file(40).test_value()?,
+                48,
+                false,
+            )
+            .test_value()?;
         assert_eq!(ledger.source_bytes(), 40);
         let refusal = ledger
-            .admit(policy, policy.admit_actual_file(40).unwrap(), 48, true)
-            .unwrap_err();
+            .admit(policy, policy.admit_actual_file(40).test_value()?, 48, true)
+            .err()
+            .test_value()?;
         assert!(
             refusal
                 .to_string()
                 .contains("retained compiler source bytes")
         );
         assert_eq!(ledger.source_bytes(), 40, "a refused row is not charged");
+        Ok(())
     }
     #[test]
-    fn paged_file_facts_use_the_project_bound_and_charge_every_encoded_row() {
+    fn paged_file_facts_use_the_project_bound_and_charge_every_encoded_row() -> Result<(), String> {
         let mut limits = SourceAdmissionLimits::default();
         limits.max_project_record_bytes = 4 * limits.max_encoded_record_bytes;
-        let policy = SourceAdmissionPolicy::new(limits).unwrap();
+        let policy = SourceAdmissionPolicy::new(limits).test_value()?;
         let mut ledger = SourceAdmissionLedger::default();
         let pages = 2 * limits.max_encoded_record_bytes;
         ledger
             .admit_with_fact_pages(
                 policy,
-                policy.admit_actual_file(20).unwrap(),
+                policy.admit_actual_file(20).test_value()?,
                 128,
                 pages,
                 false,
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(ledger.encoded_record_bytes(), 128 + pages);
         assert_eq!(ledger.records(), 1);
         assert_eq!(ledger.source_bytes(), 20);
@@ -601,12 +620,13 @@ mod tests {
         let error = ledger
             .admit_with_fact_pages(
                 policy,
-                policy.admit_actual_file(30).unwrap(),
+                policy.admit_actual_file(30).test_value()?,
                 128,
                 pages,
                 true,
             )
-            .unwrap_err();
+            .err()
+            .test_value()?;
         assert_eq!(error.resource, "project record bytes");
         assert_eq!(
             ledger, before,
@@ -616,7 +636,7 @@ mod tests {
             ledger
                 .admit_with_fact_pages(
                     policy,
-                    policy.admit_actual_file(0).unwrap(),
+                    policy.admit_actual_file(0).test_value()?,
                     limits.max_encoded_record_bytes + 1,
                     0,
                     false,
@@ -625,39 +645,48 @@ mod tests {
             "a compact row still has its individual format bound"
         );
         assert_eq!(ledger, before);
+        Ok(())
     }
 
     #[test]
-    fn overflowing_fact_page_charge_is_atomic() {
-        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).unwrap();
+    fn overflowing_fact_page_charge_is_atomic() -> Result<(), String> {
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).test_value()?;
         let mut ledger = SourceAdmissionLedger::default();
         ledger
-            .admit(policy, policy.admit_actual_file(0).unwrap(), 128, false)
-            .unwrap();
+            .admit(
+                policy,
+                policy.admit_actual_file(0).test_value()?,
+                128,
+                false,
+            )
+            .test_value()?;
         let before = ledger;
         let error = ledger
             .admit_with_fact_pages(
                 policy,
-                policy.admit_actual_file(1).unwrap(),
+                policy.admit_actual_file(1).test_value()?,
                 1,
                 usize::MAX,
                 true,
             )
-            .unwrap_err();
+            .err()
+            .test_value()?;
         assert_eq!(error.resource, "project record bytes");
         assert_eq!(ledger, before);
+        Ok(())
     }
 
     #[test]
-    fn home_assistant_record_frontier_exceeds_the_old_default_without_widening_reads() {
+    fn home_assistant_record_frontier_exceeds_the_old_default_without_widening_reads()
+    -> Result<(), String> {
         // Authentic core ddf4c61 public add refused at this exact charge on
         // 4c04: 19,215 Python files / 127,245,456 source bytes. Exercise the
         // admission boundary without allocating its real 128 MiB fact pages.
         const OBSERVED_RECORD_BYTES: usize = 134_270_703;
-        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).unwrap();
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).test_value()?;
         let mut former_limits = policy.limits();
         former_limits.max_project_record_bytes = 128 * 1024 * 1024;
-        let former = SourceAdmissionPolicy::new(former_limits).unwrap();
+        let former = SourceAdmissionPolicy::new(former_limits).test_value()?;
         let source = 4096;
         let compact_row = 128;
         let fact_pages = OBSERVED_RECORD_BYTES - compact_row;
@@ -666,12 +695,13 @@ mod tests {
         let error = rejected
             .admit_with_fact_pages(
                 former,
-                former.admit_actual_file(source).unwrap(),
+                former.admit_actual_file(source).test_value()?,
                 compact_row,
                 fact_pages,
                 false,
             )
-            .unwrap_err();
+            .err()
+            .test_value()?;
         assert_eq!(error.resource, "project record bytes");
         assert_eq!(error.attempted, OBSERVED_RECORD_BYTES);
         assert_eq!(rejected, SourceAdmissionLedger::default());
@@ -680,12 +710,12 @@ mod tests {
         admitted
             .admit_with_fact_pages(
                 policy,
-                policy.admit_actual_file(source).unwrap(),
+                policy.admit_actual_file(source).test_value()?,
                 compact_row,
                 fact_pages,
                 false,
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(admitted.encoded_record_bytes(), OBSERVED_RECORD_BYTES);
         assert_eq!(admitted.source_bytes(), source);
         assert_eq!(admitted.retained_compiler_bytes(), 0);
@@ -703,13 +733,15 @@ mod tests {
         let error = admitted
             .admit_with_fact_pages(
                 policy,
-                policy.admit_actual_file(0).unwrap(),
+                policy.admit_actual_file(0).test_value()?,
                 compact_row,
                 policy.limits().max_project_record_bytes - OBSERVED_RECORD_BYTES,
                 false,
             )
-            .unwrap_err();
+            .err()
+            .test_value()?;
         assert_eq!(error.resource, "project record bytes");
         assert_eq!(admitted, before, "the finite total remains an atomic bound");
+        Ok(())
     }
 }

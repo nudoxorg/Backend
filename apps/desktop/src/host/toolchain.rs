@@ -400,56 +400,122 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn desktop_and_standalone_keep_the_same_closed_go_only_refusal() {
+    fn desktop_and_standalone_keep_the_same_closed_go_only_refusal() -> io::Result<()> {
+        use backend_local_service::{
+            LocalCompilerHostSelection, LocalRuntimeGoAuthorityFailure as Failure,
+        };
         use std::os::unix::fs::PermissionsExt as _;
-        use backend_local_service::{LocalCompilerHostSelection, LocalRuntimeGoAuthorityFailure as Failure};
         let machine = machine("go-only-closed-handoff");
         let home = machine.root.join("home");
-        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&home)?;
         let module_root = machine.root.join("lib/node_modules");
         let tsc = module_root.join("typescript/bin/tsc");
-        std::fs::create_dir_all(tsc.parent().unwrap()).unwrap();
-        std::fs::write(&tsc, "#!/bin/sh\nexit 0\n").unwrap();
+        let tsc_parent = tsc.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TypeScript fixture has no parent",
+            )
+        })?;
+        std::fs::create_dir_all(tsc_parent)?;
+        std::fs::write(&tsc, "#!/bin/sh\nexit 0\n")?;
         let node = tsc.with_file_name(executable("node"));
-        std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n")?;
         for path in [&tsc, &node] {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
         }
-        let mut captured = BTreeMap::from([("HOME", home.into_os_string()),
-            ("PATH", tsc.parent().unwrap().as_os_str().to_owned())]);
-        for (name, cause) in [("NUDOX_GO", Failure::ExecutableUnavailable),
-            ("NUDOX_GO_ROOT", Failure::GoRootUnavailable), ("NUDOX_GO_ORACLE", Failure::OracleUnavailable)] {
-            for value in [OsString::new(), OsString::from("relative-object"), machine.root.join("missing-object").into_os_string()] {
+        let mut captured = BTreeMap::from([
+            ("HOME", home.into_os_string()),
+            ("PATH", tsc_parent.as_os_str().to_owned()),
+        ]);
+        for (name, cause) in [
+            ("NUDOX_GO", Failure::ExecutableUnavailable),
+            ("NUDOX_GO_ROOT", Failure::GoRootUnavailable),
+            ("NUDOX_GO_ORACLE", Failure::OracleUnavailable),
+        ] {
+            for value in [
+                OsString::new(),
+                OsString::from("relative-object"),
+                machine.root.join("missing-object").into_os_string(),
+            ] {
                 captured.insert(name, value);
-                let desktop = installed_snapshot(&captured).expect("desktop preserves Go-only failure");
-                let standalone = LocalCompilerHost::new(DesktopLaunchEnvironment { captured: &captured },
-                    LocalHostDiscovery::InstalledTools).capture_installed_selection().unwrap();
+                let desktop = installed_snapshot(&captured)?;
+                let standalone = LocalCompilerHost::new(
+                    DesktopLaunchEnvironment {
+                        captured: &captured,
+                    },
+                    LocalHostDiscovery::InstalledTools,
+                )
+                .capture_installed_selection()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 assert_eq!(&desktop, standalone.snapshot());
-                let transported = ClosedLocalHostEnvironmentSnapshot::parse(&desktop.encode().unwrap()).unwrap();
-                let owner = LocalCompilerHostSelection::from_closed_snapshot(transported).unwrap();
+                let encoded = desktop
+                    .encode()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let transported = ClosedLocalHostEnvironmentSnapshot::parse(&encoded)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let owner = LocalCompilerHostSelection::from_closed_snapshot(transported)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 assert_eq!(owner.go_authority_failure(), Some(cause));
-                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(tsc.as_path()));
-                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(node.as_path()));
+                // With no explicit TypeScript override, the linked TSZ checker is
+                // selected directly. Even executable PATH decoys must not become
+                // a captured external compiler/runtime while Go is refused.
+                for variable in [
+                    LocalHostVariable::NudoxTypeScriptCompiler,
+                    LocalHostVariable::NudoxTypeScriptDefaultCompiler,
+                    LocalHostVariable::NudoxTypeScriptNode,
+                    LocalHostVariable::NudoxTypeScriptDefaultNode,
+                    LocalHostVariable::NudoxTypeScriptBundledNode,
+                    LocalHostVariable::NudoxTypeScriptBundledApplication,
+                    LocalHostVariable::NudoxTypeScriptModuleRoot,
+                    LocalHostVariable::NudoxTypeScriptDefaultModuleRoot,
+                    LocalHostVariable::NudoxTypeScriptReportProgram,
+                ] {
+                    assert_eq!(owner.snapshot().path(variable), None,
+                        "ambient TypeScript paths must not replace linked TSZ authority: {variable:?}");
+                }
             }
             captured.remove(name);
         }
-        std::fs::remove_dir_all(machine.root).unwrap();
+        std::fs::remove_dir_all(machine.root)?;
+        Ok(())
     }
 
     #[test]
-    fn closed_report_replaces_stale_rust_without_ambient_discovery_or_version_claims() {
+    fn closed_report_replaces_stale_rust_without_ambient_discovery_or_version_claims()
+    -> io::Result<()> {
         let path = std::env::temp_dir().join("closed-selection-does-not-probe/rustc");
-        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([
-            (LocalHostVariable::NudoxRustc, path.clone()),
-        ]).unwrap();
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([(
+            LocalHostVariable::NudoxRustc,
+            path.clone(),
+        )])
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         record_closed_report(&snapshot);
-        let selected = report().unwrap();
-        assert!(matches!(selected, Rust::Found { rustc, place: Place::ClosedSnapshot, version: None } if rustc == path));
-        assert!(!path.exists(), "reporting cannot realize or probe a closed selection");
-        record_closed_report(&ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap());
-        let absent = report().unwrap();
-        assert!(matches!(absent, Rust::Missing { source: backend_local_service::InstalledRustSelectionSource::ClosedSnapshot, .. }));
-        assert_eq!(absent.words(), "Rust is absent from the closed compiler environment.");
+        let selected =
+            report().ok_or_else(|| io::Error::other("closed Rust report was not recorded"))?;
+        assert!(
+            matches!(selected, Rust::Found { rustc, place: Place::ClosedSnapshot, version: None } if rustc == path)
+        );
+        assert!(
+            !path.exists(),
+            "reporting cannot realize or probe a closed selection"
+        );
+        let absent_snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        record_closed_report(&absent_snapshot);
+        let absent =
+            report().ok_or_else(|| io::Error::other("absent Rust report was not recorded"))?;
+        assert!(matches!(
+            absent,
+            Rust::Missing {
+                source: backend_local_service::InstalledRustSelectionSource::ClosedSnapshot,
+                ..
+            }
+        ));
+        assert_eq!(
+            absent.words(),
+            "Rust is absent from the closed compiler environment."
+        );
+        Ok(())
     }
 
     /// A toolchain directory and a home, on disk, under a scratch root.

@@ -43,6 +43,12 @@ pub fn main_entry() -> ExitCode {
         Ok(split) => split,
         Err(fault) => return report(&fault, &Options::fallback()),
     };
+    if words.first().is_some_and(|word| word == "mcp-config") {
+        return match crate::mcp_config::run(&words[1..], &options) {
+            Ok(output) => emit(&output),
+            Err(fault) => report(&fault, &options),
+        };
+    }
     if words.first().is_some_and(|word| word == "embedding-setup") {
         return match crate::embedding_setup::run(&words[1..], &options) {
             Ok(output) => emit(&output),
@@ -109,6 +115,7 @@ fn help_output(args: &[String]) -> Option<String> {
         Some("cluster") => crate::cluster::help_text().to_owned(),
         Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
         Some("embedding-setup") => crate::embedding_setup::help_text().to_owned(),
+        Some("mcp-config") => crate::mcp_config::help_text().to_owned(),
         command => command
             .and_then(grammar_for)
             .map_or_else(invoke::help, invoke::help_for),
@@ -650,6 +657,7 @@ mod help_tests {
         for (command, expected) in [
             ("cluster", crate::cluster::help_text()),
             ("semantic-hydrate", crate::semantic_hydrate::help_text()),
+            ("mcp-config", crate::mcp_config::help_text()),
         ] {
             let arguments = ["--project", "/repo", command, "--help"].map(str::to_owned);
             assert_eq!(help_output(&arguments).as_deref(), Some(expected));

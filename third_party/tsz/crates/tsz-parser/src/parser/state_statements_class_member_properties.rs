@@ -8,19 +8,33 @@ use crate::parser::{NodeIndex, syntax_kind_ext};
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
 
+/// Inputs already classified while parsing one class property member.
+pub(super) struct ClassMemberPropertyArgs {
+    pub(super) start_pos: u32,
+    pub(super) mods: ClassMemberModifierSet,
+    pub(super) name: NodeIndex,
+    pub(super) question_token: bool,
+    pub(super) exclamation_token: bool,
+    pub(super) late_property_name_decorator: bool,
+    pub(super) method_saved_flags: u32,
+}
+
 impl<'work> ParserStateCore<'work> {
     /// Construct the body of a property class member: parse type annotation,
     /// optional/definite tokens, and initializer expression.
-    pub(crate) fn construct_class_member_property(
+    pub(super) fn construct_class_member_property(
         &mut self,
-        start_pos: u32,
-        mods: ClassMemberModifierSet,
-        name: NodeIndex,
-        question_token: bool,
-        exclamation_token: bool,
-        late_property_name_decorator: bool,
-        method_saved_flags: u32,
+        args: ClassMemberPropertyArgs,
     ) -> NodeIndex {
+        let ClassMemberPropertyArgs {
+            start_pos,
+            mods,
+            name,
+            question_token,
+            exclamation_token,
+            late_property_name_decorator,
+            method_saved_flags,
+        } = args;
         use tsz_common::diagnostics::diagnostic_codes;
 
         // Property - parse optional type and initializer

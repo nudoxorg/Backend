@@ -44,6 +44,28 @@ use reply_semantic_shape::{
 pub use reply_semantic_shape::{SemanticShapeExport, semantic_shape_batch_key};
 use serde::{Deserialize, Serialize};
 
+/// A names-only page never performs semantic ranking. It may attach an
+/// independently owned setup refusal, but never Available or a stale result.
+pub(crate) fn search_status_matches_reply(
+    reply: &CommandReply,
+    status: Option<SemanticSearchStatus>,
+) -> bool {
+    if let CommandReply::PublishedNameSearch(page) = reply {
+        if !page.readiness.is_consistent() {
+            return false;
+        }
+        return match status {
+            None => true,
+            Some(SemanticSearchStatus::Unavailable { reason }) => {
+                page.readiness.semantic
+                    == (crate::PublishedSemanticReadiness::Unavailable { reason })
+            }
+            Some(SemanticSearchStatus::Available | SemanticSearchStatus::Stale { .. }) => false,
+        };
+    }
+    status.is_none() || matches!(reply, CommandReply::Search(_))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplyEnvelope {
@@ -71,6 +93,7 @@ pub(crate) enum ReplyWire {
     Names(SnapshotWire),
     Resolved(RowsWire),
     Search(SnapshotWire),
+    PublishedNameSearch(PublishedNameSearchWire),
     Graph(SnapshotWire),
     GraphQueryPage(GraphQueryPageWire),
     SemanticShapes(SemanticShapeBatchWire),
@@ -80,6 +103,13 @@ pub(crate) enum ReplyWire {
     Revision(RevisionWire),
     Error(ErrorWire),
     Failed(CommandFailureWire),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishedNameSearchWire {
+    snapshot: SnapshotWire,
+    readiness: crate::PublishedSearchReadiness,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -225,16 +255,17 @@ impl Serialize for ReplyDto {
                 "health cursor attached to a non-health reply",
             ));
         }
-        if self.semantic_search_status().is_some()
-            && !matches!(&self.reply, CommandReply::Search(_))
-        {
+        if !search_status_matches_reply(&self.reply, self.semantic_search_status()) {
             return Err(serde::ser::Error::custom(
-                "semantic search status attached to a non-search reply",
+                "search readiness or semantic status contradicts its reply scope",
             ));
         }
         if matches!(
             &self.reply,
-            CommandReply::Names(_) | CommandReply::Search(_) | CommandReply::ProjectionPage(_)
+            CommandReply::Names(_)
+                | CommandReply::Search(_)
+                | CommandReply::PublishedNameSearch(_)
+                | CommandReply::ProjectionPage(_)
         ) {
             return reply_catalog::serialize(self, serializer);
         }
@@ -262,9 +293,9 @@ impl<'de> Deserialize<'de> for ReplyDto {
         let certificate = envelope.certificate.as_ref().unwrap_or(&empty_certificate);
         let reply =
             reply_from_wire(envelope.reply, certificate, None).map_err(serde::de::Error::custom)?;
-        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+        if !search_status_matches_reply(&reply, envelope.semantic_search) {
             return Err(serde::de::Error::custom(
-                "semantic search status attached to a non-search reply",
+                "search readiness or semantic status contradicts its reply scope",
             ));
         }
         let health_cursor = envelope
@@ -341,6 +372,12 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
             rows: rows.iter().map(row_to_wire).collect(),
         }),
         CommandReply::Search(snapshot) => ReplyWire::Search(snapshot_to_wire(snapshot)),
+        CommandReply::PublishedNameSearch(page) => {
+            ReplyWire::PublishedNameSearch(PublishedNameSearchWire {
+                snapshot: snapshot_to_wire(&page.snapshot),
+                readiness: page.readiness,
+            })
+        }
         CommandReply::Graph(snapshot) => ReplyWire::Graph(snapshot_to_wire(snapshot)),
         CommandReply::GraphQueryPage(page) => {
             ReplyWire::GraphQueryPage(graph_query_page_to_wire(page))
@@ -447,6 +484,16 @@ fn reply_from_wire_with_admission<A: CoverageAdmission>(
             certificate,
             admission,
         )?),
+        ReplyWire::PublishedNameSearch(value) => {
+            CommandReply::PublishedNameSearch(crate::PublishedNameSearchPage {
+                snapshot: snapshot_from_wire_with_admission(
+                    value.snapshot,
+                    certificate,
+                    admission,
+                )?,
+                readiness: value.readiness,
+            })
+        }
         ReplyWire::Graph(value) => CommandReply::Graph(snapshot_from_wire_with_admission(
             value,
             certificate,

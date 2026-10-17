@@ -626,6 +626,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
     if let Some(command) = view.package_graph_cli_continuation(detail) {
         lines.push(format!("Continue: {command}"));
     }
+    if let Some(command) = view.semantic_versions_cli_continuation(detail) {
+        lines.push(format!("Continue: {command}"));
+    }
     index_search_page_footer(view, &mut lines);
     index_job_footer(view, &mut lines, theme);
     lines.finish()

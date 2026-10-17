@@ -1091,9 +1091,9 @@ fn product_operation(
     use backend_engine::cluster_transport::RemoteIndexQueryOperation as Operation;
     match command {
         Command::Surface(SurfaceCommand::IndexSearch { .. }) => Some(Operation::IndexSearch),
-        Command::Search(_) => Some(Operation::Search),
+        Command::Search(_) | Command::SearchPublishedNames(_) => Some(Operation::Search),
         Command::Name(_) => Some(Operation::Names),
-        Command::Document(_) => Some(Operation::Document),
+        Command::Document(_) | Command::MembersPage { .. } => Some(Operation::Document),
         Command::Source(_) => Some(Operation::Source),
         Command::Outline(_) | Command::OutlinePage { .. } => Some(Operation::Outline),
         Command::Graph(_) | Command::GraphPage { .. } => Some(Operation::Graph),
@@ -1105,10 +1105,13 @@ fn product_operation(
 fn product_basis(command: &Command) -> Option<backend_library::ViewRevision> {
     match command {
         Command::Search(query) => Some(query.basis()),
+        Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Name(query) => Some(query.basis()),
         Command::Document(query) | Command::Source(query) => Some(query.basis()),
         Command::Outline(query) => Some(query.basis()),
-        Command::OutlinePage { page, .. } | Command::GraphPage { page, .. } => Some(page.basis()),
+        Command::OutlinePage { page, .. }
+        | Command::GraphPage { page, .. }
+        | Command::MembersPage { page, .. } => Some(page.basis()),
         Command::Graph(query) | Command::Related(query) => Some(query.basis()),
         _ => None,
     }

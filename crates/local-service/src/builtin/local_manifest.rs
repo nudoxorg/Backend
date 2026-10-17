@@ -1710,7 +1710,8 @@ mod tests {
     }
 
     #[test]
-    fn local_manifest_go_version_comes_from_the_directory_name() {
+    fn local_manifest_go_version_comes_from_the_directory_name() -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let root = fixture("go");
         let versioned = root.join("errors@v0.9.1");
         write(
@@ -1740,16 +1741,20 @@ mod tests {
         write(&newer.join("go.mod"), "module example.com/mod\n\ngo 1.27\n");
         assert!(
             read_local_manifest(&newer)
-                .unwrap_err()
+                .err()
+                .test_value()?
                 .contains("unsupported Go language version \"1.27\""),
             "a future language requirement must not acquire the 1.26 profile"
         );
         assert!(directory_version(&bare).is_none());
         let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]
-    fn local_manifest_go_future_language_requirement_is_refused_with_exact_source() {
+    fn local_manifest_go_future_language_requirement_is_refused_with_exact_source() -> Result<(), String>
+    {
+        use crate::test_support::TestValue as _;
         let root = fixture("go-future-language");
         let package = root.join("caddy@v2.11.7");
         for version in [
@@ -1769,7 +1774,7 @@ mod tests {
                 Err(super::GoReleaseError::UnsupportedVersion(version))
             );
             assert_eq!(
-                read_local_manifest(&package).unwrap_err(),
+                read_local_manifest(&package).err().test_value()?,
                 format!(
                     "local manifest {}: go.mod declares unsupported Go language version {version:?}; the newest supported language profile is 1.26",
                     package.join("go.mod").display()
@@ -1787,10 +1792,12 @@ mod tests {
             "an unavailable registry version must not hide an unsupported language requirement"
         );
         let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]
-    fn local_manifest_go_language_requirement_is_not_the_suggested_toolchain() {
+    fn local_manifest_go_language_requirement_is_not_the_suggested_toolchain() -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         let root = fixture("go-language-toolchain");
         let package = root.join("mod@v1.2.3");
         for (version, expected) in [
@@ -1813,7 +1820,10 @@ mod tests {
                 &format!("module example.com/mod\n\ngo {version}\ntoolchain go1.26.0\n"),
             );
             assert_eq!(
-                read_local_manifest(&package).unwrap().unwrap().profile,
+                read_local_manifest(&package)
+                    .test_value()?
+                    .test_value()?
+                    .profile,
                 LanguageProfile::Go(expected),
                 "the suggested executable cannot promote the module's language profile"
             );
@@ -1834,10 +1844,13 @@ mod tests {
             ));
         }
         let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]
-    fn local_manifest_go_malformed_version_is_not_a_supported_or_future_profile() {
+    fn local_manifest_go_malformed_version_is_not_a_supported_or_future_profile() -> Result<(), String>
+    {
+        use crate::test_support::TestValue as _;
         let root = fixture("go-malformed-version");
         let package = root.join("mod@v1.2.3");
         for version in [
@@ -1866,7 +1879,7 @@ mod tests {
                 Err(super::GoReleaseError::InvalidVersion(version))
             );
             assert_eq!(
-                read_local_manifest(&package).unwrap_err(),
+                read_local_manifest(&package).err().test_value()?,
                 format!(
                     "local manifest {}: go.mod declares invalid Go language version {version:?}",
                     package.join("go.mod").display()
@@ -1874,6 +1887,7 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]

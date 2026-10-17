@@ -361,6 +361,19 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
 }
 
 impl<E: Endpoint> Engine for Reconnecting<E> {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        // A replacement owner must re-admit this exact old document/source;
+        // it cannot refresh the operand or silently restart a new selection.
+        self.attempt(Repeatable::Yes, |product| {
+            product.members_page(document, limit, continuation)
+        })
+    }
+
     fn index(
         &mut self,
         package: backend_library::PackageReference,

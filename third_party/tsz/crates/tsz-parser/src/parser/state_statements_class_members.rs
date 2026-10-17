@@ -5,6 +5,7 @@ use super::state::{
     CONTEXT_FLAG_FUNCTION_BODY, CONTEXT_FLAG_GENERATOR, CONTEXT_FLAG_GENERATOR_MEMBER_NAME,
     CONTEXT_FLAG_STATIC_BLOCK, ParserStateCore,
 };
+use super::state_statements_class_member_properties::ClassMemberPropertyArgs;
 use crate::parser::{
     NodeIndex, NodeList,
     node::{self},
@@ -2340,7 +2341,7 @@ impl<'work> ParserStateCore<'work> {
                     );
                 }
             }
-            self.construct_class_member_property(
+            self.construct_class_member_property(ClassMemberPropertyArgs {
                 start_pos,
                 mods,
                 name,
@@ -2348,7 +2349,7 @@ impl<'work> ParserStateCore<'work> {
                 exclamation_token,
                 late_property_name_decorator,
                 method_saved_flags,
-            )
+            })
         }
     }
 

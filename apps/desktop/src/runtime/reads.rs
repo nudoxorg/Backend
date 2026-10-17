@@ -1703,16 +1703,19 @@ fn compose_search(
         .map_err(|error| failure(&error))?;
     check(context.cancel)?;
     let semantic_search = reply.semantic_search_status();
-    match reply.reply {
-        CommandReply::Search(snapshot) => {
-            let mut page = page_mapping::search_page(&query.text, &snapshot, context.worker);
-            if let Some(status) = semantic_search {
-                page.coverage = page.coverage.with_semantic_search_status(status);
-            }
-            Ok(page)
-        }
-        _ => Err(shape("search")),
+    let (snapshot, published_names) = match reply.reply {
+        CommandReply::Search(snapshot) => (snapshot, None),
+        CommandReply::PublishedNameSearch(page) => (page.snapshot, Some(page.readiness)),
+        _ => return Err(shape("search")),
+    };
+    let mut page = page_mapping::search_page(&query.text, &snapshot, context.worker);
+    if let Some(status) = semantic_search {
+        page.coverage = page.coverage.with_semantic_search_status(status);
     }
+    if let Some(readiness) = published_names {
+        page.coverage = page.coverage.with_published_names(readiness);
+    }
+    Ok(page)
 }
 
 fn compose_find(
@@ -1898,6 +1901,177 @@ mod tests {
     use std::sync::Condvar;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn search_and_find_keep_published_names_partial_and_resume_without_promotion() {
+        use crate::model::pages::{DeclRef, Known};
+        use backend_library::{
+            Cursor, Frontier, FullSearchReadiness, Library, PublishedNameSearchPage,
+            PublishedNameSearchQuery, PublishedSearchReadiness, PublishedSemanticReadiness, Query,
+            QueryLimit, ViewRoot, symbol_key, view_key,
+        };
+        let root = view_state_root(&[]);
+        let basis = Basis::new(root, object_version(b"desktop-published-names"));
+        let package = package_key("/workspace/docs");
+        let rows = (0..2)
+            .map(|site| {
+                Row::in_package(
+                    RowId::Symbol(symbol_key(&format!("native Document {site}"))),
+                    basis,
+                    package,
+                    format!("/workspace/docs::models.py:{}::Document", 994 + site),
+                )
+            })
+            .collect();
+        let view = ViewRoot::new_incomplete(
+            view_key(b"desktop-published-names"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, root, 0),
+            rows,
+            vec![],
+        )
+        .expect("source-bound incomplete fixture");
+        let library =
+            Library::from_view(view.clone(), Cursor::for_view_root(&view)).expect("owner");
+        // The producer stream root and the materialized query revision are
+        // different authorities. Keep the stale-source rejection exercised,
+        // then ask the actual owner for its current published-name revision.
+        let source_names = PublishedNameSearchQuery::admit(Query::new(
+            "Document",
+            root,
+            QueryLimit::new(1).expect("bounded credit"),
+        )).expect("source-root query has valid shape");
+        assert!(matches!(library.search_published_names(&source_names),
+            Err(backend_library::LibraryError::WrongBasis { .. })),
+            "a source stream root must not substitute for the current query revision");
+        let names = PublishedNameSearchQuery::admit(Query::new(
+            "Document",
+            library.revision_root(),
+            QueryLimit::new(1).expect("bounded credit"),
+        ))
+        .expect("name");
+        let first = library.search_published_names(&names).expect("first names");
+        let cursor = first.next.expect("next distinct binding");
+        let second = library
+            .search_published_names(&names.with_cursor(cursor))
+            .expect("second names");
+        let expected_first =
+            DeclRef::from_row(&first.root.rows()[0]).expect("exact selected identity");
+        let expected_second =
+            DeclRef::from_row(&second.root.rows()[0]).expect("distinct selected identity");
+        assert_ne!(expected_first.key, expected_second.key);
+        let preparing = PublishedSearchReadiness {
+            full_search: FullSearchReadiness::Preparing,
+            semantic: PublishedSemanticReadiness::Pending,
+        };
+        let ready = PublishedSearchReadiness {
+            full_search: FullSearchReadiness::Ready,
+            semantic: PublishedSemanticReadiness::NotQueried,
+        };
+        struct NamesEngine {
+            replies: VecDeque<PublishedNameSearchPage>,
+            requests: Vec<Option<PageContinuation>>,
+            packages: ViewSnapshot,
+        }
+        impl Engine for NamesEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Ok(self.packages.root.root())
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".into()))
+            }
+            fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                assert!(matches!(probe, Probe::Packages));
+                Ok(ReplyDto::new(
+                    1,
+                    CommandReply::Packages(self.packages.clone()),
+                ))
+            }
+            fn probe_page(
+                &mut self,
+                probe: Probe<'_>,
+                continuation: Option<PageContinuation>,
+            ) -> Result<ReplyDto, ClientError> {
+                assert!(matches!(
+                    probe,
+                    Probe::Search {
+                        text: "Document",
+                        limit: 1
+                    }
+                ));
+                self.requests.push(continuation);
+                Ok(ReplyDto::new(
+                    1,
+                    CommandReply::PublishedNameSearch(
+                        self.replies.pop_front().expect("exact page"),
+                    ),
+                ))
+            }
+            fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                Err(ClientError::Protocol("optional catalog unavailable".into()))
+            }
+        }
+        let mut engine = NamesEngine {
+            replies: VecDeque::from([
+                PublishedNameSearchPage {
+                    snapshot: first.clone(),
+                    readiness: preparing,
+                },
+                PublishedNameSearchPage {
+                    snapshot: second,
+                    readiness: ready,
+                },
+                PublishedNameSearchPage {
+                    snapshot: first.clone(),
+                    readiness: preparing,
+                },
+            ]),
+            requests: vec![],
+            packages: first,
+        };
+        let cancel = CancellationToken::new();
+        let outlines = OutlineCache::default();
+        let context = ReadContext {
+            worker: 7,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: None,
+        };
+        let query = SearchQuery::new("Document", 1).expect("query");
+        let page =
+            compose_search(&mut engine, &query, None, &context).expect("useful partial page");
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].decl, expected_first);
+        assert_eq!(page.coverage.published_names(), Some(preparing));
+        assert_eq!(page.coverage.readiness(), "partial");
+        assert!(!page.coverage.is_complete());
+        let continuation = page.next.expect("exact worker continuation");
+        assert_eq!(continuation.worker, 7);
+        assert_eq!(continuation.cursor, PageContinuation::from_cursor(cursor));
+        let next = compose_search(&mut engine, &query, Some(continuation.cursor), &context)
+            .expect("same stage after ready");
+        assert_eq!(next.rows[0].decl, expected_second);
+        assert_eq!(next.coverage.published_names(), Some(ready));
+        assert_eq!(next.coverage.readiness(), "partial");
+        let status = next
+            .published_names_status()
+            .expect("explicit continuation scope");
+        assert!(status.contains("this continuation still shows names only"));
+        assert!(status.contains("Semantic ranking was not queried"));
+        assert!(next.next.is_none());
+        let find = compose_find(&mut engine, Some(&query), &context).expect("Find accepts stage");
+        let Known::Known(answers) = &find.answers else {
+            panic!("useful names are not a shape fault")
+        };
+        assert_eq!(answers.rows[0].decl, expected_first);
+        assert_eq!(answers.coverage.published_names(), Some(preparing));
+        assert!(find.prepared.coverage.iter().any(|line| {
+            line.contains("Showing published declaration names")
+                && line.contains("Full search is preparing")
+                && line.contains("Semantic ranking is pending")
+        }));
+        assert_eq!(engine.requests, [None, Some(continuation.cursor), None]);
+    }
 
     struct ExactRegistryTree {
         root: PathBuf,

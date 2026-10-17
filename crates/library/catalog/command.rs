@@ -43,6 +43,12 @@ impl Library {
             Command::Add { .. } | Command::Remove { .. } | Command::Surface(_) => Ok(
                 CommandReply::Failed(crate::CommandFailure::MutationRequiresOwner),
             ),
+            Command::SearchPublishedNames(_) => {
+                Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                    "published-name search requires an observed owner preparation context"
+                        .to_owned(),
+                )))
+            }
             Command::Document(query) | Command::Source(query) => {
                 self.document(query).map(CommandReply::Document)
             }
@@ -56,6 +62,9 @@ impl Library {
             Command::Outline(query) => self.outline(query).map(CommandReply::Outline),
             Command::OutlinePage { package, page } => self
                 .outline_page(package, page)
+                .map(CommandReply::ProjectionPage),
+            Command::MembersPage { owner, page } => self
+                .members_page(owner, page)
                 .map(CommandReply::ProjectionPage),
             Command::Name(query) => self.names(&query).map(CommandReply::Names),
             Command::Resolve { text } => self

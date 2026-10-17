@@ -9,6 +9,7 @@
 
 mod call_join;
 mod exact_sites;
+mod native_target_aliases;
 #[cfg(test)]
 mod foreign_target_display_tests;
 #[cfg(test)]
@@ -32,6 +33,8 @@ mod retained_locations;
 #[cfg(test)]
 mod search_ranking_native;
 mod semantic;
+#[cfg(test)]
+mod semantic_content_admission;
 mod source_availability;
 mod structural;
 
@@ -78,7 +81,7 @@ pub(super) fn semantic_display_name(
 pub(in crate::builtin) use call_join::RetargetingScope;
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
+    join_native_typescript_target, join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 #[cfg(test)]
 pub(crate) use call_join::{foreign_display_name, join_project_call};
@@ -91,7 +94,7 @@ pub(crate) use identity::query_semantic_id;
 #[cfg(test)]
 pub(crate) use identity::semantic_coordinate;
 pub(super) use identity::{external_semantic_symbol, semantic_symbol};
-pub(super) use query::semantic_query_corpus;
+pub(super) use query::{semantic_query_corpus, semantic_query_corpus_controlled};
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(in crate::builtin) use source_availability::{

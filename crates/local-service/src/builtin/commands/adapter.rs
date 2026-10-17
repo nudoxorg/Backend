@@ -80,6 +80,7 @@ impl CatalogReplyRequest {
         match command {
             Command::Name(query) => Some(Self::Names(query.basis())),
             Command::Search(query) => Some(Self::Search(query.basis())),
+            Command::SearchPublishedNames(query) => Some(Self::Search(query.query().basis())),
             Command::GraphPage { page, .. } => Some(Self::Graph(page.basis())),
             _ => None,
         }
@@ -96,6 +97,7 @@ impl CatalogReplyRequest {
         let snapshot = match (self, &reply.reply) {
             (Self::Names(_), CommandReply::Names(snapshot))
             | (Self::Search(_), CommandReply::Search(snapshot)) => snapshot,
+            (Self::Search(_), CommandReply::PublishedNameSearch(page)) => &page.snapshot,
             (Self::Graph(_), CommandReply::ProjectionPage(page)) => {
                 if page.terminal == backend_library::PageTerminal::Cancelled {
                     return Ok(false);
@@ -396,6 +398,11 @@ pub(in crate::builtin) struct CommandAdapter {
     browse_lane: BrowseLane,
     /// The index job whose compile runs off the owner loop, if one does.
     indexing: Option<IndexJob>,
+    // Field drop order is part of custody: drop result receivers in indexing
+    // before the fallback worker-list Drop cancels and joins retained tails.
+    index_input_workers: super::index_input_workers::IndexInputWorkers,
+    #[cfg(test)]
+    index_scan_return_hook: Option<Box<dyn FnOnce() + Send>>,
     /// Recently completed owner-issued index tickets, for late await/cancel requests.
     index_terminals: std::collections::VecDeque<backend_library::IndexJobTerminal>,
     /// Bounded typed progress stream retained across the active and recent index tickets.
@@ -587,9 +594,11 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Show { .. }
         | Command::Outline(_)
         | Command::OutlinePage { .. }
+        | Command::MembersPage { .. }
         | Command::Name(_)
         | Command::Resolve { .. }
         | Command::Search(_)
+        | Command::SearchPublishedNames(_)
         | Command::Graph(_)
         | Command::Related(_)
         | Command::GraphPage { .. }
@@ -880,6 +889,9 @@ impl CommandAdapter {
             browse: super::super::browse::BrowseCache::default(),
             browse_lane,
             indexing: None,
+            index_input_workers: Default::default(),
+            #[cfg(test)]
+            index_scan_return_hook: None,
             index_terminals: std::collections::VecDeque::new(),
             index_progress: std::collections::VecDeque::new(),
             index_progress_latest: std::collections::VecDeque::new(),
@@ -1994,6 +2006,30 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        // Broadcast shutdown before joining any lane. A blocked journal,
+        // projection, inference or browse worker must not defer cancellation
+        // of an independent compiler or reader until its own join returns.
+        if let Some(indexing) = self.indexing.as_ref() {
+            indexing.cancelled.store(true, Ordering::Release);
+        }
+        self.index_input_workers.request_close();
+        self.search_lane.request_close();
+        self.remote_semantic.request_close_local();
+        self.browse_lane.request_close();
+        self.journal_readiness.request_close();
+        if let Some(indexing) = self.indexing.as_mut()
+            && matches!(
+                indexing.work,
+                IndexJobWork::Acquiring(_) | IndexJobWork::Scanning(_)
+            )
+        {
+            // Disconnect a full Staging slot before any joins, allowing the
+            // acquisition's blocked Complete send to return and retire.
+            drop(std::mem::replace(
+                &mut indexing.work,
+                IndexJobWork::Transition,
+            ));
+        }
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
@@ -2001,7 +2037,6 @@ impl CommandAdapter {
         self.search_preparation_failure = None;
         self.browse_lane.close();
         if let Some(indexing) = self.indexing.as_mut() {
-            indexing.cancelled.store(true, Ordering::Release);
             if matches!(indexing.work, IndexJobWork::Compiling { .. }) {
                 let IndexJobWork::Compiling { worker } =
                     std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
@@ -2071,6 +2106,7 @@ impl CommandAdapter {
                 }
             }
         }
+        self.index_input_workers.close();
     }
 
     fn start_owner_index_job(
@@ -3119,6 +3155,9 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        // A completed result can precede thread exit. Reap only finished
+        // input workers; active owner turns never wait for a live tail.
+        self.index_input_workers.reap_finished();
         // Derived history is sidecar work: apply any completed status and
         // reschedule selected markers before advancing the active index job.
         // A history-store refusal must not stall product reads or an admitted
@@ -3975,23 +4014,7 @@ impl CommandAdapter {
                         request_id,
                     )
                     .map(|(reply, _)| reply);
-                let reply = match (reply, observation) {
-                    (Ok(CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
-                        observation: backend_library::RegistryPackageDiscoveryObservation::Unavailable { .. }, ..
-                    })), Some(observation @ backend_library::RegistryPackageDiscoveryObservation::Missing { .. })) => {
-                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery { package, observation })
-                    }
-                    (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
-                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
-                            package,
-                            observation,
-                        })
-                    }
-                    (Ok(reply), _) => reply,
-                    (Err(error), _) => CommandReply::Failed(
-                        backend_library::CommandFailure::InvalidQuery(error.to_string()),
-                    ),
-                };
+                let reply = package_metadata_completion_reply(package, reply, observation);
                 ready.push((
                     ticket,
                     Self::encode(daemon, request_id, (reply, None), None),
@@ -4145,13 +4168,24 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
+        self.index_input_workers
+            .reserve()
+            .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let (sender, scanned) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        #[cfg(test)]
+        let returned = self.index_scan_return_hook.take();
+        let handle = std::thread::Builder::new()
             .name("locald-index-scan".to_owned())
             .spawn(move || {
                 let _ = sender.send(run_index_scan(work));
+                #[cfg(test)]
+                if let Some(returned) = returned {
+                    returned();
+                }
             })
             .map_err(|error| BuiltinModelError(format!("start the index scan: {error}")))?;
+        self.index_input_workers
+            .retain(handle, Arc::clone(&indexing.cancelled));
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Scanning);
         indexing.work = IndexJobWork::Scanning(scanned);
         Ok(())
@@ -4162,6 +4196,9 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         coordinate: backend_engine::registry::PackageCoordinate,
     ) -> Result<(), BuiltinModelError> {
+        self.index_input_workers
+            .reserve()
+            .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let gateway = self.registry.take().ok_or_else(|| {
             BuiltinModelError(
                 "no configured registry authority can acquire this package".to_owned(),
@@ -4186,7 +4223,11 @@ impl CommandAdapter {
                     if cancelled.load(Ordering::Acquire) {
                         return Err(RegistryAddError::Cancelled);
                     }
-                    let _ = sender.send(RegistryAcquisitionMessage::Staging);
+                    if sender.send(RegistryAcquisitionMessage::Staging).is_err()
+                        || cancelled.load(Ordering::Acquire)
+                    {
+                        return Err(RegistryAddError::Cancelled);
+                    }
                     gateway.stage_archive(&coordinate, &archive)
                 }));
                 let message = match result {
@@ -4201,15 +4242,20 @@ impl CommandAdapter {
                 };
                 let _ = sender.send(message);
             });
-        if let Err(error) = spawned {
-            self.registry = gateway_slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            return Err(BuiltinModelError(format!(
-                "start the registry acquisition: {error}"
-            )));
-        }
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.registry = gateway_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                return Err(BuiltinModelError(format!(
+                    "start the registry acquisition: {error}"
+                )));
+            }
+        };
+        self.index_input_workers
+            .retain(handle, Arc::clone(&indexing.cancelled));
         indexing.work = IndexJobWork::Acquiring(acquired);
         Ok(())
     }
@@ -4457,7 +4503,10 @@ impl CommandAdapter {
         }
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
-        let is_search = matches!(&request.command, Command::Search(_));
+        let is_search = matches!(
+            &request.command,
+            Command::Search(_) | Command::SearchPublishedNames(_)
+        );
         let catalog = CatalogReplyRequest::from_command(&request.command);
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
@@ -4866,6 +4915,9 @@ impl CommandAdapter {
                 self.remove(daemon, package, certificate.as_ref(), request_id)
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
+            Command::SearchPublishedNames(query) => {
+                self.published_name_search(daemon, &query, certificate, None)
+            }
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::GraphPage { symbol, page } => {
                 self.graph_page(daemon, symbol, page, certificate)
@@ -5453,7 +5505,28 @@ impl CommandAdapter {
             )];
         };
         match self.prepare_query(daemon, query.basis()) {
-            Ok(Some(backend_library::CommandFailure::QueryPreparation { .. })) => {
+            Ok(Some(backend_library::CommandFailure::QueryPreparation { state, .. })) => {
+                if query.cursor().is_none()
+                    && let Ok(names) =
+                        backend_library::PublishedNameSearchQuery::admit(query.clone())
+                {
+                    self.pending_semantic_search = None;
+                    let reply =
+                        self.published_name_search(daemon, &names, certificate, Some(state));
+                    let status = self.pending_semantic_search.take();
+                    return vec![(
+                        pending.ticket,
+                        reply.and_then(|reply| {
+                            Self::encode_with_catalog(
+                                daemon,
+                                pending.request_id,
+                                reply,
+                                status,
+                                Some(CatalogReplyRequest::Search(query.basis())),
+                            )
+                        }),
+                    )];
+                }
                 self.semantic_search_replies.push_front(pending);
                 return Vec::new();
             }
@@ -5516,6 +5589,12 @@ impl CommandAdapter {
             );
         }
         if let Some(failure) = self.prepare_query(daemon, query.basis())? {
+            if query.cursor().is_none()
+                && let backend_engine::CommandFailure::QueryPreparation { state, .. } = &failure
+                && let Ok(names) = backend_library::PublishedNameSearchQuery::admit(query.clone())
+            {
+                return self.published_name_search(daemon, &names, certificate, Some(*state));
+            }
             return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
         }
         let workspace = daemon.engine().daemon().owner().snapshot().root();
@@ -5546,6 +5625,74 @@ impl CommandAdapter {
         );
         self.pending_semantic_search = status;
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    /// Borrows only the exact current library's owner-bound name arrangement.
+    /// Continuations remain in this stage after richer search becomes ready.
+    fn published_name_search(
+        &mut self,
+        daemon: &ProductDaemon,
+        request: &backend_library::PublishedNameSearchQuery,
+        certificate: Option<WireCertificate>,
+        observed_preparation: Option<backend_library::QueryPreparationState>,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let command = Command::SearchPublishedNames(request.clone());
+        let full_search = match observed_preparation {
+            Some(state) => state.into(),
+            None => match self.prepare_query(daemon, request.query().basis())? {
+                None => backend_library::FullSearchReadiness::Ready,
+                Some(backend_engine::CommandFailure::QueryPreparation { state, .. }) => {
+                    state.into()
+                }
+                Some(failure) => {
+                    return Self::certify(
+                        daemon,
+                        &command,
+                        CommandReply::Failed(failure),
+                        certificate,
+                    );
+                }
+            },
+        };
+        let snapshot = match daemon
+            .engine()
+            .daemon()
+            .library()
+            .search_published_names(request)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Self::certify(
+                    daemon,
+                    &command,
+                    CommandReply::Failed(error.into()),
+                    certificate,
+                );
+            }
+        };
+        // Only locally owned setup/refusal is known at this stage; never
+        // query a provider or infer a projection result from name-only rows.
+        let unavailable = self.remote_semantic.unprepared_unavailability();
+        self.pending_semantic_search =
+            unavailable.map(|reason| backend_library::SemanticSearchStatus::Unavailable { reason });
+        Self::certify(
+            daemon,
+            &command,
+            CommandReply::PublishedNameSearch(backend_library::PublishedNameSearchPage {
+                snapshot,
+                readiness: backend_library::PublishedSearchReadiness {
+                    full_search,
+                    semantic: if let Some(reason) = unavailable {
+                        backend_library::PublishedSemanticReadiness::Unavailable { reason }
+                    } else if full_search == backend_library::FullSearchReadiness::Ready {
+                        backend_library::PublishedSemanticReadiness::NotQueried
+                    } else {
+                        backend_library::PublishedSemanticReadiness::Pending
+                    },
+                },
+            }),
+            certificate,
+        )
     }
 
     fn graph(
@@ -6779,8 +6926,53 @@ fn map_semantic_authority_error(
     }
 }
 
+/// Preserve an admitted point-request outcome when the shared package surface
+/// can only report generic unavailability. A successful catalog response keeps
+/// its existing authority; this does not admit a failed or cancelled fetch.
+fn package_metadata_completion_reply(
+    package: backend_engine::registry::PackageCoordinate,
+    reply: Result<CommandReply, BuiltinModelError>,
+    observation: Option<backend_library::RegistryPackageDiscoveryObservation>,
+) -> CommandReply {
+    match (reply, observation) {
+        (
+            Ok(CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                observation:
+                    backend_library::RegistryPackageDiscoveryObservation::Unavailable { .. },
+                ..
+            })),
+            Some(
+                observation @ (backend_library::RegistryPackageDiscoveryObservation::Missing {
+                    ..
+                }
+                | backend_library::RegistryPackageDiscoveryObservation::Unavailable {
+                    ..
+                }),
+            ),
+        ) => CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+            package,
+            observation,
+        }),
+        (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
+            CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                package,
+                observation,
+            })
+        }
+        (Ok(reply), _) => reply,
+        (Err(error), _) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            error.to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+#[path = "package_metadata_completion_tests.rs"]
+mod package_metadata_completion_tests;
+
 #[cfg(test)]
 mod tests {
+    use super::{BrowseLane, RegistryAcquisitionMessage, RegistryAddError};
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CatalogReplyRequest, CommandAdapter, CommandReply,
         Executed, GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournal,
@@ -6791,12 +6983,12 @@ mod tests {
         index_operation_published_observation, index_publication_worker,
         legacy_add_compiler_failure, pending_capture_unresolved,
     };
+    use crate::builtin::commands::package_profile;
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
         BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET, SemanticDeployment, builtin_dispatcher,
         forge_gateway::ForgeGateway, genesis, profile_descriptor, publish_builtin_view,
     };
-    use crate::builtin::commands::package_profile;
     use crate::process::{ForgeAuthentication, ForgeConfig};
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -8616,7 +8808,9 @@ mod tests {
     }
 
     #[test]
-    fn native_typescript_partial_coverage_pages_preserve_actual_causes_across_cold_owner_restart() {
+    fn native_typescript_partial_coverage_pages_preserve_actual_causes_across_cold_owner_restart()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         use backend_library::{
             PackageCompilerCoverage as Availability, PackageCompilerOutcomeRead as Read,
             PackageCompilerOutcomes as Outcomes,
@@ -8641,10 +8835,10 @@ mod tests {
             ("playwright.config.ts", "export const tooling = 3;"),
         ] {
             let path = Path::new(&label).join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, source).unwrap();
+            fs::create_dir_all(path.parent().test_value()?).test_value()?;
+            fs::write(path, source).test_value()?;
         }
-        fixture.adapter.as_mut().unwrap().compiler =
+        fixture.adapter.as_mut().test_value()?.compiler =
             backend_engine::application::LocalCompilerHost::new(
                 MixedNativeEnvironment(fixture.root.0.join("compiler-coverage-native")),
                 backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
@@ -8662,7 +8856,7 @@ mod tests {
             adapter.poll_deferred(daemon);
             std::thread::yield_now();
         }
-        let package = backend_library::PackageReference::parse(label).unwrap();
+        let package = backend_library::PackageReference::parse(label).test_value()?;
         let mut retained = None;
         let mut original_rows = None;
         for epoch in 0..2 {
@@ -8675,8 +8869,8 @@ mod tests {
                 &package,
                 None,
             )
-            .unwrap()
-            .unwrap();
+            .test_value()?
+            .test_value()?;
             let Outcomes::Summary {
                 refusals,
                 coverage,
@@ -8692,10 +8886,19 @@ mod tests {
             );
             assert_eq!(source_capture.profiles.len(), 1);
             assert_eq!(source_capture.profiles[0].source_count, 3);
-            assert!(matches!(source_capture.profiles[0].state,
-                backend_library::IndexOperationSemanticProfileState::Published {
-                    coverage: backend_library::IndexOperationSemanticCoverage::Partial {completed:1,total:3},..
-                }), "publication must retain the genuine TSZ partial outcome: {source_capture:?}");
+            assert!(
+                matches!(
+                    source_capture.profiles[0].state,
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        coverage: backend_library::IndexOperationSemanticCoverage::Partial {
+                            completed: 1,
+                            total: 3
+                        },
+                        ..
+                    }
+                ),
+                "publication must retain the genuine TSZ partial outcome: {source_capture:?}"
+            );
             let [Availability::Retained { read: first }] =
                 coverage.as_deref().expect("new producer coverage list")
             else {
@@ -8709,7 +8912,9 @@ mod tests {
             } else {
                 retained = Some(*first);
             }
-            let Read::Coverage(first_selector)=first else{panic!("copyable coverage read kind")};
+            let Read::Coverage(first_selector) = first else {
+                panic!("copyable coverage read kind")
+            };
             let mut next = Some(*first);
             let mut rows = Vec::new();
             while let Some(request) = next {
@@ -8720,15 +8925,15 @@ mod tests {
                     &package,
                     Some(&request),
                 )
-                .unwrap()
-                .unwrap();
-                reply.admit_request(&package, Some(&request)).unwrap();
+                .test_value()?
+                .test_value()?;
+                reply.admit_request(&package, Some(&request)).test_value()?;
                 let Outcomes::Coverage { page, .. } = reply else {
                     panic!("exact coverage page")
                 };
                 assert_eq!((page.source_count, page.completed), (3, 1));
                 assert_eq!(page.rows.len(), 1);
-                assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
+                assert!(serde_json::to_vec(&page).test_value()?.len() <= 4096);
                 rows.extend(page.rows);
                 next = page.next;
                 assert!(rows.len() <= 3, "bounded continuation does not repeat rows");
@@ -8767,7 +8972,7 @@ mod tests {
                             &package,
                             Some(&request)
                         )
-                        .unwrap(),
+                        .test_value()?,
                         Some(Outcomes::Stale { .. })
                     ),
                     "old/foreign read {changed} never retargets"
@@ -8777,6 +8982,7 @@ mod tests {
                 fixture = fixture.reopen();
             }
         }
+        Ok(())
     }
 
     fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
@@ -11724,6 +11930,38 @@ mod tests {
         );
     }
 
+    fn assert_published_names(
+        wire: &serde_json::Value,
+        state: &str,
+        daemon: &ProductDaemon,
+        text: &str,
+    ) {
+        assert_eq!(wire["reply"]["kind"], "published_name_search");
+        assert_eq!(wire["reply"]["data"]["readiness"]["full_search"], state);
+        let snapshot = &wire["reply"]["data"]["snapshot"];
+        assert_eq!(
+            snapshot["root"]["basis"]["root"],
+            backend_engine::encode_id(daemon.engine().daemon().library().view().root().as_bytes())
+        );
+        let names = daemon
+            .engine()
+            .daemon()
+            .library()
+            .names(&backend_library::NameQuery::new(
+                text,
+                daemon.engine().daemon().library().revision_root(),
+                backend_engine::QueryLimit::default(),
+            ))
+            .expect("independent exact-current name oracle");
+        let oracle =
+            serde_json::to_value(backend_engine::ReplyDto::new(1, CommandReply::Names(names)))
+                .expect("independent names wire rows");
+        assert_eq!(
+            snapshot["root"]["rows"], oracle["reply"]["data"]["root"]["rows"],
+            "full selected IDs, parent/package/source/kind and row payloads survive unchanged"
+        );
+    }
+
     fn finish_search_lane(adapter: &mut CommandAdapter, daemon: &mut ProductDaemon) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while adapter.search_lane.active() {
@@ -11946,6 +12184,358 @@ mod tests {
         assert!(!adapter.search_preparation_eager);
         assert!(!adapter.search_lane.active());
         assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+    }
+
+    #[test]
+    fn shutdown_disconnects_full_acquisition_reply_before_joining_input_worker() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, _) = fixture.parts();
+        let cancelled = install_transition_job(adapter);
+        let control = Arc::clone(&cancelled);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .send(RegistryAcquisitionMessage::Staging)
+            .expect("fill real staging slot");
+        adapter.indexing.as_mut().expect("job").work = IndexJobWork::Acquiring(receiver);
+        let (entered, receipt) = std::sync::mpsc::sync_channel(1);
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let retired = Arc::clone(&disconnected);
+        let handle = std::thread::spawn(move || {
+            let mut message = RegistryAcquisitionMessage::Complete {
+                gateway: None,
+                result: Err(RegistryAddError::Cancelled),
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut notified = false;
+            loop {
+                match sender.try_send(message) {
+                    Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                        message = returned;
+                        if !notified {
+                            let _ = entered.send(());
+                            notified = true;
+                        }
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        retired.store(control.load(Ordering::Acquire), Ordering::Release);
+                        break;
+                    }
+                    Ok(()) => panic!("staging must remain full until shutdown disconnects"),
+                }
+                // Failure-safe fixture watchdog; no latency or blocking-send
+                // performance claim. Production still uses its bounded send.
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        adapter.index_input_workers.reserve().expect("input slot");
+        adapter
+            .index_input_workers
+            .retain(handle, Arc::clone(&cancelled));
+        receipt
+            .recv_timeout(Duration::from_secs(2))
+            .expect("complete observes full staging slot");
+        adapter.close();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            disconnected.load(Ordering::Acquire),
+            "receiver disconnect follows cancellation and precedes joined retirement"
+        );
+        assert_eq!(adapter.index_input_workers.len(), 0);
+        assert!(matches!(
+            adapter.indexing.as_ref().expect("retained job").work,
+            IndexJobWork::Transition
+        ));
+        adapter.close();
+    }
+
+    #[test]
+    fn index_scan_thread_is_retained_through_source_transition_and_joined_on_close() {
+        use index_publication_worker::{TestHook, TestStage};
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let (scan_returned, receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_scan, scan_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.index_scan_return_hook = Some(Box::new(move || {
+            let _ = scan_returned.send(());
+            let _ = scan_gate.recv();
+        }));
+        let (source_entered, source_receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_source, source_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.source_test_hook = Some(TestHook {
+            stage: TestStage::BeforeSourcePreparation,
+            run: Box::new(move || {
+                let _ = source_entered.send(());
+                let _ = source_gate.recv();
+            }),
+        });
+        adapter
+            .start_index_operation(
+                daemon,
+                backend_library::IndexOperationKey::from_bytes([150; 32]).expect("key"),
+                backend_library::PackageReference::parse(label).expect("local"),
+                CompileExecutionIntent::Interactive,
+                150,
+            )
+            .expect("actual index scan");
+        receipt
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actual scan sent result but has not exited");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match source_receipt.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("source phase: {error}"),
+            }
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owner advances while scan tail remains held"
+            );
+            std::thread::yield_now();
+        }
+        let indexing = adapter.indexing.as_ref().expect("owned job");
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PreparingSource { .. }
+        ));
+        let cancelled = Arc::clone(&indexing.cancelled);
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            1,
+            "phase transition retains actual scan handle"
+        );
+        adapter.index_input_workers.reap_finished();
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            1,
+            "active poll does not join live scan tail"
+        );
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let observed = cancelled.load(Ordering::Acquire);
+            let _ = release_scan.send(());
+            let _ = release_source.send(());
+            observed
+        });
+        adapter.close();
+        assert!(observer.join().expect("retirement observer"));
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            0,
+            "real scan tail joined after cancellation"
+        );
+        adapter.close();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_broadcasts_to_index_search_semantic_browse_and_journal_before_joining() {
+        use index_publication_worker::{TestHook, TestStage};
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let original = owner_cursor(daemon);
+        let (source_entered, source_receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_source, source_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.source_test_hook = Some(TestHook {
+            stage: TestStage::BeforeSourcePreparation,
+            run: Box::new(move || {
+                let _ = source_entered.send(());
+                let _ = source_gate.recv();
+            }),
+        });
+        adapter
+            .start_index_operation(
+                daemon,
+                backend_library::IndexOperationKey::from_bytes([148; 32]).expect("key"),
+                backend_library::PackageReference::parse(label).expect("local package"),
+                CompileExecutionIntent::Interactive,
+                148,
+            )
+            .expect("accepted source work");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match source_receipt.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("owned source worker: {error}"),
+            }
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "source worker entered"
+            );
+            std::thread::yield_now();
+        }
+        let indexing = adapter.indexing.as_ref().expect("owned source phase");
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PreparingSource { .. }
+        ));
+        let index_cancelled = Arc::clone(&indexing.cancelled);
+        let (search_entered, release_search) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        search_entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cold search held");
+        let search_cancelled = adapter.search_lane.active_cancellation();
+
+        let (browse, browse_entered, release_browse) = BrowseLane::held_for_test();
+        adapter.browse_lane = browse;
+        adapter
+            .browse_lane
+            .submit(
+                149,
+                149,
+                backend_engine::Cursor::new(),
+                backend_library::SurfaceCommand::ProjectTree {
+                    root: backend_library::ProductText::from_static("/owned/shutdown-control"),
+                },
+                None,
+            )
+            .expect("owned browse request");
+        browse_entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("browse worker held");
+        let browse_cancelled = adapter.browse_lane.cancellation_for_test(149);
+        // A separate selected lifetime proves that local inference receives its
+        // own stop request, rather than borrowing the search lane's signal.
+        // This runs the existing supervised BEM2 protocol fixture, not a model.
+        let (producer, semantic, semantic_cancelled) =
+            crate::builtin::query::local_semantic::tests::gated_owner_for_shutdown()
+                .expect("actual supervised local inference held");
+        adapter.remote_semantic = semantic;
+        let release_journal = adapter.journal_readiness.hold_reader();
+        let journal_cancelled = adapter.journal_readiness.cancellation_for_test();
+        assert!(!index_cancelled.load(Ordering::Acquire));
+        assert!(!search_cancelled.load(Ordering::Acquire));
+        assert!(!semantic_cancelled.load(Ordering::Acquire));
+        assert!(!browse_cancelled.is_cancelled());
+        assert!(!journal_cancelled.load(Ordering::Acquire));
+        let release_inference = producer.release.clone();
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let signals = || {
+                [
+                    index_cancelled.load(Ordering::Acquire),
+                    search_cancelled.load(Ordering::Acquire),
+                    semantic_cancelled.load(Ordering::Acquire),
+                    browse_cancelled.is_cancelled(),
+                    journal_cancelled.load(Ordering::Acquire),
+                ]
+            };
+            while !signals().into_iter().all(|stopped| stopped)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let before_releasing_any_worker = signals();
+            // Release every fixture gate before asserting, including when an
+            // old serialized shutdown reaches this watchdog instead.
+            let _ = release_journal.send(());
+            let _ = release_search.send(());
+            let _ = release_source.send(());
+            let _ = release_browse.send(());
+            let _ = fs::write(release_inference, b"failure-safe fixture release");
+            before_releasing_any_worker
+        });
+        adapter.close();
+        let observed = observer.join().expect("shutdown observer");
+        assert_eq!(
+            observed, [true; 5],
+            "all lanes stop before any join is unblocked"
+        );
+        assert!(!adapter.search_lane.active());
+        assert!(adapter.remote_semantic.local_preparation().is_none());
+        assert!(matches!(
+            adapter.indexing.as_ref().expect("retained job").work,
+            IndexJobWork::Transition
+        ));
+        assert_eq!(
+            owner_cursor(daemon),
+            original,
+            "shutdown invents no publication"
+        );
+        adapter.close(); // Every final join remains idempotent.
+    }
+
+    #[test]
+    fn shutdown_cancels_cold_preparation_before_joining_the_journal_and_reopens() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let original = owner_cursor(daemon);
+        let original_workspace = daemon.engine().daemon().owner().snapshot().root();
+        let (entered, release_search) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("real cold preparation is held before projection");
+        let cancelled = adapter.search_lane.active_cancellation();
+        let release_journal = adapter.journal_readiness.hold_reader();
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closing = Arc::clone(&closed);
+        let observed = Arc::clone(&cancelled);
+        // Both real workers are held before shutdown. The observer always
+        // releases them before returning, including on the old wrong order;
+        // the deadline is a failure watchdog, not a latency assertion.
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !observed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let cancelled_before_journal_release = observed.load(Ordering::Acquire);
+            let joined_before_release = closing.load(Ordering::Acquire);
+            let _ = release_journal.send(());
+            let _ = release_search.send(());
+            (cancelled_before_journal_release, joined_before_release)
+        });
+        adapter.close();
+        closed.store(true, Ordering::Release);
+        let (cancelled_before_journal_release, joined_before_release) =
+            observer.join().expect("shutdown observer");
+        assert!(
+            cancelled_before_journal_release,
+            "cold preparation must see shutdown while the journal join is blocked"
+        );
+        assert!(
+            !joined_before_release,
+            "shutdown still joins its owned workers"
+        );
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!adapter.search_lane.active());
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        assert_eq!(owner_cursor(daemon), original, "shutdown publishes no view");
+
+        let mut reopened = fixture.reopen();
+        let (adapter, daemon) = reopened.parts();
+        assert_eq!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            original_workspace,
+            "reopen retains the exact workspace"
+        );
+        adapter.warm_queries(daemon);
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            immediate_search(adapter, daemon, 147, "project source")["reply"]["kind"],
+            "search",
+            "a new preparation lifetime serves the retained workspace"
+        );
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let replacement = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("reopened selected lifetime");
+        assert!(!replacement.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&cancelled, &replacement));
     }
 
     #[test]
@@ -12191,7 +12781,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache() {
+    fn configured_semantic_waiter_returns_current_names_without_waiting_for_corpus() {
+        let producer =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
+                .expect("protocol fixture activation");
+        let runtime = producer.provision.runtime().expect("runtime");
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        adapter.remote_semantic =
+            crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
+        let baseline = runtime.memory_budget().used();
+        let (entered, release) = adapter.search_lane.hold_next();
+        let body = search_body(daemon, 1591, "project");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &body, 2591),
+            Ok(Executed::Deferred)
+        ));
+        let replies = adapter.poll_deferred(daemon);
+        assert_eq!(replies.len(), 1, "name page does not owe corpus completion");
+        let (ticket, bytes) = replies.into_iter().next().expect("owned reply");
+        assert_eq!(ticket, 2591);
+        let wire: serde_json::Value =
+            serde_json::from_slice(&bytes.expect("bounded names reply")).expect("wire");
+        assert_published_names(&wire, "preparing", daemon, "project");
+        assert_eq!(
+            wire["reply"]["data"]["readiness"]["semantic"]["state"],
+            "pending"
+        );
+        assert!(
+            wire.get("semantic_search")
+                .is_none_or(serde_json::Value::is_null)
+        );
+        assert!(adapter.semantic_search_replies.is_empty());
+        assert!(adapter.remote_semantic.local_preparation().is_none());
+        assert_eq!(
+            runtime.memory_budget().used(),
+            baseline,
+            "waiter credit retired"
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("held worker");
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        release.send(()).expect("release corpus");
+        finish_search_lane(adapter, daemon);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         // This is an executed BEM2 protocol fixture, never a genuine model claim.
         let producer =
             crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
@@ -12289,9 +12929,15 @@ mod tests {
                 1,
                 "warm query completes in its next normal poll"
             );
-            let wire: serde_json::Value =
-                serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("warm reply"))
-                    .expect("wire");
+            let wire: serde_json::Value = serde_json::from_slice(
+                &replies
+                    .into_iter()
+                    .next()
+                    .test_value()?
+                    .1
+                    .expect("warm reply"),
+            )
+            .expect("wire");
             assert_eq!(wire["request_id"], id);
             assert_eq!(wire["semantic_search"]["status"], "available");
             assert!(adapter.remote_semantic.local_preparation().is_none());
@@ -12306,14 +12952,16 @@ mod tests {
             !selected.load(Ordering::Acquire),
             "abandonment and warm requests do not cancel shared work"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure() {
-        let producer =
-            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
-                .expect("protocol fixture activation");
+    fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
+        let producer = crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
+            .expect("protocol fixture activation");
         let runtime = producer.provision.runtime().expect("runtime");
         let mut fixture = AdapterFixture::new();
         let (changed_package, changed_label) = fixture.add_target();
@@ -12351,7 +12999,7 @@ mod tests {
             &replies
                 .into_iter()
                 .next()
-                .unwrap()
+                .test_value()?
                 .1
                 .expect("deadline reply"),
         )
@@ -12383,12 +13031,19 @@ mod tests {
         );
         let replies = adapter.poll_deferred(daemon);
         assert_eq!(replies.len(), 1);
-        let wire: serde_json::Value =
-            serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("stale reply"))
-                .expect("wire");
+        let wire: serde_json::Value = serde_json::from_slice(
+            &replies
+                .into_iter()
+                .next()
+                .test_value()?
+                .1
+                .expect("stale reply"),
+        )
+        .expect("wire");
         assert_eq!(wire["reply"]["data"]["kind"], "wrong_basis");
         assert!(adapter.semantic_search_replies.is_empty());
         assert_eq!(runtime.memory_budget().used(), baseline);
+        Ok(())
     }
 
     #[test]
@@ -12450,7 +13105,8 @@ mod tests {
     }
 
     #[test]
-    fn preparation_cold_search_owner_abandonment_and_failure_allow_retry_and_restart() {
+    fn preparation_cold_search_owner_abandonment_and_failure_allow_retry_and_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = AdapterFixture::new();
         let durable = fixture.root.0.join("workspace/search-index-v2");
         {
@@ -12486,8 +13142,9 @@ mod tests {
             adapter.search_snapshots =
                 crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable)
                     .with_durable_cache_budget(
-                        backend_extension_tantivy::DurableCacheBudget::new(1)
-                            .expect("refusal budget"),
+                        backend_extension_tantivy::DurableCacheBudget::new(1).ok_or_else(|| {
+                            std::io::Error::other("refusal budget must be nonzero")
+                        })?,
                     );
             assert_preparing(
                 &immediate_search(adapter, daemon, 404, "project source"),
@@ -12528,6 +13185,7 @@ mod tests {
         assert_eq!(adapter.search_snapshots.projection_opens(), 1);
         adapter.close();
         assert!(!adapter.search_lane.active());
+        Ok(())
     }
 
     #[test]
@@ -12608,18 +13266,20 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let (entered, release) = adapter.search_lane.hold_next();
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 601, "project"),
             "preparing",
             daemon,
+            "project",
         );
         entered
             .recv_timeout(Duration::from_secs(2))
             .expect("held corpus worker");
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 602, "project"),
             "preparing",
             daemon,
+            "project",
         );
         for (id, command) in [
             (
@@ -12650,6 +13310,11 @@ mod tests {
             assert_eq!(wire["request_id"], id);
             assert_ne!(wire["reply"]["kind"], "failed");
         }
+        assert_eq!(
+            adapter.search_snapshots.projection_builds(),
+            0,
+            "useful current names did not wait for or claim a lexical build"
+        );
         release.send(()).expect("warm corpus");
         finish_search_lane(adapter, daemon);
         let cold = immediate_search(adapter, daemon, 605, "project");
@@ -12670,10 +13335,11 @@ mod tests {
             "invalid_query"
         );
         assert!(!adapter.search_lane.active());
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 702, "never_published_identifier"),
             "preparing",
             daemon,
+            "never_published_identifier",
         );
         finish_search_lane(adapter, daemon);
         assert_eq!(
@@ -12684,7 +13350,8 @@ mod tests {
     }
 
     #[test]
-    fn preparation_structured_query_shares_worker_and_cancel_is_immediate() {
+    fn preparation_structured_query_shares_worker_and_cancel_is_immediate()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let query = backend_engine::GraphQueryRequest::new(
@@ -12723,12 +13390,11 @@ mod tests {
             .library()
             .view()
             .capability()
-            .expect("actual selected producer coverage");
+            .ok_or_else(|| std::io::Error::other("selected view has no producer capability"))?;
         let workspace = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             capability,
-            crate::builtin::builtin_view_capability_for_workspace(&workspace)
-                .expect("actual workspace producer admission"),
+            crate::builtin::builtin_view_capability_for_workspace(&workspace)?,
             "the selected view must retain this workspace's admitted observation"
         );
         let cancelled = query.cancelled();
@@ -12779,6 +13445,7 @@ mod tests {
         release.send(()).expect("retire worker");
         finish_search_lane(adapter, daemon);
         assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+        Ok(())
     }
 
     include!("owner_short_controls_tests.rs");
