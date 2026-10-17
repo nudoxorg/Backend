@@ -3369,44 +3369,97 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() -> Result<(), TestFailure> {
-        let library = || Ok::<_, TestFailure>(TszLibraryInput::from_utf8(
-            "lib.fixture.d.ts", b"declare type LibraryLabel = string;".to_vec(),
-        ).test_value()?.into_lib_file());
+    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance()
+    -> Result<(), TestFailure> {
+        let library = || {
+            Ok::<_, TestFailure>(
+                TszLibraryInput::from_utf8(
+                    "lib.fixture.d.ts",
+                    b"declare type LibraryLabel = string;".to_vec(),
+                )
+                .test_value()?
+                .into_lib_file(),
+            )
+        };
         let original = library().test_value()?;
         let first = vec![
             input("src/a.ts", "export const a: LibraryLabel = 'a';"),
             input("src/b.ts", "export const b: LibraryLabel = 'b';"),
         ];
+        // This fixture explicitly admits a library. The shared no-lib test
+        // recipe intentionally hides library-owned names in type positions.
+        let mut recipe = options();
+        recipe.checker.no_lib = false;
         let mut authority = TszProjectAuthority::new();
-        authority.update(first.clone(), options(), &[Arc::clone(&original)]).test_value()?;
-        let unchanged = Arc::clone(authority.project().test_value()?.bound_sources.get("src/b.ts").test_value()?);
+        authority
+            .update(first.clone(), recipe.clone(), &[Arc::clone(&original)])
+            .test_value()?;
+        let unchanged = Arc::clone(
+            authority
+                .project()
+                .test_value()?
+                .bound_sources
+                .get("src/b.ts")
+                .test_value()?,
+        );
         // The production bridge constructs these objects again after each
         // fresh admission. Equal bytes do not make their arena objects equal.
         let readmitted = library().test_value()?;
         assert!(!Arc::ptr_eq(&original, &readmitted));
-        let changed = vec![input("src/a.ts", "export const a: LibraryLabel = 'edited';"), first[1].clone()];
-        let mut recipe = options();
+        assert!(!Arc::ptr_eq(&original.arena, &readmitted.arena));
+        let changed = vec![
+            input("src/a.ts", "export const a: LibraryLabel = 'edited';"),
+            first[1].clone(),
+        ];
         recipe.environment = TszEnvironmentFingerprint::from_sha256([0x73; 32]);
-        let report = authority.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)]).test_value()?;
+        let report = authority
+            .update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)])
+            .test_value()?;
         assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
         let project = authority.project().test_value()?;
         assert!(Arc::ptr_eq(&project.lib_files[0], &original));
-        assert!(Arc::ptr_eq(project.bound_sources.get("src/b.ts").test_value()?, &unchanged));
+        assert!(Arc::ptr_eq(
+            project.bound_sources.get("src/b.ts").test_value()?,
+            &unchanged
+        ));
         let observed = |authority: &TszProjectAuthority| {
             let project = authority.project().test_value()?;
-            let session = project.checked_query_session_unmetered_for_test().test_value()?;
+            let session = project
+                .checked_query_session_unmetered_for_test()
+                .test_value()?;
             let index = session.file_index("src/b.ts").test_value()?;
-            session.with_file_checker_and_types(index, |checker, binder, _, _| {
-                let ty = checker.get_type_of_symbol(binder.file_locals.get("b").test_value()?);
-                let ty = checker.resolve_lazy_type(ty);
-                Ok::<_, TestFailure>(checker.format_type(ty))
-            }).test_value()?
+            session
+                .with_file_checker_and_types(index, |checker, binder, _, _| {
+                    let ty = checker.get_type_of_symbol(binder.file_locals.get("b").test_value()?);
+                    let ty = checker.resolve_lazy_type(ty);
+                    Ok::<_, TestFailure>(checker.format_type(ty))
+                })
+                .test_value()?
         };
         let mut cold = TszProjectAuthority::new();
-        cold.update(changed, recipe, &[readmitted]).test_value()?;
-        assert_eq!(observed(&authority).test_value()?, observed(&cold).test_value()?);
+        cold.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)])
+            .test_value()?;
+        assert!(Arc::ptr_eq(
+            &cold.project().test_value()?.lib_files[0],
+            &readmitted
+        ));
+        assert_eq!(
+            observed(&authority).test_value()?,
+            observed(&cold).test_value()?
+        );
         assert_eq!(observed(&authority).test_value()?, "string");
+
+        // Admission alone does not override noLib: the same explicit library
+        // remains present but its type-position names are intentionally hidden.
+        recipe.checker.no_lib = true;
+        let mut no_lib = TszProjectAuthority::new();
+        no_lib
+            .update(changed, recipe, &[Arc::clone(&readmitted)])
+            .test_value()?;
+        let no_lib_project = no_lib.project().test_value()?;
+        assert_eq!(no_lib_project.lib_files.len(), 1);
+        assert!(Arc::ptr_eq(&no_lib_project.lib_files[0], &readmitted));
+        assert_eq!(observed(&no_lib).test_value()?, "unknown");
         Ok(())
     }
 
