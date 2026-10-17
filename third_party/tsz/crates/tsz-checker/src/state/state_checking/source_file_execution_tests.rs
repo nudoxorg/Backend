@@ -164,6 +164,15 @@ fn grammar_arena_sweeps_stop_before_late_diagnostics() {
                 .clone();
             checkpoint.arm();
             if namespace {
+                // Exercise the same production top-level walk directly: failure
+                // must happen before any arena sweep can mask a missing poll.
+                let top_level = checker.top_level_namespace_exports(&statements);
+                if checkpoint.stop_at < statements.len() {
+                    assert!(top_level.is_none(), "stop during top-level collection");
+                    assert!(checker.ctx.diagnostics.is_empty());
+                } else {
+                    assert!(top_level.is_some(), "uncancelled collection completes");
+                }
                 checker.check_namespace_export_declaration_grammar(&statements, false);
             } else {
                 checker.check_unique_symbol_grammar();

@@ -1021,16 +1021,9 @@ impl CheckerState<'_> {
     ) {
         use crate::diagnostics::{diagnostic_codes, diagnostic_messages};
 
-        let top_level: FxHashSet<NodeIndex> = top_level_statements
-            .iter()
-            .copied()
-            .filter(|&idx| {
-                self.ctx
-                    .arena
-                    .get(idx)
-                    .is_some_and(|node| node.kind == syntax_kind_ext::NAMESPACE_EXPORT_DECLARATION)
-            })
-            .collect();
+        let Some(top_level) = self.top_level_namespace_exports(top_level_statements) else {
+            return;
+        };
 
         let is_external_module = self.ctx.is_external_module_file();
         let mut violations: Vec<(NodeIndex, &'static str, u32)> = Vec::new();
@@ -1076,6 +1069,22 @@ impl CheckerState<'_> {
             self.ctx
                 .error(start, end.saturating_sub(start), message.to_string(), code);
         }
+    }
+
+    fn top_level_namespace_exports(
+        &self,
+        statements: &[NodeIndex],
+    ) -> Option<FxHashSet<NodeIndex>> {
+        let mut declarations = FxHashSet::default();
+        for &idx in statements {
+            self.ctx.types.execution_checkpoint(1).ok()?;
+            if self.ctx.arena.get(idx).is_some_and(|node| {
+                node.kind == syntax_kind_ext::NAMESPACE_EXPORT_DECLARATION
+            }) {
+                declarations.insert(idx);
+            }
+        }
+        Some(declarations)
     }
 
     fn check_unique_symbol_grammar(&mut self) {
