@@ -1793,7 +1793,27 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Value, RpcError> {
-        let mut view = backend_present::product_view_for_command(command, reply);
+        self.surface_reply_with_profile_progress(command, reply, None, detail, context, exposure)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn surface_reply_with_profile_progress(
+        &mut self,
+        command: &SurfaceCommand,
+        reply: &SurfaceReply,
+        profile_progress: Option<backend_library::IndexProgressPage>,
+        detail: Detail,
+        context: &[u8],
+        exposure: McpExposure,
+    ) -> Result<Value, RpcError> {
+        let mut view = backend_present::product_view_for_command(command, reply)
+            .with_index_profile_progress(profile_progress)
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?;
         view.expose_mcp_advice(exposure);
         let view = view
             .with_cli_context(self.product.cli_context())
@@ -3385,6 +3405,12 @@ impl Serialize for SurfaceProjection<'_> {
                     },
                 )?;
                 map.end()
+            }
+            SurfaceReply::IndexOperationStatus(data)
+                if matches!(self.index_job,
+                Some(backend_present::IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page))) if !page.events.is_empty()) =>
+            {
+                self.serialize_job(serializer, "index-operation-status", data)
             }
             SurfaceReply::IndexStarted(data) => {
                 self.serialize_job(serializer, "index-started", data)

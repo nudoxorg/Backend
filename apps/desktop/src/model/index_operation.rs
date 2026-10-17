@@ -21,6 +21,9 @@ pub struct IndexOperationClaim {
     /// Canonical owner evidence; missing means no answer was admitted yet.
     #[serde(default)]
     pub observation: Option<backend_library::IndexOperationObservation>,
+    /// Separately admitted display milestones; never persisted as an operation receipt.
+    #[serde(skip)]
+    pub profile_progress: Option<backend_library::IndexProgressPage>,
 }
 
 impl IndexOperationClaim {
@@ -47,9 +50,18 @@ impl IndexOperationClaim {
 
     /// Bind an already generated key to the selected native project.
     pub fn for_project(key: IndexOperationKey, project: &LocalProjectId) -> Result<Self, String> {
-        let coordinate = project.service_coordinate().map_err(|error| error.to_string())?;
-        let package = PackageReference::parse(coordinate.to_owned()).map_err(|error| error.to_string())?;
-        Ok(Self { key, package, execution_intent: CompileExecutionIntent::Interactive, observation: None })
+        let coordinate = project
+            .service_coordinate()
+            .map_err(|error| error.to_string())?;
+        let package =
+            PackageReference::parse(coordinate.to_owned()).map_err(|error| error.to_string())?;
+        Ok(Self {
+            key,
+            package,
+            execution_intent: CompileExecutionIntent::Interactive,
+            observation: None,
+            profile_progress: None,
+        })
     }
 
     /// Match an observation to the caller payload and re-admit the canonical

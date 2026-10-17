@@ -726,7 +726,15 @@ impl ProductView {
         {
             if let backend_library::IndexOperationState::Active { ticket, .. } = &status.state
                 && let Some(after_observation) =
-                    backend_client::IndexObservationFingerprint::active(status)?
+                    backend_client::IndexObservationFingerprint::active_with_profile_progress(
+                        status,
+                        match &self.index_job {
+                            Some(IndexJobProjection::Progress(IndexJobObservation::Pending(
+                                page,
+                            ))) => Some(page),
+                            _ => None,
+                        },
+                    )?
             {
                 self.index_progress_poll =
                     Some(backend_client::IndexProgressReference::Operation {
@@ -745,6 +753,42 @@ impl ProductView {
                 stage: page.stage,
             });
         }
+        Ok(self)
+    }
+
+    /// Attaches separately admitted exact-ticket milestones without changing the
+    /// durable operation receipt or treating a staged candidate as published.
+    /// # Errors
+    /// Refuses a page that does not join this active operation and stage.
+    pub fn with_index_profile_progress(
+        mut self,
+        page: Option<backend_library::IndexProgressPage>,
+    ) -> Result<Self, backend_client::ClientError> {
+        let Some(page) = page else {
+            return Ok(self);
+        };
+        let Some(backend_library::IndexOperationObservation::Known(status)) = &self.index_operation
+        else {
+            return Err(backend_client::ClientError::Protocol(
+                "compiler progress has no active operation".to_owned(),
+            ));
+        };
+        backend_client::IndexObservationFingerprint::active_with_profile_progress(
+            status,
+            Some(&page),
+        )?;
+        if let Some(words) = index_profile_progress_text(status, &page)? {
+            let mut records = self.records.into_vec();
+            records.push(ProductRecord::new(
+                words,
+                None,
+                vec![format!("progress sequence {}", page.next_sequence)],
+            ));
+            self.records = records.into_boxed_slice();
+        }
+        self = self.with_index_job(IndexJobProjection::Progress(IndexJobObservation::Pending(
+            page,
+        )));
         Ok(self)
     }
 
@@ -1443,6 +1487,43 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             .with_index_job(IndexJobProjection::Cancellation(receipt.clone())),
         _ => return None,
     })
+}
+
+/// Plain words for the latest admitted compiler milestone, never a percentage
+/// or a claim that a private candidate has already been published.
+/// # Errors
+/// Refuses progress belonging to another ticket, stage or malformed receipt.
+pub fn index_profile_progress_text(
+    status: &backend_library::IndexOperationStatus,
+    page: &backend_library::IndexProgressPage,
+) -> Result<Option<String>, backend_client::ClientError> {
+    backend_client::IndexObservationFingerprint::active_with_profile_progress(status, Some(page))?;
+    if page.stage != backend_library::IndexJobStage::Compiling {
+        return Ok(None);
+    }
+    Ok(page
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            IndexJobProgressKind::ProfileStarted {
+                profile,
+                ordinal,
+                total,
+            } => Some(format!(
+                "Compiling {} profile {ordinal}/{total}",
+                profile.name().unwrap_or("unknown")
+            )),
+            IndexJobProgressKind::ProfileAdmitted {
+                profile,
+                ordinal,
+                total,
+            } => Some(format!(
+                "{} profile {ordinal}/{total} staged; publication pending",
+                profile.name().unwrap_or("unknown")
+            )),
+            IndexJobProgressKind::StageChanged { .. } => None,
+        }))
 }
 
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
@@ -5078,3 +5159,99 @@ mod project_lockfile_tests;
 #[cfg(test)]
 #[path = "package_metadata_cause_tests.rs"]
 mod package_metadata_cause_tests;
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "admitted operation/profile projection fixtures"
+)]
+mod compiler_progress_projection_tests {
+    use super::*;
+    use backend_library::{
+        CompileExecutionIntent, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage,
+        IndexJobTicket, IndexOperationKey, IndexOperationObservation, IndexOperationState,
+        IndexOperationStatus, IndexProgressPage, SemanticLanguageProfile,
+    };
+
+    #[test]
+    fn composed_progress_uses_existing_job_slot_and_durable_key_continuation() {
+        let package = PackageReference::parse("/workspace/profile-progress".to_owned())
+            .expect("local package");
+        let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [1; 16], package.clone());
+        let status = IndexOperationStatus::new(
+            IndexOperationKey::from_bytes([2; 32]).expect("key"),
+            package,
+            CompileExecutionIntent::Interactive,
+            IndexOperationState::Active {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+            },
+        );
+        let page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+            events: vec![IndexJobProgressEvent {
+                ticket,
+                sequence: 3,
+                kind: IndexJobProgressKind::ProfileStarted {
+                    profile: SemanticLanguageProfile::from_name("typescript")
+                        .expect("native profile"),
+                    ordinal: 2,
+                    total: 3,
+                },
+            }]
+            .into_boxed_slice(),
+            next_sequence: 3,
+            truncated: false,
+            has_more: false,
+        };
+        let observation = IndexOperationObservation::Known(status.clone());
+        let view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_profile_progress(Some(page.clone()))
+            .expect("exact ticket join")
+            .with_bounded_index_poll()
+            .expect("composed continuation");
+        assert_eq!(view.index_operation(), Some(&observation));
+        assert!(
+            matches!(view.index_job(), Some(IndexJobProjection::Progress(IndexJobObservation::Pending(actual))) if actual == &page)
+        );
+        let Some(crate::Affordance::ObserveIndexChanges {
+            reference:
+                backend_client::IndexProgressReference::Operation {
+                    operation_key,
+                    after_observation,
+                    ..
+                },
+        }) = view.index_poll_affordance()
+        else {
+            panic!("durable continuation")
+        };
+        assert_eq!(operation_key, status.operation_key);
+        assert_eq!(
+            Some(after_observation),
+            backend_client::IndexObservationFingerprint::active_with_profile_progress(
+                &status,
+                Some(&page)
+            )
+            .expect("same client validator")
+        );
+        assert_eq!(
+            index_profile_progress_text(&status, &page)
+                .expect("plain words")
+                .as_deref(),
+            Some("Compiling typescript profile 2/3")
+        );
+        let mut foreign = page;
+        foreign.ticket =
+            IndexJobTicket::new(std::num::NonZeroU64::MIN, [9; 16], status.package.clone());
+        for event in &mut foreign.events {
+            event.ticket = foreign.ticket.clone();
+        }
+        assert!(
+            product_view(&SurfaceReply::IndexOperationStatus(observation))
+                .with_index_profile_progress(Some(foreign))
+                .is_err()
+        );
+    }
+}

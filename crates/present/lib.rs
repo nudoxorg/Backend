@@ -156,8 +156,8 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, index_stage_name, package_graph_markdown, product_view, product_view_for_command,
-    product_view_for_owned_command,
+    ProductView, index_profile_progress_text, index_stage_name, package_graph_markdown,
+    product_view, product_view_for_command, product_view_for_owned_command,
 };
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};

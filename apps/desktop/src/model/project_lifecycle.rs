@@ -156,6 +156,21 @@ impl ProjectLifecycle {
 }
 
 impl WorkspaceProject {
+    /// Latest exact-ticket milestone, shown only while its active receipt is current.
+    #[must_use]
+    pub fn compiler_progress_words(&self) -> Option<String> {
+        if !matches!(self.lifecycle(), ProjectLifecycle::Active(_)) {
+            return None;
+        }
+        let operation = self.operation.as_ref()?;
+        let IndexOperationObservation::Known(status) = operation.observation.as_ref()? else {
+            return None;
+        };
+        backend_present::index_profile_progress_text(status, operation.profile_progress.as_ref()?)
+            .ok()
+            .flatten()
+    }
+
     /// Shared bounded compiler explanation from an admitted typed refusal.
     #[must_use]
     pub fn compiler_refusal_words(&self) -> Option<String> {
@@ -307,6 +322,90 @@ mod tests {
     use super::*;
     use crate::model::index_operation::tests::{claim, observation, published};
     use crate::navigation::RequestId;
+
+    #[test]
+    fn profile_milestones_are_transient_exact_ticket_display_not_saved_publication() {
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexJobTicket, IndexProgressPage,
+            SemanticLanguageProfile,
+        };
+        let mut row = WorkspaceProject::indexing("/tmp/profile-progress-display").expect("project");
+        let mut operation = claim(&row.id, 0x72);
+        let ticket = IndexJobTicket::new(
+            std::num::NonZeroU64::MIN,
+            [1; 16],
+            operation.package.clone(),
+        );
+        operation.observation = Some(observation(
+            &operation,
+            IndexOperationState::Active {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+            },
+        ));
+        operation.profile_progress = Some(IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+            events: vec![IndexJobProgressEvent {
+                ticket,
+                sequence: 3,
+                kind: IndexJobProgressKind::ProfileStarted {
+                    profile: SemanticLanguageProfile::from_name("typescript")
+                        .expect("native profile"),
+                    ordinal: 2,
+                    total: 3,
+                },
+            }]
+            .into_boxed_slice(),
+            next_sequence: 3,
+            truncated: false,
+            has_more: false,
+        });
+        row.operation = Some(operation.clone());
+        assert_eq!(
+            row.compiler_progress_words().as_deref(),
+            Some("Compiling typescript profile 2/3")
+        );
+        assert_eq!(
+            row.lifecycle(),
+            ProjectLifecycle::Active(IndexJobStage::Compiling)
+        );
+        assert!(row.progress.is_none());
+        assert!(row.files_indexed.is_none());
+        let bytes = serde_json::to_vec(&operation).expect("saved durable claim");
+        let restored: crate::model::IndexOperationClaim =
+            serde_json::from_slice(&bytes).expect("existing saved claim shape");
+        assert!(restored.profile_progress.is_none());
+        assert!(restored.same_request(&operation));
+        assert_eq!(restored.observation, operation.observation);
+        row.phase = ProjectPhase::Unconfirmed;
+        assert!(
+            row.compiler_progress_words().is_none(),
+            "retained progress is not active after restart"
+        );
+        row.phase = ProjectPhase::Indexing;
+        row.operation
+            .as_mut()
+            .expect("claim")
+            .profile_progress
+            .as_mut()
+            .expect("page")
+            .ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [9; 16], operation.package);
+        let foreign = row
+            .operation
+            .as_mut()
+            .expect("claim")
+            .profile_progress
+            .as_mut()
+            .expect("page");
+        for event in &mut foreign.events {
+            event.ticket = foreign.ticket.clone();
+        }
+        assert!(
+            row.compiler_progress_words().is_none(),
+            "old owner progress cannot describe a retry"
+        );
+    }
 
     #[test]
     fn local_queue_preflight_and_saved_claim_cannot_invent_owner_acceptance() {

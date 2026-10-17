@@ -123,12 +123,13 @@ impl Engine for SessionEngine<'_> {
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
+        let context = session.request_context().cloned();
         match self.paths {
             Some(paths) => {
                 backend_client::surface_with_index_journal(paths, command, |command| match recovery
                     .as_deref_mut()
                 {
-                    Some(recovery) => recovery.surface(session, command, None),
+                    Some(recovery) => recovery.surface(session, command, context.as_ref()),
                     None => session.surface(command),
                 })
             }
@@ -170,7 +171,61 @@ impl Engine for SessionEngine<'_> {
 /// Returns the typed fault the engine or the transport produced, with the
 /// operand the caller supplied already attached.
 pub fn execute(session: &mut Session, request: &Request) -> Result<Answer, Fault> {
-    backend_present::answer(&mut SessionEngine::new(session), request)
+    answer_with_compiler_progress(&mut SessionEngine::new(session), request)
+}
+
+// Explicit CLI index_progress uses the same admitted composition as MCP and
+// add --wait. Bind all reads to the pre-existing absolute session scope.
+fn answer_with_compiler_progress(
+    engine: &mut SessionEngine<'_>,
+    request: &Request,
+) -> Result<Answer, Fault> {
+    if !matches!(request, Request::Surface(command) if matches!(command.as_ref(), SurfaceCommand::IndexOperationStatus { .. }))
+    {
+        return backend_present::answer(engine, request);
+    }
+    let operand = match request {
+        Request::Surface(command) => match command.as_ref() {
+            SurfaceCommand::IndexOperationStatus { operation_key } => {
+                backend_present::Operand::Text(operation_key.to_hex())
+            }
+            _ => backend_present::Operand::Whole,
+        },
+        _ => backend_present::Operand::Whole,
+    };
+    let original = engine.session.request_context().cloned();
+    let context = original.clone().unwrap_or_default();
+    context
+        .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+        .map_err(|error| Fault::from_client_error(&error, operand.clone()))?;
+    engine
+        .session
+        .set_request_context(Some(context.clone()))
+        .map_err(|error| Fault::from_client_error(&error, operand.clone()))?;
+    let result = backend_present::answer(engine, request).and_then(|answer| {
+        let Answer::Product(view) = answer else {
+            return Ok(answer);
+        };
+        let Some(observation) = view.index_operation().cloned() else {
+            return Ok(Answer::Product(view));
+        };
+        let observed =
+            backend_client::observe_index_operation_progress(observation, &context, |command| {
+                engine.surface(command)
+            })
+            .map_err(|error| Fault::from_client_error(&error, operand.clone()))?;
+        let view = backend_present::product_view(&SurfaceReply::IndexOperationStatus(
+            observed.observation,
+        ))
+        .with_index_profile_progress(observed.profile_progress)
+        .map_err(|error| Fault::from_client_error(&error, operand.clone()))?;
+        Ok(Answer::Product(Box::new(view)))
+    });
+    let restored = engine
+        .session
+        .set_request_context(original)
+        .map_err(|error| Fault::from_client_error(&error, operand.clone()));
+    result.and_then(|answer| restored.map(|()| answer))
 }
 
 /// Executes against the frozen runtime attachment, retaining default index
@@ -183,7 +238,7 @@ pub fn execute_in_workspace(
     request: &Request,
     paths: &backend_runtime::WorkspacePaths,
 ) -> Result<Answer, Fault> {
-    backend_present::answer(
+    answer_with_compiler_progress(
         &mut SessionEngine {
             session,
             paths: Some(paths),
@@ -200,7 +255,7 @@ pub(crate) fn execute_with_recovery(
     paths: &backend_runtime::WorkspacePaths,
     recovery: &mut crate::owner_recovery::OwnerRecovery,
 ) -> Result<Answer, Fault> {
-    backend_present::answer(
+    answer_with_compiler_progress(
         &mut SessionEngine {
             session,
             paths: Some(paths),
@@ -227,7 +282,7 @@ pub(crate) fn execute_with_output_admission(
         recovery,
     };
     let Request::Surface(command) = request else {
-        return backend_present::answer(&mut engine, request);
+        return answer_with_compiler_progress(&mut engine, request);
     };
     if let SurfaceCommand::SemanticVersions {
         package,
@@ -290,7 +345,7 @@ pub(crate) fn execute_with_output_admission(
         return result.and_then(|answer| restored.map(|()| answer));
     }
     let backend_library::SurfaceCommand::PackageGraphPage { request } = command.as_ref() else {
-        return backend_present::answer(&mut engine, &Request::Surface(command.clone()));
+        return answer_with_compiler_progress(&mut engine, &Request::Surface(command.clone()));
     };
     let mut selection = backend_present::PackageGraphPageSelection::new(request)?;
     let original_context = engine.session.request_context().cloned();
@@ -311,7 +366,7 @@ pub(crate) fn execute_with_output_admission(
                 request: selection.request().clone(),
             },
         ));
-        let answer = backend_present::answer(&mut engine, &request)?;
+        let answer = answer_with_compiler_progress(&mut engine, &request)?;
         let page = match &answer {
             Answer::Product(view) => view.package_graph_page(),
             _ => None,
