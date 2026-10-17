@@ -6944,6 +6944,7 @@ fn map_semantic_authority_error(
 
 #[cfg(test)]
 mod tests {
+    use super::{BrowseLane, RegistryAcquisitionMessage, RegistryAddError};
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CatalogReplyRequest, CommandAdapter, CommandReply,
         Executed, GraphProjectionStamp, IndexJob, IndexJobWork, IndexOperationJournal,
