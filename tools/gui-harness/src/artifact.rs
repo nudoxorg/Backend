@@ -473,10 +473,6 @@ fn verify_run_inner(
             .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?;
         let mut manifest_frame_paths = std::collections::BTreeSet::new();
         for frame in &manifest.frames {
-            let expected_size = frame
-                .viewport
-                .unwrap_or(manifest.config.viewport)
-                .physical_size();
             let frame_relative = safe_relative_path(&frame.path)?;
             let path = base.join(&frame_relative);
             if !manifest_frame_paths.insert(frame.path.clone())
