@@ -16,6 +16,7 @@ const SOURCE: &str = include_str!("../fixtures/httpie-signature/argparser.py");
 struct RetainedProduct {
     library: Library,
     selected_documents: Vec<(String, SymbolKey)>,
+    continuations: std::collections::BTreeMap<String, (PageContinuation, ViewStateRoot)>,
 }
 
 impl RetainedProduct {
@@ -226,15 +227,25 @@ impl Engine for RetainedProduct {
 impl Product for RetainedProduct {
     fn encode_continuation(
         &mut self,
-        _continuation: PageContinuation,
+        continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        Err(ClientError::Protocol(
-            "this finite fixture owes no continuation".to_owned(),
-        ))
+        // Retain only actual Library-issued cursors, using the same typed
+        // cursor bytes and issuing-owner check as the shared client fixture.
+        let token = fixture_page_cursor(continuation);
+        self.continuations
+            .insert(token.clone(), (continuation, self.library.revision_root()));
+        Ok(token)
     }
 
-    fn decode_continuation(&mut self, _token: &str) -> Result<PageContinuation, ClientError> {
-        Err(ClientError::StaleCursor)
+    fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
+        let (continuation, owner) = self
+            .continuations
+            .get(token)
+            .ok_or_else(|| ClientError::Protocol("unissued retained cursor".to_owned()))?;
+        if *owner != self.library.revision_root() || continuation.cursor().query_offset() == 0 {
+            return Err(ClientError::StaleCursor);
+        }
+        Ok(*continuation)
     }
 
     fn graph_page(
@@ -387,6 +398,7 @@ fn server(library: Library) -> Server<RetainedProduct> {
         RetainedProduct {
             library,
             selected_documents: Vec::new(),
+            continuations: std::collections::BTreeMap::new(),
         },
         SHELF.to_owned(),
         [9; 32],
@@ -442,6 +454,16 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                         .product
                         .symbol(coordinate)
                         .expect("address reuses actual membership");
+                    if record["identity"]["shape"] == "external" {
+                        let row = server
+                            .product
+                            .library
+                            .view()
+                            .row_ref(RowId::Symbol(symbol))
+                            .expect("retained external target");
+                        assert_eq!(row.package, None, "navigation is not local ownership");
+                        assert_eq!(row.source, SourceAvailability::NotCaptured);
+                    }
                     assert!(operands.insert(coordinate.to_owned()));
                     assert!(symbols.insert(symbol));
                     assert_eq!(
@@ -454,6 +476,10 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                         json!({"coordinate":coordinate,"detail":detail}),
                     );
                     assert_eq!(document["isError"], false, "{document}");
+                    assert!(
+                        document["structuredContent"].get("notes").is_none(),
+                        "a valid external target is not a failed local member proof: {document}"
+                    );
                     assert_eq!(
                         document["structuredContent"]["identity"]["coordinate"],
                         coordinate
@@ -589,6 +615,69 @@ fn actual_package_only_route_keeps_unknown_counts_after_successful_selected_read
         );
         assert!(text_of(&packages).contains("declaration count unavailable"));
         assert!(!text_of(&packages).contains("0 declaration"));
+    }
+}
+
+#[test]
+fn selected_external_documents_do_not_claim_local_outline_membership() {
+    let library = retained_library();
+    let external = library
+        .view()
+        .rows()
+        .iter()
+        .filter(|row| matches!(row.id, RowId::Symbol(_)) && row.package.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(external.len(), 4);
+    let mut server = server(library);
+    for row in external {
+        let RowId::Symbol(symbol) = row.id else {
+            panic!("external symbol")
+        };
+        for registered in [false, true] {
+            let arguments = json!({"coordinate":row.label,
+                "selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()},"detail":"full"});
+            let document = if registered {
+                invoke(
+                    &mut server,
+                    "backend.call",
+                    json!({"name":"backend.document","arguments":arguments}),
+                )
+            } else {
+                invoke(&mut server, "backend.document", arguments)
+            };
+            assert_eq!(document["isError"], false, "{document}");
+            let body = &document["structuredContent"];
+            assert_eq!(body["identity"]["coordinate"], row.label);
+            assert_eq!(
+                body["identity"]["semantic_data"]["value"],
+                json!(symbol.as_bytes())
+            );
+            assert_eq!(body["source_fault"]["cause"], "not-captured");
+            for absent in ["notes", "members", "source", "signature"] {
+                assert!(
+                    body.get(absent).is_none(),
+                    "no invented foreign fact: {body}"
+                );
+            }
+            let source_arguments = json!({"coordinate":row.label,
+                "selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()},"detail":"full"});
+            let source = if registered {
+                invoke(
+                    &mut server,
+                    "backend.call",
+                    json!({"name":"backend.source","arguments":source_arguments}),
+                )
+            } else {
+                invoke(&mut server, "backend.source", source_arguments)
+            };
+            assert_eq!(
+                source["isError"], true,
+                "source remains unavailable: {source}"
+            );
+            assert_eq!(source["structuredContent"]["slug"], "source-unavailable");
+            assert_eq!(source["structuredContent"]["cause"], "not-captured");
+        }
     }
 }
 
@@ -737,6 +826,41 @@ fn selected_graph_continuation_refuses_changed_id_or_coordinate_assertion() {
     let cursor = first["structuredContent"]["nextCursor"]
         .as_str()
         .expect("actual owner-issued successor");
+    let (issued_token, (issued, _)) = server
+        .product
+        .continuations
+        .iter()
+        .next()
+        .map(|(token, value)| (token.clone(), *value))
+        .expect("actual retained cursor");
+    assert!(issued.cursor().query_offset() > 0);
+    assert_eq!(
+        server
+            .product
+            .decode_continuation(&issued_token)
+            .expect("issued bytes"),
+        issued
+    );
+    let changed_token = format!(
+        "{}{}",
+        &issued_token[..issued_token.len() - 1],
+        if issued_token.ends_with('0') {
+            '1'
+        } else {
+            '0'
+        },
+    );
+    for unissued in [
+        String::new(),
+        "pc1-not-hex".to_owned(),
+        format!("{issued_token}00"),
+        changed_token,
+    ] {
+        assert!(
+            server.product.decode_continuation(&unissued).is_err(),
+            "unissued/tampered cursor"
+        );
+    }
     for changed in [
         json!({"selected_symbol":{"kind":"selected-symbol-id","value":neighbor.as_bytes()},"coordinate":coordinate,"limit":1,"cursor":cursor}),
         json!({"selected_symbol":selector,"coordinate":format!("{coordinate}-wrong"),"limit":1,"cursor":cursor}),
@@ -772,4 +896,14 @@ fn selected_graph_continuation_refuses_changed_id_or_coordinate_assertion() {
         first["structuredContent"]["records"][0]["identity"]["semantic_data"],
         next["structuredContent"]["records"][0]["identity"]["semantic_data"]
     );
+    for expected in [center, neighbor] {
+        assert!([&first, &next].iter().any(|page|
+            page["structuredContent"]["records"][0]["identity"]["semantic_data"]["value"] == json!(expected.as_bytes())),
+            "exact center and neighbor, never substituted rows");
+    }
+    server.product.library = retained_library();
+    assert!(matches!(
+        server.product.decode_continuation(&issued_token),
+        Err(ClientError::StaleCursor)
+    ));
 }

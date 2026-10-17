@@ -1047,9 +1047,29 @@ fn probe_members(
     document: &backend_library::Document,
     notes: &mut Vec<Fault>,
 ) -> Vec<Row> {
-    let Some(project) = Identity::parse(coordinate).project().cloned() else {
+    let identity = Identity::parse(coordinate);
+    let Some(project) = identity.project().cloned() else {
         return Vec::new();
     };
+    // An admitted external target is retained for navigation, without claiming
+    // ownership by the local package named in its scoped display address.
+    // Its document selection proves the target; a local outline cannot prove
+    // that foreign declaration's members or source availability.
+    if identity.shape() == crate::identity::IdentityShape::External
+        && coordinate.starts_with(&format!(
+            "{}::external::{}::",
+            project.root(),
+            backend_library::RowId::Symbol(document.symbol).stable_key(),
+        ))
+        && document.selection.as_ref().is_some_and(|selection| {
+            selection.coordinate() == coordinate
+                && selection.symbol() == document.symbol
+                && selection.source().root == document.basis
+                && document.source_basis() == Some(selection.source())
+        })
+    {
+        return Vec::new();
+    }
     match document_member_rows(engine, project.root(), document) {
         Ok(rows) => rows,
         Err(error) => {
@@ -1666,6 +1686,80 @@ mod document_member_paging_controls {
                 assert_eq!(notes.len(), 1);
                 assert_eq!(notes[0].slug(), crate::FaultSlug::Protocol);
             }
+        }
+    }
+
+    #[test]
+    fn external_member_scope_requires_exact_selection_and_keeps_local_owner_guard() {
+        let mut reader = Reader::new(Disturbance::None);
+        let symbol = symbol_key("retained foreign target");
+        let coordinate = format!("{PATH}::external::{}::foreign", RowId::Symbol(symbol));
+        let source = reader.catalog.view().basis();
+        let source = Basis {
+            root: reader.catalog.revision_root(),
+            ..source
+        };
+        let row = Row::new(RowId::Symbol(symbol), source, &coordinate);
+        assert_eq!(row.package, None);
+        let document = Document::new(symbol, source.root, [])
+            .with_source_basis(source)
+            .with_selection(
+                backend_library::DocumentSelection::from_row(&row, source)
+                    .expect("exact external selection"),
+            )
+            .expect("same selected row and full source basis");
+        let mut notes = Vec::new();
+        assert!(probe_members(&mut reader, &coordinate, &document, &mut notes).is_empty());
+        assert_eq!(
+            reader.calls, 0,
+            "external navigation is not package ownership"
+        );
+        assert!(notes.is_empty());
+        assert_eq!(
+            document.location,
+            backend_library::SourceAvailability::NotCaptured
+        );
+
+        // An external-looking operand alone does not bypass member admission.
+        // Neither does missing optional source on a genuinely local selection.
+        let mismatched_key = format!(
+            "{PATH}::external::{}::foreign",
+            RowId::Symbol(symbol_key("another retained target"))
+        );
+        let mismatched_selection = backend_library::DocumentSelection::from_row(
+            &Row::new(RowId::Symbol(symbol), source, &mismatched_key),
+            source,
+        );
+        for (coordinate, selection) in [
+            (coordinate, None),
+            (mismatched_key, mismatched_selection),
+            (
+                OWNER.to_owned(),
+                backend_library::DocumentSelection::from_row(
+                    &Row::in_package(RowId::Symbol(symbol), source, package_key(PATH), OWNER),
+                    source,
+                ),
+            ),
+        ] {
+            let mut reader = Reader::new(Disturbance::None);
+            let mut document = Document::new(symbol, source.root, []).with_source_basis(source);
+            if let Some(selection) = selection {
+                document = document.with_selection(selection).expect("same row basis");
+            }
+            let mut notes = Vec::new();
+            assert!(probe_members(&mut reader, &coordinate, &document, &mut notes).is_empty());
+            assert_eq!(
+                reader.calls, 3,
+                "complete original package walk was required"
+            );
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].slug(), crate::FaultSlug::Protocol);
+            assert!(
+                notes[0]
+                    .cause()
+                    .sentence()
+                    .contains("document owner is absent")
+            );
         }
     }
 
