@@ -798,7 +798,7 @@ fn glob_component_matches(pattern: &str, value: &str, case_insensitive: bool) ->
             .char_indices()
             .filter(|(_, character)| matches!(character, '*' | '?' | '['))
             .map(|(index, _)| index)
-            .last();
+            .next_back();
         let suffix = last_meta.map_or("", |index| {
             if alternative[index..].starts_with('[') {
                 alternative[index + 1..]

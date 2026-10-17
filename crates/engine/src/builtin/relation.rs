@@ -870,8 +870,7 @@ impl ProductSourceRecord {
     /// most 391 references are needed (12,512 encoded key bytes), before the
     /// bounded label and optional alias evidence.
     pub const MAX_PROJECT_MEMBERSHIP_PAGES: usize =
-        (Self::MAX_PROJECT_FILES + MIN_PROJECT_MEMBERSHIP_PAGE_FILES - 1)
-            / MIN_PROJECT_MEMBERSHIP_PAGE_FILES;
+        Self::MAX_PROJECT_FILES.div_ceil(MIN_PROJECT_MEMBERSHIP_PAGE_FILES);
 
     fn encoded_value_bytes(&self) -> usize {
         let mut bytes = Vec::new();
