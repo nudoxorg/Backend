@@ -1180,6 +1180,271 @@ sys.exit(surface.main())
 
 
 
+class PlatformPopenCompatibilityTests(unittest.TestCase):
+    def test_non_linux_popen_run_and_forced_owner_cleanup_preserve_original_paths(self):
+        """Real ordinary children exercise the Darwin-selected API path."""
+        import os, select, signal, subprocess, sys, tempfile, time
+        from unittest.mock import patch
+        c=surface.process_custody
+        children=[]
+        sentinel=None
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                                _fallback_children=set(),_stopping=False), \
+                    patch.object(c.sys,'platform','darwin'), \
+                    patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')):
+                c.activate()
+                self.assertFalse(c._active)
+                try:
+                    sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True)
+                    def spawn():
+                        child=c.popen([sys.executable,'-u','-c',
+                            'import time;print("ready",flush=True);time.sleep(60)'],
+                            stdout=subprocess.PIPE,start_new_session=True)
+                        children.append(child)
+                        self.assertIs(type(child),subprocess.Popen)
+                        self.assertFalse(hasattr(child,'retire'))
+                        self.assertTrue(select.select([child.stdout],[],[],5)[0],'ordinary child not ready')
+                        self.assertEqual(child.stdout.readline(),b'ready\n')
+                        return child
+                    child=spawn()
+                    c.stop(child)
+                    self.assertEqual(child.returncode,-signal.SIGTERM)
+                    child.stdout.close()
+                    result=c.run([sys.executable,'-c','print("ordinary-run")'],
+                                 capture_output=True,text=True,timeout=5,check=True)
+                    self.assertEqual(result.stdout,'ordinary-run\n')
+                    self.assertEqual(result.returncode,0)
+
+                    child=spawn()
+                    original_wait=child.wait
+                    first=True
+                    def idle_timeout(timeout=None):
+                        nonlocal first
+                        if first:
+                            first=False
+                            self.assertEqual(timeout,20)
+                            raise subprocess.TimeoutExpired(child.args,timeout)
+                        return original_wait(timeout=timeout)
+                    owner=surface.Owner.__new__(surface.Owner)
+                    owner.process=child
+                    owner.state_directory=tempfile.TemporaryDirectory(dir=root)
+                    state=Path(owner.state_directory.name)
+                    owner.log=(root/'owner.log').open('w')
+                    with patch.object(child,'wait',side_effect=idle_timeout):
+                        with self.assertRaisesRegex(RuntimeError,'failed to retire through its idle timeout'):
+                            owner.stop()
+                    self.assertEqual(child.returncode,-signal.SIGKILL)
+                    self.assertTrue(owner.log.closed)
+                    self.assertFalse(state.exists())
+                    child.stdout.close()
+                    # Root cleanup cannot masquerade as Linux descendant proof.
+                    with self.assertRaisesRegex(RuntimeError,'descendant custody remains unproved'):
+                        c.stop_before_exit()
+                    self.assertIsNone(sentinel.poll())
+                    with patch.object(c.subprocess,'Popen',side_effect=AssertionError('spawn after interruption')):
+                        with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                            c.popen([sys.executable,'-c','pass'])
+                finally:
+                    for child in children:
+                        if child.poll() is None:child.kill()
+                        child.wait(timeout=5)
+                        if child.stdout and not child.stdout.closed:child.stdout.close()
+                    if sentinel is not None:
+                        if sentinel.poll() is None:sentinel.terminate()
+                        sentinel.wait(timeout=5)
+
+
+    def test_non_linux_admitted_constructor_is_registered_before_stop_snapshot(self):
+        """Gate a real constructor while interruption competes for admission."""
+        import signal, subprocess, sys, threading
+        from unittest.mock import patch
+        c=surface.process_custody
+        original_popen=subprocess.Popen
+        constructor_entered=threading.Event()
+        release_constructor=threading.Event()
+        stop_entered=threading.Event()
+        stop_done=threading.Event()
+        children=[]
+        errors=[]
+        refused=[]
+        constructors=[]
+        def gated_constructor(*args,**kwargs):
+            constructors.append(True)
+            constructor_entered.set()
+            if not release_constructor.wait(5):
+                raise RuntimeError('constructor regression gate expired')
+            child=original_popen(*args,**kwargs)
+            children.append(child)
+            return child
+        def spawn():
+            try:
+                c.popen([sys.executable,'-c','import time;time.sleep(60)'],
+                        start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            except BaseException as error:errors.append(error)
+        def interrupt():
+            stop_entered.set()
+            try:c.stop_before_exit()
+            except RuntimeError as error:refused.append(str(error))
+            except BaseException as error:errors.append(error)
+            finally:stop_done.set()
+        with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                            _fallback_children=set(),_stopping=False), \
+                patch.object(c.sys,'platform','darwin'), \
+                patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')), \
+                patch.object(c.subprocess,'Popen',side_effect=gated_constructor):
+            c.activate()
+            spawning=threading.Thread(target=spawn)
+            stopping=threading.Thread(target=interrupt)
+            try:
+                spawning.start()
+                self.assertTrue(constructor_entered.wait(5),'constructor was not reached')
+                stopping.start()
+                self.assertTrue(stop_entered.wait(5),'interruption was not attempted')
+                self.assertFalse(stop_done.wait(.1),'stop snapshot escaped an admitted constructor')
+                self.assertFalse(c._stopping)
+                release_constructor.set()
+                spawning.join(10)
+                stopping.join(15)
+                self.assertFalse(spawning.is_alive())
+                self.assertFalse(stopping.is_alive())
+                self.assertEqual(errors,[])
+                self.assertEqual(len(children),1)
+                self.assertIs(type(children[0]),original_popen)
+                self.assertEqual(children[0].returncode,-signal.SIGTERM)
+                self.assertEqual(children[0].wait(timeout=0),-signal.SIGTERM)
+                self.assertEqual(len(refused),1)
+                self.assertIn('descendant custody remains unproved',refused[0])
+                self.assertIn(children[0],c._fallback_children)
+                # The opposing order refuses before entering the constructor.
+                with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                    c.popen([sys.executable,'-c','pass'])
+                self.assertEqual(len(constructors),1)
+            finally:
+                release_constructor.set()
+                if spawning.ident is not None:spawning.join(10)
+                if stopping.ident is not None:stopping.join(15)
+                for child in children:
+                    if child.poll() is None:child.kill()
+                    child.wait(timeout=5)
+
+
+    def test_non_linux_run_preserves_communication_and_stops_registered_worker(self):
+        """Real ordinary run workers stay registered through interruption."""
+        import signal, subprocess, sys, tempfile, threading, time
+        from unittest.mock import patch
+        c=surface.process_custody
+        children=[]
+        worker_errors=[]
+        worker_results=[]
+        stop_errors=[]
+        stop_entered=threading.Event()
+        stop_done=threading.Event()
+        worker=None
+        stopping=None
+        sentinel=None
+        with tempfile.TemporaryDirectory() as directory:
+            ready=Path(directory)/'ready'
+            halt=Path(directory)/'halt'
+            with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                                _fallback_children=set(),_stopping=False), \
+                    patch.object(c.sys,'platform','darwin'), \
+                    patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')):
+                try:
+                    sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+                    c.activate()
+                    payload='héllo'*32768
+                    answer=c.run([sys.executable,'-c',
+                        'import sys,time;time.sleep(.2);data=sys.stdin.read();sys.stdout.write(data);sys.stderr.write("err")'],
+                        input=payload,capture_output=True,text=True,encoding='utf-8',timeout=5,check=True)
+                    self.assertEqual((answer.returncode,answer.stdout,answer.stderr),(0,payload,'err'))
+                    with self.assertRaises(subprocess.CalledProcessError) as failed:
+                        c.run([sys.executable,'-c',
+                            'import sys;print("out");print("err",file=sys.stderr);sys.exit(7)'],
+                            capture_output=True,text=True,timeout=5,check=True)
+                    self.assertEqual((failed.exception.returncode,failed.exception.output,failed.exception.stderr),
+                                     (7,'out\n','err\n'))
+                    with self.assertRaises(subprocess.TimeoutExpired) as timed:
+                        c.run([sys.executable,'-u','-c',
+                            'import sys,time;print("partial");print("error",file=sys.stderr);time.sleep(60)'],
+                            capture_output=True,text=True,timeout=1)
+                    self.assertEqual(timed.exception.timeout,1)
+                    # Like CPython POSIX run, partial TimeoutExpired streams are bytes even in text mode.
+                    self.assertEqual((timed.exception.output,timed.exception.stderr),(b'partial\n',b'error\n'))
+                    before=len(c._fallback_children)
+                    with self.assertRaises(ValueError):
+                        c.run([sys.executable,'-c','pass'],input=b'x',stdin=subprocess.PIPE)
+                    with self.assertRaises(ValueError):
+                        c.run([sys.executable,'-c','pass'],capture_output=True,stdout=subprocess.PIPE)
+                    self.assertEqual(len(c._fallback_children),before)
+                    with self.assertRaises(TypeError):
+                        c.run([sys.executable,'-c','import time;time.sleep(60)'],timeout='invalid')
+                    self.assertTrue(all(child.returncode is not None for child in c._fallback_children))
+                    code=('import pathlib,sys,time;data=sys.stdin.read();print(data,flush=True);'
+                          'print("worker-error",file=sys.stderr,flush=True);'
+                          'pathlib.Path(sys.argv[1]).write_text("ready");'
+                          'end=time.monotonic()+60;'
+                          'exec("while time.monotonic()<end and not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)")')
+                    def run_worker():
+                        try:worker_results.append(c.run([sys.executable,'-u','-c',code,str(ready),str(halt)],
+                            input='once',capture_output=True,text=True))
+                        except BaseException as error:worker_errors.append(error)
+                    worker=threading.Thread(target=run_worker)
+                    worker.start()
+                    deadline=time.monotonic()+5
+                    while not ready.exists() and time.monotonic()<deadline and worker.is_alive():time.sleep(.01)
+                    self.assertTrue(ready.exists(),'real run worker never reached ready marker')
+                    with c._lock:
+                        children=list(c._fallback_children)
+                    active=[child for child in children if child.poll() is None]
+                    self.assertEqual(len(active),1)
+                    child=active[0]
+                    self.assertIs(type(child),subprocess.Popen)
+                    def interrupt():
+                        stop_entered.set()
+                        try:c.stop_before_exit()
+                        except BaseException as error:stop_errors.append(error)
+                        finally:stop_done.set()
+                    # Actual opposing CPython lock ownership must be retried,
+                    # rather than reported as a successfully drained root.
+                    with child._waitpid_lock:
+                        stopping=threading.Thread(target=interrupt)
+                        stopping.start()
+                        self.assertTrue(stop_entered.wait(5))
+                        self.assertFalse(stop_done.wait(.1),'stop ignored the occupied waitpid lock')
+                    stopping.join(15)
+                    worker.join(10)
+                    self.assertFalse(stopping.is_alive())
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(worker_errors,[])
+                    self.assertEqual(len(worker_results),1)
+                    self.assertEqual((worker_results[0].returncode,worker_results[0].stdout,worker_results[0].stderr),
+                                     (-signal.SIGTERM,'once\n','worker-error\n'))
+                    self.assertEqual(child.wait(timeout=0),-signal.SIGTERM)
+                    self.assertEqual(len(stop_errors),1)
+                    self.assertIsInstance(stop_errors[0],RuntimeError)
+                    self.assertIn('descendant custody remains unproved',str(stop_errors[0]))
+                    self.assertIsNone(sentinel.poll())
+                    with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                        c.run([sys.executable,'-c','pass'])
+                finally:
+                    # Cooperative private teardown also drains the old, unregistered
+                    # implementation if this regression fails before finding its child.
+                    halt.write_text('stop')
+                    # No global Popen replacement: retain only exact admitted objects.
+                    with c._lock:children=list(c._fallback_children)
+                    for child in children:
+                        if child.poll() is None:c.signal_session(child,signal.SIGKILL,time.monotonic()+5)
+                        child.wait(timeout=5)
+                    if stopping is not None:stopping.join(15)
+                    if worker is not None:worker.join(10)
+                    if sentinel is not None:
+                        if sentinel.poll() is None:sentinel.kill()
+                        sentinel.wait(timeout=5)
+
+
 class InterruptedChildCustodyTests(unittest.TestCase):
     @unittest.skipUnless(hasattr(__import__('os'), 'waitid') and hasattr(__import__('os'), 'pidfd_open'), 'Linux waitid/pidfd session control')
     def test_exited_leader_retains_grandchild_custody_on_wait_timeout_sigterm_and_interrupt(self):
