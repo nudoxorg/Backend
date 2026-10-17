@@ -19,6 +19,7 @@ use backend_library::CommandReply;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
+use crate::test_support::TestValue as _;
 struct Release(Option<SyncSender<()>>);
 impl Release {
     fn now(&mut self) {
@@ -1709,7 +1710,9 @@ fn index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_
 
 // Typed descriptor volume exercises the production stage boundary. Only the
 // initial selection is a native compiler claim; filler rows are unavailable.
-fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSelection {
+fn staged_selection_removal(
+    fixture: &mut AdapterFixture,
+) -> Result<PreparedProductSelection, String> {
     use backend_engine::builtin::SemanticUnavailableReason;
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, PythonVersion};
     let package = fixture.package;
@@ -1726,19 +1729,19 @@ fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSele
         .as_str()
         .split('#')
         .next()
-        .unwrap()
+        .test_value()?
         .to_owned();
-    let reference = backend_engine::PackageReference::parse(label.clone()).unwrap();
+    let reference = backend_engine::PackageReference::parse(label.clone()).test_value()?;
     let prefix = "directory/".repeat(20);
     for index in 0..6_000 {
         keys.push(
             ProductSemanticPublicationKey::new(
                 reference.clone(),
                 PackageUrl::parse(format!("{coordinate}#{prefix}unavailable_{index:05}.py"))
-                    .unwrap(),
+                    .test_value()?,
                 LanguageProfile::Python(PythonVersion::Python314),
             )
-            .unwrap(),
+            .test_value()?,
         );
     }
     let intent = BuiltinIntent::index_with_semantics(
@@ -1754,7 +1757,7 @@ fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSele
             })
             .collect(),
     )
-    .unwrap();
+    .test_value()?;
     let base = fixture.parts().1.engine().daemon().owner().snapshot();
     let staged =
         prepare_builtin_intent_at_snapshot(&base, &intent, None, Arc::new(AtomicBool::new(false)))
@@ -1767,16 +1770,19 @@ fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSele
         !selected_semantic_removals(&staged.intent).is_empty(),
         "selection planner must receive retained descriptors before queue transfer"
     );
-    PreparedProductSelection {
+    Ok(PreparedProductSelection {
         intent: Some(intent),
         selected: Vec::new(),
         revision_fence: None,
         profile_refusals: Box::new([]),
         partial_plan: None,
-    }
+    })
 }
 
-fn assert_selection_removed(fixture: &mut AdapterFixture, keys: &[ProductSemanticPublicationKey]) {
+fn assert_selection_removed(
+    fixture: &mut AdapterFixture,
+    keys: &[ProductSemanticPublicationKey],
+) -> Result<(), String> {
     let package = fixture.package;
     let (adapter, daemon) = fixture.parts();
     assert!(
@@ -1787,17 +1793,21 @@ fn assert_selection_removed(fixture: &mut AdapterFixture, keys: &[ProductSemanti
             .is_empty()
     );
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let relation = snapshot.relation::<BuiltinSemanticRelation>().unwrap();
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .test_value()?;
     for key in keys {
         assert!(matches!(
-            relation.lookup(key).unwrap(),
+            relation.lookup(key).test_value()?,
             Some(ProductSemanticPublicationRecord::Unavailable(_))
         ));
     }
+    Ok(())
 }
 
 #[test]
-fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compaction() {
+fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compaction()
+-> Result<(), String> {
     let mut fixture = native_fixture();
     let package = fixture.package;
     let keys = fixture
@@ -1805,9 +1815,9 @@ fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compact
         .0
         .semantic_authority
         .selected_product_keys_for_package(package)
-        .unwrap();
-    let prepared = staged_selection_removal(&mut fixture);
-    let reference = backend_library::PackageReference::parse(fixture.label.clone()).unwrap();
+        .test_value()?;
+    let prepared = staged_selection_removal(&mut fixture)?;
+    let reference = backend_library::PackageReference::parse(fixture.label.clone()).test_value()?;
     let (adapter, daemon) = fixture.parts();
     adapter
         .finish_add(
@@ -1833,11 +1843,12 @@ fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compact
                 )
             }
         });
-    assert_selection_removed(&mut fixture, &keys);
+    assert_selection_removed(&mut fixture, &keys)?;
+    Ok(())
 }
 
 #[test]
-fn publication_worker_removes_native_selection_after_staging() {
+fn publication_worker_removes_native_selection_after_staging() -> Result<(), String> {
     let mut fixture = native_fixture();
     let package = fixture.package;
     let label = fixture.label.clone();
@@ -1846,11 +1857,11 @@ fn publication_worker_removes_native_selection_after_staging() {
         .0
         .semantic_authority
         .selected_product_keys_for_package(package)
-        .unwrap();
-    let prepared = staged_selection_removal(&mut fixture);
-    let reference = backend_library::PackageReference::parse(label.clone()).unwrap();
+        .test_value()?;
+    let prepared = staged_selection_removal(&mut fixture)?;
+    let reference = backend_library::PackageReference::parse(label.clone()).test_value()?;
     let (adapter, daemon) = fixture.parts();
-    let ticket = adapter.issue_index_ticket(reference).unwrap();
+    let ticket = adapter.issue_index_ticket(reference).test_value()?;
     let mut job = IndexJob {
         owner_ticket: ticket.clone(),
         operation_key: None,
@@ -1870,8 +1881,9 @@ fn publication_worker_removes_native_selection_after_staging() {
     };
     adapter
         .start_index_publication(daemon, &mut job, prepared)
-        .unwrap();
+        .test_value()?;
     adapter.indexing = Some(job);
     published(&mut fixture, &ticket);
-    assert_selection_removed(&mut fixture, &keys);
+    assert_selection_removed(&mut fixture, &keys)?;
+    Ok(())
 }

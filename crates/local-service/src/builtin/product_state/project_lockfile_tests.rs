@@ -1,3 +1,5 @@
+use crate::test_support::TestValue as _;
+
 fn lock_command(state: &mut ProductState, command: SurfaceCommand) -> Result<SurfaceReply, String> {
     state.execute(
         command,
@@ -8,11 +10,11 @@ fn lock_command(state: &mut ProductState, command: SurfaceCommand) -> Result<Sur
         None,
     )
 }
-fn create_locked(path: &Path, name: &str) -> SurfaceCommand {
-    SurfaceCommand::ProjectCreate {
-        name: ProjectName::new(name).unwrap(),
-        lockfile: Some(ProductText::new(path.to_str().unwrap()).unwrap()),
-    }
+fn create_locked(path: &Path, name: &str) -> Result<SurfaceCommand, String> {
+    Ok(SurfaceCommand::ProjectCreate {
+        name: ProjectName::new(name).test_value()?,
+        lockfile: Some(ProductText::new(path.to_str().test_value()?).test_value()?),
+    })
 }
 fn sync_locked(id: ProjectId) -> SurfaceCommand {
     SurfaceCommand::ProjectSync {
@@ -24,26 +26,27 @@ fn npm_lock(version: &str) -> String {
 }
 
 #[test]
-fn lockfile_create_validates_before_identity_or_commit_and_sync_rereads_atomically() {
+fn lockfile_create_validates_before_identity_or_commit_and_sync_rereads_atomically()
+-> Result<(), String> {
     let root = fixture("lockfile-atomic");
     let state_path = root.join("product-state.json");
     let lockfile = root.join("package-lock.json");
-    let mut state = ProductState::open(state_path.clone()).unwrap();
+    let mut state = ProductState::open(state_path.clone()).test_value()?;
     let first_identity = state.state.next_project;
-    fs::write(&lockfile, "invalid JSON").unwrap();
-    assert!(lock_command(&mut state, create_locked(&lockfile, "App")).is_err());
+    fs::write(&lockfile, "invalid JSON").test_value()?;
+    assert!(lock_command(&mut state, create_locked(&lockfile, "App")?).is_err());
     assert_eq!(state.state.next_project, first_identity);
     assert_eq!(state.state.epoch, 0);
     assert!(state.state.projects.is_empty());
     assert!(!state_path.exists());
-    fs::write(&lockfile, npm_lock("1.0.0")).unwrap();
-    let created = match lock_command(&mut state, create_locked(&lockfile, "App")).unwrap() {
+    fs::write(&lockfile, npm_lock("1.0.0")).test_value()?;
+    let created = match lock_command(&mut state, create_locked(&lockfile, "App")?).test_value()? {
         SurfaceReply::ProjectCreated(project) => project,
         other => panic!("{other:?}"),
     };
     assert!(created.members.is_empty());
     assert!(created.lockfile_membership.is_none());
-    let synced = match lock_command(&mut state, sync_locked(created.id)).unwrap() {
+    let synced = match lock_command(&mut state, sync_locked(created.id)).test_value()? {
         SurfaceReply::ProjectSynced(project) => project,
         other => panic!("{other:?}"),
     };
@@ -53,46 +56,48 @@ fn lockfile_create_validates_before_identity_or_commit_and_sync_rereads_atomical
         synced.lockfile_membership,
         Some(backend_library::ProjectLockfileMembership::Complete)
     );
-    let committed = fs::read(&state_path).unwrap();
+    let committed = fs::read(&state_path).test_value()?;
     let epoch = state.state.epoch;
-    fs::write(&lockfile, npm_lock("not-a-version")).unwrap();
+    fs::write(&lockfile, npm_lock("not-a-version")).test_value()?;
     assert!(lock_command(&mut state, sync_locked(created.id)).is_err());
     assert_eq!(state.state.epoch, epoch);
-    assert_eq!(fs::read(&state_path).unwrap(), committed);
+    assert_eq!(fs::read(&state_path).test_value()?, committed);
     assert_eq!(state.state.projects[0].members, synced.members);
-    fs::write(&lockfile, npm_lock("2.0.0")).unwrap();
-    lock_command(&mut state, sync_locked(created.id)).unwrap();
+    fs::write(&lockfile, npm_lock("2.0.0")).test_value()?;
+    lock_command(&mut state, sync_locked(created.id)).test_value()?;
     drop(state);
-    let mut reopened = ProductState::open(state_path).unwrap();
+    let mut reopened = ProductState::open(state_path).test_value()?;
     assert_eq!(
         reopened.state.projects[0].members[0].as_str(),
         "pkg:npm/unindexed@2.0.0"
     );
-    match lock_command(&mut reopened, SurfaceCommand::Projects).unwrap() {
+    match lock_command(&mut reopened, SurfaceCommand::Projects).test_value()? {
         SurfaceReply::Projects(projects) => {
             assert_eq!(projects[0].member_manifest_names[0].as_str(), "unindexed")
         }
         _ => unreachable!(),
     }
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_partial_workspace_rows_persist_without_refusing_registry_members() {
+fn lockfile_partial_workspace_rows_persist_without_refusing_registry_members() -> Result<(), String>
+{
     let root = fixture("lockfile-workspace");
     let lockfile = root.join("package-lock.json");
-    fs::create_dir(root.join("versionless")).unwrap();
+    fs::create_dir(root.join("versionless")).test_value()?;
     fs::write(
         root.join("versionless/package.json"),
         r#"{"name":"versionless"}"#,
     )
-    .unwrap();
-    fs::create_dir(root.join("pinned")).unwrap();
+    .test_value()?;
+    fs::create_dir(root.join("pinned")).test_value()?;
     fs::write(
         root.join("pinned/package.json"),
         r#"{"name":"pinned-local","version":"0.2.0"}"#,
     )
-    .unwrap();
+    .test_value()?;
     fs::write(
         &lockfile,
         serde_json::json!({"lockfileVersion":3,"packages":{
@@ -102,14 +107,14 @@ fn lockfile_partial_workspace_rows_persist_without_refusing_registry_members() {
         }})
         .to_string(),
     )
-    .unwrap();
+    .test_value()?;
     let state_path = root.join("product-state.json");
-    let mut state = ProductState::open(state_path.clone()).unwrap();
-    let created = match lock_command(&mut state, create_locked(&lockfile, "App")).unwrap() {
+    let mut state = ProductState::open(state_path.clone()).test_value()?;
+    let created = match lock_command(&mut state, create_locked(&lockfile, "App")?).test_value()? {
         SurfaceReply::ProjectCreated(project) => project,
         _ => unreachable!(),
     };
-    let synced = match lock_command(&mut state, sync_locked(created.id)).unwrap() {
+    let synced = match lock_command(&mut state, sync_locked(created.id)).test_value()? {
         SurfaceReply::ProjectSynced(project) => project,
         _ => unreachable!(),
     };
@@ -139,16 +144,18 @@ fn lockfile_partial_workspace_rows_persist_without_refusing_registry_members() {
         other => panic!("{other:?}"),
     }
     drop(state);
-    let mut reopened = ProductState::open(state_path).unwrap();
-    match lock_command(&mut reopened, SurfaceCommand::Projects).unwrap() {
+    let mut reopened = ProductState::open(state_path).test_value()?;
+    match lock_command(&mut reopened, SurfaceCommand::Projects).test_value()? {
         SurfaceReply::Projects(projects) => assert_eq!(projects[0], synced),
         _ => unreachable!(),
     }
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_ordinary_large_npm_project_syncs_all_members_with_bounded_reply() {
+fn lockfile_ordinary_large_npm_project_syncs_all_members_with_bounded_reply() -> Result<(), String>
+{
     let root = fixture("lockfile-large");
     let lockfile = root.join("package-lock.json");
     let mut packages = serde_json::Map::new();
@@ -162,122 +169,134 @@ fn lockfile_ordinary_large_npm_project_syncs_all_members_with_bounded_reply() {
         &lockfile,
         serde_json::json!({"lockfileVersion":3,"packages":packages}).to_string(),
     )
-    .unwrap();
-    let mut state = ProductState::open(root.join("product-state.json")).unwrap();
-    let id = match lock_command(&mut state, create_locked(&lockfile, "Large")).unwrap() {
+    .test_value()?;
+    let mut state = ProductState::open(root.join("product-state.json")).test_value()?;
+    let id = match lock_command(&mut state, create_locked(&lockfile, "Large")?).test_value()? {
         SurfaceReply::ProjectCreated(project) => project.id,
         _ => unreachable!(),
     };
-    let reply = lock_command(&mut state, sync_locked(id)).unwrap();
-    reply.admit(reply.id()).unwrap();
-    assert!(serde_json::to_vec(&reply).unwrap().len() < 4 * 1024 * 1024);
+    let reply = lock_command(&mut state, sync_locked(id)).test_value()?;
+    reply.admit(reply.id()).test_value()?;
+    assert!(serde_json::to_vec(&reply).test_value()?.len() < 4 * 1024 * 1024);
     match reply {
         SurfaceReply::ProjectSynced(project) => assert_eq!(project.members.len(), 1444),
         _ => unreachable!(),
     }
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn lockfile_workspace_symlink_escape_fails_before_project_commit() {
+fn lockfile_workspace_symlink_escape_fails_before_project_commit() -> Result<(), String> {
     let root = fixture("lockfile-escape");
     let foreign = fixture("lockfile-foreign");
     fs::write(
         foreign.join("package.json"),
         r#"{"name":"foreign","version":"1.0.0"}"#,
     )
-    .unwrap();
-    std::os::unix::fs::symlink(&foreign, root.join("escape")).unwrap();
+    .test_value()?;
+    std::os::unix::fs::symlink(&foreign, root.join("escape")).test_value()?;
     let lockfile = root.join("package-lock.json");
     fs::write(
         &lockfile,
         r#"{"lockfileVersion":3,"packages":{"escape":{"name":"foreign","version":"1.0.0"}}}"#,
     )
-    .unwrap();
-    let mut state = ProductState::open(root.join("product-state.json")).unwrap();
-    assert!(lock_command(&mut state, create_locked(&lockfile, "Escape")).is_err());
+    .test_value()?;
+    let mut state = ProductState::open(root.join("product-state.json")).test_value()?;
+    assert!(lock_command(&mut state, create_locked(&lockfile, "Escape")?).is_err());
     assert_eq!(state.state.epoch, 0);
     assert!(state.state.projects.is_empty());
-    fs::remove_dir_all(root).unwrap();
-    fs::remove_dir_all(foreign).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    fs::remove_dir_all(foreign).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_legacy_project_state_is_read_only_until_a_successful_version_two_commit() {
+fn lockfile_legacy_project_state_is_read_only_until_a_successful_version_two_commit()
+-> Result<(), String> {
     let root = fixture("lockfile-state-version");
     let path = root.join("product-state.json");
     let mut original = StoredState::default();
     original.version = 1;
-    let bytes = serde_json::to_vec(&original).unwrap();
-    fs::write(&path, &bytes).unwrap();
-    let mut state = ProductState::open(path.clone()).unwrap();
+    let bytes = serde_json::to_vec(&original).test_value()?;
+    fs::write(&path, &bytes).test_value()?;
+    let mut state = ProductState::open(path.clone()).test_value()?;
     assert_eq!(state.state.version, 1);
-    lock_command(&mut state, SurfaceCommand::Projects).unwrap();
+    lock_command(&mut state, SurfaceCommand::Projects).test_value()?;
     assert_eq!(
-        fs::read(&path).unwrap(),
+        fs::read(&path).test_value()?,
         bytes,
         "read does not migrate durable state"
     );
-    lock_command(&mut state, create("New")).unwrap();
+    lock_command(&mut state, create("New")).test_value()?;
     assert_eq!(state.state.version, 2);
-    assert_eq!(ProductState::open(path.clone()).unwrap().state.version, 2);
-    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        ProductState::open(path.clone()).test_value()?.state.version,
+        2
+    );
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_parent_replacement_cannot_rebind_old_workspace_inventory() {
+fn lockfile_parent_replacement_cannot_rebind_old_workspace_inventory() -> Result<(), String> {
     let root = fixture("lockfile-parent-generation");
     let parent = root.join("selected");
-    fs::create_dir(&parent).unwrap();
-    let cap =
-        backend_platform::directory::DirectoryCapability::open_read_only_source(&parent).unwrap();
+    fs::create_dir(&parent).test_value()?;
+    let cap = backend_platform::directory::DirectoryCapability::open_read_only_source(&parent)
+        .test_value()?;
     let inventory = backend_engine::project_lockfile::LockfileFormat::Npm
         .parse(r#"{"lockfileVersion":3,"packages":{"local":{"name":"local"}}}"#)
-        .unwrap();
-    fs::rename(&parent, root.join("retired")).unwrap();
-    fs::create_dir(&parent).unwrap();
-    fs::create_dir(parent.join("local")).unwrap();
+        .test_value()?;
+    fs::rename(&parent, root.join("retired")).test_value()?;
+    fs::create_dir(&parent).test_value()?;
+    fs::create_dir(parent.join("local")).test_value()?;
     fs::write(
         parent.join("local/package.json"),
         r#"{"name":"foreign","version":"9.0.0"}"#,
     )
-    .unwrap();
+    .test_value()?;
     assert!(project_lockfile::resolve(inventory, &parent, &cap).is_err());
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_unimplemented_formats_are_refused_at_create_without_empty_project() {
+fn lockfile_unimplemented_formats_are_refused_at_create_without_empty_project() -> Result<(), String>
+{
     let root = fixture("lockfile-unsupported");
     let path = root.join("pnpm-lock.yaml");
-    fs::write(&path, "lockfileVersion: '9.0'\n").unwrap();
-    let mut state = ProductState::open(root.join("product-state.json")).unwrap();
-    let error = lock_command(&mut state, create_locked(&path, "App")).unwrap_err();
+    fs::write(&path, "lockfileVersion: '9.0'\n").test_value()?;
+    let mut state = ProductState::open(root.join("product-state.json")).test_value()?;
+    let error = lock_command(&mut state, create_locked(&path, "App")?)
+        .err()
+        .test_value()?;
     assert!(error.contains("unsupported project lockfile format"));
     assert!(state.state.projects.is_empty());
     assert_eq!(state.state.epoch, 0);
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }
 
 #[test]
-fn lockfile_sync_then_manual_membership_changes_reopen_with_parallel_names() {
+fn lockfile_sync_then_manual_membership_changes_reopen_with_parallel_names() -> Result<(), String> {
     let root = fixture("lockfile-member-change");
     let lockfile = root.join("package-lock.json");
-    fs::write(&lockfile, npm_lock("1.0.0")).unwrap();
+    fs::write(&lockfile, npm_lock("1.0.0")).test_value()?;
     let state_path = root.join("product-state.json");
-    let mut state = ProductState::open(state_path.clone()).unwrap();
-    let id = match lock_command(&mut state, create_locked(&lockfile, "App")).unwrap() {
+    let mut state = ProductState::open(state_path.clone()).test_value()?;
+    let id = match lock_command(&mut state, create_locked(&lockfile, "App")?).test_value()? {
         SurfaceReply::ProjectCreated(project) => project.id,
         _ => unreachable!(),
     };
-    lock_command(&mut state, sync_locked(id)).unwrap();
+    lock_command(&mut state, sync_locked(id)).test_value()?;
     // Previously saved builds can retain exact display names. A membership
     // edit must clear that snapshot in pending state, not only enrich its reply.
     state.state.projects[0].member_manifest_names =
         vec![ProductText::from_static("unindexed")].into_boxed_slice();
     for add in [true, false] {
-        let package = PackageReference::parse("pkg:npm/manual@2.0.0").unwrap();
+        let package = PackageReference::parse("pkg:npm/manual@2.0.0").test_value()?;
         let command = if add {
             SurfaceCommand::ProjectAdd {
                 project: ProjectSelector::Id(id),
@@ -289,10 +308,10 @@ fn lockfile_sync_then_manual_membership_changes_reopen_with_parallel_names() {
                 package,
             }
         };
-        let reply = lock_command(&mut state, command).unwrap();
-        reply.admit(reply.id()).unwrap();
+        let reply = lock_command(&mut state, command).test_value()?;
+        reply.admit(reply.id()).test_value()?;
         drop(state);
-        state = ProductState::open(state_path.clone()).unwrap();
+        state = ProductState::open(state_path.clone()).test_value()?;
         assert_eq!(
             state.state.projects[0].members.len(),
             if add { 2 } else { 1 }
@@ -300,5 +319,6 @@ fn lockfile_sync_then_manual_membership_changes_reopen_with_parallel_names() {
         assert!(state.state.projects[0].member_manifest_names.is_empty());
         assert!(state.state.projects[0].lockfile_membership.is_none());
     }
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(root).test_value()?;
+    Ok(())
 }

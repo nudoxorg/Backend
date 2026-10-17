@@ -558,13 +558,13 @@ mod tests {
         );
     }
     #[test]
-    fn coverage_followup_filters_profiles_and_checks_only_the_requested_indexed_source() {
+    fn coverage_followup_filters_profiles_and_checks_only_the_requested_indexed_source()
+    -> Result<(), String> {
+        use crate::test_support::TestValue as _;
         use backend_library::{PackageCompilerCoverageSelector, SemanticLanguageProfile};
-        use backend_semantic::ir::{
-            SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow,
-        };
+        use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow};
         use std::cell::Cell;
-        let profile = SemanticLanguageProfile::from_name("typescript").unwrap();
+        let profile = SemanticLanguageProfile::from_name("typescript").test_value()?;
         let selector = PackageCompilerCoverageSelector {
             outcome: PackageCompilerOutcomeSelector {
                 basis: [3; 32],
@@ -598,11 +598,11 @@ mod tests {
                 })
                 .collect(),
         )
-        .unwrap();
+        .test_value()?;
         for candidate in ["python", "typescript", "rust"] {
             if wants_coverage(
                 Some(&request),
-                SemanticLanguageProfile::from_name(candidate).unwrap(),
+                SemanticLanguageProfile::from_name(candidate).test_value()?,
             ) {
                 loads.set(loads.get() + 1);
                 let row = coverage_row(&catalog, selector.offset as usize, |path, seen| {
@@ -611,8 +611,8 @@ mod tests {
                     assert_eq!(*seen, source);
                     Ok(())
                 })
-                .unwrap()
-                .unwrap();
+                .test_value()?
+                .test_value()?;
                 assert_eq!(row.path(), "src/02048.spec.ts");
             }
         }
@@ -631,14 +631,14 @@ mod tests {
             assert_eq!(path, "src/04095.spec.ts");
             Ok(())
         })
-        .unwrap();
+        .test_value()?;
         assert!(last.is_some());
         assert_eq!(lookups.get(), 2);
         assert!(
             coverage_row(&catalog, 4096, |_, _| panic!(
                 "past end does not touch source"
             ))
-            .unwrap()
+            .test_value()?
             .is_none()
         );
         assert!(
@@ -649,5 +649,6 @@ mod tests {
         );
         let diagnostic = PackageCompilerOutcomeRead::Diagnostic(selector.outcome);
         assert!(!wants_coverage(Some(&diagnostic), profile));
+        Ok(())
     }
 }
