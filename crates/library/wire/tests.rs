@@ -2790,36 +2790,38 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 mod index_ticket_reply;
 
 #[test]
-fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
+fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
         DTO_VERSION, 33,
         "current matched cohort retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
-    let encoded_kind = serde_json::to_vec(&kind).unwrap();
+    let encoded_kind = serde_json::to_vec(&kind)?;
     assert_eq!(encoded_kind, b"\"native_checker_worker_pool_unavailable\"");
-    assert_eq!(serde_json::from_slice::<F>(&encoded_kind).unwrap(), kind);
+    assert_eq!(serde_json::from_slice::<F>(&encoded_kind)?, kind);
     // Exact maintained preflight algorithm parameterized by the supported
     // protocol. This is a codec law, not an old-binary process replay.
     let current = serde_json::to_vec(&serde_json::json!({
         "version": DTO_VERSION,
         "reply": {"typescript_failure": kind, "unknown_future_shape": true}
-    }))
-    .unwrap();
+    }))?;
     let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
         .expect_err("DTO27 peer must refuse the current DTO before decoding its failure variant");
     assert!(old_peer.contains(&format!("reply DTO version {DTO_VERSION}")));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
-    let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    let mut previous: serde_json::Value = serde_json::from_slice(&current)?;
     previous["version"] = serde_json::json!(27);
     previous["reply"]["typescript_failure"] = serde_json::json!("unknown_future_variant");
-    let bytes = serde_json::to_vec(&previous).unwrap();
-    let error =
-        crate::wire::decode_reply_body(&bytes).expect_err("strict old live envelope refused");
+    let bytes = serde_json::to_vec(&previous)?;
+    let error = crate::wire::decode_reply_body(&bytes)
+        .err()
+        .ok_or_else(|| std::io::Error::other("strict old live envelope must be refused"))?;
     assert!(error.contains("reply DTO version 27"));
     assert!(!error.contains("unknown variant"));
+    Ok(())
 }
 
 #[test]
@@ -3394,7 +3396,8 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
 }
 
 #[test]
-fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_evidence() {
+fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
     let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
     let labels = ["pkg::from", "pkg::to"];
     let ids = labels.map(|label| RowId::Symbol(symbol_key(label)));
@@ -3402,10 +3405,15 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
         view_key(b"view"),
         basis,
         Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
-        labels.iter().zip(ids).map(|(label, id)| Row::new(id, basis, *label)).collect(),
+        labels
+            .iter()
+            .zip(ids)
+            .map(|(label, id)| Row::new(id, basis, *label))
+            .collect(),
         vec![crate::Coverage::Complete],
         capability(basis.object),
-    ).expect("checked source rows");
+    )
+    .expect("checked source rows");
     let mut proof = certificate(&root);
     for label in labels {
         proof = proof.with_claim(WireClaim::Key {
@@ -3417,44 +3425,109 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
     let relation = crate::GraphRelation::new(ids[0], ids[1], crate::SemanticLinkKind::Calls)
         .with_confidence(crate::SemanticConfidence::Syntactic);
     let revision = crate::RichGraphRevision::new(
-        root.root().to_bytes(), crate::SemanticGenerationId::new([7; 32]), [8; 32],
+        root.root().to_bytes(),
+        crate::SemanticGenerationId::new([7; 32]),
+        [8; 32],
     );
     let rich = crate::RichGraphSnapshot::from_view(&root, ids[0], &[relation], revision)
         .expect("observed confidence graph");
     let snapshot = ViewSnapshot {
-        root: root.clone(), freshness: Freshness::Current, next: None,
-        graph_relations: Some(vec![relation].into_boxed_slice()), rich_graph: Some(rich),
+        root: root.clone(),
+        freshness: Freshness::Current,
+        next: None,
+        graph_relations: Some(vec![relation].into_boxed_slice()),
+        rich_graph: Some(rich),
     };
-    let current = serde_json::to_value(super::reply::snapshot_to_wire(&snapshot)).expect("wire");
+    let current = serde_json::to_value(super::reply::snapshot_to_wire(&snapshot))?;
     let decode = |value: serde_json::Value| -> Result<ViewSnapshot, String> {
         let wire = serde_json::from_value(value).map_err(|error| error.to_string())?;
         super::reply::snapshot_from_wire(wire, &proof, Some(capability(basis.object)))
     };
-    let actual = decode(current.clone()).expect("current confidence");
+    let actual = decode(current.clone()).map_err(std::io::Error::other)?;
     assert_eq!(actual.root.root(), root.root());
-    assert_eq!(actual.graph_relations.as_ref().unwrap()[0].confidence, Some(crate::SemanticConfidence::Syntactic));
-    assert_eq!(actual.rich_graph.as_ref().unwrap().edges[0].provenance.confidence, Some(crate::SemanticConfidence::Syntactic));
+    assert_eq!(
+        actual
+            .graph_relations
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("graph relations omitted"))?[0]
+            .confidence,
+        Some(crate::SemanticConfidence::Syntactic)
+    );
+    assert_eq!(
+        actual
+            .rich_graph
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("rich graph omitted"))?
+            .edges[0]
+            .provenance
+            .confidence,
+        Some(crate::SemanticConfidence::Syntactic)
+    );
 
     let mut legacy = current.clone();
     legacy["graph_relations"]["schema"] = 1.into();
-    legacy["graph_relations"]["relations"][0].as_object_mut().unwrap().remove("confidence");
+    legacy["graph_relations"]["relations"][0]
+        .as_object_mut()
+        .ok_or_else(|| std::io::Error::other("graph relation must be a JSON object"))?
+        .remove("confidence");
     legacy["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
-    let decoded_legacy = decode(legacy.clone()).expect("legacy sidecar and rich presentation remain readable");
-    assert_eq!(decoded_legacy.graph_relations.as_ref().unwrap()[0].confidence, None);
-    let legacy_rich = decoded_legacy.rich_graph.as_ref().unwrap();
+    let decoded_legacy = decode(legacy.clone()).map_err(std::io::Error::other)?;
+    assert_eq!(
+        decoded_legacy
+            .graph_relations
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("legacy graph relations omitted"))?[0]
+            .confidence,
+        None
+    );
+    let legacy_rich = decoded_legacy
+        .rich_graph
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("legacy rich graph omitted"))?;
     assert_eq!(legacy_rich.edges[0].provenance.confidence, None);
-    assert_eq!(legacy_rich.edges[0].id, actual.rich_graph.as_ref().unwrap().edges[0].id);
-    assert_eq!(legacy_rich.layout, actual.rich_graph.as_ref().unwrap().layout);
+    assert_eq!(
+        legacy_rich.edges[0].id,
+        actual
+            .rich_graph
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("current rich graph omitted"))?
+            .edges[0]
+            .id
+    );
+    assert_eq!(
+        legacy_rich.layout,
+        actual
+            .rich_graph
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("current rich graph omitted"))?
+            .layout
+    );
     assert_eq!(legacy_rich.revision, revision);
     assert_eq!(decoded_legacy.root.root(), root.root());
     let mut legacy_without_rich = legacy.clone();
     legacy_without_rich["rich_graph"] = serde_json::Value::Null;
-    assert_eq!(decode(legacy_without_rich).expect("legacy sidecar alone").graph_relations.as_ref().unwrap()[0].confidence, None);
+    let legacy_without_rich = decode(legacy_without_rich).map_err(std::io::Error::other)?;
+    assert_eq!(
+        legacy_without_rich
+            .graph_relations
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("legacy graph relations omitted"))?[0]
+            .confidence,
+        None
+    );
 
     let mut unknown = current.clone();
     unknown["graph_relations"]["relations"][0]["confidence"] = serde_json::Value::Null;
     unknown["rich_graph"] = serde_json::Value::Null;
-    assert_eq!(decode(unknown).expect("explicit unknown confidence").graph_relations.as_ref().unwrap()[0].confidence, None);
+    let unknown = decode(unknown).map_err(std::io::Error::other)?;
+    assert_eq!(
+        unknown
+            .graph_relations
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("unknown graph relations omitted"))?[0]
+            .confidence,
+        None
+    );
     let mut bad_schema = current.clone();
     bad_schema["graph_relations"]["schema"] = 3.into();
     assert!(decode(bad_schema).is_err());
@@ -3462,7 +3535,8 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
     legacy_claim["graph_relations"]["relations"][0]["confidence"] = "compiler".into();
     assert!(decode(legacy_claim).is_err());
     let mut bad_confidence = current.clone();
-    bad_confidence["graph_relations"]["relations"][0]["confidence"] = "stronger-than-compiler".into();
+    bad_confidence["graph_relations"]["relations"][0]["confidence"] =
+        "stronger-than-compiler".into();
     assert!(decode(bad_confidence).is_err());
     let mut extra = current.clone();
     extra["graph_relations"]["relations"][0]["future_authority"] = true.into();
@@ -3470,11 +3544,18 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
     let mut duplicate = current.clone();
     let mut conflict = duplicate["graph_relations"]["relations"][0].clone();
     conflict["confidence"] = "compiler".into();
-    duplicate["graph_relations"]["relations"].as_array_mut().unwrap().push(conflict);
+    duplicate["graph_relations"]["relations"]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::other("graph relations must be a JSON array"))?
+        .push(conflict);
     assert!(decode(duplicate).is_err());
     let mut disagreement = current;
     disagreement["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
-    assert!(decode(disagreement).unwrap_err().contains("confidence"));
+    let error = decode(disagreement)
+        .err()
+        .ok_or_else(|| std::io::Error::other("conflicting confidence must be rejected"))?;
+    assert!(error.contains("confidence"));
+    Ok(())
 }
 
 #[test]
