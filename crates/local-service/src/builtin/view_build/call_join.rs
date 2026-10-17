@@ -1665,7 +1665,7 @@ mod tsz_source_coordinate_tests {
             byte_len: u32::try_from(source.len()).map_err(|error| error.to_string())?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            LanguageProfile::TypeScript(if path.ends_with(".tsx") { TypeScriptSource::Tsx } else { TypeScriptSource::TypeScript }),
             Stage::LowerIr,
             NativeTool::TypeScriptCompiler,
             source_facts.identity,
@@ -2085,6 +2085,7 @@ mod tsz_source_coordinate_tests {
         use super::super::super::IndexedProject;
         use backend_engine::{Fragment, RowId};
         use std::sync::Arc;
+        for (package_label, target_path) in [("fixture-ts", "src/app.service.ts"), ("fixture-tsx", "src/app.service.tsx")] {
         let service = "export class AppService { getHello(): string { return ''; } }\n";
         let caller = "import { AppService } from '@/service';\nconst service = new AppService();\nservice.getHello();\n";
         let start = service.find("getHello():").expect("target") as u32;
@@ -2093,18 +2094,18 @@ mod tsz_source_coordinate_tests {
         let source_id = *ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes());
         let program = typescript_program_identity(&[
             ("src/app.controller.ts".to_owned(), *ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes())),
-            ("src/app.service.ts".to_owned(), source_id),
+            (target_path.to_owned(), source_id),
         ]).expect("complete fixture program");
-        let (target_bytes, target) = source_image("src/app.service.ts", service, 3, None)?;
-        let package = backend_engine::package_key("fixture");
-        let project = IndexedProject { package, label: "fixture".to_owned(), files: Arc::from([]) };
+        let (target_bytes, target) = source_image(target_path, service, 3, None)?;
+        let package = backend_engine::package_key(package_label);
+        let project = IndexedProject { package, label: package_label.to_owned(), files: Arc::from([]) };
         let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
         for (admitted_source, selected, target_present) in [
             (source_id, true, true), ([99; 32], true, true),
             (source_id, false, true), (source_id, true, false),
         ] {
             let (caller_bytes, owner) = source_image("src/app.controller.ts", caller, 9,
-                Some(("src/app.service.ts".to_owned(), start, end, start, program, admitted_source, at, at + 8)))?;
+                Some((target_path.to_owned(), start, end, start, program, admitted_source, at, at + 8)))?;
             let target_image = SemanticImageView::reopen(&target_bytes).map_err(|error| error.to_string())?;
             let caller_image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
             let index = ProjectCallableIndex::build_from_views(&[&target_image, &caller_image]).map_err(|error| error.to_string())?;
@@ -2120,9 +2121,12 @@ mod tsz_source_coordinate_tests {
                 backend_semantic::ir::ExternalTargetIdentity::capture(&caller_image, external).map_err(|error| error.to_string())?);
             let owned = identity::semantic_symbol(package, target);
             let mut rows = Vec::new();
-            for (image, bytes, path) in [(&target_image, &target_bytes, "src/app.service.ts"), (&caller_image, &caller_bytes, "src/app.controller.ts")] {
+            for (image, bytes, path, profile) in [
+                (&target_image, &target_bytes, target_path, if target_path.ends_with(".tsx") { TypeScriptSource::Tsx } else { TypeScriptSource::TypeScript }),
+                (&caller_image, &caller_bytes, "src/app.controller.ts", TypeScriptSource::TypeScript),
+            ] {
                 rows.extend(project_image_rows(image, *blake3::hash(bytes).as_bytes(), &project,
-                    LanguageProfile::TypeScript(TypeScriptSource::TypeScript), initial.basis(), false, path, &[])
+                    LanguageProfile::TypeScript(profile), initial.basis(), false, path, &[])
                     .map_err(|error| error.to_string())?.rows.into_iter().map(|row| row.row));
             }
             let caller_key = RowId::Symbol(identity::semantic_symbol(package, owner));
@@ -2143,6 +2147,7 @@ mod tsz_source_coordinate_tests {
             let document = &rows.iter().find(|row| row.id == caller_key).expect("retained actual caller").document;
             assert!(matches!(document[0], Fragment::Link { target, .. }
                 if target == if admitted { owned } else { endpoint }), "document links share the exact same key arrangement");
+        }
         }
         Ok(())
     }

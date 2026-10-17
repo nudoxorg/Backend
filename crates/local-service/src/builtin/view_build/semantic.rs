@@ -593,7 +593,8 @@ fn semantic_rows(
     let mut symbols = BTreeSet::new();
     let mut remaining_bytes = MAX_REBUILD_BYTES;
     let mut targets = SemanticTargets::default();
-    let mut native_selections = BTreeMap::<_, Vec<super::source_availability::SelectedSourceArtifacts>>::new();
+    let mut native_selections = super::native_target_aliases::NativePackageSelections::default();
+    let mut native_aliases = super::native_target_aliases::NativeTargetAliases::default();
     // Package publication already named its projects. Seek each one instead of
     // paging every other package's publications and discarding them.
     let bounds = match foreign {
@@ -626,6 +627,11 @@ fn semantic_rows(
                 package_ended = true;
                 break;
             }
+            // The relation's typed order groups package references before
+            // coordinates/profiles/history, including across page boundaries.
+            // Only compact alias keys survive a completed package callback.
+            native_selections.advance(key, |package, selected|
+                native_aliases.record_selected(package, selected))?;
             if !key.is_selected() {
                 continue;
             }
@@ -881,9 +887,13 @@ fn semantic_rows(
             // Match the query/graph package's entire selected image scope,
             // including a TS import whose local target is in the TSX profile.
             drop(opened);
-            native_selections.entry(project.package).or_default().push(activated);
+            native_selections.retain(key, activated)?;
         }
         if package_ended || (bounds.is_some() && page.next().is_none()) {
+            // Explicit seeks use project-map order (hashed keys), not global
+            // reference order. Finish this complete package before any seek.
+            native_selections.finish(|package, selected|
+                native_aliases.record_selected(package, selected))?;
             bound_index = bound_index.saturating_add(1);
             from = bounds
                 .as_ref()
@@ -896,10 +906,8 @@ fn semantic_rows(
         };
         after = Some(next);
     }
-    let mut native_aliases = super::native_target_aliases::NativeTargetAliases::default();
-    for (package, selected) in native_selections {
-        native_aliases.record_selected(package, &selected)?;
-    }
+    native_selections.finish(|package, selected|
+        native_aliases.record_selected(package, selected))?;
     native_aliases.apply(&mut rows);
     Ok(SemanticRows {
         rows,
