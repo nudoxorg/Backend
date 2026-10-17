@@ -76,7 +76,7 @@ class OwnerLifecycleTests(unittest.TestCase):
                 else:
                     (case / "locald.sock").touch()
                 return process
-            with patch.object(surface, "ROOT", root), patch.object(surface.subprocess, "Popen", side_effect=launch):
+            with patch.object(surface, "ROOT", root), patch.object(surface.process_custody, "popen", side_effect=launch):
                 if startup_failure:
                     with self.assertRaisesRegex(RuntimeError, "did not open its endpoint") as failure:
                         surface.Owner(root / "bin", case)
@@ -1052,6 +1052,7 @@ class SigtermEvidenceTests(unittest.TestCase):
                     patch.object(surface, "ThreadPoolExecutor", ImmediateExecutor), \
                     patch.object(surface, "_invoke_case", side_effect=late_error), \
                     patch.object(surface.os, "_exit", side_effect=StopAfterEvidence), \
+                    patch.object(surface.process_custody, "stop_before_exit", return_value={"roots_reaped": True}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(StopAfterEvidence):
                     surface.compare_cases(args, argparse.ArgumentParser())
@@ -1175,6 +1176,255 @@ sys.exit(surface.main())
                     child.stdout.close()
                 if child.stderr:
                     child.stderr.close()
+
+
+
+
+class InterruptedChildCustodyTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(__import__('os'), 'waitid') and hasattr(__import__('os'), 'pidfd_open'), 'Linux waitid/pidfd session control')
+    def test_exited_leader_retains_grandchild_custody_on_wait_timeout_sigterm_and_interrupt(self):
+        """Actual root exits first; grandchild creates its own compiler-like PGID."""
+        import json, os, signal, subprocess, sys, tempfile
+        code = r'''import json, os, signal, subprocess, sys, threading, time
+from pathlib import Path
+import process_custody as c
+mode, pidfile = sys.argv[1:]
+def publish(role,pid):
+    fields=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+    row={'role':role,'pid':pid,'start':int(fields[19]),'sid':int(fields[3]),'pgrp':int(fields[2]),'parent':int(fields[1])}
+    path=Path(pidfile).with_name(role+'.json')
+    temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(row));temporary.replace(path)
+    return row
+# This unrelated session is present before custody starts and must survive.
+sentinel = None
+root_code = """import json,os,subprocess,sys
+from pathlib import Path
+def publish(role,pid):
+    stat=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+    row={'role':role,'pid':pid,'start':int(stat[19]),'sid':int(stat[3]),'pgrp':int(stat[2]),'parent':int(stat[1])}
+    path=Path(sys.argv[1]).with_name(role+'.json')
+    temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(row));temporary.replace(path)
+    return row
+publish('root',os.getpid())
+p=subprocess.Popen([sys.executable,'-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'],process_group=0,stdout=None if sys.argv[2] in ('timeout','communicate-interrupt') else subprocess.DEVNULL)
+try:
+    identity=publish('grandchild',p.pid)
+    Path(sys.argv[1]+'.tmp').write_text(json.dumps(identity));Path(sys.argv[1]+'.tmp').replace(sys.argv[1])
+except BaseException:
+    p.kill();p.wait();raise
+sys.exit(0)
+"""
+cancelled = threading.Event()
+def terminate(*_args):
+    if mode=='sigterm':cancelled.set()
+    else:raise SystemExit(143)
+signal.signal(signal.SIGTERM,terminate)
+errors=[]
+def timed_run():
+    try:
+        c.run([sys.executable,'-c',root_code,pidfile,mode],capture_output=True,timeout=2)
+    except subprocess.TimeoutExpired:
+        return
+    except BaseException as error:
+        errors.append(repr(error))
+    else:
+        errors.append('timeout was not preserved')
+try:
+    sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'], start_new_session=True)
+    publish('sentinel',sentinel.pid)
+    c.activate()
+    if mode == 'timeout':
+        worker=threading.Thread(target=timed_run);worker.start()
+    else:
+        child=c.popen([sys.executable,'-c',root_code,pidfile,mode],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    until=time.monotonic()+5
+    while not Path(pidfile).exists():
+        assert time.monotonic()<until
+        time.sleep(.01)
+    identity=json.loads(Path(pidfile).read_text())
+    if not mode.endswith('-interrupt'):
+        print(json.dumps(identity),flush=True)
+    if mode != 'timeout':
+        # For interrupts, observe without setting Popen.returncode: inherited
+        # CPython _wait would otherwise short-circuit instead of exposing the
+        # leader-first private-reap regression this control must detect.
+        while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
+            assert time.monotonic()<until
+            time.sleep(.01)
+        if not mode.endswith('-interrupt'):
+            assert child.poll()==0
+            assert os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+        if mode.endswith('-interrupt'):
+            assert child.returncode is None
+            interrupted=False
+            try:
+                if mode == 'communicate-interrupt':
+                    communicate=child._communicate
+                    def announced_communicate(*args):
+                        print(json.dumps(dict(identity,interrupt_ready=mode)),flush=True)
+                        return communicate(*args)
+                    child._communicate=announced_communicate
+                    child.communicate(timeout=8)
+                else:
+                    # Exercise CPython's exhausted short Ctrl-C grace. It
+                    # must preserve KeyboardInterrupt AND the unreaped anchor.
+                    child._sigint_wait_secs=1e-9
+                    with child:
+                        print(json.dumps(dict(identity,interrupt_ready=mode)),flush=True)
+                        signal.pause()
+            except KeyboardInterrupt:
+                interrupted=True
+            assert interrupted, 'KeyboardInterrupt was replaced or swallowed'
+            if mode == 'context-interrupt':
+                assert not child.retired, 'expired grace claimed retirement'
+            if not child.retired:
+                assert os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+                child.retire(time.monotonic()+5)
+        elif mode == 'normal':
+            assert child.wait(timeout=5)==0
+        else:
+            assert cancelled.wait(10)
+            result=c.stop_before_exit()
+            assert result['owned_sessions_retired'] and result['anchors_reaped_last']
+    else:
+        worker.join(8);assert not worker.is_alive() and not errors,errors
+    assert all(child.retired for child in c._children)
+    for pid in [identity['pid'],*[child.pid for child in c._children]]:
+        try:
+            os.waitpid(pid,os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError('root or adopted grandchild was not reaped')
+    assert sentinel.poll() is None
+    print(json.dumps({'sessions_retired':True,'adopted_grandchild_reaped':True,'sentinel_alive':True}),flush=True)
+finally:
+    # Failure cleanup retains the same exact recorded custody, never a host scan.
+    try:
+        c.stop_before_exit()
+    finally:
+        if sentinel is not None:
+            sentinel.terminate();sentinel.wait()
+'''
+        for mode in ('normal', 'timeout', 'sigterm', 'communicate-interrupt', 'context-interrupt'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                identity_path=Path(tmp)/'owned-grandchild.json'
+                env=dict(os.environ,PYTHONPATH=str(Path(surface.__file__).parent))
+                runner=subprocess.Popen([sys.executable,'-u','-c',code,mode,str(identity_path)],
+                    env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+                runner_fd=os.pidfd_open(runner.pid)
+                owned_fds={}
+                def pin_published():
+                    # Exact literal private files, including records written
+                    # before stdout announcement. Never infer a PID from argv.
+                    records={}
+                    for role in ('sentinel','root','grandchild'):
+                        path=Path(tmp)/(role+'.json')
+                        try:
+                            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+                        except FileNotFoundError:
+                            continue
+                        try:
+                            with os.fdopen(fd,'rb') as stream:raw=stream.read(1025)
+                            self.assertLessEqual(len(raw),1024)
+                            row=json.loads(raw)
+                        except BaseException:
+                            raise
+                        self.assertEqual(row['role'],role)
+                        self.assertGreater(row['pid'],0)
+                        self.assertGreater(row['start'],0)
+                        records[role]=row
+                    if 'root' in records:
+                        self.assertEqual(records['root']['sid'],records['root']['pid'])
+                        self.assertEqual(records['root']['pgrp'],records['root']['pid'])
+                        self.assertEqual(records['root']['parent'],runner.pid)
+                    if 'sentinel' in records:
+                        self.assertEqual(records['sentinel']['sid'],records['sentinel']['pid'])
+                        self.assertEqual(records['sentinel']['pgrp'],records['sentinel']['pid'])
+                        self.assertEqual(records['sentinel']['parent'],runner.pid)
+                    if 'grandchild' in records:
+                        self.assertIn('root',records)
+                        self.assertEqual(records['grandchild']['sid'],records['root']['pid'])
+                        self.assertEqual(records['grandchild']['pgrp'],records['grandchild']['pid'])
+                        self.assertNotEqual(records['grandchild']['pgrp'],records['root']['pgrp'])
+                        self.assertEqual(records['grandchild']['parent'],records['root']['pid'])
+                    for role,row in records.items():
+                        if role in owned_fds:continue
+                        pid=row['pid']
+                        def matches():
+                            stat=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+                            return int(stat[19])==row['start'] and int(stat[3])==row['sid'] and int(stat[2])==row['pgrp']
+                        try:
+                            if not matches():continue
+                            fd=os.pidfd_open(pid)
+                            try:
+                                if not matches():continue
+                                owned_fds[role]=fd;fd=None
+                            finally:
+                                if fd is not None:os.close(fd)
+                        except (FileNotFoundError,ProcessLookupError):
+                            pass
+                    return records
+                try:
+                    import select
+                    self.assertTrue(select.select([runner.stdout],[],[],6)[0], 'owned grandchild not announced')
+                    identity=json.loads(runner.stdout.readline())
+                    published=pin_published()
+                    self.assertEqual(set(published),{'sentinel','root','grandchild'})
+                    if mode.endswith('-interrupt'):
+                        self.assertEqual(identity['interrupt_ready'],mode)
+                        signal.pidfd_send_signal(runner_fd,signal.SIGINT)
+                    elif mode=='sigterm':
+                        signal.pidfd_send_signal(runner_fd,signal.SIGTERM)
+                    stdout,stderr=runner.communicate(timeout=15)
+                    self.assertEqual(runner.returncode,0,stderr)
+                    result=json.loads(stdout)
+                    self.assertTrue(result['sessions_retired'] and result['adopted_grandchild_reaped'] and result['sentinel_alive'])
+                    print(json.dumps({'event':'owned-lifecycle-mode','mode':mode,'runner_pid':runner.pid,
+                        'identities':published,'result':result}),flush=True)
+                finally:
+                    # Failure may precede announcement. Read the already-known
+                    # private records BEFORE stopping the runner, and preserve
+                    # exact pidfds while its cooperative finally still reaps.
+                    cleanup_errors=[]
+                    def try_pin():
+                        try:return pin_published()
+                        except BaseException as error:
+                            cleanup_errors.append(repr(error));return {}
+                    try:
+                        try_pin()
+                        if runner.poll() is None:
+                            try:signal.pidfd_send_signal(runner_fd,signal.SIGTERM)
+                            except ProcessLookupError:pass
+                            try:runner.communicate(timeout=10)
+                            except subprocess.TimeoutExpired:pass
+                        try_pin()
+                        if runner.poll() is None:
+                            # Descendants/sentinel first; runner LAST. Numeric
+                            # PID reuse cannot redirect these identity-joined fds.
+                            for role in ('grandchild','root','sentinel'):
+                                if role in owned_fds:
+                                    try:signal.pidfd_send_signal(owned_fds[role],signal.SIGKILL)
+                                    except ProcessLookupError:pass
+                            try:runner.communicate(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                try:signal.pidfd_send_signal(runner_fd,signal.SIGKILL)
+                                except ProcessLookupError:pass
+                                runner.communicate(timeout=3)
+                        # A runner may already have died while its recorded
+                        # children survive. Their same pidfds still own cleanup.
+                        for fd in owned_fds.values():
+                            try:signal.pidfd_send_signal(fd,signal.SIGKILL)
+                            except ProcessLookupError:pass
+                        runner.wait(timeout=3)
+                        import select
+                        for role,fd in owned_fds.items():
+                            poller=select.poll();poller.register(fd,select.POLLIN)
+                            if not poller.poll(2000):cleanup_errors.append(role+' did not exit after exact pidfd cleanup')
+                        if cleanup_errors:self.fail('owned cleanup unresolved: '+repr(cleanup_errors))
+                    finally:
+                        for fd in owned_fds.values():os.close(fd)
+                        os.close(runner_fd)
 
 
 if __name__ == "__main__":

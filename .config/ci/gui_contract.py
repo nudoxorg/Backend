@@ -8,9 +8,10 @@ import re
 import select
 import shutil
 import subprocess
+import process_custody
 import time
 
-from smoke import drew_a_frame, stop
+from smoke import drew_a_frame
 
 
 def require_visible(text: str, expected: list[str]) -> None:
@@ -42,7 +43,7 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
     env.update(BACKEND_PROJECT=str(project), BACKEND_LOCALD_ENDPOINT=str(owner.endpoint),
                NUDOX_TRACE=str(root / 'trace.jsonl'))
     reader, writer = os.pipe()
-    display = subprocess.Popen(
+    display = process_custody.popen(
         [tools['Xvfb'], '-displayfd', str(writer), '-screen', '0', '1600x1000x24', '-nolisten', 'tcp'],
         env=env, pass_fds=(writer,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True)
@@ -58,7 +59,7 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         if not number.isdecimal() or display.poll() is not None:
             raise RuntimeError('GUI Xvfb did not start')
         env['DISPLAY'] = ':' + number
-        app = subprocess.Popen([owner.bin_dir / 'backend-desktop'], env=env, cwd=project,
+        app = process_custody.popen([owner.bin_dir / 'backend-desktop'], env=env, cwd=project,
                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                start_new_session=True)
 
@@ -66,7 +67,7 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             remaining = deadline - time.monotonic()
             if remaining <= 0 or app.poll() is not None:
                 raise RuntimeError('GUI deadline exceeded or desktop exited before content proof')
-            return subprocess.run([tools[name], *map(str, args)], env=env, check=True,
+            return process_custody.run([tools[name], *map(str, args)], env=env, check=True,
                                   capture_output=True, text=True, timeout=min(10, remaining))
 
         window = None
@@ -74,7 +75,7 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             if app.poll() is not None:
                 raise RuntimeError('desktop exited before opening the real project')
             if drew_a_frame(root / 'trace.jsonl'):
-                found = subprocess.run([tools['xdotool'], 'search', '--onlyvisible', '--pid', str(app.pid)],
+                found = process_custody.run([tools['xdotool'], 'search', '--onlyvisible', '--pid', str(app.pid)],
                                        env=env, capture_output=True, text=True, timeout=5)
                 if found.returncode == 0 and found.stdout.splitlines():
                     windows = found.stdout.splitlines()
@@ -173,7 +174,7 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                  'visible_source': spec['visible_source'], 'quit_exit': 0}, usage, evidence)
     finally:
         if app is not None:
-            stop(app)
-        stop(display)
+            process_custody.stop(app)
+        process_custody.stop(display)
         os.close(reader)
         log.close()

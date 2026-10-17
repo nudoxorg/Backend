@@ -11,6 +11,7 @@ import argparse
 import json
 import shlex
 import subprocess
+import process_custody
 import tempfile
 import time
 from pathlib import Path
@@ -81,7 +82,7 @@ def run_one(bin_dir: Path, name: str) -> float:
         scope = ["--project", str(project), "--workspace", str(workspace), "--endpoint", str(endpoint)]
 
         def invoke(arguments: list[str], fmt: str = "json") -> subprocess.CompletedProcess:
-            return subprocess.run([str(bin_dir / "backend-cli"), *scope, "--format", fmt, *arguments],
+            return process_custody.run([str(bin_dir / "backend-cli"), *scope, "--format", fmt, *arguments],
                                   cwd=project, env=env, stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True, timeout=10)
 
@@ -129,7 +130,7 @@ def run_one(bin_dir: Path, name: str) -> float:
             require(recovery.startswith("(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; " + quoted_executable + " "),
                     f"recovery did not begin with its observed executable: {recovery!r}")
             stubbed = recovery.replace(quoted_executable + " ", "nudox ", 1)
-            parsed = subprocess.run(["/bin/sh", "-c", 'nudox() { printf "%s\\000" "$@"; }; ' + stubbed],
+            parsed = process_custody.run(["/bin/sh", "-c", 'nudox() { printf "%s\\000" "$@"; }; ' + stubbed],
                                     cwd=project, env=env, capture_output=True, timeout=10)
             require(parsed.returncode == 0 and not parsed.stderr, "recovery is not valid shell syntax")
             expected_argv = ["--project", str(project), "--workspace", str(workspace), "--passive",

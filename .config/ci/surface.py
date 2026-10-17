@@ -36,6 +36,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import process_custody
 import sys
 import tempfile
 import time
@@ -157,6 +158,7 @@ class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
     def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
+        process_custody.activate()
         self.bin_dir = bin_dir
         # Keep public project/endpoint coordinates stable, but place durable
         # owner writes on the task volume, not its rootfs /tmp overlay. The
@@ -189,7 +191,7 @@ class Owner:
         self.log = open(case_root / "locald.log", "w")
         self.process = None
         try:
-            self.process = subprocess.Popen(
+            self.process = process_custody.popen(
                 [
                     bin_dir / "backend-locald",
                     "--endpoint", str(self.endpoint),
@@ -249,14 +251,16 @@ class Owner:
                     self.process.wait(timeout=20)
                 except subprocess.TimeoutExpired:
                     log("owner stop: idle retirement timed out; sending SIGKILL")
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    process_custody.signal_session(self.process, signal.SIGKILL)
                     reap_started = time.monotonic()
                     log("owner stop: waiting to reap SIGKILLed process")
-                    self.process.wait()
+                    self.process.retire(time.monotonic()+5)
                     log(f"owner stop: reaped SIGKILLed process after {time.monotonic() - reap_started:.3f}s")
                     raise RuntimeError("backend-locald failed to retire through its idle timeout")
                 else:
                     log("owner stop: idle retirement completed")
+            # poll observes exit without reaping the owned session anchor.
+            self.process.wait(timeout=5)
             if self.process.returncode != 0:
                 raise RuntimeError(f"backend-locald exited {self.process.returncode}")
         finally:
@@ -296,7 +300,7 @@ def run_cli(owner: Owner, project: Path, args: list[str], timeout: float) -> tup
     log(f"{operation}: started (timeout={timeout:g}s)")
     outcome = "completed"
     try:
-        result = subprocess.run(
+        result = process_custody.run(
             [owner.bin_dir / "backend-cli", "--endpoint", str(owner.endpoint), "--project", str(project), "--json", *args],
             env=owner.env,
             cwd=project,
@@ -336,7 +340,7 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
         requests.append({"jsonrpc": "2.0", "id": index, "method": "tools/call",
                          "params": {"name": call["tool"], "arguments": call.get("arguments", {})}})
     started = time.monotonic()
-    result = subprocess.run(
+    result = process_custody.run(
         [owner.bin_dir / "backend-mcp", "--endpoint", str(owner.endpoint), "--project", str(project)],
         env=owner.env,
         cwd=project,
@@ -373,7 +377,7 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
     pending = b""
     continuation_id = 10000
     with tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(
+        process = process_custody.popen(
             [owner.bin_dir / "backend-mcp", "--endpoint", str(owner.endpoint), "--project", str(project)],
             env=owner.env, cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
         )
@@ -443,10 +447,10 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
             raise
         finally:
             selector.close()
-            # Match subprocess.run(timeout=...) cleanup for this owned client.
+            # Match process_custody.run(timeout=...) cleanup for this owned client.
             if process.poll() is None:
                 process.kill()
-                process.wait()
+            process.wait(timeout=5)  # Also retire descendants after root-first exit.
             process.stdout.close()
             if not process.stdin.closed:
                 process.stdin.close()
@@ -1326,6 +1330,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         finally:
             emit_evidence(case, entry)
 
+    process_custody.activate()
     executor = ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface")
     futures = {executor.submit(invoke_tracked, case): case for case in cases}
     pending = set(futures)
@@ -1394,6 +1399,9 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                                                         separators=(",", ":")), flush=True)
             sys.stdout.flush()
             sys.stderr.flush()
+            # Reporting cannot release live detached owner/client custody.
+            cleanup = process_custody.stop_before_exit()
+            print('SURFACE-CHILD-CUSTODY ' + json.dumps(cleanup, sort_keys=True), flush=True)
             os._exit(128 + signal.SIGTERM)
     if previous_sigterm is not None:
         signal.signal(signal.SIGTERM, previous_sigterm)
