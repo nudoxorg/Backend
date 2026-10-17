@@ -9,7 +9,8 @@ use backend_semantic::vocabulary::{Language, Stage};
 use backend_version::ContentId;
 
 #[test]
-fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admission() {
+fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admission()
+-> Result<(), String> {
     let version = format!("5.9.3-{}", "a".repeat(122));
     for cause in [
         C::RuntimeFiles {
@@ -33,7 +34,9 @@ fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admis
             export: E::GetAllowSyntheticDefaultImports,
         },
     ] {
-        let detail = D::new(R::SelectedCompiler, V::new(&version), cause).unwrap();
+        let detail = D::new(R::SelectedCompiler, V::new(&version), cause).ok_or_else(|| {
+            "the oversized-but-bounded admission detail is representable".to_owned()
+        })?;
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {
@@ -53,8 +56,8 @@ fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admis
                 .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
             },
         )
-        .unwrap()
-        .unwrap();
+        .map_err(|error| format!("project the typed compiler refusal: {error:?}"))?
+        .ok_or_else(|| "the authority terminal projects to a compiler failure".to_owned())?;
         for (tool, arguments, _) in compiler_error_routes() {
             let mut server = ready(Fake {
                 surface_error: Some(compiler_client_error(&failure)),
@@ -68,7 +71,8 @@ fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admis
             let structured = tool_failure(&response, "compiler-refused");
             assert_eq!(
                 structured["compiler_failure"],
-                serde_json::to_value(&failure).unwrap()
+                serde_json::to_value(&failure)
+                    .map_err(|error| format!("encode the compiler failure for MCP: {error}"))?
             );
             assert!(structured.get("compiler_tool_requirement").is_none());
             let text = text_of(&response["result"]);
@@ -77,8 +81,11 @@ fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admis
                 assert!(!text.contains(private));
             }
             assert!(wire_fits(&response, ResponseTransport::HttpBody));
-            assert!(wire_tokens(&response).unwrap() <= MCP_CL100K_TOKEN_LIMIT);
+            let token_count = wire_tokens(&response)
+                .map_err(|error| format!("count tokens in the MCP response: {error:?}"))?;
+            assert!(token_count <= MCP_CL100K_TOKEN_LIMIT);
             assert_context_bounded(&response);
         }
     }
+    Ok(())
 }

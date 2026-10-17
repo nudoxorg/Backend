@@ -127,22 +127,40 @@ fn typescript_missing_node_has_host_guidance_without_a_false_tsc_requirement() {
 }
 
 #[test]
-fn go_dependency_refusals_keep_exact_cli_mcp_facts_and_safe_details() {
-    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
-        CompilerDiagnostic, GoAuthorityFailureKind as G};
-    for kind in [G::DependencyInvocation, G::DependencyProtocol, G::DependencyPackageLoad,
-        G::DependencyEmptyGraph, G::DependencyIncompleteFiles, G::DependencyUnsafePath,
-        G::DependencyLimit] {
+fn go_dependency_refusals_keep_exact_cli_mcp_facts_and_safe_details() -> Result<(), String> {
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerDiagnostic,
+        GoAuthorityFailureKind as G,
+    };
+    for kind in [
+        G::DependencyInvocation,
+        G::DependencyProtocol,
+        G::DependencyPackageLoad,
+        G::DependencyEmptyGraph,
+        G::DependencyIncompleteFiles,
+        G::DependencyUnsafePath,
+        G::DependencyLimit,
+    ] {
         let private = b"private /home/user/go/pkg/mod dependency stderr";
-        let failure = PackageCompilerFailure::from_package_terminal("main.go",
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "main.go",
             &CompilerTerminal::Compile {
-                attempted: CompilerAttempt { source: source(),
-                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"real-go-selection") },
-                cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve,
+                attempted: CompilerAttempt {
+                    source: source(),
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"real-go-selection",
+                    ),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::Resolve,
                     class: AuthorityDiagnosticClass::Authority,
                     diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
-                        .map(|value| value.with_go_failure(kind)) },
-            }).unwrap().unwrap();
+                        .map(|value| value.with_go_failure(kind)),
+                },
+            },
+        )
+        .map_err(|error| format!("project the Go dependency refusal: {error:?}"))?
+        .ok_or_else(|| "the Go dependency terminal projects to a compiler failure".to_owned())?;
         let fault = compiler_fault(&failure);
         let rendered = fault.render(None);
         assert!(rendered.contains(kind.kind_tag()));
@@ -151,10 +169,17 @@ fn go_dependency_refusals_keep_exact_cli_mcp_facts_and_safe_details() {
         let dto = FaultDto::new(&fault);
         assert_eq!(dto.compiler_failure, Some(failure.clone()));
         let value = fault_value(&fault);
-        assert_eq!(value["compiler_failure"], serde_json::to_value(&failure).unwrap());
-        assert_eq!(serde_json::from_value::<FaultDto>(value).unwrap(), dto);
-        if kind == G::DependencyPackageLoad { assert!(failure.detail().contains("go mod download")); }
+        let encoded_failure = serde_json::to_value(&failure)
+            .map_err(|error| format!("encode the Go compiler failure: {error}"))?;
+        assert_eq!(value["compiler_failure"], encoded_failure);
+        let decoded_dto = serde_json::from_value::<FaultDto>(value)
+            .map_err(|error| format!("decode the Go fault DTO: {error}"))?;
+        assert_eq!(decoded_dto, dto);
+        if kind == G::DependencyPackageLoad {
+            assert!(failure.detail().contains("go mod download"));
+        }
     }
+    Ok(())
 }
 
 #[test]
@@ -361,7 +386,14 @@ fn compiler_index_receipt_uses_shared_human_sentence_and_keeps_exact_machine_fac
         )),
     ] {
         let dto = ProductDto::new(&product_view(&reply));
-        assert_eq!(dto.fault.as_ref().expect("terminal refusal is a product fault").compiler_failure.as_ref(), Some(&failure));
+        assert_eq!(
+            dto.fault
+                .as_ref()
+                .expect("terminal refusal is a product fault")
+                .compiler_failure
+                .as_ref(),
+            Some(&failure)
+        );
         let tags = dto.records[0].tags.join(" ");
         assert!(tags.contains(compiler_fault(&failure).cause().sentence()));
         assert!(!tags.contains("RAW LEGACY"));
@@ -498,7 +530,13 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
     let dto = ProductDto::new(&product_view(
         &backend_library::SurfaceReply::IndexTerminal(terminal),
     ));
-    assert!(dto.fault.as_ref().expect("partial is not full success").partial_publication.is_some());
+    assert!(
+        dto.fault
+            .as_ref()
+            .expect("partial is not full success")
+            .partial_publication
+            .is_some()
+    );
     assert!(dto.records[0].tags.join(" ").contains(sentence));
     assert!(
         dto.records[0]
@@ -509,60 +547,138 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
 }
 
 #[test]
-fn native_typescript_program_refusal_retains_request_source_without_naming_a_hot_file() {
-    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
-        CompilerDiagnostic, TypeScriptAuthorityFailureKind as T};
-    for (kind, program) in [(T::NativeProjectCheckDeadline, true),
-        (T::NativeSessionWorkBudgetExhausted, true), (T::NativeCheckerWorkerPoolUnavailable, true),
-        (T::NativeSessionExecutionCheckpointMismatch, true), (T::NativeSourceMismatch, false)] {
-        let failure = PackageCompilerFailure::from_package_terminal("eslint.config.mjs", &CompilerTerminal::Compile {
-            attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"actual-request-context") },
-            cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
-                diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
-                    .map(|diagnostic| diagnostic.with_typescript_failure(kind)) },
-        }).unwrap().unwrap();
+fn native_typescript_program_refusal_retains_request_source_without_naming_a_hot_file()
+-> Result<(), String> {
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerDiagnostic,
+        TypeScriptAuthorityFailureKind as T,
+    };
+    for (kind, program) in [
+        (T::NativeProjectCheckDeadline, true),
+        (T::NativeSessionWorkBudgetExhausted, true),
+        (T::NativeCheckerWorkerPoolUnavailable, true),
+        (T::NativeSessionExecutionCheckpointMismatch, true),
+        (T::NativeSourceMismatch, false),
+    ] {
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "eslint.config.mjs",
+            &CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: source(),
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"actual-request-context",
+                    ),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::Resolve,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
+                        .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
+                },
+            },
+        )
+        .map_err(|error| format!("project the TypeScript program refusal: {error:?}"))?
+        .ok_or_else(|| {
+            "the TypeScript program terminal projects to a compiler failure".to_owned()
+        })?;
         assert_eq!(failure.is_typescript_program_execution_failure(), program);
         let fault = compiler_fault(&failure);
         assert_eq!(fault.compiler_failure(), Some(&failure));
-        assert_eq!(fault.cause().sentence().contains("TypeScript project (requested from eslint.config.mjs)"), program);
+        assert_eq!(
+            fault
+                .cause()
+                .sentence()
+                .contains("TypeScript project (requested from eslint.config.mjs)"),
+            program
+        );
         assert!(fault.cause().sentence().contains(kind.kind_tag()));
         let value = fault_value(&fault);
-        assert_eq!(value["compiler_failure"], serde_json::to_value(&failure).unwrap());
-        assert_eq!(serde_json::from_value::<FaultDto>(value).unwrap(), FaultDto::new(&fault));
+        let encoded_failure = serde_json::to_value(&failure)
+            .map_err(|error| format!("encode the TypeScript program failure: {error}"))?;
+        assert_eq!(value["compiler_failure"], encoded_failure);
+        let decoded_dto = serde_json::from_value::<FaultDto>(value)
+            .map_err(|error| format!("decode the TypeScript program fault DTO: {error}"))?;
+        assert_eq!(decoded_dto, FaultDto::new(&fault));
     }
+    Ok(())
 }
 
 #[test]
-fn native_typescript_program_refusal_names_the_observed_stop_site_beside_the_request_source() {
-    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
-        CompilerDiagnostic, TypeScriptAuthorityFailureKind as T, TypeScriptStopPhase as P,
-        TypeScriptStopSite as S};
-    let failure = |site: S| PackageCompilerFailure::from_package_terminal("playwright.config.ts", &CompilerTerminal::Compile {
-        attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site-words") },
-        cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
-            diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
-                .map(|diagnostic| diagnostic.with_typescript_failure(T::NativeProjectCheckWorkBudgetExhausted).with_typescript_stop_site(site)) },
-    }).unwrap().unwrap();
-    let sentence = |site: S| compiler_fault(&failure(site)).cause().sentence().to_owned();
-    let both = sentence(S::new(Some(P::FileCheck), Some("node_modules/rxjs/dist/types/operators/pluck.d.ts"), 7, 9));
+fn native_typescript_program_refusal_names_the_observed_stop_site_beside_the_request_source()
+-> Result<(), String> {
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerDiagnostic,
+        TypeScriptAuthorityFailureKind as T, TypeScriptStopPhase as P, TypeScriptStopSite as S,
+    };
+    let make_failure = |site: Option<S>| -> Result<PackageCompilerFailure, String> {
+        PackageCompilerFailure::from_package_terminal(
+            "playwright.config.ts",
+            &CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: source(),
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"stop-site-words",
+                    ),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::Resolve,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
+                        .map(|diagnostic| {
+                            let diagnostic = diagnostic
+                                .with_typescript_failure(T::NativeProjectCheckWorkBudgetExhausted);
+                            match site {
+                                Some(site) => diagnostic.with_typescript_stop_site(site),
+                                None => diagnostic,
+                            }
+                        }),
+                },
+            },
+        )
+        .map_err(|error| format!("project the TypeScript stop-site failure: {error:?}"))?
+        .ok_or_else(|| {
+            "the TypeScript stop-site terminal projects to a compiler failure".to_owned()
+        })
+    };
+    let failure = |site| make_failure(Some(site));
+    let sentence = |site: S| -> Result<String, String> {
+        let failure = failure(site)?;
+        Ok(compiler_fault(&failure).cause().sentence().to_owned())
+    };
+    let both = sentence(S::new(
+        Some(P::FileCheck),
+        Some("node_modules/rxjs/dist/types/operators/pluck.d.ts"),
+        7,
+        9,
+    ))?;
     assert!(both.contains("requested from playwright.config.ts; stopped in file_check of node_modules/rxjs/dist/types/operators/pluck.d.ts after 7 of 9 work units"), "{both}");
     assert!(both.contains("typescript_native_project_check_work_budget_exhausted"));
-    assert!(sentence(S::new(Some(P::Merge), None, 1, 2)).contains("stopped in merge after 1 of 2 work units"));
-    assert!(sentence(S::new(None, Some("src/app/index.tsx"), 3, 3)).contains("stopped at src/app/index.tsx after 3 of 3 work units"));
-    assert!(sentence(S::new(None, None, 0, 2)).contains("stopped between phases after 0 of 2 work units"));
+    assert!(
+        sentence(S::new(Some(P::Merge), None, 1, 2))?
+            .contains("stopped in merge after 1 of 2 work units")
+    );
+    assert!(
+        sentence(S::new(None, Some("src/app/index.tsx"), 3, 3))?
+            .contains("stopped at src/app/index.tsx after 3 of 3 work units")
+    );
+    assert!(
+        sentence(S::new(None, None, 0, 2))?
+            .contains("stopped between phases after 0 of 2 work units")
+    );
     // Without a site the sentence is exactly the request-context form.
-    let plain = PackageCompilerFailure::from_package_terminal("playwright.config.ts", &CompilerTerminal::Compile {
-        attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"stop-site-words") },
-        cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
-            diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
-                .map(|diagnostic| diagnostic.with_typescript_failure(T::NativeProjectCheckWorkBudgetExhausted)) },
-    }).unwrap().unwrap();
-    assert!(compiler_fault(&plain).cause().sentence().contains("TypeScript project (requested from playwright.config.ts):"));
+    let plain = make_failure(None)?;
+    assert!(
+        compiler_fault(&plain)
+            .cause()
+            .sentence()
+            .contains("TypeScript project (requested from playwright.config.ts):")
+    );
+    Ok(())
 }
 
 #[test]
-fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words() {
-
+fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words()
+-> Result<(), String> {
     use backend_library::interface::{
         AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic,
         TypeScriptCompilerAdmissionCause as C, TypeScriptCompilerAdmissionDetail as D,
@@ -591,7 +707,8 @@ fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words
             export: E::GetModeForUsageLocation,
         },
     ] {
-        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), cause).unwrap();
+        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), cause)
+            .ok_or_else(|| "the selected compiler admission detail is representable".to_owned())?;
         let failure = PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {
@@ -608,8 +725,10 @@ fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words
                 .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
             },
         )
-        .unwrap()
-        .unwrap();
+        .map_err(|error| format!("project the selected TypeScript admission refusal: {error:?}"))?
+        .ok_or_else(|| {
+            "the selected TypeScript terminal projects to a compiler failure".to_owned()
+        })?;
         let fault = compiler_fault(&failure);
         let rendered = fault.render(None);
         assert!(rendered.contains("TypeScript compiler package (requested from main.ts)"));
@@ -622,14 +741,17 @@ fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words
         let value = fault_value(&fault);
         assert_eq!(
             value["compiler_failure"],
-            serde_json::to_value(&failure).unwrap()
+            serde_json::to_value(&failure)
+                .map_err(|error| format!("encode the selected TypeScript failure: {error}"))?
         );
         assert!(value.get("compiler_tool_requirement").is_none());
         let dto = FaultDto::new(&fault);
         assert_eq!(
-            serde_json::from_value::<FaultDto>(value.clone()).unwrap(),
+            serde_json::from_value::<FaultDto>(value.clone())
+                .map_err(|error| format!("decode the selected TypeScript fault DTO: {error}"))?,
             dto
         );
         assert!(encode_value(&value, DEFAULT_RESPONSE_BUDGET_BYTES).is_ok());
     }
+    Ok(())
 }

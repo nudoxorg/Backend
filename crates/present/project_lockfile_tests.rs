@@ -4,17 +4,20 @@ use backend_library::{
 };
 
 #[test]
-fn large_project_display_retains_all_names_and_truthful_partial_membership() {
+fn large_project_display_retains_all_names_and_truthful_partial_membership() -> Result<(), String> {
     let record = ProjectRecord {
         id: ProjectId::new(std::num::NonZeroU64::MIN),
-        name: ProjectName::new("Large").unwrap(),
+        name: ProjectName::new("Large")
+            .map_err(|error| format!("admit the large fixture project name: {error:?}"))?,
         lockfile: Some(ProductText::from_static("/project/package-lock.json")),
         members: (0..1444)
-            .map(|index| PackageReference::parse(format!("pkg:npm/p{index}@1.0.0")).unwrap())
-            .collect(),
+            .map(|index| PackageReference::parse(format!("pkg:npm/p{index}@1.0.0")))
+            .collect::<Result<Box<[_]>, _>>()
+            .map_err(|error| format!("parse a generated project member: {error:?}"))?,
         member_manifest_names: (0..1444)
-            .map(|index| ProductText::new(format!("p{index}")).unwrap())
-            .collect(),
+            .map(|index| ProductText::new(format!("p{index}")))
+            .collect::<Result<Box<[_]>, _>>()
+            .map_err(|error| format!("admit a generated member manifest name: {error:?}"))?,
         lockfile_membership: Some(ProjectLockfileMembership::Partial {
             unresolved: vec![ProjectUnresolvedLockMember {
                 name: ProductText::from_static("local-root"),
@@ -27,7 +30,9 @@ fn large_project_display_retains_all_names_and_truthful_partial_membership() {
             .into_boxed_slice(),
         }),
     };
-    record.admit().unwrap();
+    record
+        .admit()
+        .map_err(|error| format!("admit the large project display record: {error:?}"))?;
     let reply = SurfaceReply::ProjectSynced(record);
     let view = product_view(&reply);
     assert_eq!(view.records().len(), 1);
@@ -51,6 +56,8 @@ fn large_project_display_retains_all_names_and_truthful_partial_membership() {
             .any(|tag| tag.contains("unresolved local-root")
                 && tag.contains("add its local path explicitly"))
     );
-    let bytes = serde_json::to_vec(&crate::dto::ProductDto::new(&view)).unwrap();
+    let bytes = serde_json::to_vec(&crate::dto::ProductDto::new(&view))
+        .map_err(|error| format!("serialize the bounded project DTO: {error}"))?;
     assert!(bytes.len() < backend_library::MAX_REPLY_BODY);
+    Ok(())
 }
