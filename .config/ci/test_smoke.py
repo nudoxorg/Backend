@@ -333,5 +333,26 @@ class SmokeContract(unittest.TestCase):
             self.assertNotIn(name, env)
 
 
+class GuiScratchParent(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+        self.shm = self.root / "shm"
+        self.shm.mkdir()
+        self.mounts = self.root / "mounts"
+
+    def test_tmpfs_shm_holds_the_gui_home(self):
+        self.mounts.write_text(f"overlay / overlay rw 0 0\nshm {self.shm} tmpfs rw,nosuid,nodev,noexec 0 0\n")
+        self.assertEqual(smoke.gui_scratch_parent(self.mounts, self.shm), str(self.shm))
+
+    def test_disk_backed_or_missing_shm_keeps_the_default(self):
+        self.mounts.write_text(f"/dev/sda1 {self.shm} ext4 rw 0 0\n")
+        self.assertIsNone(smoke.gui_scratch_parent(self.mounts, self.shm))
+        self.mounts.write_text(f"shm {self.root / 'absent'} tmpfs rw 0 0\n")
+        self.assertIsNone(smoke.gui_scratch_parent(self.mounts, self.root / "absent"))
+        self.assertIsNone(smoke.gui_scratch_parent(self.root / "no-proc-mounts", self.shm))
+
+
 if __name__ == "__main__":
     unittest.main()

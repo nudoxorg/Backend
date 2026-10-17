@@ -526,6 +526,30 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
         server_log.close()
 
 
+def gui_scratch_parent(mounts: Path = Path("/proc/mounts"), shm: Path = Path("/dev/shm")) -> str | None:
+    """RAM-backed tmpfs for the GUI HOME, or None for the default TMPDIR.
+
+    On Quit the desktop fsyncs its state. On the shared CI disk that fsync
+    waits behind whatever else is writing (builds, T2, Nix), and the 10s
+    Quit bound fails for reasons that have nothing to do with the product.
+    tmpfs keeps the same fsync calls and the same bound. Nothing is executed
+    from HOME, so a noexec /dev/shm is fine.
+    """
+    try:
+        table = mounts.read_text()
+    except OSError:
+        return None
+    for line in table.splitlines():
+        fields = line.split()
+        if len(fields) > 2 and fields[1] == str(shm) and fields[2] == "tmpfs":
+            break
+    else:
+        return None
+    if shm.is_dir() and os.access(shm, os.W_OK | os.X_OK):
+        return str(shm)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("surface", choices=["cli", "mcp", "gui"])
@@ -533,7 +557,8 @@ def main() -> int:
     parser.add_argument("--gui-budget", type=float, default=45.0, help="seconds to wait for the first frame")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
-    with tempfile.TemporaryDirectory(prefix=f"nudox-smoke-{args.surface}-") as scratch:
+    parent = gui_scratch_parent() if args.surface == "gui" else None
+    with tempfile.TemporaryDirectory(prefix=f"nudox-smoke-{args.surface}-", dir=parent) as scratch:
         home = Path(scratch)
         if args.surface == "cli":
             return smoke_cli(args.bin_dir, home)
