@@ -12,9 +12,9 @@
 /// discovery adapters.
 pub use backend_discovery::{
     DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError as FilesystemDiscoveryError,
-    DiscoveryPolicy, EntryKind, HARD_IGNORED_DIRECTORIES, SourceSelectionScope, PythonSourceContext,
-    is_python_context_document,
-    is_hard_ignored_directory, is_hard_ignored_path, is_ignored_source_file_path,
+    DiscoveryPolicy, EntryKind, HARD_IGNORED_DIRECTORIES, PythonSourceContext,
+    SourceSelectionScope, is_hard_ignored_directory, is_hard_ignored_path,
+    is_ignored_source_file_path, is_python_context_document,
 };
 
 mod arrangement;
@@ -25,9 +25,9 @@ mod cargo_aliases;
 mod cargo_source;
 mod catalog;
 mod command;
-mod declaration_selector;
 mod command_registry;
 mod cursor;
+mod declaration_selector;
 mod delta;
 mod error;
 mod forge_identity;
@@ -43,17 +43,20 @@ mod package_compiler_outcomes;
 mod package_graph;
 mod package_graph_page;
 mod progress;
+mod published_search;
 mod python_project;
 mod query_window;
-pub use query_window::{QueryPosition, QueryWindow};
 pub use python_project::{
     PYTHON_PROJECT_EXTRACTION_POLICY, PythonDependencyDeclaration, PythonMetadataEvidence,
     PythonMetadataFact, PythonProjectMetadata,
 };
+pub use query_window::{QueryPosition, QueryWindow};
+mod owner_statement;
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
-mod owner_statement;
-pub use owner_statement::{NativeOwnerStatement, seal_native_owner_statement, verify_native_owner_statement};
+pub use owner_statement::{
+    NativeOwnerStatement, seal_native_owner_statement, verify_native_owner_statement,
+};
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
@@ -64,9 +67,9 @@ pub use semantic_source::{
     SemanticSourceChunk, SemanticSourceDocument, SemanticSourceError, SemanticSourceHistory,
     SemanticSourceIdentity, SemanticSourceMetadata, SemanticSourceRange,
     SemanticSourceRecordSchema, SemanticSourceReference, SemanticSourceRequest,
-    SemanticVersionDescriptor, SemanticVersionsCursor, SemanticVersionsCursorClaims, SemanticVersionsPage,
-    VerifiedSemanticVersionsCursor,
-    VerifiedSemanticSourceReference, canonical_semantic_source,
+    SemanticVersionDescriptor, SemanticVersionsCursor, SemanticVersionsCursorClaims,
+    SemanticVersionsPage, VerifiedSemanticSourceReference, VerifiedSemanticVersionsCursor,
+    canonical_semantic_source,
 };
 mod source_atom;
 mod source_discovery;
@@ -151,7 +154,6 @@ pub use cargo_source::{
     MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
 pub use catalog::{Library, QueryPageRecipe, RankedSearchSnapshot};
-pub use declaration_selector::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
 pub use command::ReferenceFact;
 pub use command::{
     Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,
@@ -166,6 +168,7 @@ pub use cursor::{
     CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, CURSOR_WINDOW_QUERY_BYTES, Cursor, CursorError, CursorEvent,
     CursorRead, CursorResetReason, CursorSub,
 };
+pub use declaration_selector::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
 pub use error::LibraryError;
 pub use forge_identity::{
@@ -178,9 +181,10 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_compiler_outcomes::{
-    PackageCompilerCoverage, PackageCompilerCoverageSelector, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
-    PackageCompilerDiagnostic, PackageCompilerOutcomeBasis, PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector,
-    PackageCompilerOutcomes, PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,
+    PackageCompilerCoverage, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
+    PackageCompilerCoverageSelector, PackageCompilerDiagnostic, PackageCompilerOutcomeBasis,
+    PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector, PackageCompilerOutcomes,
+    PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,
 };
 pub use package_graph::{
     BorrowedPackageGraphSourceState, CheckedPackageGraphFacts, CheckedPackageGraphSourceWitness,
@@ -201,6 +205,10 @@ pub use package_graph_page::{
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
     ProgressError, SourceUnavailableReason,
+};
+pub use published_search::{
+    FullSearchReadiness, PublishedNameSearchPage, PublishedNameSearchQuery,
+    PublishedSearchReadiness, PublishedSemanticReadiness,
 };
 pub use registry_forge::{
     MAX_REGISTRY_FORGE_ASSOCIATION_BYTES, MAX_REGISTRY_FORGE_ASSOCIATIONS,
@@ -272,33 +280,33 @@ pub use source_membership::{
 pub use surface::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
     CompilerNativeToolFact, CompilerStageFact, DeclarationChange, DeclarationReadExtent,
-    DeclarationRecord, DiffRecord,
-    ForgeDiscoveryCandidate, ForgeFact, ForgeManifestRecord, ForgePackageDetailRecord,
-    ForgePackageManifestDetail, ForgePackagePin, ForgePackageRecord, ForgePackageRegistryEvidence,
-    ForgeRepositoryMetadataRecord, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
-    IndexJobOutcome, IndexJobPartialPublication, IndexSourceCaptureSummary, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
-    IndexJobTicket, IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
+    DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact, ForgeManifestRecord,
+    ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin, ForgePackageRecord,
+    ForgePackageRegistryEvidence, ForgeRepositoryMetadataRecord, IndexCancelReceipt,
+    IndexCancelStatus, IndexJobObservation, IndexJobOutcome, IndexJobPartialPublication,
+    IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal, IndexJobTicket,
+    IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
     IndexOperationPriorSemantic, IndexOperationProfileRefusal, IndexOperationPublicationReceipt,
     IndexOperationSemanticCoverage, IndexOperationSemanticProfileState,
     IndexOperationSemanticUnavailableReason, IndexOperationSourceCaptureReceipt,
     IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
     IndexOperationUnresolvedReason, IndexProgressPage, IndexSearchCursor, IndexSearchPage,
-    IndexSearchResultCount, IndexStartResult, LocalDeclarationSearchRecord, LocalDeclarationSource,
-    MAX_INDEX_PROGRESS_EVENTS, MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS,
-    MAX_PROJECT_MEMBERS, MAX_PROJECT_MEMBER_PAYLOAD_BYTES,
-    MAX_PRODUCT_TEXT_BYTES, MAX_SELECTED_PROJECT_FRONTIER_FILES, PackageCompilerFailure,
-    PackageCompilerFailureCause, PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts,
-    PackageCoordinate, PackageForeignKeyFaultFacts, PackageLanguageProjectionFault,
-    PackageLineageFaultFacts, PackageLoweringFaultFacts, PackageParentageFact,
-    PackageProjectionAdmissionFaultFacts, PackageProjectionConstructorFaultFacts,
-    PackageProjectionSemanticTypeFaultFacts, PackageReference, PackageReferenceKind,
-    PackageTypeCellFact, PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
-    ProductAdmissionError, ProductText, ProjectId, ProjectLockfileMembership, ProjectName,
-    ProjectRecord, ProjectSelector, ProjectUnresolvedLockMember,
-    ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
-    RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
-    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
-    RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
+    IndexSearchResultCount, IndexSourceCaptureSummary, IndexStartResult,
+    LocalDeclarationSearchRecord, LocalDeclarationSource, MAX_INDEX_PROGRESS_EVENTS,
+    MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES,
+    MAX_PROJECT_MEMBER_PAYLOAD_BYTES, MAX_PROJECT_MEMBERS, MAX_SELECTED_PROJECT_FRONTIER_FILES,
+    PackageCompilerFailure, PackageCompilerFailureCause, PackageCompilerFailurePhase,
+    PackageCompilerFragmentFaultFacts, PackageCoordinate, PackageForeignKeyFaultFacts,
+    PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
+    PackageParentageFact, PackageProjectionAdmissionFaultFacts,
+    PackageProjectionConstructorFaultFacts, PackageProjectionSemanticTypeFaultFacts,
+    PackageReference, PackageReferenceKind, PackageTypeCellFact,
+    PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact, ProductAdmissionError, ProductText,
+    ProjectId, ProjectLockfileMembership, ProjectName, ProjectRecord, ProjectSelector,
+    ProjectUnresolvedLockMember, ReferenceRecord, RegistryDiscoveryAdvisory,
+    RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
+    RegistryDiscoveryMetadata, RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem,
+    RegistryEvidenceFacet, RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
     RegistryPackageDiscoveryObservation, RegistryPackageFactAuthority,
     RegistryPackageFactCompleteness, RegistryPackageFactFreshness, RegistryPackageFactProof,
     RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,

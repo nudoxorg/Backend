@@ -350,7 +350,9 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             selected_declaration(engine, selector, DeclarationRead::Document, Some(cursor))
         },
         Request::Source(at) => source(engine, at),
-        Request::Declaration { selector, read } => selected_declaration(engine, selector, *read, None),
+        Request::Declaration { selector, read } => {
+            selected_declaration(engine, selector, *read, None)
+        }
         Request::Neighbourhood {
             coordinate,
             incoming,
@@ -363,16 +365,25 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
                     limit: *limit,
                 },
             )?;
-            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
+            let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
             let list = record_list(text, &snapshot);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
                 list
             };
+            let list = if let Some(readiness) = published_names {
+                list.with_published_names(readiness)
+            } else {
+                list
+            };
             let list = if list.is_empty() {
                 list.with_empty_reason(
-                    "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
+                    if published_names.is_some() {
+                        "no current declaration names matched; full lexical search has not been queried in this result stage"
+                    } else {
+                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword"
+                    },
                 )
             } else {
                 list
@@ -404,15 +415,22 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
 pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
     match request {
         Request::Search { text, .. } => {
-            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
+            let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
             let list = record_list(text, &snapshot);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
                 list
             };
+            let list = if let Some(readiness) = published_names {
+                list.with_published_names(readiness)
+            } else {
+                list
+            };
             let list = if list.is_empty() {
-                list.with_empty_reason("no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword")
+                list.with_empty_reason(if published_names.is_some() {
+                    "no current declaration names matched; full lexical search has not been queried in this result stage"
+                } else { "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword" })
             } else {
                 list
             };
@@ -445,16 +463,25 @@ pub fn answer_paged(
                 },
                 continuation,
             )?;
-            let (snapshot, semantic_search) = search_snapshot(reply, "search")?;
+            let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
             let list = record_list(text, &snapshot);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
                 list
             };
+            let list = if let Some(readiness) = published_names {
+                list.with_published_names(readiness)
+            } else {
+                list
+            };
             let list = if list.is_empty() {
                 list.with_empty_reason(
-                    "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
+                    if published_names.is_some() {
+                        "no current declaration names matched; full lexical search has not been queried in this result stage"
+                    } else {
+                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword"
+                    },
                 )
             } else {
                 list
@@ -911,10 +938,20 @@ fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<Vie
 fn search_snapshot(
     reply: ReplyDto,
     what: &str,
-) -> Result<(ViewSnapshot, Option<backend_library::SemanticSearchStatus>), Fault> {
+) -> Result<
+    (
+        ViewSnapshot,
+        Option<backend_library::SemanticSearchStatus>,
+        Option<backend_library::PublishedSearchReadiness>,
+    ),
+    Fault,
+> {
     let semantic_search = reply.semantic_search_status();
     match reply.reply {
-        CommandReply::Search(snapshot) => Ok((snapshot, semantic_search)),
+        CommandReply::Search(snapshot) => Ok((snapshot, semantic_search, None)),
+        CommandReply::PublishedNameSearch(page) => {
+            Ok((page.snapshot, semantic_search, Some(page.readiness)))
+        }
         _ => Err(shape(what)),
     }
 }

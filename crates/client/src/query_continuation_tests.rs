@@ -109,7 +109,10 @@ impl CommandTransport for Transport {
             .expect("requests")
             .push(request.command.clone());
         let library = self.owner.lock().expect("owner");
-        if matches!(&request.command, Command::GraphPage { .. }) {
+        if matches!(
+            &request.command,
+            Command::GraphPage { .. } | Command::SearchPublishedNames(_)
+        ) {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
             let admitted =
@@ -119,7 +122,21 @@ impl CommandTransport for Transport {
                 "plain graph strict standalone command admission"
             );
         }
-        let mut reply = if let Command::GraphQuery(query) = &request.command {
+        let mut reply = if let Command::SearchPublishedNames(query) = &request.command {
+            let snapshot = library
+                .search_published_names(query)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            ReplyDto::new(
+                request.request_id,
+                CommandReply::PublishedNameSearch(backend_library::PublishedNameSearchPage {
+                    snapshot,
+                    readiness: backend_library::PublishedSearchReadiness {
+                        full_search: backend_library::FullSearchReadiness::Preparing,
+                        semantic: backend_library::PublishedSemanticReadiness::Pending,
+                    },
+                }),
+            )
+        } else if let Command::GraphQuery(query) = &request.command {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
             let admitted = backend_library::decode_command_body_for_owner(&bytes, library.cursor())
@@ -181,6 +198,7 @@ impl CommandTransport for Transport {
                 Some(page)
             }
             CommandReply::ProjectionPage(page) => Some(&page.snapshot),
+            CommandReply::PublishedNameSearch(page) => Some(&page.snapshot),
             _ => None,
         };
         if let Some(page) = snapshot {
@@ -189,6 +207,11 @@ impl CommandTransport for Transport {
                 Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query)
                     .canonical_preimage()
                     .to_vec(),
+                Command::SearchPublishedNames(query) => {
+                    QueryPageRecipe::published_names(library.revision_root(), query)
+                        .canonical_preimage()
+                        .to_vec()
+                }
                 Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query)
                     .canonical_preimage()
                     .to_vec(),
@@ -3387,5 +3410,123 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
             .decode_page_continuation(&token)
             .is_err(),
         "foreign issuing scope"
+    );
+}
+
+struct PublishedNamesTransport {
+    inner: Transport,
+    full_ready: Arc<std::sync::atomic::AtomicBool>,
+}
+impl CommandTransport for PublishedNamesTransport {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        let request = match &request.command {
+            Command::Search(query) if query.cursor().is_none() => {
+                let query = backend_library::PublishedNameSearchQuery::admit(query.clone())
+                    .map_err(|_| {
+                        ClientError::Protocol("stage fixture accepts names only".to_owned())
+                    })?;
+                CommandDto::new(request.request_id, Command::SearchPublishedNames(query))
+                    .with_certificate(request.certificate().expect("initial owner proof").clone())
+            }
+            _ => request,
+        };
+        let mut reply = self.inner.request(request)?;
+        if self.full_ready.load(std::sync::atomic::Ordering::Acquire)
+            && let CommandReply::PublishedNameSearch(page) = &mut reply.reply
+        {
+            page.readiness = backend_library::PublishedSearchReadiness {
+                full_search: backend_library::FullSearchReadiness::Ready,
+                semantic: backend_library::PublishedSemanticReadiness::NotQueried,
+            };
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn copied_search_stage_continuation_never_promotes_after_full_projection_becomes_ready() {
+    let owner = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let make = || {
+        Session::from_transport(
+            "/private/published-names.sock",
+            PublishedNamesTransport {
+                inner: Transport {
+                    owner: Arc::clone(&owner),
+                    requests: Arc::clone(&requests),
+                    graph_ids: None,
+                },
+                full_ready: Arc::clone(&ready),
+            },
+        )
+    };
+    let mut issuing = make();
+    let first = issuing.search("Thing", 3).expect("useful name phase");
+    let CommandReply::PublishedNameSearch(first) = first.reply else {
+        panic!("explicit phase");
+    };
+    assert_eq!(
+        first.readiness.full_search,
+        backend_library::FullSearchReadiness::Preparing
+    );
+    let mut seen = first
+        .snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let continuation = PageContinuation::from_cursor(first.snapshot.next.expect("next stage page"));
+    let token = issuing
+        .encode_query_continuation(continuation)
+        .expect("portable stage command");
+    ready.store(true, std::sync::atomic::Ordering::Release);
+    let mut fresh = make();
+    let continuation = fresh
+        .decode_page_continuation(&token)
+        .expect("same source/owner");
+    let mut reply = fresh
+        .search_page("Thing", 3, Some(continuation))
+        .expect("same phase after readiness");
+    loop {
+        let CommandReply::PublishedNameSearch(page) = reply.reply else {
+            panic!("never full-search promotion");
+        };
+        assert_eq!(
+            page.readiness.full_search,
+            backend_library::FullSearchReadiness::Ready
+        );
+        for row in page.snapshot.root.rows() {
+            assert!(seen.insert(row.id));
+        }
+        let Some(next) = page.snapshot.next else {
+            break;
+        };
+        reply = fresh
+            .search_page("Thing", 3, Some(PageContinuation::from_cursor(next)))
+            .expect("same stage");
+    }
+    assert_eq!(seen.len(), 7);
+    assert!(
+        requests
+            .lock()
+            .expect("commands")
+            .iter()
+            .all(|command| matches!(
+                command,
+                Command::Revision | Command::SearchPublishedNames(_)
+            ))
+    );
+    let mut wrong = make();
+    let continuation = wrong
+        .decode_page_continuation(&token)
+        .expect("authenticated token");
+    assert!(wrong.search_page("Other", 3, Some(continuation)).is_err());
+    *owner.lock().expect("replace source") = owner_with_label(1, 8, 0, "Thing repeated");
+    let mut stale = make();
+    assert!(
+        stale.decode_page_continuation(&token).is_err(),
+        "no stale root or coordinate re-resolution"
     );
 }

@@ -97,6 +97,9 @@ pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> 
     let catalog = match &request.command {
         Command::Name(query) => Some((query.window(), query.cursor())),
         Command::Search(query) => Some((query.window(), query.cursor())),
+        Command::SearchPublishedNames(query) => {
+            Some((query.query().window(), query.query().cursor()))
+        }
         Command::GraphPage { page, .. } => Some((
             page.window(),
             page.continuation().map(crate::PageContinuation::cursor),
@@ -111,6 +114,7 @@ pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> 
     let text = match &request.command {
         Command::Name(query) => Some(query.text()),
         Command::Search(query) => Some(query.text()),
+        Command::SearchPublishedNames(query) => Some(query.query().text()),
         Command::Resolve { text } => Some(text.as_str()),
         Command::Surface(command) => {
             command
@@ -164,6 +168,11 @@ pub fn admit_reply_with_capability(
             observed: reply.request_id,
         });
     }
+    if !super::reply::search_status_matches_reply(&reply.reply, reply.semantic_search_status()) {
+        return Err(ReplyAdmissionError::Protocol(
+            "semantic status exceeded the reply's search stage".to_owned(),
+        ));
+    }
     admit_reply_shape(&request.command, &reply.reply)?;
     let expected_basis = command_basis(&request.command);
     match &reply.reply {
@@ -204,6 +213,57 @@ pub fn admit_reply_with_capability(
             };
             ViewProjection::from_snapshot(snapshot, materialized_basis, response_cursor)
                 .map(|_| ())
+                .map_err(ReplyAdmissionError::Projection)?;
+        }
+        CommandReply::PublishedNameSearch(page) => {
+            if !page.readiness.is_consistent() {
+                return Err(ReplyAdmissionError::Protocol(
+                    "name-stage readiness contradicts its full-search state".to_owned(),
+                ));
+            }
+            let query = match &request.command {
+                Command::SearchPublishedNames(query) => query.clone(),
+                Command::Search(query)
+                    if query.cursor().is_none()
+                        && page.readiness.full_search != crate::FullSearchReadiness::Ready =>
+                {
+                    crate::PublishedNameSearchQuery::admit(query.clone()).map_err(|_| {
+                        ReplyAdmissionError::Protocol(
+                            "full search cannot degrade arbitrary query syntax".to_owned(),
+                        )
+                    })?
+                }
+                _ => {
+                    return Err(ReplyAdmissionError::Protocol(
+                        "published-name stage changed command domain".to_owned(),
+                    ));
+                }
+            };
+            if query.query().basis() != page.snapshot.root.basis().root {
+                return Err(ReplyAdmissionError::Protocol(
+                    "published-name stage changed source revision".to_owned(),
+                ));
+            }
+            let source = page.snapshot.root.basis().root;
+            let recipe = crate::QueryPageRecipe::published_names(source, &query);
+            let predecessor = crate::QueryPageRecipe::published_names_predecessor(source, &query)
+                .ok_or_else(|| {
+                ReplyAdmissionError::Protocol(
+                    "published-name predecessor changed credit".to_owned(),
+                )
+            })?;
+            if recipe.identity() != page.snapshot.root.recipe() {
+                return Err(ReplyAdmissionError::Protocol(
+                    "published-name stage recipe mismatch".to_owned(),
+                ));
+            }
+            admit_catalog_window(
+                &page.snapshot,
+                query.query().window(),
+                query.query().cursor(),
+                predecessor.identity(),
+            )?;
+            ViewProjection::from_snapshot(&page.snapshot, Some(source), None)
                 .map_err(ReplyAdmissionError::Projection)?;
         }
         CommandReply::Health(_) => {
@@ -494,6 +554,12 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
         | CommandReply::Graph(snapshot) => {
             add_bound(&mut bound, snapshot.root.encoded_size_bound());
         }
+        CommandReply::PublishedNameSearch(page) => {
+            add_bound(
+                &mut bound,
+                page.snapshot.root.encoded_size_bound().saturating_add(128),
+            );
+        }
         CommandReply::Health(root) => add_bound(&mut bound, root.encoded_size_bound()),
         CommandReply::Readiness(report) => add_bound(
             &mut bound,
@@ -762,7 +828,8 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         | (Command::Packages, CommandReply::Packages(_))
         | (Command::Name(_), CommandReply::Names(_))
         | (Command::Resolve { .. }, CommandReply::Resolved(_))
-        | (Command::Search(_), CommandReply::Search(_))
+        | (Command::Search(_), CommandReply::Search(_) | CommandReply::PublishedNameSearch(_))
+        | (Command::SearchPublishedNames(_), CommandReply::PublishedNameSearch(_))
         | (Command::Health, CommandReply::Health(_) | CommandReply::Readiness(_))
         | (Command::Revision, CommandReply::Revision(_))
         | (
@@ -1136,6 +1203,7 @@ fn command_basis(command: &Command) -> Option<ViewRevision> {
         Command::Outline(query) => Some(query.basis()),
         Command::Name(query) => Some(query.basis()),
         Command::Search(query) => Some(query.basis()),
+        Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Graph(query) | Command::Related(query) => Some(query.basis()),
         Command::PackagePage(page)
         | Command::OutlinePage { page, .. }
@@ -1150,6 +1218,7 @@ fn command_cursor(command: &Command) -> Option<Cursor> {
     match command {
         Command::Name(query) => query.cursor(),
         Command::Search(query) => query.cursor(),
+        Command::SearchPublishedNames(query) => query.query().cursor(),
         Command::PackagePage(page)
         | Command::OutlinePage { page, .. }
         | Command::GraphPage { page, .. } => {

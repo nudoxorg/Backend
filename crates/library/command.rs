@@ -1203,6 +1203,8 @@ pub enum Command {
     },
     /// Search names and document text.
     Search(Query),
+    /// Read a separately authenticated current name stage while richer search prepares.
+    SearchPublishedNames(crate::PublishedNameSearchQuery),
     /// Read graph neighbors for one declaration.
     Graph(GraphNeighborhoodQuery),
     /// Read symbols related to one declaration.
@@ -1240,7 +1242,7 @@ impl Command {
             Self::Outline(_) | Self::OutlinePage { .. } => CommandId::Outline,
             Self::Name(_) => CommandId::Name,
             Self::Resolve { .. } => CommandId::Resolve,
-            Self::Search(_) => CommandId::Search,
+            Self::Search(_) | Self::SearchPublishedNames(_) => CommandId::Search,
             Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
             Self::Related(_) => CommandId::Related,
             Self::GraphQuery(_) => CommandId::GraphQuery,
@@ -1299,6 +1301,8 @@ pub enum CommandReply {
     Resolved(Box<[Row]>),
     /// Search arrangement view.
     Search(ViewSnapshot),
+    /// Name-only results with explicit full-search readiness; never lexical completion.
+    PublishedNameSearch(crate::PublishedNameSearchPage),
     /// Graph arrangement view.
     Graph(ViewSnapshot),
     /// Bounded structured graph-query rows and terminal.

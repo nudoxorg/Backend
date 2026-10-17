@@ -13,6 +13,10 @@ fn query_parts(
 ) -> Option<(&str, &str, QueryLimit, Option<backend_library::Cursor>)> {
     match command {
         Command::Search(query) => Some(("Search", query.text(), query.limit(), query.cursor())),
+        Command::SearchPublishedNames(request) => {
+            let query = request.query();
+            Some(("Search", query.text(), query.limit(), query.cursor()))
+        }
         Command::Name(query) => Some(("Name", query.text(), query.limit(), query.cursor())),
         _ => None,
     }
@@ -63,6 +67,7 @@ fn scope(certificate: &WireCertificate) -> Result<&WireClaim, ClientError> {
 pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> {
     match command {
         Command::Search(query) => Some(query.basis()),
+        Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Name(query) => Some(query.basis()),
         Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => Some(page.basis()),
         _ => None,
@@ -166,6 +171,7 @@ impl Session {
         }
         let next = match &reply.reply {
             CommandReply::Search(page) | CommandReply::Names(page) => page.next,
+            CommandReply::PublishedNameSearch(page) => page.snapshot.next,
             CommandReply::ProjectionPage(page)
                 if matches!(
                     &command,
@@ -178,7 +184,10 @@ impl Session {
         };
         if matches!(
             &reply.reply,
-            CommandReply::Search(_) | CommandReply::Names(_) | CommandReply::ProjectionPage(_)
+            CommandReply::Search(_)
+                | CommandReply::PublishedNameSearch(_)
+                | CommandReply::Names(_)
+                | CommandReply::ProjectionPage(_)
         ) {
             let observed = reply
                 .certificate()
@@ -194,7 +203,23 @@ impl Session {
             .certificate()
             .ok_or_else(|| ClientError::Protocol("query page omitted proof".to_owned()))?;
         let next_command = match command {
+            Command::Search(query)
+                if matches!(&reply.reply, CommandReply::PublishedNameSearch(_)) =>
+            {
+                Command::SearchPublishedNames(
+                    backend_library::PublishedNameSearchQuery::admit(query)
+                        .map_err(|_| {
+                            ClientError::Protocol(
+                                "published-name reply changed query grammar".to_owned(),
+                            )
+                        })?
+                        .with_cursor(cursor),
+                )
+            }
             Command::Search(query) => Command::Search(query.with_cursor(cursor)),
+            Command::SearchPublishedNames(query) => {
+                Command::SearchPublishedNames(query.with_cursor(cursor))
+            }
             Command::Name(query) => Command::Name(query.with_cursor(cursor)),
             Command::GraphPage { symbol, page } => Command::GraphPage {
                 symbol,
@@ -379,6 +404,14 @@ impl Session {
                 backend_library::QueryPageRecipe::search_predecessor(revision.root, query)
                     .ok_or_else(|| {
                         ClientError::Protocol("query predecessor changed window credit".to_owned())
+                    })?
+            }
+            Command::SearchPublishedNames(query) => {
+                backend_library::QueryPageRecipe::published_names_predecessor(revision.root, query)
+                    .ok_or_else(|| {
+                        ClientError::Protocol(
+                            "published-name predecessor changed window credit".to_owned(),
+                        )
                     })?
             }
             Command::Name(query) => {
@@ -627,6 +660,7 @@ impl Session {
                 .ok_or_else(|| ClientError::Protocol("prepared query changed family".to_owned()))?;
         let manifest_absent = match &request.command {
             Command::Search(query) => query.read_manifest().is_none(),
+            Command::SearchPublishedNames(query) => query.query().read_manifest().is_none(),
             Command::Name(query) => query.read_manifest().is_none(),
             _ => false,
         };
@@ -645,6 +679,13 @@ impl Session {
             (Command::Search(query), Some(window)) => {
                 Command::Search(query.with_window(window).ok_or_else(|| {
                     ClientError::Protocol("search delivery changed issued ceiling".to_owned())
+                })?)
+            }
+            (Command::SearchPublishedNames(query), Some(window)) => {
+                Command::SearchPublishedNames(query.with_window(window).ok_or_else(|| {
+                    ClientError::Protocol(
+                        "published-name delivery changed issued ceiling".to_owned(),
+                    )
                 })?)
             }
             (Command::Name(query), Some(window)) => {

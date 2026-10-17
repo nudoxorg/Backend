@@ -257,9 +257,10 @@ impl ReplyDto {
     pub fn decode_against(bytes: &[u8], expected: &Self) -> Result<Self, String> {
         let envelope: ReplyEnvelope = super::codec::parse_reply_body(bytes)?;
         ensure_version(envelope.version, "reply")?;
-        if envelope.semantic_search.is_some() && !matches!(&expected.reply, CommandReply::Search(_))
-        {
-            return Err("semantic search status attached to a non-search reply".to_owned());
+        if !super::reply::search_status_matches_reply(&expected.reply, envelope.semantic_search) {
+            return Err(
+                "search readiness or semantic status contradicts its reply scope".to_owned(),
+            );
         }
         let observed = serde_json::to_value(&envelope).map_err(|error| error.to_string())?;
         let accepted = serde_json::to_value(expected).map_err(|error| error.to_string())?;
@@ -286,8 +287,10 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire(envelope.reply, certificate, capability)?;
-        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
-            return Err("semantic search status attached to a non-search reply".to_owned());
+        if !super::reply::search_status_matches_reply(&reply, envelope.semantic_search) {
+            return Err(
+                "search readiness or semantic status contradicts its reply scope".to_owned(),
+            );
         }
         let health_cursor = envelope
             .health_cursor
@@ -336,8 +339,10 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire_with_verifier(envelope.reply, certificate, verifier)?;
-        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
-            return Err("semantic search status attached to a non-search reply".to_owned());
+        if !super::reply::search_status_matches_reply(&reply, envelope.semantic_search) {
+            return Err(
+                "search readiness or semantic status contradicts its reply scope".to_owned(),
+            );
         }
         let health_cursor = envelope
             .health_cursor
@@ -603,6 +608,7 @@ enum CommandWire {
     Name(NameQueryWire),
     Resolve(TextWire),
     Search(QueryWire),
+    SearchPublishedNames(QueryWire),
     Graph(GraphNeighborhoodQueryWire),
     Related(GraphNeighborhoodQueryWire),
     GraphPage(SymbolPageWire),
@@ -850,6 +856,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
         Command::Name(query) => CommandWire::Name(name_query_to_wire(query)),
         Command::Resolve { text } => CommandWire::Resolve(TextWire { text: text.clone() }),
         Command::Search(query) => CommandWire::Search(query_to_wire(query)),
+        Command::SearchPublishedNames(query) => {
+            CommandWire::SearchPublishedNames(query_to_wire(query.query()))
+        }
         Command::Graph(query) => CommandWire::Graph(graph_query_to_wire(query)),
         Command::Related(query) => CommandWire::Related(graph_query_to_wire(query)),
         Command::GraphPage { symbol, page } => CommandWire::GraphPage(SymbolPageWire {
@@ -915,6 +924,15 @@ fn command_from_wire(
             value,
             required_certificate(certificate)?,
         )?)),
+        CommandWire::SearchPublishedNames(value) => {
+            let query = query_from_wire(value, required_certificate(certificate)?)?;
+            Ok(Command::SearchPublishedNames(
+                crate::PublishedNameSearchQuery::admit(query).map_err(|_| {
+                    "published-name search requires one identifier or qualified identifier"
+                        .to_owned()
+                })?,
+            ))
+        }
         CommandWire::Graph(value) => Ok(Command::Graph(graph_query_from_wire(
             &value,
             required_certificate(certificate)?,

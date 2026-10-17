@@ -3,6 +3,7 @@
 use super::*;
 
 mod arrangement_owned_run;
+mod published_search;
 mod name_ranking;
 mod outline_navigation;
 mod public_coordinates;
