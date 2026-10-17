@@ -3,6 +3,10 @@ use super::{SemanticSourceHistory, SemanticSourceMetadata, SemanticSourceReferen
 use crate::{IndexSearchCursor, PackageReference, ProductAdmissionError};
 use serde::{Deserialize, Serialize};
 
+/// Requested initial discovery credit. Adapters measure the complete response
+/// and may reduce the first page; a returned cursor fixes its effective credit.
+pub const DEFAULT_SEMANTIC_VERSIONS_LIMIT: u16 = 8;
+
 /// Opaque stateless owner cursor for one exact generation-discovery snapshot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
