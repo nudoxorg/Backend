@@ -277,13 +277,20 @@ fn append_compiler_query_facts(
                 opened_image.source,
             )?;
             let declarations = declarations.iter().collect::<Vec<_>>();
-            let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
-            let locations = super::retained_locations::RetainedLocations::for_entities(
+            let kinds = super::semantic::entity_kinds_controlled(
+                profile,
+                image,
+                &session,
+                &declarations,
+                cancelled,
+            )?;
+            let locations = super::retained_locations::RetainedLocations::for_entities_controlled(
                 profile,
                 image,
                 &session,
                 &declarations,
                 &kinds.exact,
+                cancelled,
             )
             .map_err(BuiltinModelError)?;
             for (identity, binding) in &kinds.exact {
