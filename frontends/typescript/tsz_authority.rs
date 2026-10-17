@@ -3464,6 +3464,108 @@ mod tests {
     }
 
     #[test]
+    fn project_library_origins_survive_compaction_without_name_or_id_fallback()
+    -> Result<(), TestFailure> {
+        let library = TszLibraryInput::from_utf8(
+            "lib.fixture.d.ts",
+            b"declare type LibraryLabel = string;".to_vec(),
+        )
+        .test_value()?
+        .into_lib_file();
+        let mut recipe = options();
+        recipe.checker.no_lib = false;
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(
+                vec![
+                    input(
+                        "src/value.ts",
+                        "export const value: LibraryLabel = 'value';",
+                    ),
+                    input(
+                        "src/shadow.ts",
+                        "type LibraryLabel = number; export const shadow: LibraryLabel = 1;",
+                    ),
+                ],
+                recipe,
+                &[Arc::clone(&library)],
+            )
+            .test_value()?;
+        let project = authority.project().test_value()?;
+        let alias = project.program.globals.get("LibraryLabel").test_value()?;
+        let local_alias = library
+            .binder
+            .file_locals
+            .get("LibraryLabel")
+            .test_value()?;
+        assert_eq!(
+            project.program.lib_symbol_reverse_remap.get(&alias),
+            Some(&(Arc::as_ptr(&library.binder) as usize, local_alias)),
+        );
+        assert!(
+            project
+                .program
+                .files
+                .iter()
+                .any(|file| { !file.lib_symbol_reverse_remap.contains_key(&alias) }),
+            "a compacted file need not retain a global library origin locally",
+        );
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .test_value()?;
+        for (path, name, expected) in [
+            ("src/value.ts", "value", "string"),
+            ("src/shadow.ts", "shadow", "number"),
+        ] {
+            let index = session.file_index(path).test_value()?;
+            let observed = session
+                .with_file_checker_and_types(index, |checker, binder, _, _| {
+                    assert!(Arc::ptr_eq(
+                        &binder.lib_symbol_reverse_remap,
+                        &project.program.lib_symbol_reverse_remap,
+                    ));
+                    let ty = checker.get_type_of_symbol(binder.file_locals.get(name).test_value()?);
+                    let ty = checker.resolve_lazy_type(ty);
+                    Ok::<_, TestFailure>(checker.format_type(ty))
+                })
+                .test_value()?
+                .test_value()?;
+            assert_eq!(observed, expected, "exact source owner for {path}");
+        }
+
+        // A separately bound library supplies the same spelling and real local
+        // IDs, but neither is an admitted origin for this program's symbol.
+        let mut foreign_source = String::new();
+        for index in 0..16 {
+            foreign_source.push_str(&format!("declare type Padding{index} = boolean;\n"));
+        }
+        foreign_source.push_str("declare type LibraryLabel = number;");
+        let foreign = TszLibraryInput::from_utf8("lib.foreign.d.ts", foreign_source.into_bytes())
+            .test_value()?
+            .into_lib_file();
+        let unowned = foreign
+            .binder
+            .file_locals
+            .get("LibraryLabel")
+            .test_value()?;
+        assert!(project.program.symbols.get(unowned).is_none());
+        let index = session.file_index("src/value.ts").test_value()?;
+        session
+            .with_file_checker_and_types(index, |checker, _, _, _| {
+                assert_eq!(checker.get_type_of_symbol(unowned), TszTypeId::UNKNOWN);
+                checker.ctx.lib_contexts = Arc::new(vec![tsz::checker::context::LibContext {
+                    arena: Arc::clone(&foreign.arena),
+                    binder: Arc::clone(&foreign.binder),
+                }]);
+                // This is deliberately checked even if the shared definition
+                // store already contains the admitted alias's string body.
+                assert_eq!(checker.get_type_of_symbol(alias), TszTypeId::UNKNOWN);
+            })
+            .test_value()?;
+        Ok(())
+    }
+
+    #[test]
     fn in_memory_library_input_rejects_invalid_utf8_and_untyped_paths() {
         assert_eq!(
             TszLibraryInput::from_utf8("lib.fixture.d.ts", vec![0xff]),

@@ -240,6 +240,10 @@ impl MergedProgram {
             .saturating_add(self.compiler_file_format_bytes_est());
         size += self.globals.estimated_size_bytes();
         size += self.lib_globals.estimated_size_bytes();
+        // One shared origin allocation; per-file checker Arc clones add no maps.
+        size += self.lib_symbol_reverse_remap.capacity()
+            * (ENTRY_OVERHEAD + size_of::<u32>() + size_of::<(usize, u32)>());
+
         size += self
             .file_locals
             .iter()

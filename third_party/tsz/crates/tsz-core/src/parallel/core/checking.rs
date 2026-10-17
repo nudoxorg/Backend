@@ -2923,7 +2923,9 @@ pub fn create_binder_from_bound_file(
 
     binder.is_external_module = file.is_external_module;
     binder.file_features = file.file_features;
-    binder.lib_symbol_reverse_remap = file.lib_symbol_reverse_remap.clone();
+    // file_locals includes program globals, so its exact library origins must
+    // come from the same complete program, not the compacted per-file subset.
+    binder.lib_symbol_reverse_remap = Arc::clone(&program.lib_symbol_reverse_remap);
     binder.lib_binders = program.lib_binders.clone();
     binder.lib_symbol_ids = program.lib_symbol_ids.clone();
     binder.lib_type_namespace = Arc::new(program.build_lib_type_namespace(file_idx));
@@ -3017,7 +3019,9 @@ pub fn create_binder_from_bound_file_with_shared(
 
     binder.is_external_module = file.is_external_module;
     binder.file_features = file.file_features;
-    binder.lib_symbol_reverse_remap = file.lib_symbol_reverse_remap.clone();
+    // file_locals includes program globals, so its exact library origins must
+    // come from the same complete program, not the compacted per-file subset.
+    binder.lib_symbol_reverse_remap = Arc::clone(&program.lib_symbol_reverse_remap);
     binder.lib_binders = program.lib_binders.clone();
     binder.lib_symbol_ids = program.lib_symbol_ids.clone();
     binder.lib_type_namespace = Arc::new(program.build_lib_type_namespace(file_idx));
