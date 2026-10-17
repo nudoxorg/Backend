@@ -409,6 +409,26 @@ impl LocalEngineClient {
         self.index_observation(*request_id, *basis, project, operation, observation)
     }
 
+    fn request_index_cancel(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        let EngineRequest::CancelIndexOperation { owner, request, project, operation, basis, .. } = request else {
+            unreachable!("index cancellation adapter received another request")
+        };
+        if !operation.belongs_to(project) || operation.cancellation_ticket().is_none() {
+            return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
+        }
+        // No replay on a broken mutation connection. Ticket owner epoch and
+        // exact package prevent a replacement owner addressing other work.
+        let owner = owner.as_ref().filter(|owner| owner.is_gated())
+            .ok_or_else(|| EngineFault::IndexUnconfirmed { project: project.clone() })?;
+        let cancel = self.current_cancel()?;
+        let observation = self.with_session_once(|session| {
+            let mut controlled = OwnedIndexCancellation { session, owner, basis: *basis, cancel: &cancel };
+            super::index_cancellation::cancel_and_reconcile(&mut controlled, operation)
+        })
+            .map_err(|_| EngineFault::IndexUnconfirmed { project: project.clone() })?;
+        self.index_observation(*request, *basis, project, operation, observation)
+    }
+
     fn request_index_status(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         let EngineRequest::IndexOperationStatus { request: request_id, project, operation, basis, .. } = request else {
             unreachable!("index status adapter called with a non-status request")
@@ -531,6 +551,29 @@ fn cancel_wake(
     Ok(cancel.on_cancel(move || interrupt.interrupt()))
 }
 
+struct OwnedIndexCancellation<'a> {
+    session: &'a mut Session,
+    owner: &'a super::actor::IndexMutationLease,
+    basis: VersionedRoot,
+    cancel: &'a CancellationToken,
+}
+impl super::index_cancellation::CancellationClient for OwnedIndexCancellation<'_> {
+    fn status(&mut self, key: backend_library::IndexOperationKey) -> Result<backend_library::IndexOperationObservation, ClientError> {
+        self.session.index_operation_status(key)
+    }
+    fn cancel(&mut self, ticket: backend_library::IndexJobTicket) -> Result<backend_library::IndexCancelReceipt, ClientError> {
+        let refused = |message: Arc<str>| ClientError::Protocol(message.to_string());
+        let current = self.owner.ready_for_send(self.basis, self.cancel).map_err(refused)?;
+        let revision = self.session.revision()?;
+        let socket = VersionedRoot::from_revision(current.producer_epoch(), revision.cursor(), 0);
+        if !super::actor::admits_mutation_root(current, socket) {
+            return Err(ClientError::Protocol("cancellation socket no longer matches the selected index producer".to_owned()));
+        }
+        self.owner.ready_for_send(self.basis, self.cancel).map_err(refused)?;
+        self.session.cancel_index_job(ticket)
+    }
+}
+
 impl EngineClient for LocalEngineClient {
 
     fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
@@ -538,16 +581,24 @@ impl EngineClient for LocalEngineClient {
         observer.gate = self.gate.clone();
         Some(Box::new(observer))
     }
+    fn index_cancellation_client(&self) -> Option<Box<dyn EngineClient>> {
+        let mut client = Self::new(&self.endpoint, self.project.clone());
+        client.gate = self.gate.clone();
+        Some(Box::new(client))
+    }
 
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.active_cancel = Some(request.cancellation().clone());
         let _lifetime = match request {
-            EngineRequest::IndexProject { owner: Some(owner), project, basis, .. } => {
+            EngineRequest::IndexProject { owner: Some(owner), project, basis, .. }
+            | EngineRequest::CancelIndexOperation { owner: Some(owner), project, basis, .. } => {
                 let lifetime = owner.bind_cancellation(request.cancellation());
                 if let Err(message) = owner.ready_for_send(*basis, request.cancellation()) {
                     self.active_cancel = None;
-                    return Err(EngineFault::IndexNotSent { project: project.clone(),
-                        error: crate::core::ErrorValue::new(FaultCode::Transport, message) });
+                    return Err(if matches!(request, EngineRequest::CancelIndexOperation { .. }) {
+                        EngineFault::IndexUnconfirmed { project: project.clone() }
+                    } else { EngineFault::IndexNotSent { project: project.clone(),
+                        error: crate::core::ErrorValue::new(FaultCode::Transport, message) } });
                 }
                 lifetime
             }
@@ -559,7 +610,7 @@ impl EngineClient for LocalEngineClient {
                 return Err(match request {
                     EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent { project: project.clone(),
                         error: crate::core::ErrorValue::new(FaultCode::Transport, format!("The owner stopped before this request's first send: {error}. Nothing was sent.")) },
-                    EngineRequest::IndexOperationStatus { project, .. } =>
+                    EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. } =>
                         EngineFault::IndexUnconfirmed { project: project.clone() },
                     _ => owner_fault(error),
                 });
@@ -571,6 +622,7 @@ impl EngineClient for LocalEngineClient {
                 return Err(match request {
                     EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent { project: project.clone(),
                         error: crate::core::ErrorValue::new(FaultCode::Transport, "This index request stopped before its first send. Nothing was sent.") },
+                    EngineRequest::CancelIndexOperation { project, .. } => EngineFault::IndexUnconfirmed { project: project.clone() },
                     _ => EngineFault::Cancelled,
                 });
             }
@@ -590,6 +642,7 @@ impl EngineClient for LocalEngineClient {
             EngineRequest::Surface { .. } => self.request_surface(request),
             EngineRequest::IndexProject { .. } => self.request_index(request),
             EngineRequest::IndexOperationStatus { .. } => self.request_index_status(request),
+            EngineRequest::CancelIndexOperation { .. } => self.request_index_cancel(request),
             EngineRequest::Object {
                 request,
                 basis,
@@ -617,7 +670,7 @@ impl EngineClient for LocalEngineClient {
             && self.gate.as_ref().and_then(super::owner::OwnerGate::ready_epoch)
                 != self.attached_epoch;
         let result = match (request, result) {
-            (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. },
+            (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. },
                 Err(EngineFault::Cancelled | EngineFault::Superseded | EngineFault::Failed(_))) =>
                 Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
             (_, result) => result,
@@ -642,14 +695,14 @@ fn owner_change_result(
             Err(error)
         }
         (
-            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. },
+            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. } | EngineRequest::CancelIndexOperation { .. },
             Ok(dto @ EngineDto::IndexOperation { .. }),
         ) if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
                     if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. } | backend_library::IndexOperationState::Failed { .. })) =>
         {
             Ok(dto)
         }
-        (EngineRequest::IndexOperationStatus { project, .. }, _) => {
+        (EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. }, _) => {
             Err(EngineFault::IndexUnconfirmed {
                 project: project.clone(),
             })

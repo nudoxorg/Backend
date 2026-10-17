@@ -270,6 +270,8 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::IndexProject { .. }
         | Intent::ReconcileIndexProject { .. }
         | Intent::CheckIndexOutcome(_)
+        | Intent::CancelOwnedIndex(_)
+        | Intent::CancelIndexOperation { .. }
         | Intent::AddProject { .. }
         | Intent::RejectProjectPath { .. }
         | Intent::ActivateProject(_)

@@ -218,7 +218,28 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 }));
             }
         }
-        Intent::CheckIndexOutcome(_) => {}, // the root admits the saved key and live owner
+        Intent::CancelIndexOperation { project, operation, basis, request } => {
+            if operation.belongs_to(project) && operation.cancellation_ticket().is_some()
+                && next.workspace().projects.iter().any(|row| row.id == *project
+                    && row.phase == ProjectPhase::Indexing && row.request.is_none()
+                    && row.operation.as_ref() == Some(operation))
+            {
+                let mut workspace = next.workspace().clone();
+                workspace.projects = workspace.projects.iter().cloned().map(|mut row| {
+                    if row.id == *project {
+                        row.phase = ProjectPhase::Cancelling;
+                        row.request = Some(*request);
+                    }
+                    row
+                }).collect::<Vec<_>>().into();
+                next = next.with_workspace(workspace);
+                effects.push(Effect::Engine(super::intent::EngineCommand::CancelIndexOperation {
+                    project: project.clone(), operation: operation.clone(), basis: *basis, request: *request,
+                }));
+                effects.push(Effect::Persist);
+            }
+        }
+        Intent::CheckIndexOutcome(_) | Intent::CancelOwnedIndex(_) => {}, // root admits saved key and owner
         Intent::AddProject { project } => {
             next = admit_project(&next, project.clone());
             effects.push(Effect::Persist);

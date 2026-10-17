@@ -282,7 +282,9 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             let (phase, error) = match &observation {
                 IndexOperationObservation::Known(status) => match &status.state {
                     IndexOperationState::Accepted => (ProjectPhase::Indexing, None),
-                    IndexOperationState::Active { .. } => (ProjectPhase::Indexing, None),
+                    IndexOperationState::Active { .. } => (
+                        if row.phase == ProjectPhase::Cancelling { ProjectPhase::Cancelling }
+                        else { ProjectPhase::Indexing }, None),
                     IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. } => (ProjectPhase::Ready, None),
                     IndexOperationState::Failed { reason, detail, .. } => (
                         if *reason == IndexOperationFailureReason::Cancelled { ProjectPhase::Cancelled } else { ProjectPhase::Failed },
@@ -493,6 +495,52 @@ mod tests {
         request: RequestId, observation: backend_library::IndexOperationObservation) -> EngineEvent {
         EngineEvent { basis: root(), request, lane: None, result: Ok(EngineDto::IndexOperation {
             request, basis: root(), project, operation, observation }) }
+    }
+
+    #[test]
+    fn owned_cancel_retains_shelf_and_claim_until_the_exact_durable_outcome() {
+        use backend_library::{IndexJobStage, IndexJobTicket, IndexOperationFailureReason, IndexOperationState, ProductText};
+        use crate::navigation::{Effect, EngineCommand, Intent};
+        let (submitted, project, mut operation, start_request) = saved_operation();
+        let active = crate::model::index_operation::tests::observation(&operation, IndexOperationState::Active {
+            ticket: IndexJobTicket::new(std::num::NonZeroU64::new(3).expect("id"), [6; 16], operation.package.clone()),
+            stage: IndexJobStage::Compiling,
+        });
+        let observed = map_event(&submitted, operation_event(project.clone(), operation.clone(), start_request, active.clone())).expect("active");
+        operation.observation = Some(active.clone());
+        let request = RequestId::new(75);
+        let intent = Intent::CancelIndexOperation { project: project.clone(), operation: operation.clone(), basis: root(), request };
+        let cancellation = crate::navigation::reduce(&observed, intent.clone());
+        assert!(cancellation.effects.iter().any(|effect| matches!(effect, Effect::Engine(EngineCommand::CancelIndexOperation { .. }))));
+        assert_eq!(cancellation.snapshot.workspace().projects[0].phase, ProjectPhase::Cancelling);
+        assert_eq!(cancellation.snapshot.shelf().items, observed.shelf().items);
+        let repeated = crate::navigation::reduce(&cancellation.snapshot, intent);
+        assert!(!repeated.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))), "an outstanding cancellation cannot be submitted twice");
+        let pending = map_event(&cancellation.snapshot, operation_event(project.clone(), operation.clone(), request, active)).expect("request remains pending");
+        assert_eq!(pending.workspace().projects[0].phase, ProjectPhase::Cancelling);
+        assert!(pending.workspace().projects[0].request.is_none());
+        assert_eq!(pending.workspace().projects[0].operation, Some(operation.clone()));
+        let cancelled = crate::model::index_operation::tests::observation(&operation, IndexOperationState::Failed {
+            reason: IndexOperationFailureReason::Cancelled,
+            detail: ProductText::from_static("owner observed cancellation before commit"), compiler_failure: None,
+        });
+        for (observation, phase) in [
+            (cancelled, ProjectPhase::Cancelled),
+            (crate::model::index_operation::tests::published(&operation), ProjectPhase::Ready),
+            (crate::model::index_operation::tests::partially_published(&operation).expect("checked partial"), ProjectPhase::Ready),
+        ] {
+            let result = map_event(&cancellation.snapshot, operation_event(project.clone(), operation.clone(), request, observation)).expect("actual outcome");
+            assert_eq!(result.workspace().projects[0].phase, phase);
+            assert_eq!(result.shelf().items, observed.shelf().items);
+            assert!(result.workspace().projects[0].operation.is_some());
+        }
+        let ambiguous = map_event(&cancellation.snapshot, EngineEvent { basis: root(), request, lane: None,
+            result: Err(EngineFault::IndexUnconfirmed { project: project.clone() }) }).expect("unconfirmed");
+        assert_eq!(ambiguous.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        assert_eq!(ambiguous.workspace().projects[0].operation, Some(operation));
+        assert_eq!(ambiguous.shelf().items, observed.shelf().items);
+        let retry = crate::navigation::reduce(&ambiguous, Intent::RetryIndex(project));
+        assert!(!retry.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))), "ambiguity cannot resend or start new work");
     }
 
     #[test]

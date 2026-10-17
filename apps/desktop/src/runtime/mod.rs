@@ -16,6 +16,7 @@ pub(crate) mod fixture_releases;
 pub(crate) mod fixture_world;
 pub(crate) mod hand;
 pub(crate) mod indexed_world;
+pub(crate) mod index_cancellation;
 pub(crate) mod graph_focus;
 pub(crate) mod liveness;
 pub mod mailbox;

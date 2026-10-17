@@ -215,6 +215,11 @@ impl DesktopRuntime {
         self.dispatch_with_owner(intent, None, Some(owner))
     }
 
+    pub(crate) fn dispatch_index_cancellation(&mut self, intent: Intent, owner: super::actor::IndexMutationLease) -> Vec<RuntimeEvent> {
+        if !matches!(intent, Intent::CancelIndexOperation { .. }) { return Vec::new(); }
+        self.dispatch_with_owner(intent, Some(owner), None)
+    }
+
     /// A root-owned preflight proves this exact claim has never reached transport.
     pub(crate) fn release_unsent_claim(&mut self, intent: &Intent) {
         let Intent::IndexProject { project, operation, .. } = intent else { return; };
@@ -326,6 +331,12 @@ impl DesktopRuntime {
                     cancel,
                 )
             }
+            EngineCommand::CancelIndexOperation { project, operation, basis, request } => {
+                let cancel = CancellationToken::new();
+                (request, EngineRequest::CancelIndexOperation {
+                    owner, project, operation, basis, request, cancel: cancel.clone(),
+                }, basis, cancel)
+            }
             EngineCommand::IndexOperationStatus {
                 project,
                 operation,
@@ -398,7 +409,7 @@ impl DesktopRuntime {
                 lane,
                 index_project: match &engine_request {
                     EngineRequest::IndexProject { project, .. }
-                    | EngineRequest::IndexOperationStatus { project, .. } => Some(project.clone()),
+                    | EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. } => Some(project.clone()),
                     _ => None,
                 },
                 observation_owner: observation_owner.clone(),
@@ -448,7 +459,7 @@ impl DesktopRuntime {
     /// its claim. A refused status read says nothing about already accepted
     /// work, so that request retains its exact durable claim for reconciliation.
     fn hold_refused_index(&mut self, request: &EngineRequest) -> Vec<RuntimeEvent> {
-        let (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. }) = request else { return Vec::new(); };
+        let (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. }) = request else { return Vec::new(); };
         let fault = if matches!(request, EngineRequest::IndexProject { .. }) {
             super::actor::EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                 FaultCode::Transport, "The local index queue did not accept this request. Nothing was sent; try again after it settles.") }

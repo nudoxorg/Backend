@@ -146,12 +146,13 @@ enum QueuedIntent {
     Acquire { intent: Intent, composition: crate::host::registry::Composition, attachment: OwnerAttachment, owner: super::acquire::OwnerRequest },
     Index { intent: Intent, attachment: super::actor::IndexMutationLease },
     IndexStatus { intent: Intent, attachment: OwnerAttachment },
+    IndexCancel { intent: Intent, attachment: super::actor::IndexMutationLease },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
     GraphNavigation { intent: Intent, request: GraphViewRequest },
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } | Self::GraphNavigation { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::IndexCancel { intent, .. } | Self::Read { intent, .. } | Self::GraphNavigation { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -416,6 +417,18 @@ impl UiRootEntity {
                 {
                     self.dispatch_index(intent, attachment, cx);
                 }
+                QueuedIntent::IndexCancel { intent, attachment }
+                    if matches!(&intent, Intent::CancelIndexOperation { project, operation, basis, .. }
+                        if self.snapshot().key().same_authority(*basis)
+                            && self.snapshot().workspace().projects.iter().any(|row| row.id == *project
+                                && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none()
+                                && row.operation.as_ref() == Some(operation) && operation.cancellation_ticket().is_some())
+                            && matches!(attachment.admission(*basis), super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing)) =>
+                {
+                    let events = self.runtime.dispatch_index_cancellation(intent, attachment);
+                    self.apply_events(events, cx);
+                }
+                QueuedIntent::IndexCancel { .. } => refresh_observation = true,
                 QueuedIntent::IndexStatus { intent, attachment }
                     if self.store.as_ref().is_some_and(|store| {
                         store.read(cx).admits_owner_attachment(&attachment)
@@ -1040,6 +1053,7 @@ impl UiRootEntity {
                 self.schedule_pending_indexes(cx);
             }
             Intent::CheckIndexOutcome(project) => self.schedule_index_check(project, cx),
+            Intent::CancelOwnedIndex(project) => self.schedule_index_cancel(project, cx),
             Intent::AddRelease(release) => {
                 if let Some(owner) = self.acquisition_owner(cx) {
                     super::acquire::add_owned(release, super::acquire::current_composition(cx), owner, cx.weak_entity(), cx);
@@ -1283,6 +1297,32 @@ impl UiRootEntity {
         self.schedule_flush(cx);
     }
 
+    fn schedule_index_cancel(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
+        if self.quitting || self.index_preflights.contains_key(&project) { return; }
+        let snapshot = self.snapshot();
+        let Some(operation) = snapshot.workspace().projects.iter()
+            .find(|row| row.id == project && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none())
+            .and_then(|row| row.operation.as_ref())
+            .filter(|operation| operation.belongs_to(&project) && operation.cancellation_ticket().is_some()).cloned()
+        else { return; };
+        let Some(attachment) = self.store.as_ref().and_then(|store| {
+            let store = store.read(cx);
+            store.snapshot().key().same_authority(snapshot.key()).then(|| store.current_index_owner()).flatten()
+        }) else { return; };
+        if self.pending.iter().any(|queued| matches!(queued.intent(),
+            Intent::CancelIndexOperation { project: candidate, .. } if candidate == &project)) { return; }
+        // An automatic status observation cannot coalesce away this explicit
+        // mutation before dispatch. Both still use the same exact saved key.
+        self.pending.retain(|queued| !matches!(queued.intent(),
+            Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project));
+        let request = self.runtime.allocate_request();
+        self.pending.push(QueuedIntent::IndexCancel {
+            intent: Intent::CancelIndexOperation { project, operation, basis: snapshot.key(), request },
+            attachment,
+        });
+        self.schedule_flush(cx);
+    }
+
     fn schedule_index_check(
         &mut self,
         project: crate::core::LocalProjectId,
@@ -1323,7 +1363,7 @@ impl UiRootEntity {
             if candidate == &project && (captured != &attachment
                 || !basis.same_authority(snapshot.key()) || saved != &operation))
         });
-        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
+        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } | Intent::CancelIndexOperation { project: candidate, .. } if candidate == &project)) { return; }
         let request = self.runtime.allocate_request();
         self.pending.push(QueuedIntent::IndexStatus {
             intent: Intent::ReconcileIndexProject {

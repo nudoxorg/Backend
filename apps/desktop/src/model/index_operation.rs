@@ -85,6 +85,21 @@ impl IndexOperationClaim {
         Some(incoming)
     }
 
+    /// Cancellation needs an exact admitted active ticket, never a restored
+    /// numeric guess or merely a running-looking shelf phase.
+    pub(crate) fn cancellation_ticket(&self) -> Option<backend_library::IndexJobTicket> {
+        use backend_library::{IndexOperationObservation, IndexOperationState};
+        let observation = self.observation.as_ref()?;
+        if !self.admits_observation(observation) { return None; }
+        match observation {
+            IndexOperationObservation::Known(status) => match &status.state {
+                IndexOperationState::Active { ticket, .. } => Some(ticket.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Only a checked consumed-key tombstone permits a deliberate new attempt.
     /// Unknown or unresolved work might still be active and never permits one.
     #[must_use]

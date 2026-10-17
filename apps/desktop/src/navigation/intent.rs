@@ -209,6 +209,19 @@ pub enum Intent {
         basis: VersionedRoot,
         request: RequestId,
     },
+    /// Ask the root to cancel its exact admitted active operation.
+    CancelOwnedIndex(LocalProjectId),
+    /// Owner-attached cancellation; never starts or substitutes an operation.
+    CancelIndexOperation {
+        /// Exact native project on the shelf.
+        project: LocalProjectId,
+        /// Saved payload and admitted active owner ticket.
+        operation: crate::model::IndexOperationClaim,
+        /// Producer authority captured for this action.
+        basis: VersionedRoot,
+        /// UI request identity for its one-shot send and reconciliation.
+        request: RequestId,
+    },
     /// Admit one validated native local folder to the durable shelf.
     AddProject {
         /// Exact native identity admitted by the dialog or platform picker.
@@ -371,6 +384,17 @@ pub enum EngineCommand {
         project: LocalProjectId,
         operation: crate::model::IndexOperationClaim,
         basis: VersionedRoot,
+        request: RequestId,
+    },
+    /// Cancel an admitted exact ticket and reconcile its saved durable key.
+    CancelIndexOperation {
+        /// Exact native project on the shelf.
+        project: LocalProjectId,
+        /// Saved payload and admitted active owner ticket.
+        operation: crate::model::IndexOperationClaim,
+        /// Producer authority captured for this action.
+        basis: VersionedRoot,
+        /// UI request identity retained through reconciliation.
         request: RequestId,
     },
     /// Ask for one object/delta projection.
