@@ -32,6 +32,8 @@ mod retained_locations;
 #[cfg(test)]
 mod search_ranking_native;
 mod semantic;
+#[cfg(test)]
+mod semantic_content_admission;
 mod source_availability;
 mod structural;
 

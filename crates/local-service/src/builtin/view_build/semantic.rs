@@ -1669,17 +1669,12 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
     let encoded_bytes = documentation_bytes
         .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;
-    // The canonical semantic document is rendered (and so validated against
-    // its type-depth and size bounds) but not shown. It is an injective
-    // machine encoding that spells every name as hex (`name=x"626561636F6E
-    // 5F656E747279"`) and every type as canonical IR; placing it first in
-    // the document put that dump at the top of every compiler-backed page and
-    // into every documentation fact. A reader gets the written signature and
-    // the declaration's own documentation instead.
-    let mut output = vec![0; prepared.encoded_len];
-    prepared
-        .write_into(&mut output)
-        .map_err(|error| BuiltinModelError(format!("write project semantic document: {error}")))?;
+    // Preparation already traverses the complete canonical document with its
+    // count writer, admitting profile/availability/type-depth and exact size.
+    // The product exposes the written signature and documentation below, not
+    // that canonical encoding. Do not allocate and render the same encoding a
+    // second time merely to discard it. ByteWriter output-buffer checks belong
+    // to callers that actually request canonical bytes.
     let mut document = Vec::with_capacity(documentation.len());
     let mut documentation_targets = Vec::new();
     for fragment in documentation {
