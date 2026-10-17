@@ -5057,3 +5057,7 @@ mod tests {
 #[cfg(test)]
 #[path = "project_lockfile_tests.rs"]
 mod project_lockfile_tests;
+
+#[cfg(test)]
+#[path = "package_metadata_cause_tests.rs"]
+mod package_metadata_cause_tests;
