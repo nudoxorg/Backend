@@ -1997,6 +1997,10 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        // The journal reader can still be returning from native I/O. Signal
+        // preparation before joining it, so cold search work does not continue
+        // for the entire unrelated join before seeing shutdown.
+        self.search_lane.request_close();
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
@@ -12082,6 +12086,77 @@ mod tests {
         assert!(!adapter.search_preparation_eager);
         assert!(!adapter.search_lane.active());
         assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+    }
+
+    #[test]
+    fn shutdown_cancels_cold_preparation_before_joining_the_journal_and_reopens() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let original = owner_cursor(daemon);
+        let original_workspace = daemon.engine().daemon().owner().snapshot().root();
+        let (entered, release_search) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("real cold preparation is held before projection");
+        let cancelled = adapter.search_lane.active_cancellation();
+        let release_journal = adapter.journal_readiness.hold_reader();
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closing = Arc::clone(&closed);
+        let observed = Arc::clone(&cancelled);
+        // Both real workers are held before shutdown. The observer always
+        // releases them before returning, including on the old wrong order;
+        // the deadline is a failure watchdog, not a latency assertion.
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !observed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let cancelled_before_journal_release = observed.load(Ordering::Acquire);
+            let joined_before_release = closing.load(Ordering::Acquire);
+            let _ = release_journal.send(());
+            let _ = release_search.send(());
+            (cancelled_before_journal_release, joined_before_release)
+        });
+        adapter.close();
+        closed.store(true, Ordering::Release);
+        let (cancelled_before_journal_release, joined_before_release) =
+            observer.join().expect("shutdown observer");
+        assert!(
+            cancelled_before_journal_release,
+            "cold preparation must see shutdown while the journal join is blocked"
+        );
+        assert!(
+            !joined_before_release,
+            "shutdown still joins its owned workers"
+        );
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!adapter.search_lane.active());
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        assert_eq!(owner_cursor(daemon), original, "shutdown publishes no view");
+
+        let mut reopened = fixture.reopen();
+        let (adapter, daemon) = reopened.parts();
+        assert_eq!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            original_workspace,
+            "reopen retains the exact workspace"
+        );
+        adapter.warm_queries(daemon);
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            immediate_search(adapter, daemon, 147, "project source")["reply"]["kind"],
+            "search",
+            "a new preparation lifetime serves the retained workspace"
+        );
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let replacement = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("reopened selected lifetime");
+        assert!(!replacement.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&cancelled, &replacement));
     }
 
     #[test]
