@@ -111,7 +111,7 @@ impl CommandTransport for Transport {
         let library = self.owner.lock().expect("owner");
         if matches!(
             &request.command,
-            Command::GraphPage { .. } | Command::SearchPublishedNames(_)
+            Command::GraphPage { .. } | Command::MembersPage { .. } | Command::SearchPublishedNames(_)
         ) {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
@@ -217,6 +217,11 @@ impl CommandTransport for Transport {
                     .to_vec(),
                 Command::GraphPage { symbol, page } => {
                     QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
+                        .canonical_preimage()
+                        .to_vec()
+                }
+                Command::MembersPage { owner, page } => {
+                    QueryPageRecipe::members(library.revision_root(), owner.symbol(), page.limit())
                         .canonical_preimage()
                         .to_vec()
                 }
@@ -3571,6 +3576,224 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
     );
 }
 
+// Emulate the real local service's bounded revision proof, and cross the
+// strict command codec for the center document as well as the graph request.
+struct BoundedMembersTransport(Transport);
+impl CommandTransport for BoundedMembersTransport {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        if matches!(
+            &request.command,
+            Command::Document(_) | Command::MembersPage { .. }
+        ) {
+            let proof = request.certificate().expect("revision proof");
+            assert!(proof.claims.iter().any(|claim| matches!(
+                claim,
+                WireClaim::RootCommitment {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            )));
+            assert!(
+                !proof.claims.iter().any(|claim| matches!(
+                    claim,
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        ..
+                    }
+                )),
+                "member request must not ship the whole owner relation"
+            );
+            let bytes =
+                backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
+            let admitted =
+                backend_library::decode_command_body(&bytes).map_err(ClientError::Protocol)?;
+            assert_eq!(
+                admitted, request,
+                "actual document/member request wire admission"
+            );
+        }
+        let revision = matches!(&request.command, Command::Revision);
+        let mut reply = self.0.request(request)?;
+        if revision {
+            let root = self.0.owner.lock().expect("owner").revision_root();
+            let certificate = reply.certificate().expect("owner revision proof");
+            let claims = certificate
+                .claims
+                .iter()
+                .filter(|claim| {
+                    !matches!(
+                        claim,
+                        WireClaim::Root {
+                            schema: WireSchema::ViewRelation,
+                            ..
+                        } | WireClaim::RootCommitment {
+                            schema: WireSchema::ViewRelation,
+                            ..
+                        }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut proof = WireCertificate::new();
+            for claim in claims {
+                proof = proof.with_claim(claim);
+            }
+            reply = reply.with_certificate(proof.with_claim(WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id: encode_id(root.as_bytes()),
+            }));
+            let bytes = serde_json::to_vec(&reply).expect("bounded owner revision wire");
+            let library = self.0.owner.lock().expect("owner");
+            reply = ReplyDto::decode_with_certificate(&bytes, library.view().capability())
+                .map_err(ClientError::Protocol)?;
+        }
+        Ok(reply)
+    }
+}
+
+fn direct_member_fixture() -> (Arc<Mutex<Library>>, Arc<Mutex<Vec<Command>>>, SymbolKey) {
+    let base = owner_with_package(1, 406, 0, &["pkg::models.py:994::Document"], Some("pkg"));
+    let center = symbol_key("pkg::Thing000");
+    let mut rows = base.view().rows().to_vec();
+    for row in &mut rows {
+        if matches!(row.id, RowId::Symbol(symbol) if symbol != center) {
+            row.parent = Some(center);
+        }
+    }
+    let root = ViewRoot::new_checked(
+        base.view().recipe(),
+        base.view().basis(),
+        base.view().frontier(),
+        rows,
+        base.view().coverage().to_vec(),
+        base.view().capability().expect("same fixture authority"),
+    )
+    .expect("exact parents");
+    let library = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("catalog");
+    let owner = Arc::new(Mutex::new(library));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    (owner, requests, center)
+}
+
+#[test]
+fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_requests() {
+    let (owner, requests, center) = direct_member_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        BoundedMembersTransport(Transport {
+            owner: owner.clone(),
+            requests: requests.clone(),
+            graph_ids: None,
+        }),
+    );
+    let reply = client.document_symbol(center).expect("selected document");
+    let CommandReply::Document(document) = reply.reply else {
+        panic!("document");
+    };
+    let source = document.source_basis().expect("exact selected source");
+    let row = owner
+        .lock()
+        .expect("owner")
+        .view()
+        .row_ref(RowId::Symbol(center))
+        .expect("selected owner")
+        .clone();
+    let mut changed_sources = [source; 5];
+    changed_sources[0].root = view_state_root(&[]);
+    changed_sources[1].object = object_version(b"other member source");
+    changed_sources[2].branch = backend_library::branch_key("other member branch");
+    changed_sources[3].log = backend_library::log_key("other member log");
+    changed_sources[4].schema = source.schema + 1;
+    for changed in changed_sources {
+        assert_ne!(changed, source);
+        let selection = backend_library::DocumentSelection::from_row(&row, changed)
+            .expect("independently consistent owner selection");
+        let wrong = backend_library::Document::new(center, changed.root, vec![])
+            .with_source_basis(changed)
+            .with_selection(selection)
+            .expect("consistent document");
+        let before = requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|command| matches!(command, Command::MembersPage { .. }))
+            .count();
+        assert!(client.members_page(&wrong, 200, None).is_err());
+        assert_eq!(
+            before,
+            requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .filter(|command| matches!(command, Command::MembersPage { .. }))
+                .count(),
+            "changed source must refuse before member request"
+        );
+        assert!(client.continuations.is_empty());
+    }
+    let mut wrong_owner = document.clone();
+    wrong_owner.symbol = symbol_key("foreign selected owner");
+    assert!(client.members_page(&wrong_owner, 200, None).is_err());
+    let mut missing_selection = document.clone();
+    missing_selection.selection = None;
+    assert!(client.members_page(&missing_selection, 200, None).is_err());
+    assert!(
+        !requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .any(|command| matches!(command, Command::MembersPage { .. }))
+    );
+    let mut continuation = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let reply = client
+            .members_page(&document, 200, continuation)
+            .expect("admitted member wire");
+        assert!(admit_member_page_source(&reply, source).is_ok());
+        for changed in changed_sources {
+            assert!(matches!(
+                admit_member_page_source(&reply, changed),
+                Err(ClientError::StaleCursor)
+            ));
+        }
+        let CommandReply::ProjectionPage(page) = reply.reply else {
+            panic!("member page");
+        };
+        for row in page.snapshot.root.rows() {
+            assert!(seen.insert(row.id));
+        }
+        match page.terminal {
+            PageTerminal::More(next) => continuation = Some(next),
+            PageTerminal::Complete => break,
+            PageTerminal::Cancelled => panic!("not a cancelled fixture"),
+        }
+    }
+    assert_eq!(seen.len(), 406);
+    let requests = requests.lock().expect("requests");
+    let members = requests
+        .iter()
+        .filter_map(|command| match command {
+            Command::MembersPage { owner, page } => Some((owner, page)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 3);
+    assert!(
+        members
+            .iter()
+            .all(|(owner, page)| owner.symbol().is_selected()
+                && owner.symbol().claimed_bytes() == *center.as_bytes()
+                && owner.source_basis().is_none()
+                && page.limit().get() == 200)
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|command| matches!(command, Command::Outline(_) | Command::OutlinePage { .. }))
+    );
+}
+
 struct PublishedNamesTransport {
     inner: Transport,
     full_ready: Arc<std::sync::atomic::AtomicBool>,
@@ -3687,4 +3910,117 @@ fn copied_search_stage_continuation_never_promotes_after_full_projection_becomes
         stale.decode_page_continuation(&token).is_err(),
         "no stale root or coordinate re-resolution"
     );
+}
+
+// Fault injection after the inner transport's strict reply admission exercises
+// the Session's last source guard independently of wire rejection. Every
+// replacement view and offered cursor is constructed through public typed APIs.
+struct ChangedMemberReplySource {
+    inner: BoundedMembersTransport,
+    source: Basis,
+    offered: Arc<Mutex<Option<PageContinuation>>>,
+}
+impl CommandTransport for ChangedMemberReplySource {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        let members = matches!(&request.command, Command::MembersPage { .. });
+        let mut reply = self.inner.request(request)?;
+        if members {
+            let CommandReply::ProjectionPage(page) = &mut reply.reply else {
+                panic!("actual member page");
+            };
+            assert!(
+                matches!(page.terminal, PageTerminal::More(_)),
+                "real fixture offers a successor"
+            );
+            let rows = page
+                .snapshot
+                .root
+                .rows()
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.basis = self.source;
+                    row
+                })
+                .collect();
+            let frontier = Frontier::new(
+                self.source.branch,
+                self.source.log,
+                self.source.schema,
+                self.source.root,
+                page.snapshot.root.frontier().sequence,
+            );
+            let changed = ViewRoot::new_incomplete(
+                page.snapshot.root.recipe(),
+                self.source,
+                frontier,
+                rows,
+                vec![],
+            )
+            .expect("consistent source-bound fault view");
+            let next = PageContinuation::from_cursor(Cursor::for_view_root(&changed));
+            page.snapshot.root = changed;
+            page.snapshot.next = Some(next.cursor());
+            page.terminal = PageTerminal::More(next);
+            *self.offered.lock().expect("offered") = Some(next);
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn direct_member_session_refuses_changed_reply_sources_before_retaining_any_cursor() {
+    let (owner, requests, center) = direct_member_fixture();
+    let source = {
+        let library = owner.lock().expect("owner");
+        Basis {
+            root: library.revision_root(),
+            ..library.view().basis()
+        }
+    };
+    let mut sources = [source; 5];
+    sources[0].root = view_state_root(&[]);
+    sources[1].object = object_version(b"changed returned object");
+    sources[2].branch = backend_library::branch_key("changed returned branch");
+    sources[3].log = backend_library::log_key("changed returned log");
+    sources[4].schema = source.schema + 1;
+    for changed in sources {
+        assert_ne!(changed, source);
+        let offered = Arc::new(Mutex::new(None));
+        let mut client = Session::from_transport(
+            "/private/test-owner.sock",
+            ChangedMemberReplySource {
+                inner: BoundedMembersTransport(Transport {
+                    owner: owner.clone(),
+                    requests: requests.clone(),
+                    graph_ids: None,
+                }),
+                source: changed,
+                offered: offered.clone(),
+            },
+        );
+        let reply = client
+            .document_symbol(center)
+            .expect("actual admitted owner document");
+        let CommandReply::Document(document) = reply.reply else {
+            panic!("document")
+        };
+        assert!(
+            matches!(
+                client.members_page(&document, 1, None),
+                Err(ClientError::StaleCursor)
+            ),
+            "changed returned source must refuse: {changed:?}"
+        );
+        let successor = offered
+            .lock()
+            .expect("offered")
+            .expect("transport offered a cursor");
+        assert!(
+            client.continuations.is_empty(),
+            "no rejected member cursor is retained"
+        );
+        assert!(!client.has_portable_query_continuation(successor));
+        assert!(client.encode_query_continuation(successor).is_err());
+    }
 }

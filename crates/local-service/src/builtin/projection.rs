@@ -321,6 +321,14 @@ fn projection_page_certificate(
             *package,
             request.limit(),
         ),
+        Command::MembersPage {
+            owner,
+            page: request,
+        } => backend_engine::QueryPageRecipe::members(
+            page.snapshot.root.basis().root,
+            owner.symbol(),
+            request.limit(),
+        ),
         Command::GraphPage {
             symbol,
             page: request,

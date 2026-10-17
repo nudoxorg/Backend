@@ -594,6 +594,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Show { .. }
         | Command::Outline(_)
         | Command::OutlinePage { .. }
+        | Command::MembersPage { .. }
         | Command::Name(_)
         | Command::Resolve { .. }
         | Command::Search(_)

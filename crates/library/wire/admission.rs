@@ -86,11 +86,16 @@ impl std::error::Error for ReplyAdmissionError {}
 /// Returns [`RequestAdmissionError`] when a text-bearing command is empty or
 /// exceeds [`MAX_COMMAND_TEXT`].
 pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> {
-    if matches!(&request.command, Command::PackagePage(page) | Command::OutlinePage { page, .. } if page.window().is_windowed() || page.continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
+    if matches!(&request.command, Command::PackagePage(page) | Command::OutlinePage { page, .. } | Command::MembersPage { page, .. } if page.window().is_windowed() || page.continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
     {
         return Err(RequestAdmissionError::InvalidSurface);
     }
     if matches!(&request.command, Command::GraphQuery(query) if query.page().window().is_windowed() || query.page().continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
+    {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
+    if let Command::MembersPage { owner, page } = &request.command
+        && owner.basis() != page.basis()
     {
         return Err(RequestAdmissionError::InvalidSurface);
     }
@@ -479,6 +484,15 @@ fn admit_projection_page(
             request.limit(),
         )
         .identity(),
+        Command::MembersPage {
+            owner,
+            page: request,
+        } => crate::QueryPageRecipe::members(
+            page.snapshot.root.basis().root,
+            owner.symbol(),
+            request.limit(),
+        )
+        .identity(),
         Command::GraphPage {
             symbol,
             page: request,
@@ -500,6 +514,15 @@ fn admit_projection_page(
         ));
     }
 
+    if let Command::MembersPage { owner, .. } = command
+        && owner
+            .source_basis()
+            .is_some_and(|source| source != page.snapshot.root.basis())
+    {
+        return Err(ReplyAdmissionError::Protocol(
+            "member page changed its selected source object or stream".to_owned(),
+        ));
+    }
     if let Command::GraphPage {
         symbol,
         page: request,
@@ -833,7 +856,10 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         | (Command::Health, CommandReply::Health(_) | CommandReply::Readiness(_))
         | (Command::Revision, CommandReply::Revision(_))
         | (
-            Command::PackagePage(_) | Command::OutlinePage { .. } | Command::GraphPage { .. },
+            Command::PackagePage(_)
+            | Command::OutlinePage { .. }
+            | Command::GraphPage { .. }
+            | Command::MembersPage { .. },
             CommandReply::ProjectionPage(_),
         )
         | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_)) => true,
@@ -1207,7 +1233,8 @@ fn command_basis(command: &Command) -> Option<ViewRevision> {
         Command::Graph(query) | Command::Related(query) => Some(query.basis()),
         Command::PackagePage(page)
         | Command::OutlinePage { page, .. }
-        | Command::GraphPage { page, .. } => Some(page.basis()),
+        | Command::GraphPage { page, .. }
+        | Command::MembersPage { page, .. } => Some(page.basis()),
         Command::GraphQuery(query) => Some(query.page().basis()),
         Command::SemanticShapes(request) => Some(request.basis()),
         _ => None,
@@ -1221,7 +1248,8 @@ fn command_cursor(command: &Command) -> Option<Cursor> {
         Command::SearchPublishedNames(query) => query.query().cursor(),
         Command::PackagePage(page)
         | Command::OutlinePage { page, .. }
-        | Command::GraphPage { page, .. } => {
+        | Command::GraphPage { page, .. }
+        | Command::MembersPage { page, .. } => {
             page.continuation().map(crate::PageContinuation::cursor)
         }
         Command::GraphQuery(query) => query

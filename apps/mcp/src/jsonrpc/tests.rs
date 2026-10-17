@@ -910,6 +910,57 @@ fn unreachable() -> ClientError {
 }
 
 impl Engine for Fake {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if !self.page_limits.is_empty()
+            && let Some(replacement) = self.outline_source_after_first_page.take()
+        {
+            self.page_catalog = Some(replacement);
+        }
+        if let Some(catalog) = &self.page_catalog {
+            self.page_limits.push(limit);
+            let request = backend_library::PageRequest::new(
+                document.basis,
+                backend_library::QueryLimit::new(limit).expect("credit"),
+            );
+            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+            let mut owner =
+                backend_library::DocumentQuery::selected(document.symbol, document.basis);
+            if let Some(source) = document.source_basis() {
+                owner = owner.with_source_basis(source);
+            }
+            let page = catalog
+                .members_page(owner, request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
+        if continuation.is_some() {
+            return Err(ClientError::StaleCursor);
+        }
+        let reply = self.probe(Probe::OutlinePage {
+            path: PROJECT,
+            limit,
+        })?;
+        let CommandReply::ProjectionPage(mut page) = reply.reply else {
+            return Err(ClientError::Protocol("wrong member fixture".to_owned()));
+        };
+        let rows = page
+            .snapshot
+            .root
+            .rows()
+            .iter()
+            .filter(|row| {
+                row.id == RowId::Symbol(document.symbol) || row.parent == Some(document.symbol)
+            })
+            .cloned()
+            .collect();
+        page.snapshot = snapshot(rows);
+        Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
+    }
     fn index(
         &mut self,
         package: PackageReference,

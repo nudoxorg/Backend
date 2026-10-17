@@ -612,6 +612,7 @@ enum CommandWire {
     Graph(GraphNeighborhoodQueryWire),
     Related(GraphNeighborhoodQueryWire),
     GraphPage(SymbolPageWire),
+    MembersPage(MembersPageWire),
     GraphQuery(GraphQueryRequestWire),
     SemanticShapes(SemanticShapeRequestWire),
     Surface(crate::SurfaceCommand),
@@ -654,6 +655,13 @@ struct DocumentQueryWire {
     symbol: SymbolAddressWire,
     basis: String,
     source: Option<super::BasisWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MembersPageWire {
+    owner: DocumentQueryWire,
+    page: PageRequestWire,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -865,6 +873,10 @@ fn command_to_wire(command: &Command) -> CommandWire {
             symbol: symbol_address_to_wire(*symbol),
             page: page_request_to_wire(*page),
         }),
+        Command::MembersPage { owner, page } => CommandWire::MembersPage(MembersPageWire {
+            owner: document_query_to_wire(owner),
+            page: page_request_to_wire(*page),
+        }),
         Command::GraphQuery(request) => CommandWire::GraphQuery(graph_request_to_wire(request)),
         Command::SemanticShapes(request) => {
             CommandWire::SemanticShapes(semantic_shape_request_to_wire(request))
@@ -943,6 +955,10 @@ fn command_from_wire(
         )?)),
         CommandWire::GraphPage(value) => Ok(Command::GraphPage {
             symbol: symbol_address_from_wire(&value.symbol, required_certificate(certificate)?)?,
+            page: page_request_from_wire(value.page, required_certificate(certificate)?)?,
+        }),
+        CommandWire::MembersPage(value) => Ok(Command::MembersPage {
+            owner: document_query_from_wire(&value.owner, required_certificate(certificate)?)?,
             page: page_request_from_wire(value.page, required_certificate(certificate)?)?,
         }),
         CommandWire::GraphQuery(value) => Ok(Command::GraphQuery(graph_request_from_wire(

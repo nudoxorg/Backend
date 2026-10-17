@@ -1608,6 +1608,47 @@ impl Session {
         self.send_success(command, Some(certificate))
     }
 
+    /// Reads only the admitted document owner's immediate members at its exact
+    /// immutable source. A revision change refuses this composite read rather
+    /// than re-resolving its coordinate or substituting a new owner.
+    ///
+    /// # Errors
+    /// Returns owner, transport, source-basis or continuation admission failures.
+    pub fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        if revision.root != document.basis {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::WrongBasis {
+                    expected: document.basis.into(),
+                    observed: revision.root.into(),
+                },
+            ));
+        }
+        let source = self.admitted_source_basis()?;
+        if document.source_basis() != Some(source)
+            || !document.selection.as_ref().is_some_and(|selection| {
+                selection.symbol() == document.symbol && selection.source() == source
+            })
+        {
+            return Err(ClientError::StaleCursor);
+        }
+        // A bounded owner revision supplies a root commitment, not the full
+        // relation preimage needed to serialize a source Basis. Check that
+        // admitted source locally, then retain it for reply admission below.
+        let owner = DocumentQuery::selected(document.symbol, document.basis);
+        let certificate = selected_symbol_certificate(revision.certificate, document.symbol);
+        let page = page_request(document.basis, limit, continuation)?;
+        self.send_success(
+            Command::MembersPage { owner, page },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
     /// Reads a graph window while retaining the exact selected ID and optional label.
     ///
     /// # Errors
@@ -2497,6 +2538,17 @@ impl Session {
         self.request_result(result)
     }
 
+    fn admitted_source_basis(&self) -> Result<backend_library::Basis, ClientError> {
+        let owner = self.admitted_owner.ok_or(ClientError::StaleCursor)?;
+        Ok(backend_library::Basis {
+            root: owner.root(),
+            object: self.admitted_source.ok_or(ClientError::StaleCursor)?,
+            branch: owner.branch(),
+            log: owner.log(),
+            schema: owner.schema(),
+        })
+    }
+
     fn send_success_with_budget(
         &mut self,
         command: Command,
@@ -2504,6 +2556,9 @@ impl Session {
         remaining: Option<Duration>,
     ) -> Result<ReplyDto, ClientError> {
         let started = std::time::Instant::now();
+        let members_source = matches!(&command, Command::MembersPage { .. })
+            .then(|| self.admitted_source_basis())
+            .transpose()?;
         let selected_assertion = selected_coordinate_assertion(&command, certificate.as_ref())?;
         // A small graph page may legitimately omit its center. Authenticate
         // that selected row through a document at this already admitted source,
@@ -2564,6 +2619,9 @@ impl Session {
         })?;
         if let Some(assertion) = selected_assertion {
             assertion.admit_payload(&reply, pinned_center.as_ref())?;
+        }
+        if let Some(source) = members_source {
+            admit_member_page_source(&reply, source)?;
         }
         self.remember_continuation(&reply, pinned_center);
         if let Some((command, Some(certificate))) = portable {
@@ -2703,6 +2761,21 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         bytes.push(high << 4 | low);
     }
     Some(bytes)
+}
+
+fn admit_member_page_source(
+    reply: &ReplyDto,
+    source: backend_library::Basis,
+) -> Result<(), ClientError> {
+    let CommandReply::ProjectionPage(page) = &reply.reply else {
+        return Err(ClientError::Protocol(
+            "member page changed reply shape".to_owned(),
+        ));
+    };
+    if page.snapshot.root.basis() != source {
+        return Err(ClientError::StaleCursor);
+    }
+    Ok(())
 }
 
 fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {

@@ -198,6 +198,19 @@ impl QueryPageRecipe {
         }
     }
 
+    /// Binds immediate membership to its exact selected owner, source and credit.
+    #[must_use]
+    pub fn members(root: ViewStateRoot, owner: crate::SymbolAddress, limit: QueryLimit) -> Self {
+        let recipe = members_page_recipe(owner, limit);
+        let preimage =
+            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
+                .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
     /// Binds a fixed outline page to its package, source root and exact credit.
     #[must_use]
     pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit) -> Self {
@@ -260,6 +273,14 @@ impl QueryPageRecipe {
 pub(crate) fn outline_page_recipe(package: PackageKey, limit: QueryLimit) -> Vec<u8> {
     let mut bytes = b"outline-page-v3\0".to_vec();
     bytes.extend_from_slice(package.as_bytes());
+    bytes.extend_from_slice(&limit.get().to_be_bytes());
+    bytes
+}
+
+fn members_page_recipe(owner: crate::SymbolAddress, limit: QueryLimit) -> Vec<u8> {
+    let mut bytes = b"members-page-v1\0".to_vec();
+    bytes.push(u8::from(owner.is_selected()));
+    bytes.extend_from_slice(&owner.claimed_bytes());
     bytes.extend_from_slice(&limit.get().to_be_bytes());
     bytes
 }
@@ -379,6 +400,79 @@ impl Library {
             &self.work,
         );
         self.projection_page(&recipe_bytes, &result, start, limit)
+    }
+
+    /// Pages one retained owner and its immediate members from the existing
+    /// parent arrangement. Unrelated package rows and semantic images are never
+    /// visited. The owner prefix proves membership even for an empty member set.
+    ///
+    /// # Errors
+    /// Refuses a stale source, missing owner, changed credit or foreign cursor.
+    pub fn members_page(
+        &self,
+        owner: DocumentQuery,
+        page: PageRequest,
+    ) -> Result<ProjectionPage, LibraryError> {
+        self.check_basis(owner.basis())?;
+        self.check_basis(page.basis())?;
+        if owner.basis() != page.basis()
+            || owner
+                .source_basis()
+                .is_some_and(|source| source != self.revision_basis())
+            || page.window().is_windowed()
+            || page
+                .continuation()
+                .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+        {
+            return Err(LibraryError::InvalidQuery(
+                "member page changed its owner/source/fixed credit".to_owned(),
+            ));
+        }
+        let symbol = owner
+            .resolve_symbol(&self.view)
+            .ok_or(LibraryError::NotFound)?;
+        let root = self
+            .view
+            .row_ref(RowId::Symbol(symbol))
+            .ok_or(LibraryError::NotFound)?;
+        let recipe_bytes = members_page_recipe(owner.symbol(), page.limit());
+        let recipe = self.query_recipe(&recipe_bytes, None);
+        let limit = usize::from(page.limit().get());
+        let cursor = page.continuation().map(crate::PageContinuation::cursor);
+        let start = self.check_query_cursor(cursor, recipe, limit, |offset, count| {
+            self.member_page_ids(root, symbol, offset, count)
+        })?;
+        let result = self.member_page_ids(root, symbol, start, limit);
+        self.projection_page(&recipe_bytes, &result, start, limit)
+    }
+
+    fn member_page_ids(
+        &self,
+        root: &Row,
+        symbol: SymbolKey,
+        start: usize,
+        limit: usize,
+    ) -> ArrangementPage {
+        let mut ids = Vec::with_capacity(limit.saturating_add(1));
+        if start == 0 {
+            ids.push(RowId::Symbol(symbol));
+        }
+        let mut has_more = false;
+        if let Some(package) = root.package {
+            let children = self.arrangement.children_page_from(
+                package,
+                Some(symbol),
+                start.saturating_sub(1),
+                limit.saturating_add(1).saturating_sub(ids.len()),
+            );
+            has_more = children.has_more;
+            ids.extend(children.ids);
+        }
+        has_more |= ids.len() > limit;
+        ids.truncate(limit);
+        self.work.record_seek();
+        self.work.record_output(ids.len());
+        ArrangementPage { ids, has_more }
     }
 
     /// Looks up one document under an exact source basis.

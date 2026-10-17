@@ -3478,6 +3478,77 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
 }
 
 #[test]
+fn direct_member_wire_preserves_selected_owner_source_credit_and_recipe() {
+    let (library, ids) = paged_query_fixture(0);
+    let RowId::Symbol(owner) = ids[0] else {
+        panic!("symbol fixture");
+    };
+    let source = Basis {
+        root: library.revision_root(),
+        ..library.view().basis()
+    };
+    let query = DocumentQuery::selected(owner, source.root).with_source_basis(source);
+    let credit = QueryLimit::new(200).expect("credit");
+    let command = CommandDto::new(
+        81,
+        Command::MembersPage {
+            owner: query,
+            page: crate::PageRequest::new(source.root, credit),
+        },
+    );
+    let bytes = serde_json::to_vec(&command).expect("wire");
+    assert_eq!(
+        CommandDto::decode_against(&bytes, &command).expect("exact command"),
+        command
+    );
+    let page = library
+        .members_page(query, crate::PageRequest::new(source.root, credit))
+        .expect("empty member set still proves owner");
+    assert_eq!(page.snapshot.root.row_count(), 1);
+    let reply = ReplyDto::new(81, CommandReply::ProjectionPage(page.clone()));
+    assert_eq!(admit_reply(&command, &reply), Ok(()));
+    let RowId::Symbol(other) = ids[1] else {
+        panic!("symbol fixture");
+    };
+    let wrong_owner = CommandDto::new(
+        81,
+        Command::MembersPage {
+            owner: DocumentQuery::selected(other, source.root).with_source_basis(source),
+            page: crate::PageRequest::new(source.root, credit),
+        },
+    );
+    assert!(admit_reply(&wrong_owner, &reply).is_err());
+    let wrong_source = Basis {
+        object: object_version(b"other source"),
+        ..source
+    };
+    let wrong_source = CommandDto::new(
+        81,
+        Command::MembersPage {
+            owner: query.with_source_basis(wrong_source),
+            page: crate::PageRequest::new(source.root, credit),
+        },
+    );
+    assert!(admit_reply(&wrong_source, &reply).is_err());
+    let wrong_credit = CommandDto::new(
+        81,
+        Command::MembersPage {
+            owner: query,
+            page: crate::PageRequest::new(source.root, QueryLimit::new(199).expect("credit")),
+        },
+    );
+    assert!(admit_reply(&wrong_credit, &reply).is_err());
+    let outline = CommandDto::new(
+        81,
+        Command::OutlinePage {
+            package: crate::package_key("pkg"),
+            page: crate::PageRequest::new(source.root, credit),
+        },
+    );
+    assert!(admit_reply(&outline, &reply).is_err());
+}
+
+#[test]
 fn published_name_stage_admission_cannot_claim_full_search_or_vector_success() {
     let (library, _) = paged_query_fixture(0);
     let query = Query::new(

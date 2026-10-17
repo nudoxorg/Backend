@@ -69,7 +69,9 @@ pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> 
         Command::Search(query) => Some(query.basis()),
         Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Name(query) => Some(query.basis()),
-        Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => Some(page.basis()),
+        Command::GraphPage { page, .. }
+        | Command::OutlinePage { page, .. }
+        | Command::MembersPage { page, .. } => Some(page.basis()),
         _ => None,
     }
 }

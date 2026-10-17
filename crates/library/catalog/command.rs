@@ -63,6 +63,9 @@ impl Library {
             Command::OutlinePage { package, page } => self
                 .outline_page(package, page)
                 .map(CommandReply::ProjectionPage),
+            Command::MembersPage { owner, page } => self
+                .members_page(owner, page)
+                .map(CommandReply::ProjectionPage),
             Command::Name(query) => self.names(&query).map(CommandReply::Names),
             Command::Resolve { text } => self
                 .names(&NameQuery::new(text, basis, QueryLimit::default()))
