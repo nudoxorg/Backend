@@ -261,6 +261,12 @@ impl SemanticGenerationResidence {
         self.hits
     }
 
+    /// Encoded image bytes and image owners currently retained by this
+    /// residence. This is not a count of bytes read or decoded by a worker.
+    pub(super) fn resident_image_weight(&self) -> (usize, usize) {
+        (self.resident_bytes, self.resident_images)
+    }
+
     /// Returns the resident images for `claim`, activating through `activate` on a miss.
     ///
     /// # Errors

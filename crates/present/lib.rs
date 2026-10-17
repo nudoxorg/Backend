@@ -73,6 +73,8 @@ mod outline;
 mod owner_recovery_tests;
 mod package_graph;
 mod page;
+mod document_sections;
+pub use document_sections::{DocumentContinuation, DocumentSectionPage};
 mod product;
 mod projection;
 #[cfg(test)]

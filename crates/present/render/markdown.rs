@@ -531,6 +531,10 @@ pub fn page_projection(page: &PageProjection<'_>) -> String {
         lines.push(fault(reason));
     }
     push_notes(&mut lines, page.notes());
+    if let Some(window) = page.section_page() {
+        lines.blank();
+        lines.push(window.description(page.identity().coordinate().as_str()));
+    }
     lines.finish()
 }
 

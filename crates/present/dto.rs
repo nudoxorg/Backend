@@ -359,6 +359,9 @@ impl FaultDto {
 /// One declaration page.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PageDto {
+    /// Explicit selected extent; other section rows remain retrievable by cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_page: Option<crate::DocumentSectionPage>,
     /// The page's identity.
     pub identity: IdentityDto,
     /// The declaration kind.
@@ -398,6 +401,9 @@ pub struct PageDto {
 /// omitted by the Summary projection do not become empty page sections.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SummaryPageDto {
+    /// Explicit declaration section extent, when paginated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_page: Option<crate::DocumentSectionPage>,
     /// The retained public identity, including its readable trail and segments.
     pub identity: IdentityDto,
     /// The declaration kind, when observed.
@@ -458,6 +464,7 @@ impl PageDto {
     #[must_use]
     pub fn from_projection(page: &PageProjection<'_>) -> Self {
         Self {
+            section_page: page.section_page().cloned(),
             identity: IdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name().to_owned()),
             language: page.language().name().to_owned(),

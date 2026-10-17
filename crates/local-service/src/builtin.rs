@@ -130,6 +130,7 @@ mod sql_projection;
 pub use compiler_scope::{ProductCompilerScope, ProductCompilerTargetKind, product_compiler_scope};
 #[path = "builtin/selected_full_image.rs"]
 mod selected_full_image;
+mod source_coverage;
 #[path = "builtin/versioned_planes.rs"]
 mod versioned_planes;
 #[path = "builtin/view_build/mod.rs"]

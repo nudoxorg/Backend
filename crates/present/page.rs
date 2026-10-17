@@ -391,7 +391,7 @@ impl Source {
     }
 }
 
-/// One complete declaration page.
+/// One declaration projection, with explicit section extent when paginated.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Page {
     identity: Identity,
@@ -403,6 +403,7 @@ pub struct Page {
     relations: Box<[RelationGroup]>,
     source: Source,
     notes: Box<[Fault]>,
+    pub(crate) section_page: Option<crate::DocumentSectionPage>,
 }
 
 impl Page {
@@ -432,6 +433,7 @@ impl Page {
             relations: Box::new([]),
             source,
             notes: Box::new([]),
+            section_page: None,
         }
     }
 
@@ -493,6 +495,34 @@ impl Page {
                     | FaultSlug::PartiallyPublished
             )
         })
+    }
+
+    /// Exact section extent; None means this page was not section-paginated.
+    #[must_use]
+    pub fn section_page(&self) -> Option<&crate::DocumentSectionPage> { self.section_page.as_ref() }
+
+    /// Clones invariant evidence and only the selected section rows. Large
+    /// composite pages never clone every member merely to fit a small window.
+    pub(crate) fn select_sections(&self, start: usize, end: usize) -> Self {
+        let members = self.members.iter().flat_map(|group| group.members()).enumerate()
+            .filter(|(index, _)| (start..end).contains(index))
+            .map(|(_, row)| row.clone()).collect();
+        let mut position = self.members.iter().map(|group| group.members().len()).sum::<usize>();
+        let mut relations = Vec::new();
+        for group in self.relations() {
+            let mut rows = Vec::new();
+            for row in group.relations() {
+                if (start..end).contains(&position) { rows.push(row.clone()); }
+                position += 1;
+            }
+            if !rows.is_empty() { relations.push(RelationGroup::new(group.label(), rows)); }
+        }
+        Self {
+            identity: self.identity.clone(), kind: self.kind, language: self.language,
+            signature: self.signature.clone(), prose: self.prose.clone(),
+            members: MemberGroup::group(members), relations: relations.into_boxed_slice(),
+            source: self.source.clone(), notes: self.notes.clone(), section_page: None,
+        }
     }
 
     /// Returns the page's identity.

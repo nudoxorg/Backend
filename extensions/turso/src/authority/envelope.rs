@@ -37,6 +37,7 @@ const ENVELOPE_VERSION: u16 = 4;
 const METADATA_MAGIC: &[u8] = b"BACKEND_COMPILER_PUBLICATION_METADATA\0";
 const METADATA_VERSION: u16 = 4;
 const PROGRAM_METADATA_VERSION: u16 = 5;
+const COVERAGE_METADATA_VERSION: u16 = 6;
 const MAX_PROFILE_BYTES: usize = 256;
 const MAX_MEMBER_IDS: usize = 100_000;
 const MAX_MANIFEST_BYTES: usize =
@@ -62,6 +63,53 @@ pub const COMPILER_SEMANTIC_IMAGE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0
 
 /// Schema of witness-bearing metadata. Legacy metadata remains byte-identical v4.
 pub const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 5);
+/// Metadata with an authenticated compiler-observed coverage member.
+pub const COMPILER_COVERAGE_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 6);
+/// Schema of the canonical immutable coverage catalog.
+pub const COMPILER_SOURCE_COVERAGE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00a, 1);
+
+/// A bounded pointer to compiler-observed coverage, stored once in the selected closure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerSourceCoverageMember {
+    object_id: AuthorityHash,
+    identity: AuthorityHash,
+    byte_length: u32,
+}
+impl CompilerSourceCoverageMember {
+    /// Admits a verified typed object and its canonical coverage catalog.
+    pub fn from_verified_object(
+        object: VerifiedObjectEnvelope,
+        coverage: &backend_semantic::ir::SourceCoverageObservation,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        let bytes = coverage.encode();
+        let key =
+            ObjectKey::<backend_semantic::ir::SourceCoverageSchema>::from_value(bytes.as_slice());
+        if object.schema() != COMPILER_SOURCE_COVERAGE_SCHEMA
+            || object.key() != key.as_bytes()
+            || object.payload_len() != bytes.len() as u64
+        {
+            return Err(CompilerEnvelopeError::SourceCoverage);
+        }
+        Ok(Self {
+            object_id: *object.id().as_bytes(),
+            identity: coverage.identity(),
+            byte_length: bytes.len() as u32,
+        })
+    }
+    /// Exact immutable object identity.
+    pub const fn object_id(&self) -> &AuthorityHash {
+        &self.object_id
+    }
+    /// Exact canonical catalog digest.
+    pub const fn identity(&self) -> &AuthorityHash {
+        &self.identity
+    }
+    /// Exact payload extent.
+    pub const fn byte_length(&self) -> u32 {
+        self.byte_length
+    }
+}
+
 /// Exact schema of one full native program source-membership object.
 pub const NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc009, 1);
@@ -276,6 +324,7 @@ pub struct CompilerPublicationMetadata {
     versioned_planes: Option<VersionedPlaneMetadata>,
     semantic_catalog_root: Option<AuthorityHash>,
     native_program_sources: Option<CompilerProgramSourceMember>,
+    source_coverage: Option<CompilerSourceCoverageMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -370,6 +419,7 @@ impl CompilerPublicationMetadata {
                 .map(|planes| *planes.catalog_root().as_bytes()),
             versioned_planes,
             native_program_sources: None,
+            source_coverage: None,
         })
     }
 
@@ -391,8 +441,18 @@ impl CompilerPublicationMetadata {
         self.native_program_sources.as_ref()
     }
 
+    /// Attaches the exact compiler coverage object before publication is committed.
+    pub fn with_source_coverage(mut self, member: CompilerSourceCoverageMember) -> Result<Self, CompilerEnvelopeError> {
+        if self.native_program_sources.is_none() {return Err(CompilerEnvelopeError::SourceCoverage);}
+        if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+        self.source_coverage = Some(member); Ok(self)
+    }
+    /// Legacy metadata records no coverage explanations.
+    pub const fn source_coverage(&self) -> Option<&CompilerSourceCoverageMember> { self.source_coverage.as_ref() }
+
     fn schema(&self) -> SchemaIdentity {
-        if self.native_program_sources.is_some() {
+        if self.source_coverage.is_some() { COMPILER_COVERAGE_METADATA_SCHEMA }
+        else if self.native_program_sources.is_some() {
             COMPILER_PROGRAM_METADATA_SCHEMA
         } else {
             COMPILER_PUBLICATION_METADATA_SCHEMA
@@ -499,7 +559,9 @@ impl CompilerPublicationMetadata {
         );
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
-            &if self.native_program_sources.is_some() {
+            &if self.source_coverage.is_some() {
+                COVERAGE_METADATA_VERSION
+            } else if self.native_program_sources.is_some() {
                 PROGRAM_METADATA_VERSION
             } else {
                 METADATA_VERSION
@@ -528,10 +590,14 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&bytes);
             }
         }
+        if self.source_coverage.is_some() { output.push(u8::from(self.native_program_sources.is_some())); }
         if let Some(member) = self.native_program_sources {
             output.extend_from_slice(&member.object_id);
             output.extend_from_slice(&member.program);
             output.extend_from_slice(&member.byte_length.to_le_bytes());
+        }
+        if let Some(member) = self.source_coverage {
+            output.extend_from_slice(&member.object_id); output.extend_from_slice(&member.identity); output.extend_from_slice(&member.byte_length.to_le_bytes());
         }
         output
     }
@@ -539,7 +605,9 @@ impl CompilerPublicationMetadata {
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        if self.native_program_sources.is_some() {
+        if self.source_coverage.is_some() {
+            let key = ObjectKey::<CompilerCoverageMetadataSchema>::from_value(self); TypedObject::from_value(&key, self)
+        } else if self.native_program_sources.is_some() {
             let key = ObjectKey::<CompilerProgramMetadataSchema>::from_value(self);
             TypedObject::from_value(&key, self)
         } else {
@@ -566,7 +634,7 @@ impl CompilerPublicationMetadata {
             return Err(CompilerEnvelopeError::MetadataMagic);
         }
         let version = input.u16()?;
-        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION) {
+        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
         let manifest_length =
@@ -604,7 +672,10 @@ impl CompilerPublicationMetadata {
             }
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
         };
-        let native_program_sources = if version == PROGRAM_METADATA_VERSION {
+        let has_program = if version == COVERAGE_METADATA_VERSION {
+            match input.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::NativeProgramSources)}
+        } else { version == PROGRAM_METADATA_VERSION };
+        let native_program_sources = if has_program {
             let member = CompilerProgramSourceMember {
                 object_id: input.array::<32>()?,
                 program: input.array::<32>()?,
@@ -620,6 +691,11 @@ impl CompilerPublicationMetadata {
         } else {
             None
         };
+        let source_coverage = if version == COVERAGE_METADATA_VERSION {
+            let member = CompilerSourceCoverageMember {object_id:input.array::<32>()?, identity:input.array::<32>()?, byte_length:input.u32()?};
+            if member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_SOURCE_COVERAGE_BYTES {return Err(CompilerEnvelopeError::SourceCoverage);}
+            Some(member)
+        } else {None};
         if !input.is_empty() {
             return Err(CompilerEnvelopeError::TrailingBytes);
         }
@@ -638,6 +714,7 @@ impl CompilerPublicationMetadata {
         if let Some(member) = native_program_sources {
             metadata = metadata.with_native_program_sources(member)?;
         }
+        if let Some(member) = source_coverage { metadata = metadata.with_source_coverage(member)?; }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -1063,7 +1140,7 @@ pub fn reopen_selected_compiler_publication(
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
     if !matches!(
         metadata_object.schema(),
-        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1079,6 +1156,9 @@ pub fn reopen_selected_compiler_publication(
         .map_err(|error| error.to_string())?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
+    }
+    if reopen_source_coverage(&manifest,&metadata)?.as_ref().is_some_and(|coverage|coverage.input_root()!=selected.input_digest()) {
+        return Err("compiler coverage input differs from selected attempt".to_owned());
     }
     let images = copy_semantic_image_members(&manifest, &metadata)?;
     verify_versioned_plane_members(&manifest, &metadata)?;
@@ -1137,7 +1217,7 @@ pub fn reopen_selected_compiler_metadata(
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
     if !matches!(
         metadata_object.schema(),
-        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1269,7 +1349,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             })?;
         if !matches!(
             metadata_object.schema(),
-            COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+            COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
         ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
@@ -1284,6 +1364,9 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             return Err(
                 "reopened compiler metadata differs from the exact envelope pack".to_owned(),
             );
+        }
+        if reopen_source_coverage(&manifest,&observed_metadata)?.as_ref().is_some_and(|coverage|coverage.input_root()!=observed.input_digest()) {
+            return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
         verify_semantic_image_members(&manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
@@ -1307,6 +1390,7 @@ fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityH
     if let Some(member) = metadata.native_program_sources() {
         members.push(*member.object_id());
     }
+    if let Some(member) = metadata.source_coverage() { members.push(*member.object_id()); }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -1331,6 +1415,110 @@ fn metadata_member_count(
         .checked_add(plane_count)
         .and_then(|count| count.checked_add(1))
         .ok_or(CompilerEnvelopeError::MemberCount)
+}
+
+/// Reopens an authenticated coverage object; old publications honestly return None.
+pub fn reopen_source_coverage(
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<backend_semantic::ir::SourceCoverageObservation>, String> {
+    let Some(member) = metadata.source_coverage() else {
+        return Ok(None);
+    };
+    let id = closure
+        .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+        .map_err(|e| format!("admit compiler coverage member: {e:?}"))?
+        .ok_or("compiler coverage member absent from selected closure")?;
+    let object = closure
+        .get(id)
+        .map_err(|e| format!("read compiler coverage member: {e:?}"))?
+        .ok_or("compiler coverage member disappeared")?;
+    if object.schema() != COMPILER_SOURCE_COVERAGE_SCHEMA
+        || object.bytes().len() != member.byte_length() as usize
+    {
+        return Err("compiler coverage schema or extent mismatch".to_owned());
+    }
+    let coverage = backend_semantic::ir::SourceCoverageObservation::decode(object.bytes())
+        .map_err(str::to_owned)?;
+    if coverage.identity() != *member.identity()
+        || coverage.completed() as usize != metadata.images().len()
+    {
+        return Err("compiler coverage identity or artifact count mismatch".to_owned());
+    }
+    let program = reopen_native_program_sources(closure, metadata)?
+        .ok_or("compiler coverage has no authenticated native program")?;
+    if coverage.program() != &program.membership_identity() {
+        return Err("compiler coverage program identity mismatch".to_owned());
+    }
+    if let Some(catalog)=coverage.catalog() {
+    if let Some((_, nodes)) = program.nodes() {
+        let expected = nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.config_path.as_str(),
+                    *node.config.as_ref(),
+                    node.environment,
+                )
+            })
+            .collect::<Vec<_>>();
+        let observed = catalog
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                backend_semantic::ir::SourceCoverageRow::Configuration {
+                    path,
+                    source,
+                    environment,
+                } => Some((path.as_str(), *source, *environment)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if observed != expected {
+            return Err(
+                "compiler coverage configuration differs from native program forest".to_owned(),
+            );
+        }
+    } else if catalog.rows().iter().any(|row| {
+        matches!(
+            row,
+            backend_semantic::ir::SourceCoverageRow::Configuration { .. }
+        )
+    }) {
+        return Err(
+            "single inferred program cannot authenticate a configured coverage row".to_owned(),
+        );
+    }
+    let selected_sources = program
+        .sources()
+        .filter_map(|source| source.package_path.map(|path| (path, source.source)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for row in catalog.rows() {
+        if let backend_semantic::ir::SourceCoverageRow::Gap{path,cause:backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,..}=row
+            && selected_sources.contains_key(path.as_str()) {
+                return Err("configured exclusion is present in actual native program".to_owned());
+            }
+    }
+    for row in catalog.rows() {
+        if let backend_semantic::ir::SourceCoverageRow::Gap {
+            path,
+            source,
+            byte_len,
+            cause: backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+        } = row
+        {
+            if !selected_sources.get(path.as_str()).is_some_and(|selected| {
+                selected.identity.as_ref() == source && selected.byte_len == *byte_len
+            }) {
+                return Err(
+                    "TypeScript work-budget gap is outside its exact bound native source"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    }
+    Ok(Some(coverage))
 }
 
 /// Reopens only the selected closure's exact program member and validates its identity.
@@ -1410,6 +1598,7 @@ fn verify_semantic_image_members(
     manifest: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
 ) -> Result<(), String> {
+    let _coverage = reopen_source_coverage(manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -1602,6 +1791,7 @@ fn copy_semantic_image_members(
     images
         .try_reserve_exact(metadata.images().len())
         .map_err(|_| "compiler image inventory allocation failed".to_owned())?;
+    let _coverage = reopen_source_coverage(manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -1734,6 +1924,8 @@ pub enum CompilerEnvelopeError {
     VersionedPlaneMetadata,
     /// A full native program object has invalid schema, extent or membership.
     NativeProgramSources,
+    /// The compiler coverage catalog is malformed or not exactly bound.
+    SourceCoverage,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -1896,6 +2088,17 @@ impl Schema for CompilerProgramMetadataSchema {
     type Value = CompilerPublicationMetadata;
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
         output.extend_from_slice(&value.canonical_bytes());
+    }
+}
+
+struct CompilerCoverageMetadataSchema;
+impl Schema for CompilerCoverageMetadataSchema {
+    const DOMAIN: u8 = 0x7a;
+    const TYPE: u16 = 0xc002;
+    const VERSION: u8 = 6;
+    type Value = CompilerPublicationMetadata;
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(&value.canonical_bytes());
     }
 }
 
@@ -2104,6 +2307,249 @@ mod tests {
     }
 
     #[test]
+    fn compiler_coverage_catalog_reopens_after_restart_and_rejects_missing_or_foreign_member() {
+        use backend_semantic::ir::{
+            SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow, SourceCoverageSchema,
+        };
+        let (image, _) = compiler_image();
+        let legacy = metadata(image);
+        let legacy_bytes = legacy.canonical_bytes();
+        let legacy_id = legacy.object_id();
+        assert!(
+            CompilerPublicationMetadata::decode(&legacy_bytes)
+                .unwrap()
+                .source_coverage()
+                .is_none()
+        );
+        use backend_semantic::ir::{
+            NativeProgramForestSchema, NativeProgramNode, NativeProgramSource,
+            NativeProgramSourceManifest, NativeProgramSources, SourceIdentity,
+        };
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let program = NativeProgramSources::from_forest(
+            toolchain,
+            0,
+            vec![NativeProgramNode {
+                config_path: "tsconfig.app.json".into(),
+                config: ContentId::from_canonical_bytes(b"config"),
+                environment: [7; 32],
+                references: vec![],
+                program: Some(
+                    NativeProgramSourceManifest::from_sources(
+                        toolchain,
+                        vec![NativeProgramSource {
+                            program_path: "src/main.ts".into(),
+                            package_path: Some("src/main.ts".into()),
+                            source: SourceIdentity::from_bytes(b"export {};").unwrap(),
+                        }],
+                    )
+                    .unwrap(),
+                ),
+            }],
+        )
+        .unwrap();
+        let program_object = TypedObject::from_value(
+            &ObjectKey::<NativeProgramForestSchema>::from_value(program.as_bytes()),
+            program.as_bytes(),
+        );
+        let coverage = SourceCoverageManifest::new(
+            [3; 32],
+            [1, 0],
+            program.membership_identity(),
+            2,
+            1,
+            vec![
+                SourceCoverageRow::Configuration {
+                    path: "tsconfig.app.json".into(),
+                    source: *ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                        b"config",
+                    )
+                    .as_ref(),
+                    environment: [7; 32],
+                },
+                SourceCoverageRow::Gap {
+                    path: "src/app.spec.ts".into(),
+                    source: *ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                        b"spec",
+                    )
+                    .as_ref(),
+                    byte_len: 4,
+                    cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                },
+            ],
+        )
+        .unwrap();
+        let coverage = backend_semantic::ir::SourceCoverageObservation::from_catalog(coverage).unwrap();
+        let bytes = coverage.encode();
+        let object = TypedObject::from_value(
+            &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
+            bytes.as_slice(),
+        );
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).unwrap();
+        let receipt = store
+            .write_closure(&ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap())
+            .unwrap();
+        let verified = store
+            .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
+            .unwrap();
+        let member = CompilerSourceCoverageMember::from_verified_object(verified, &coverage).unwrap();
+        assert_eq!(legacy.clone().with_source_coverage(member),Err(CompilerEnvelopeError::SourceCoverage),"coverage needs authenticated native program authority before canonicalization");
+    let program_verified = store
+            .verify_object_claim(UntrustedObjectId::from_bytes(
+                *program_object.id().as_bytes(),
+            ))
+            .unwrap();
+        let program_member =
+            CompilerProgramSourceMember::from_verified_program_sources(program_verified, &program)
+                .unwrap();
+        let current = legacy
+            .with_native_program_sources(program_member)
+            .unwrap()
+            .with_source_coverage(member)
+            .unwrap();
+        assert_eq!(
+            current.typed_object().schema(),
+            COMPILER_COVERAGE_METADATA_SCHEMA
+        );
+        let encoded = current.canonical_bytes();
+        assert_eq!(encoded.len(), legacy_bytes.len() + 137);
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&encoded).unwrap(),
+            current
+        );
+        assert!(metadata_member_ids(&current).contains(member.object_id()));
+        drop(store);
+        let store = FileStore::open(&directory, 1024 * 1024).unwrap();
+        let closure = store.open_closure(receipt).unwrap();
+        let reopened = reopen_source_coverage(
+            &closure,
+            &CompilerPublicationMetadata::decode(&encoded).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            reopened, coverage,
+            "cold CAS read retains actual config and gap cause"
+        );
+        // Publication-boundary capacity control: this is authenticated retained
+        // evidence, not a claim that the native resolver compiled >16k inputs.
+        for reason in [backend_semantic::ir::SourceCoverageCapacityReason::RowCount,backend_semantic::ir::SourceCoverageCapacityReason::EncodedBytes] {
+            let capacity=backend_semantic::ir::SourceCoverageObservation::not_recorded_capacity([3;32],[1,0],program.membership_identity(),20_001,1,reason).unwrap();
+            let bytes=capacity.encode();
+            let object=TypedObject::from_value(&ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),bytes.as_slice());
+            let receipt=store.write_closure(&ClosureManifest::new(vec![program_object.clone(),object.clone()]).unwrap()).unwrap();
+            let verified=store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
+            let mut unavailable=current.clone();
+            unavailable.source_coverage=Some(CompilerSourceCoverageMember::from_verified_object(verified,&capacity).unwrap());
+            let encoded=unavailable.canonical_bytes();
+            let cold_store=FileStore::open(&directory,1024*1024).unwrap();
+            let closure=cold_store.open_closure(receipt).unwrap();
+            let cold=reopen_source_coverage(&closure,&CompilerPublicationMetadata::decode(&encoded).unwrap()).unwrap().unwrap();
+            assert_eq!(cold,capacity);
+            assert_eq!(cold.capacity_reason(),Some(reason));
+            assert_eq!((cold.source_count(),cold.completed()),(20_001,1));
+            assert!(cold.catalog().is_none(),"cold reopen cannot invent a cause catalog");
+            let mut forged=unavailable;
+            forged.source_coverage.as_mut().unwrap().identity[0]^=1;
+            assert!(reopen_source_coverage(&closure,&forged).is_err());
+        }
+        let mut wrong = current.clone();
+        wrong.source_coverage.as_mut().unwrap().identity[0] ^= 1;
+        assert!(reopen_source_coverage(&closure, &wrong).is_err());
+        let mut wrong = current.clone();
+        wrong.source_coverage.as_mut().unwrap().byte_length += 1;
+        assert!(reopen_source_coverage(&closure, &wrong).is_err());
+        for change in 0..6 {
+            let mut rows = coverage.catalog().unwrap().rows().to_vec();
+            let mut program_id = program.membership_identity();
+            match change {
+                0 => {
+                    let SourceCoverageRow::Configuration { path, .. } = &mut rows[0] else {
+                        unreachable!()
+                    };
+                    *path = "tsconfig.wrong.json".into();
+                }
+                1 => {
+                    let SourceCoverageRow::Configuration { source, .. } = &mut rows[0] else {
+                        unreachable!()
+                    };
+                    *source = *ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                        b"different config",
+                    )
+                    .as_ref();
+                }
+                2 => {
+                    let SourceCoverageRow::Configuration { environment, .. } = &mut rows[0] else {
+                        unreachable!()
+                    };
+                    *environment = [8; 32];
+                }
+                3 => program_id[0] ^= 1,
+                4 => {
+                    let SourceCoverageRow::Gap { path, .. } = &mut rows[1] else {
+                        unreachable!()
+                    };
+                    *path = "src/main.ts".into();
+                }
+                _ => {
+                    let SourceCoverageRow::Gap { cause, .. } = &mut rows[1] else {
+                        unreachable!()
+                    };
+                    *cause = SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted;
+                }
+            }
+            let forged = SourceCoverageManifest::new([3; 32], [1, 0], program_id, 2, 1, rows).unwrap();
+            let forged = backend_semantic::ir::SourceCoverageObservation::from_catalog(forged).unwrap();
+            let bytes = forged.encode();
+            let object = TypedObject::from_value(
+                &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
+                bytes.as_slice(),
+            );
+            let id = store
+                .write_closure(
+                    &ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap(),
+                )
+                .unwrap();
+            let verified = store
+                .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
+                .unwrap();
+            let mut wrong = current.clone();
+            wrong.source_coverage =
+                Some(CompilerSourceCoverageMember::from_verified_object(verified, &forged).unwrap());
+            let closure = store.open_closure(id).unwrap();
+            assert!(
+                reopen_source_coverage(&closure, &wrong).is_err(),
+                "authenticated conflicting catalog {change}"
+            );
+        }
+        let foreign = store
+            .write_closure(&ClosureManifest::new(vec![self::member(b"unrelated")]).unwrap())
+            .unwrap();
+        let foreign = store.open_closure(foreign).unwrap();
+        assert!(reopen_source_coverage(&foreign, &current).is_err());
+        assert!(
+            reopen_source_coverage(
+                &foreign,
+                &CompilerPublicationMetadata::decode(&legacy_bytes).unwrap()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&legacy_bytes)
+                .unwrap()
+                .object_id(),
+            legacy_id,
+            "legacy identities unchanged"
+        );
+        drop(closure);
+        drop(foreign);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn native_program_metadata_preserves_legacy_identity_and_binds_exact_cas_object() {
         use backend_semantic::ir::{
             NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
@@ -2176,7 +2622,7 @@ mod tests {
             Err(CompilerEnvelopeError::NativeProgramSources)
         );
         let mut future = bytes;
-        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&6u16.to_le_bytes());
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&7u16.to_le_bytes());
         assert_eq!(
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
@@ -2340,7 +2786,7 @@ mod tests {
         assert_eq!(owners["vite.config.ts"], config.program());
         assert_ne!(owners["src/app.ts"], owners["vite.config.ts"]);
         let unrelated =
-            ClosureManifest::new(vec![super::tests::member(b"unrelated")]).expect("unrelated");
+            ClosureManifest::new(vec![self::member(b"unrelated")]).expect("unrelated");
         let unrelated_id = store.write_closure(&unrelated).expect("write unrelated");
         let unrelated = store.open_closure(unrelated_id).expect("open unrelated");
         assert!(reopen_native_program_sources(&unrelated, &metadata).is_err());

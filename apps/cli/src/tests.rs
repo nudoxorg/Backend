@@ -562,7 +562,7 @@ fn a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command() {
     assert_eq!(fault.operand().render(), "document");
     assert_eq!(
         fault.cause().sentence(),
-        "usage: nudox document [COORDINATE] [--selected-id SELECTED_ID]"
+        "usage: nudox document [COORDINATE] [--selected-id SELECTED_ID] [--cursor CURSOR]"
     );
     assert_eq!(render::exit_code(&fault), ExitCode::from(64));
 }

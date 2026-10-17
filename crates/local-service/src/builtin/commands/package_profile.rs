@@ -19,6 +19,7 @@ const MAX_PROFILES: usize = 16;
 pub(super) fn read(
     snapshot: &WorkspaceSnapshot,
     journal: &IndexOperationJournal,
+    authority: &super::super::semantic_authority::SemanticAuthority,
     package: &PackageReference,
     read: Option<&PackageCompilerOutcomeRead>,
 ) -> Result<Option<Outcomes>, BuiltinModelError> {
@@ -102,6 +103,12 @@ pub(super) fn read(
     let mut profiles = Vec::with_capacity(records.len());
     let mut refusals = Vec::new();
     let mut full = None;
+    let mut coverage = Vec::new();
+    let mut coverage_page = None;
+    let coverage_read = match read {
+        Some(PackageCompilerOutcomeRead::Coverage(selector)) => Some(*selector),
+        _ => None,
+    };
     for (key, record) in records {
         // The canonical PSC2 decoder already prohibits history/generation keys.
         if !key.is_selected() || key.package_key().to_bytes() != project_key {
@@ -173,6 +180,162 @@ pub(super) fn read(
                 full = Some(refusal);
             }
         }
+        if wants_coverage(read, profile.profile)
+            && let backend_engine::builtin::ProductSemanticCaptureOutcome::Published {
+                coverage: published_coverage,
+                claim,
+            } = record.outcome()
+        {
+            use backend_library::{
+                PackageCompilerCoverage as Availability, PackageCompilerCoveragePage as Page,
+                PackageCompilerCoverageSelector as Selector,
+            };
+            let observations = authority.selected_source_coverage(key, claim)?;
+            match observations {
+                None => {
+                    coverage.push(Availability::LegacyNotRecorded {
+                        profile: profile.profile,
+                    });
+                    if coverage_read.is_some_and(|read| read.outcome.profile == profile.profile) {
+                        coverage_page = Some(Err(Unavailable::CoverageNotRecorded));
+                    }
+                }
+                Some(observations) => {
+                    if observations.input_root() != capture.input_digest()
+                        || observations.profile() != <[u8; 2]>::from(key.profile())
+                        || u64::from(observations.source_count()) != capture.source_count()
+                        || match published_coverage {
+                            backend_engine::builtin::SemanticPublicationCoverage::Complete => {
+                                observations.completed() != observations.source_count()
+                            }
+                            backend_engine::builtin::SemanticPublicationCoverage::Partial(
+                                partial,
+                            ) => {
+                                observations.completed() != partial.completed().get()
+                                    || observations.source_count() != partial.total().get()
+                            }
+                        }
+                    {
+                        return Err(BuiltinModelError(
+                            "compiler coverage differs from selected capture".to_owned(),
+                        ));
+                    }
+                    if let Some(reason) = observations.capacity_reason() {
+                        coverage.push(Availability::NotRecordedCapacity {
+                            profile: profile.profile,
+                            reason,
+                        });
+                        if let Some(requested) =
+                            coverage_read.filter(|read| read.outcome.profile == profile.profile)
+                        {
+                            if requested.generation != *claim.binding().identity.as_ref()
+                                || requested.input_digest != *capture.input_digest()
+                                || requested.catalog != observations.identity()
+                            {
+                                return Ok(Some(Outcomes::Stale {
+                                    package: package.clone(),
+                                }));
+                            }
+                            coverage_page = Some(Err(Unavailable::CoverageNotRecordedCapacity));
+                        }
+                        profiles.push(profile);
+                        continue;
+                    }
+                    let catalog = observations.catalog().ok_or_else(|| {
+                        BuiltinModelError(
+                            "coverage recording has no catalog or capacity reason".to_owned(),
+                        )
+                    })?;
+                    let first = Selector {
+                        outcome: PackageCompilerOutcomeSelector {
+                            basis: basis.identity(),
+                            profile: profile.profile,
+                        },
+                        catalog: observations.identity(),
+                        generation: *claim.binding().identity.as_ref(),
+                        input_digest: *capture.input_digest(),
+                        offset: 0,
+                    };
+                    coverage.push(Availability::Retained {
+                        read: PackageCompilerOutcomeRead::Coverage(first),
+                    });
+                    if let Some(requested) =
+                        coverage_read.filter(|read| read.outcome.profile == profile.profile)
+                    {
+                        if (Selector {
+                            offset: 0,
+                            ..requested
+                        }) != first
+                        {
+                            return Ok(Some(Outcomes::Stale {
+                                package: package.clone(),
+                            }));
+                        }
+                        let offset = requested.offset as usize;
+                        if offset > catalog.rows().len() {
+                            return Err(BuiltinModelError(
+                                "compiler coverage offset is outside catalog".to_owned(),
+                            ));
+                        }
+                        let row = coverage_row(catalog, offset, |path, identity| {
+                            let file_key =
+                                backend_engine::product_source_file_key(project_key, path);
+                            let row = source
+                                .lookup(&file_key)
+                                .map_err(|e| {
+                                    BuiltinModelError(format!("read coverage source: {e}"))
+                                })?
+                                .ok_or_else(|| {
+                                    BuiltinModelError("compiler coverage source absent".to_owned())
+                                })?;
+                            let file = row.file_fields().ok_or_else(|| {
+                                BuiltinModelError(
+                                    "compiler coverage source is not a file".to_owned(),
+                                )
+                            })?;
+                            if file.project != project_key
+                                || file.path != path
+                                || file.source_identity.as_ref().map(|id| id.as_ref())
+                                    != Some(identity)
+                            {
+                                return Err(BuiltinModelError(
+                                    "compiler coverage source differs from selected frontier"
+                                        .to_owned(),
+                                ));
+                            }
+                            Ok(())
+                        })?;
+                        let rows = row.into_iter().collect::<Vec<_>>().into_boxed_slice();
+                        let end = offset + rows.len();
+                        let page = Page {
+                            generation: *claim.binding().identity.as_ref(),
+                            input_digest: *capture.input_digest(),
+                            source_count: observations.source_count(),
+                            completed: observations.completed(),
+                            row_count: catalog.rows().len() as u32,
+                            rows,
+                            next: (end < catalog.rows().len()).then_some(
+                                PackageCompilerOutcomeRead::Coverage(Selector {
+                                    offset: end as u32,
+                                    ..requested
+                                }),
+                            ),
+                        };
+                        coverage_page = Some(
+                            if serde_json::to_vec(&page)
+                                .map_err(|e| BuiltinModelError(e.to_string()))?
+                                .len()
+                                > 4096
+                            {
+                                Err(Unavailable::CoverageRowTooLarge)
+                            } else {
+                                Ok(page)
+                            },
+                        );
+                    }
+                }
+            }
+        }
         profiles.push(profile);
     }
     profiles.sort_by_key(|profile| profile.profile);
@@ -216,6 +379,23 @@ pub(super) fn read(
             return Ok(unavailable(Unavailable::CaptureIncomplete));
         }
     }
+    if let Some(selector) = coverage_read {
+        let page = match coverage_page {
+            Some(Ok(page)) => page,
+            Some(Err(reason)) => return Ok(unavailable(reason)),
+            None => return Ok(unavailable(Unavailable::ProfileNotPublished)),
+        };
+        let result = Outcomes::Coverage {
+            package: package.clone(),
+            basis,
+            selector,
+            page,
+        };
+        result
+            .admit_request(package, read)
+            .map_err(|e| BuiltinModelError(e.to_string()))?;
+        return Ok(Some(result));
+    }
     let outcomes = match selector {
         Some(selector) => match full {
             Some(refusal) if refusal.compiler_failure.is_some() => Outcomes::Diagnostic {
@@ -231,12 +411,43 @@ pub(super) fn read(
             basis,
             source_capture: summary,
             refusals: refusals.into_boxed_slice(),
+            coverage: Some(coverage.into_boxed_slice()),
         },
     };
     outcomes
         .admit_request(package, read)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     Ok(Some(outcomes))
+}
+
+fn wants_coverage(
+    read: Option<&PackageCompilerOutcomeRead>,
+    profile: backend_library::SemanticLanguageProfile,
+) -> bool {
+    match read {
+        None | Some(PackageCompilerOutcomeRead::Current) => true,
+        Some(PackageCompilerOutcomeRead::Coverage(read)) => read.outcome.profile == profile,
+        Some(PackageCompilerOutcomeRead::Diagnostic(_)) => false,
+    }
+}
+
+/// Only this indexed row is checked against the source frontier. Other
+/// profiles and earlier gaps have no source lookup work in this request.
+fn coverage_row(
+    catalog: &backend_semantic::ir::SourceCoverageManifest,
+    offset: usize,
+    check_source: impl FnOnce(&str, &[u8; 32]) -> Result<(), BuiltinModelError>,
+) -> Result<Option<backend_semantic::ir::SourceCoverageRow>, BuiltinModelError> {
+    if offset > catalog.rows().len() {
+        return Err(BuiltinModelError(
+            "compiler coverage offset outside catalog".to_owned(),
+        ));
+    }
+    let row = catalog.rows().get(offset);
+    if let Some(backend_semantic::ir::SourceCoverageRow::Gap { path, source, .. }) = row {
+        check_source(path, source)?;
+    }
+    Ok(row.cloned())
 }
 
 fn receipt_matches_capture(
@@ -345,5 +556,98 @@ mod tests {
             receipt_matches_capture(&status, &lagging),
             "semantic state may lag; exact captured source tuples may not"
         );
+    }
+    #[test]
+    fn coverage_followup_filters_profiles_and_checks_only_the_requested_indexed_source() {
+        use backend_library::{PackageCompilerCoverageSelector, SemanticLanguageProfile};
+        use backend_semantic::ir::{
+            SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow,
+        };
+        use std::cell::Cell;
+        let profile = SemanticLanguageProfile::from_name("typescript").unwrap();
+        let selector = PackageCompilerCoverageSelector {
+            outcome: PackageCompilerOutcomeSelector {
+                basis: [3; 32],
+                profile,
+            },
+            catalog: [4; 32],
+            generation: [5; 32],
+            input_digest: [7; 32],
+            offset: 2048,
+        };
+        let request = PackageCompilerOutcomeRead::Coverage(selector);
+        let loads = Cell::new(0);
+        let lookups = Cell::new(0);
+        let source =
+            *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                b"spec",
+            )
+            .as_ref();
+        let catalog = SourceCoverageManifest::new(
+            [7; 32],
+            [1, 0],
+            [7; 32],
+            4097,
+            1,
+            (0..4096)
+                .map(|i| SourceCoverageRow::Gap {
+                    path: format!("src/{i:05}.spec.ts"),
+                    source,
+                    byte_len: 4,
+                    cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                })
+                .collect(),
+        )
+        .unwrap();
+        for candidate in ["python", "typescript", "rust"] {
+            if wants_coverage(
+                Some(&request),
+                SemanticLanguageProfile::from_name(candidate).unwrap(),
+            ) {
+                loads.set(loads.get() + 1);
+                let row = coverage_row(&catalog, selector.offset as usize, |path, seen| {
+                    lookups.set(lookups.get() + 1);
+                    assert_eq!(path, "src/02048.spec.ts");
+                    assert_eq!(*seen, source);
+                    Ok(())
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!(row.path(), "src/02048.spec.ts");
+            }
+        }
+        assert_eq!(
+            loads.get(),
+            1,
+            "other published profiles do not load their catalogs"
+        );
+        assert_eq!(
+            lookups.get(),
+            1,
+            "earlier/unrequested rows perform zero source lookups"
+        );
+        let last = coverage_row(&catalog, 4095, |path, _| {
+            lookups.set(lookups.get() + 1);
+            assert_eq!(path, "src/04095.spec.ts");
+            Ok(())
+        })
+        .unwrap();
+        assert!(last.is_some());
+        assert_eq!(lookups.get(), 2);
+        assert!(
+            coverage_row(&catalog, 4096, |_, _| panic!(
+                "past end does not touch source"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            coverage_row(&catalog, 4097, |_, _| panic!(
+                "invalid index does not touch source"
+            ))
+            .is_err()
+        );
+        let diagnostic = PackageCompilerOutcomeRead::Diagnostic(selector.outcome);
+        assert!(!wants_coverage(Some(&diagnostic), profile));
     }
 }

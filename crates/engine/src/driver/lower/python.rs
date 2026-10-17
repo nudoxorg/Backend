@@ -138,6 +138,7 @@ pub(crate) fn collect_with_project_checker<'source>(
     emitter.emit_classes()?;
     emitter.emit_non_class_declarations()?;
     emitter.emit_parentage()?;
+    emitter.emit_declared_member_inventories()?;
     emitter.emit_occurrences()?;
     emitter.emit_docs()?;
     Ok(())
@@ -8033,6 +8034,10 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
 #[cfg(test)]
 #[path = "python_import_binding_tests.rs"]
 mod import_binding_tests;
+
+#[cfg(test)]
+#[path = "python_member_inventory_tests.rs"]
+mod member_inventory_tests;
 
 #[cfg(test)]
 mod tests {

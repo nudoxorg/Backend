@@ -621,6 +621,8 @@ impl Write for HardCapWriter {
 
 #[derive(Serialize)]
 struct SummaryPageDto<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    section_page: Option<&'a crate::DocumentSectionPage>,
     identity: SummaryIdentityDto<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<&'static str>,
@@ -636,6 +638,7 @@ struct SummaryPageDto<'a> {
 impl<'a> SummaryPageDto<'a> {
     fn new(page: &PageProjection<'a>) -> Self {
         Self {
+            section_page: page.section_page(),
             identity: SummaryIdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name()),
             language: page.language().name(),

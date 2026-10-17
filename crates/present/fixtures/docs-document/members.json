@@ -1,0 +1,331 @@
+[
+  {
+    "name": "title",
+    "line": 997,
+    "signature": "title = models.CharField(_(\"title\"), max_length=255, null=True, blank=True)",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "excerpt",
+    "line": 998,
+    "signature": "excerpt = models.TextField(_(\"excerpt\"), max_length=300, null=True, blank=True)",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "link_reach",
+    "line": 999,
+    "signature": "link_reach = models.CharField(",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "link_role",
+    "line": 1004,
+    "signature": "link_role = models.CharField(",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "creator",
+    "line": 1007,
+    "signature": "creator = models.ForeignKey(",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "deleted_at",
+    "line": 1014,
+    "signature": "deleted_at = models.DateTimeField(null=True, blank=True)",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "ancestors_deleted_at",
+    "line": 1015,
+    "signature": "ancestors_deleted_at = models.DateTimeField(null=True, blank=True)",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "has_deleted_children",
+    "line": 1016,
+    "signature": "has_deleted_children = models.BooleanField(default=False)",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "duplicated_from",
+    "line": 1017,
+    "signature": "duplicated_from = models.ForeignKey(",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "attachments",
+    "line": 1025,
+    "signature": "attachments = ArrayField(",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "alphabet",
+    "line": 1034,
+    "signature": "alphabet = \"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\"",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "steplen",
+    "line": 1035,
+    "signature": "steplen = 7  # nb siblings max: 3,521,614,606,208",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "node_order_by",
+    "line": 1036,
+    "signature": "node_order_by = []  # Manual ordering",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "path",
+    "line": 1038,
+    "signature": "path = models.CharField(max_length=7 * 36, unique=True, db_collation=\"C\")",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "objects",
+    "line": 1040,
+    "signature": "objects = DocumentManager()",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "__str__",
+    "line": 1062,
+    "signature": "def __str__(self):",
+    "summary": "",
+    "kind": "function"
+  },
+  {
+    "name": "__init__",
+    "line": 1065,
+    "signature": "def __init__(self, *args, **kwargs):",
+    "summary": "Initialize cache property.",
+    "kind": "function"
+  },
+  {
+    "name": "is_leaf",
+    "line": 1071,
+    "signature": "def is_leaf(self):",
+    "summary": ":returns: True if the node is has no children",
+    "kind": "function"
+  },
+  {
+    "name": "key_base",
+    "line": 1078,
+    "signature": "def key_base(self):",
+    "summary": "Key base of the location where the document is stored in object storage.",
+    "kind": "function"
+  },
+  {
+    "name": "file_key",
+    "line": 1087,
+    "signature": "def file_key(self):",
+    "summary": "Key of the legacy object storage file that used to hold the content.",
+    "kind": "function"
+  },
+  {
+    "name": "get_self_and_ancestors_paths",
+    "line": 1099,
+    "signature": "def get_self_and_ancestors_paths(self):",
+    "summary": "Return the paths of the document and of all its ancestors, computed from",
+    "kind": "function"
+  },
+  {
+    "name": "get_nb_accesses_cache_key",
+    "line": 1113,
+    "signature": "def get_nb_accesses_cache_key(self):",
+    "summary": "Generate a unique cache key for each document.",
+    "kind": "function"
+  },
+  {
+    "name": "get_nb_accesses",
+    "line": 1117,
+    "signature": "def get_nb_accesses(self):",
+    "summary": "Calculate the number of accesses:",
+    "kind": "function"
+  },
+  {
+    "name": "nb_accesses_direct",
+    "line": 1141,
+    "signature": "def nb_accesses_direct(self):",
+    "summary": "Returns the number of accesses related to the document or one of its ancestors.",
+    "kind": "function"
+  },
+  {
+    "name": "nb_accesses_ancestors",
+    "line": 1146,
+    "signature": "def nb_accesses_ancestors(self):",
+    "summary": "Returns the number of accesses related to the document or one of its ancestors.",
+    "kind": "function"
+  },
+  {
+    "name": "_saved_link_definition",
+    "line": 1151,
+    "signature": "_saved_link_definition = None",
+    "summary": "",
+    "kind": "variable"
+  },
+  {
+    "name": "from_db",
+    "line": 1154,
+    "signature": "def from_db(cls, db, field_names, values):",
+    "summary": "Load a document, remembering its link definition to spot its changes.",
+    "kind": "function"
+  },
+  {
+    "name": "refresh_from_db",
+    "line": 1160,
+    "signature": "def refresh_from_db(self, *args, **kwargs):",
+    "summary": "Reload a document, taking a new snapshot of the link fields reloaded.",
+    "kind": "function"
+  },
+  {
+    "name": "remember_link_definition",
+    "line": 1173,
+    "signature": "def remember_link_definition(self, fields=None):",
+    "summary": "Snapshot the link definition as it is in the database.",
+    "kind": "function"
+  },
+  {
+    "name": "link_definition_changed",
+    "line": 1189,
+    "signature": "def link_definition_changed(self):",
+    "summary": "Tell whether `link_reach` or `link_role` differ from the last snapshot.",
+    "kind": "function"
+  },
+  {
+    "name": "invalidate_nb_accesses_cache",
+    "line": 1200,
+    "signature": "def invalidate_nb_accesses_cache(self):",
+    "summary": "Invalidate the cache for number of accesses, including on affected descendants.",
+    "kind": "function"
+  },
+  {
+    "name": "get_role",
+    "line": 1212,
+    "signature": "def get_role(self, user):",
+    "summary": "Return the roles a user has on a document.",
+    "kind": "function"
+  },
+  {
+    "name": "has_link_trace",
+    "line": 1227,
+    "signature": "def has_link_trace(self, user):",
+    "summary": "Return if the user has a link trace on this document.",
+    "kind": "function"
+  },
+  {
+    "name": "compute_ancestors_links_paths_mapping",
+    "line": 1238,
+    "signature": "def compute_ancestors_links_paths_mapping(self):",
+    "summary": "Compute the ancestors links for the current document up to the highest readable ancestor.",
+    "kind": "function"
+  },
+  {
+    "name": "link_definition",
+    "line": 1259,
+    "signature": "def link_definition(self):",
+    "summary": "Returns link reach/role as a definition in dictionary format.",
+    "kind": "function"
+  },
+  {
+    "name": "ancestors_link_definition",
+    "line": 1264,
+    "signature": "def ancestors_link_definition(self):",
+    "summary": "Link definition equivalent to all document's ancestors.",
+    "kind": "function"
+  },
+  {
+    "name": "ancestors_link_definition",
+    "line": 1279,
+    "signature": "def ancestors_link_definition(self, definition):",
+    "summary": "Cache the ancestors_link_definition.",
+    "kind": "function"
+  },
+  {
+    "name": "ancestors_link_reach",
+    "line": 1284,
+    "signature": "def ancestors_link_reach(self):",
+    "summary": "Link reach equivalent to all document's ancestors.",
+    "kind": "function"
+  },
+  {
+    "name": "ancestors_link_role",
+    "line": 1289,
+    "signature": "def ancestors_link_role(self):",
+    "summary": "Link role equivalent to all document's ancestors.",
+    "kind": "function"
+  },
+  {
+    "name": "computed_link_definition",
+    "line": 1294,
+    "signature": "def computed_link_definition(self):",
+    "summary": "Link reach/role on the document, combining inherited ancestors' link",
+    "kind": "function"
+  },
+  {
+    "name": "computed_link_reach",
+    "line": 1306,
+    "signature": "def computed_link_reach(self):",
+    "summary": "Actual link reach on the document.",
+    "kind": "function"
+  },
+  {
+    "name": "computed_link_role",
+    "line": 1311,
+    "signature": "def computed_link_role(self):",
+    "summary": "Actual link role on the document.",
+    "kind": "function"
+  },
+  {
+    "name": "get_abilities",
+    "line": 1315,
+    "signature": "def get_abilities(self, user):  # pylint: disable=too-many-locals",
+    "summary": "Compute and return abilities for a given user on the document.",
+    "kind": "function"
+  },
+  {
+    "name": "send_email",
+    "line": 1430,
+    "signature": "def send_email(self, subject, emails, context=None, language=None):",
+    "summary": "Generate and send email from a template.",
+    "kind": "function"
+  },
+  {
+    "name": "send_invitation_email",
+    "line": 1465,
+    "signature": "def send_invitation_email(self, email, role, sender, language=None):",
+    "summary": "Method allowing a user to send an email invitation to another user for a document.",
+    "kind": "function"
+  },
+  {
+    "name": "soft_delete",
+    "line": 1496,
+    "signature": "def soft_delete(self):",
+    "summary": "Soft delete the document, marking the deletion on descendants.",
+    "kind": "function"
+  },
+  {
+    "name": "restore",
+    "line": 1530,
+    "signature": "def restore(self):",
+    "summary": "Cancelling a soft delete with checks.",
+    "kind": "function"
+  }
+]

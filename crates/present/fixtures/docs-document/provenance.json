@@ -1,0 +1,12 @@
+{
+  "kind": "physical-source-derived-presentation-fixture-not-compiler-proof",
+  "source_bytes": 86300,
+  "source_sha256": "282e82df97d13367659c0efc308fed977924e182220fe3ec6ecf3da71e16d31e",
+  "actual_source_path": "src/backend/core/models.py",
+  "class_line": 994,
+  "source_members": 47,
+  "native_selected_symbol_hex": "e56066ba2fc1202af124d7b2df592bbea967ecad5a02636a4ba7a5f49b05a905",
+  "actual_coordinate": "/srv/ci/ndr25a2/source/docs::semantic::46af6473ddcaf6963c3c8d63315b9bc2b34b37a744f514c2d57fce60cf8f8d54::Document",
+  "actual_presentation_failure_bytes": 59392,
+  "actual_budget_bytes": 49152
+}

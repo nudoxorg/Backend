@@ -303,6 +303,13 @@ pub enum Request {
     Remove(String),
     /// One declaration page: document, members, relations, source.
     Page(String),
+    /// Resume exact declaration sections after revalidating its source and complete content.
+    ResumePage {
+        /// Full selected operand; a coordinate never replaces the selected row.
+        selector: DeclarationSelector,
+        /// Content-bound section continuation.
+        cursor: String,
+    },
     /// One declaration's captured source only.
     Source(String),
     /// One declaration's bounded neighbourhood.
@@ -395,6 +402,12 @@ pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelect
 
 fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
     let selector = declaration_selector(invocation)?;
+    if read == DeclarationRead::Document && let Some(cursor) = invocation.option("cursor") {
+        if cursor.is_empty() || selector.selected_id().is_none() {
+            return Err(Fault::usage("cursor", "copy the full document continuation including selected_symbol / --selected-id; a coordinate alone cannot resume a selected row"));
+        }
+        return Ok(Request::ResumePage { selector, cursor: cursor.to_owned() });
+    }
     if let DeclarationSelector::Coordinate(coordinate) = selector {
         return Ok(match read {
             DeclarationRead::Document => Request::Page(coordinate),

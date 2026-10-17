@@ -344,9 +344,13 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             execution_intent,
         } => index(engine, path, *execution_intent),
         Request::Remove(path) => remove(engine, path),
-        Request::Page(at) => page(engine, at).map(Box::new).map(Answer::Page),
+        Request::Page(at) => page(engine, at, None).map(Box::new).map(Answer::Page),
+        Request::ResumePage { selector, cursor } => {
+            if selector.selected_id().is_none() { return Err(Fault::usage("cursor", "document continuation requires the original full selected row ID")); }
+            selected_declaration(engine, selector, DeclarationRead::Document, Some(cursor))
+        },
         Request::Source(at) => source(engine, at),
-        Request::Declaration { selector, read } => selected_declaration(engine, selector, *read),
+        Request::Declaration { selector, read } => selected_declaration(engine, selector, *read, None),
         Request::Neighbourhood {
             coordinate,
             incoming,
@@ -721,6 +725,7 @@ fn selected_declaration(
     engine: &mut dyn Engine,
     selector: &DeclarationSelector,
     kind: DeclarationRead,
+    cursor: Option<&str>,
 ) -> Result<Answer, Fault> {
     let reply = read(
         engine,
@@ -763,6 +768,9 @@ fn selected_declaration(
             } else {
                 page_from_document(coordinate, &document, &[], &[], Vec::new())
             };
+            let page = if kind == DeclarationRead::Document {
+                crate::document_sections::window(page, &document, cursor)?
+            } else { page };
             if kind == DeclarationRead::Source {
                 if let Some(fault) = page.source().fault() {
                     return Err(fault.clone());
@@ -782,7 +790,7 @@ fn selected_declaration(
     }
 }
 
-fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
+fn page(engine: &mut dyn Engine, text: &str, cursor: Option<&str>) -> Result<Page, Fault> {
     let coordinate = resolve_declaration(engine, text, "show")?;
     let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Document(coordinate))?;
@@ -792,14 +800,15 @@ fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
     let mut notes = Vec::with_capacity(2);
     let relation_rows = probe_rows(engine, coordinate, &mut notes);
     let members = probe_members(engine, coordinate, &document, &mut notes);
-    Ok(page_from_document_with_graph_relations(
+    let page = page_from_document_with_graph_relations(
         coordinate,
         &document,
         &members,
         &relation_rows.rows,
         relation_rows.graph_relations.as_deref().unwrap_or(&[]),
         notes,
-    ))
+    );
+    crate::document_sections::window(page, &document, cursor)
 }
 
 fn source(engine: &mut dyn Engine, text: &str) -> Result<Answer, Fault> {

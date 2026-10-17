@@ -45,6 +45,7 @@ pub struct PageProjection<'a> {
     source_site: Option<&'a SourceSite>,
     source_fault: Option<&'a Fault>,
     notes: &'a [Fault],
+    section_page: Option<&'a crate::DocumentSectionPage>,
 }
 
 impl<'a> PageProjection<'a> {
@@ -68,7 +69,14 @@ impl<'a> PageProjection<'a> {
             source_site: page.source().site(),
             source_fault: page.source().fault(),
             notes: page.notes(),
+            section_page: page.section_page(),
         }
+    }
+
+    /// Exact extent and continuation of the selected declaration sections.
+    #[must_use]
+    pub fn section_page(&self) -> Option<&'a crate::DocumentSectionPage> {
+        self.section_page
     }
 
     /// Exact identity, including any selected native symbol operand.
