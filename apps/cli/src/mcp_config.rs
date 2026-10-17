@@ -9,7 +9,7 @@ pub(super) const fn help_text() -> &'static str {
     "nudox mcp-config — print installed stdio MCP setup without starting a service\n\n\
      nudox mcp-config [--project PATH]\n\
      nudox mcp-config --format json [--project PATH]\n\n\
-     Prints complete mcpServers JSON and shell-quoted Claude Code/Codex registration instructions. JSON format prints only the configuration. The selected project defaults to this directory and is recorded as an absolute path. Existing client configuration is never read, written or removed; inspect an existing nudox entry before registering. Repeating this command only prints the same setup.\n\n\
+     Prints complete mcpServers JSON and shell-quoted Claude Code/Codex registration instructions. JSON format prints only the configuration. The selected project follows normal CLI discovery: --project, then BACKEND_PROJECT, then the Git root or nearest language manifest from this directory. It is recorded as an absolute path. Existing client configuration is never read, written or removed; inspect an existing nudox entry before registering. Repeating this command only prints the same setup.\n\n\
      Stdio: the client launches MCP; its first owner-backed tool call starts the matched local daemon. It does not start an HTTP listener or index automatically. Index with nudox add . --wait, inspect its terminal receipt, then search. HTTP is separate: explicitly keep backend-mcp --project /absolute/project --http 127.0.0.1:41449 running and configure http://127.0.0.1:41449/mcp with the selected Bearer credential."
 }
 
@@ -161,10 +161,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         .map(|path| std::env::split_paths(&path).take(256).collect::<Vec<_>>())
         .unwrap_or_default();
     let launchers = launchers(&current, invoked.as_deref(), &search).map_err(fail)?;
-    let project = options
-        .project()
-        .cloned()
-        .map_or_else(std::env::current_dir, Ok)
+    let project = backend_runtime::discover_project(options.project().cloned())
         .map_err(|error| fail(error.to_string()))?;
     let project = std::fs::canonicalize(project)
         .map_err(|error| fail(format!("selected project is unavailable: {error}")))?;
