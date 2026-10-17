@@ -280,6 +280,13 @@ fn pocketbase_exact_captured45_reports_native_program_and_checker_phases() {
             .closure_witness
             .validate_current(admitted.witness())
             .unwrap();
+        // A captured lock/config can be irrelevant to this resolver's read set.
+        // Still preserve every45+3 input pin, then poll the same absolute deadline.
+        for pin in capture.sources.iter().chain(&capture.configs) {
+            verified_source(&capture.source_root, pin);
+        }
+        backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(&budget, 0)
+            .expect("original deadline/cancellation still holds after postvalidation");
         authorities.push(authority);
     }
     assert_eq!(authorities.len(), 1);
