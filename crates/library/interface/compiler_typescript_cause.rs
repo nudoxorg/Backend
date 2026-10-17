@@ -103,18 +103,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_bounds_collapses_and_rejects_empty() {
-        let cause = TypeScriptFailureCause::sanitize("  two\t\nconfigs \"a\"\\b  ").unwrap();
+    fn sanitize_bounds_collapses_and_rejects_empty() -> Result<(), String> {
+        let cause = TypeScriptFailureCause::sanitize("  two\t\nconfigs \"a\"\\b  ")
+            .ok_or_else(|| "expected fixture cause to be accepted".to_owned())?;
         assert_eq!(cause.as_str(), "two configs a b");
         assert!(TypeScriptFailureCause::sanitize(" \n\t ").is_none());
         let long = "x".repeat(1000);
-        let cause = TypeScriptFailureCause::sanitize(&long).unwrap();
+        let cause = TypeScriptFailureCause::sanitize(&long)
+            .ok_or_else(|| "expected bounded long cause to be accepted".to_owned())?;
         assert_eq!(cause.as_str().len(), TypeScriptFailureCause::MAX_BYTES);
         assert!(cause.as_str().ends_with("..."));
         let wide = "é".repeat(1000);
-        let cause = TypeScriptFailureCause::sanitize(&wide).unwrap();
+        let cause = TypeScriptFailureCause::sanitize(&wide)
+            .ok_or_else(|| "expected bounded wide cause to be accepted".to_owned())?;
         assert!(cause.as_str().len() <= TypeScriptFailureCause::MAX_BYTES);
         assert!(cause.as_str().is_char_boundary(cause.as_str().len()));
+        Ok(())
     }
 
     #[test]
@@ -128,9 +132,9 @@ mod tests {
     }
 
     #[test]
-    fn longest_known_fixed_sentences_plus_cause_fit_public_detail_bound() {
-        let cause =
-            TypeScriptFailureCause::new(&"c".repeat(TypeScriptFailureCause::MAX_BYTES)).unwrap();
+    fn longest_known_fixed_sentences_plus_cause_fit_public_detail_bound() -> Result<(), String> {
+        let cause = TypeScriptFailureCause::new(&"c".repeat(TypeScriptFailureCause::MAX_BYTES))
+            .ok_or_else(|| "expected max-size fixture cause to be accepted".to_owned())?;
         for kind in [
             TypeScriptAuthorityFailureKind::HostNodeUnavailable,
             TypeScriptAuthorityFailureKind::HostCompilerApiBridge,
@@ -143,5 +147,6 @@ mod tests {
                 "{kind:?}"
             );
         }
+        Ok(())
     }
 }

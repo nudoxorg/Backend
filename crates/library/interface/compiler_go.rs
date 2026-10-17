@@ -27,7 +27,8 @@ mod tests {
     use super::GoAuthorityFailureKind as G;
 
     #[test]
-    fn public_go_failure_contract_has_exact_closed_names_and_guidance() {
+    fn public_go_failure_contract_has_exact_closed_names_and_guidance(
+    ) -> Result<(), serde_json::Error> {
         for (kind, wire, tag, detail) in [
             (
                 G::DependencyInvocation,
@@ -72,15 +73,16 @@ mod tests {
                 "Go selected dependency files beyond the bounded semantic witness budget; the dependency closure was not admitted",
             ),
         ] {
-            assert_eq!(serde_json::to_value(kind).unwrap(), serde_json::json!(wire));
+            assert_eq!(serde_json::to_value(kind)?, serde_json::json!(wire));
             assert_eq!(
-                serde_json::from_value::<G>(serde_json::json!(wire)).unwrap(),
+                serde_json::from_value::<G>(serde_json::json!(wire))?,
                 kind
             );
             assert_eq!(kind.kind_tag(), tag);
             assert_eq!(kind.detail(), detail);
         }
         assert!(serde_json::from_value::<G>(serde_json::json!("unrecognized_go_failure")).is_err());
+        Ok(())
     }
 }
 
