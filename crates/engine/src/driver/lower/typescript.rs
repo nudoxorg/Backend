@@ -6341,7 +6341,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             ) { wanted.insert((start, end)); }
         }
         let mut identifiers = HashMap::<(u32, u32), Option<TszNodeIndex>>::new();
-        for (raw_node, _) in arena.nodes.iter().enumerate() {
+        for (raw_node, _) in arena.nodes.iter().enumerate().take_while(|_| !wanted.is_empty()) {
             let Ok(raw_node) = u32::try_from(raw_node) else { continue; };
             let identifier = TszNodeIndex(raw_node);
             if arena.get_identifier_at(identifier).is_none() { continue; }
