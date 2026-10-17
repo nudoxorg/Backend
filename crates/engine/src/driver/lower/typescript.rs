@@ -1269,6 +1269,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     ) -> Result<[u32; MAX_FACT_CHILDREN + 1], TypeScriptCollectError> {
         let mut ordinals = [0_u32; MAX_FACT_CHILDREN + 1];
         for (index, row) in params.iter().enumerate() {
+            let bindings = self.destructured_parameter_bindings(row.name);
             let name = self
                 .slice_span(row.name)
                 .ok_or(TypeScriptCollectError::Span {
@@ -1290,6 +1291,26 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let ordinal = self.push(fact)?;
             self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
             self.claim_staged_members(member_base, ordinal);
+            if let Some(bindings) = bindings {
+                // The pattern occupies one argument position and retains its
+                // complete declared type/source. It is not an authored name.
+                self.facts.publication_roles[ordinal as usize] =
+                    backend_semantic::ir::DeclarationPublicationRole::ReferenceOnly;
+                for binding in bindings {
+                    if self.fact_at_name_start(binding.start).is_some() { continue; }
+                    let name = self.slice_span(binding).ok_or(TypeScriptCollectError::Span {
+                        start: binding.start, end: binding.end,
+                    })?;
+                    let extension = self.extension_without_type_parameters()?;
+                    // An aggregate annotation is not the type of each leaf.
+                    // The native checker supplies the leaf's computed type.
+                    let fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
+                        .typed(unknown_record(TypeReason::Unannotated))
+                        .with_extension(extension);
+                    let leaf = self.push(fact)?;
+                    self.register(leaf, binding, binding, EntityKind::Parameter)?;
+                }
+            }
             if let Some(default) = row.default {
                 self.declare_expression_bindings(default.start, default.end, 0)?;
             }
@@ -1298,6 +1319,39 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
         }
         Ok(ordinals)
+    }
+
+    /// The exact parsed object/array binding pattern proves which identifiers
+    /// are declarations. Property labels, computed keys and default-expression
+    /// references are deliberately not bindings; OXC's pattern walker follows
+    /// only binding values, nested patterns and rest arguments.
+    fn destructured_parameter_bindings(&self, span: Span) -> Option<Vec<Span>> {
+        let first = self.node_index.partition_point(|(known, _)|
+            (known.start, known.end) < (span.start, span.end));
+        for (known, node) in self.node_index.get(first..).unwrap_or(&[]) {
+            if *known != span { break; }
+            let kind = self.semantic.nodes().get_node(*node).kind();
+            let mut bindings = Vec::new();
+            if let Some(pattern) = kind.as_object_pattern() {
+                for property in &pattern.properties {
+                    bindings.extend(property.value.get_binding_identifiers().into_iter().map(|binding| binding.span));
+                }
+                if let Some(rest) = &pattern.rest {
+                    bindings.extend(rest.argument.get_binding_identifiers().into_iter().map(|binding| binding.span));
+                }
+            } else if let Some(pattern) = kind.as_array_pattern() {
+                for element in pattern.elements.iter().flatten() {
+                    bindings.extend(element.get_binding_identifiers().into_iter().map(|binding| binding.span));
+                }
+                if let Some(rest) = &pattern.rest {
+                    bindings.extend(rest.argument.get_binding_identifiers().into_iter().map(|binding| binding.span));
+                }
+            } else {
+                continue;
+            }
+            return Some(bindings);
+        }
+        None
     }
 
     /// Pushes the dedicated result carrier for one annotated signature: a
@@ -7005,8 +7059,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let symbol_node = bound_file
                 .arena
                 .get(declaration)
-                .and_then(|node| bound_file.arena.get_type_alias(node))
-                .map(|alias| alias.name)
+                .and_then(|node| {
+                    bound_file.arena.get_type_alias(node).map(|alias| alias.name)
+                        .or_else(|| bound_file.arena.get_binding_element(node).map(|binding| binding.name))
+                })
                 .unwrap_or(declaration);
             let Some((start, end)) = bound_file.arena.pos_end_at(symbol_node) else {
                 continue;
@@ -11657,7 +11713,7 @@ mod lane_tests {
         AnonymousCallableAnchorView, AnonymousCallableFamilyMultiplicity, CallableChildRole,
         CallableParentShape, CallableTypeContainerKind, ComputedType, DeclarationFamilyId,
         EntityId, EntityKind, FragmentError, FragmentView, ItemName, LinkKind, OccurrenceFault,
-        OccurrenceTarget, ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr,
+        OccurrenceTarget, ProductChildRole, ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr,
         TypeId, TypeQuery, TypeScriptSourceCoordinate, VariantFingerprint,
     };
     use backend_semantic::vocabulary::{
@@ -12043,6 +12099,77 @@ mod lane_tests {
         )
         .map_err(LaneError::from)?;
         Ok(facts)
+    }
+
+    #[test]
+    fn native_tsz_destructured_parameters_keep_one_carrier_and_exact_authored_leaves() -> Result<(), LaneError> {
+        use backend_semantic::ir::{DeclarationPublicationRole as Role, SignatureCarrierRole, SignatureCarrierRoleObservation};
+        let source = "declare function fallback(): string;\ninterface NavBarProps { title?: string; onClick: () => void; nested: { count: number }; extra: boolean; }\nexport function NavBar({\n  title = fallback(),\n  onClick: invoke,\n  nested: { count },\n  ...remaining\n}: NavBarProps) { invoke(); return title + count; }\nexport function array([first, , ...tail]: string[]) { return first; }\n";
+        let authority = native_tsz_project_with_resolutions(&[("NavBar.ts", source)], &[])?;
+        let project = authority.project().ok_or(LaneError::Missing("destructured parameter project"))?;
+        let facts = collect_native_tsz_file(project, "NavBar.ts", source)?;
+        for name in ["NavBar", "array"] {
+            let function = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
+                && facts.kinds[index] == EntityKind::Function).expect("function declaration");
+            let start = facts.child_starts[function] as usize;
+            let count = facts.child_counts[function] as usize;
+            let inputs = (start..start + count).filter(|&index|
+                facts.child_roles[index] == ProductChildRole::FunctionParameter).collect::<Vec<_>>();
+            assert_eq!(inputs.len(), 1, "destructuring remains one argument position: {name}");
+            let carrier = facts.child_targets[inputs[0]] as usize;
+            assert_eq!(facts.publication_roles[carrier], Role::ReferenceOnly);
+            let span = facts.provenance.source_spans()[carrier].expect("complete aggregate source span");
+            assert_eq!(&source.as_bytes()[span.start as usize..span.end as usize], facts.names[carrier]);
+            assert!(facts.names[carrier].starts_with(if name == "NavBar" { b"{" } else { b"[" }));
+        }
+        let ir = owned_tsz_ir_at_path(source, "NavBar.ts")?;
+        for (name, declaration, reference) in [
+            ("title", "title = fallback()", "return title"),
+            ("invoke", "invoke,", "{ invoke()"),
+            ("count", "count },", "+ count"),
+            ("remaining", "remaining\n", "...remaining"),
+            ("first", "first,", "return first"),
+            ("tail", "tail]", "...tail"),
+        ] {
+            let start = source.find(declaration).expect("written binding") as u32;
+            let leaf = (0..facts.len()).find(|&index|
+                facts.names[index] == name.as_bytes()
+                    && facts.kinds[index] == EntityKind::Parameter
+                    && facts.publication_roles[index] == Role::PrimaryOwned
+                    && facts.provenance.source_spans()[index].is_some_and(|span|
+                        (span.start, span.end) == (start, start + name.len() as u32)))
+                .expect("exact source-owned destructured leaf");
+            let entity = ir.canonical_entities().find(|entity|
+                entity.kind == EntityKind::Parameter
+                    && entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(name.as_bytes())
+                    && entity.authority.publication == Role::PrimaryOwned)
+                .expect("retained authored parameter");
+            assert!(ir.typescript_extension(entity.id).and_then(|extension| extension.observed).is_some(),
+                "leaf type comes from the exact native binding: {name}");
+            if !reference.starts_with("...") {
+                let at = source.find(reference).expect("body reference") + reference.len() - name.len();
+                // invoke's prefix includes '(' rather than a trailing name.
+                let at = if name == "invoke" { source.find("{ invoke()").unwrap() + 2 } else { at } as u32;
+                assert!((0..facts.occurrence_len).any(|index|
+                    facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                        .is_some_and(|span| span.start + facts.occurrences[index].span.start == at)
+                        && facts.occurrences[index].target == OccurrenceTarget::Local(EntityId::new(leaf as u32))),
+                    "body reference targets its exact authored leaf: {name}");
+            }
+        }
+        assert!(!(0..facts.len()).any(|index|
+            facts.kinds[index] == EntityKind::Parameter && facts.publication_roles[index] == Role::PrimaryOwned
+                && [b"onClick".as_slice(), b"nested", b"fallback"].contains(&facts.names[index])),
+            "property labels and default-expression references are not parameter bindings");
+        for entity in ir.canonical_entities().filter(|entity|
+            entity.kind == EntityKind::Parameter && entity.authority.publication == Role::ReferenceOnly)
+        {
+            if entity.name.named_atom().and_then(|atom| ir.atom(atom)).is_some_and(|name| name.starts_with(b"{") || name.starts_with(b"[")) {
+                assert_eq!(ir.signature_carrier_role(entity.id),
+                    Some(SignatureCarrierRoleObservation::Captured(SignatureCarrierRole::Input)));
+            }
+        }
+        Ok(())
     }
 
     #[test]
