@@ -288,8 +288,9 @@ impl LocalSemanticOwner {
                     QueryPreparationState::Preparing
                 })
             }
-            Execution::Closed => Some(QueryPreparationState::Retiring),
-            Execution::Ready { .. } => None,
+            // Closed owns neither a worker nor a pending join. A cancelled
+            // worker remains Working/Retiring until its owner has joined it.
+            Execution::Closed | Execution::Ready { .. } => None,
         }
     }
     /// The serving adapter supplies interest from its existing admitted live tickets.
