@@ -593,6 +593,7 @@ fn semantic_rows(
     let mut symbols = BTreeSet::new();
     let mut remaining_bytes = MAX_REBUILD_BYTES;
     let mut targets = SemanticTargets::default();
+    let mut native_selections = BTreeMap::<_, Vec<super::source_availability::SelectedSourceArtifacts>>::new();
     // Package publication already named its projects. Seek each one instead of
     // paging every other package's publications and discarding them.
     let bounds = match foreign {
@@ -877,6 +878,10 @@ fn semantic_rows(
                 }
             }
             activated_publications.insert((key.package_key(), key.profile()));
+            // Match the query/graph package's entire selected image scope,
+            // including a TS import whose local target is in the TSX profile.
+            drop(opened);
+            native_selections.entry(project.package).or_default().push(activated);
         }
         if package_ended || (bounds.is_some() && page.next().is_none()) {
             bound_index = bound_index.saturating_add(1);
@@ -891,6 +896,11 @@ fn semantic_rows(
         };
         after = Some(next);
     }
+    let mut native_aliases = super::native_target_aliases::NativeTargetAliases::default();
+    for (package, selected) in native_selections {
+        native_aliases.record_selected(package, &selected)?;
+    }
+    native_aliases.apply(&mut rows);
     Ok(SemanticRows {
         rows,
         exact_sites,

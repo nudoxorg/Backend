@@ -826,6 +826,30 @@ fn foreign_native_source_retarget(
     }
 }
 
+/// Resolves a native TSZ endpoint by its complete program/source/extent/kind
+/// proof. This is shared by row, document, graph, references and query
+/// projection; npm spellings and same-name declarations are not candidates.
+/// `published` comes from the same `publication_entities` inventory that the
+/// successful row/query projection emits in full. Duplicate/capacity errors
+/// abort that projection; they never admit a view with omitted owned rows.
+pub(crate) fn join_native_typescript_target(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    index: &ProjectCallableIndex,
+    published: &BTreeSet<DeclarationIdentity>,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else { return Ok(None); };
+    if image.atom(ecosystem) != Some(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes()) {
+        return Ok(None);
+    }
+    let Some(kind) = foreign.kind else { return Ok(None); };
+    Ok(foreign_native_source_retarget(image, external, kind, index)?
+        .filter(|identity| published.contains(identity)))
+}
+
 pub(crate) fn foreign_package_call_retarget(
     image: &SemanticImageView<'_>,
     external: ExternalId,
@@ -2053,6 +2077,74 @@ mod tsz_source_coordinate_tests {
             None,
             "an incomplete source manifest cannot claim a program-bound reference"
         );
+    }
+
+    #[test]
+    fn native_tsz_endpoint_projection_shares_exact_declaration_keys_and_preserves_unknowns() -> Result<(), String> {
+        use super::super::{identity, native_target_aliases::NativeTargetAliases, semantic::project_image_rows};
+        use super::super::super::IndexedProject;
+        use backend_engine::{Fragment, RowId};
+        use std::sync::Arc;
+        let service = "export class AppService { getHello(): string { return ''; } }\n";
+        let caller = "import { AppService } from '@/service';\nconst service = new AppService();\nservice.getHello();\n";
+        let start = service.find("getHello():").expect("target") as u32;
+        let end = start + "getHello(): string { return ''; }".len() as u32;
+        let at = caller.find("service.getHello()").expect("use") as u32 + 8;
+        let source_id = *ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes());
+        let program = typescript_program_identity(&[
+            ("src/app.controller.ts".to_owned(), *ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes())),
+            ("src/app.service.ts".to_owned(), source_id),
+        ]).expect("complete fixture program");
+        let (target_bytes, target) = source_image("src/app.service.ts", service, 3, None)?;
+        let package = backend_engine::package_key("fixture");
+        let project = IndexedProject { package, label: "fixture".to_owned(), files: Arc::from([]) };
+        let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
+        for (admitted_source, selected, target_present) in [
+            (source_id, true, true), ([99; 32], true, true),
+            (source_id, false, true), (source_id, true, false),
+        ] {
+            let (caller_bytes, owner) = source_image("src/app.controller.ts", caller, 9,
+                Some(("src/app.service.ts".to_owned(), start, end, start, program, admitted_source, at, at + 8)))?;
+            let target_image = SemanticImageView::reopen(&target_bytes).map_err(|error| error.to_string())?;
+            let caller_image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+            let index = ProjectCallableIndex::build_from_views(&[&target_image, &caller_image]).map_err(|error| error.to_string())?;
+            let published = if selected { BTreeSet::from([target, owner]) } else { BTreeSet::from([owner]) };
+            let external = caller_image.canonical_links().find_map(|(_, link)| match link.target {
+                backend_semantic::ir::LinkTarget::External(external) => Some(external), _ => None,
+            }).expect("native endpoint");
+            let joined = super::join_native_typescript_target(&caller_image, external, &index, &published).map_err(|error| error.to_string())?;
+            let succeeds = admitted_source == source_id && selected;
+            assert_eq!(joined, succeeds.then_some(target));
+            let digest = *blake3::hash(&caller_bytes).as_bytes();
+            let endpoint = identity::external_semantic_symbol(package, digest,
+                backend_semantic::ir::ExternalTargetIdentity::capture(&caller_image, external).map_err(|error| error.to_string())?);
+            let owned = identity::semantic_symbol(package, target);
+            let mut rows = Vec::new();
+            for (image, bytes, path) in [(&target_image, &target_bytes, "src/app.service.ts"), (&caller_image, &caller_bytes, "src/app.controller.ts")] {
+                rows.extend(project_image_rows(image, *blake3::hash(bytes).as_bytes(), &project,
+                    LanguageProfile::TypeScript(TypeScriptSource::TypeScript), initial.basis(), false, path, &[])
+                    .map_err(|error| error.to_string())?.rows.into_iter().map(|row| row.row));
+            }
+            let caller_key = RowId::Symbol(identity::semantic_symbol(package, owner));
+            rows.iter_mut().find(|row| row.id == caller_key).expect("actual caller row").document =
+                vec![Fragment::Link { label: "authored use".to_owned(), target: endpoint }].into_boxed_slice();
+            let mut aliases = NativeTargetAliases::default();
+            aliases.record_image(package, digest, &caller_image, &index, &published).map_err(|error| error.to_string())?;
+            // Defensive projection boundary: even a correctly recorded
+            // selected alias cannot remove an endpoint if no real target row
+            // survived admission. Record first, then remove only that row.
+            if !target_present { rows.retain(|row| row.id != RowId::Symbol(owned)); }
+            aliases.apply(&mut rows);
+            let admitted = succeeds && target_present;
+            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(endpoint)), !admitted,
+                "only an exact selected endpoint becomes the existing declaration row");
+            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(owned)), target_present,
+                "the arrangement never filters an authored target");
+            let document = &rows.iter().find(|row| row.id == caller_key).expect("retained actual caller").document;
+            assert!(matches!(document[0], Fragment::Link { target, .. }
+                if target == if admitted { owned } else { endpoint }), "document links share the exact same key arrangement");
+        }
+        Ok(())
     }
 
     #[test]
