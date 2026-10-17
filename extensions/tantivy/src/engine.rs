@@ -71,6 +71,8 @@ static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 std::thread_local! {
     static TEST_CANCEL_AFTER_PUBLICATION: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_CANCEL_AFTER_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+    static TEST_ADMISSION_CANCEL: std::cell::RefCell<Option<(&'static str, usize, std::sync::Arc<AtomicBool>)>> = const { std::cell::RefCell::new(None) };
+    static TEST_TOKENIZATION_PASSES: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_CANCEL_BEFORE_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_FORCE_MERGE_AFTER_NEXT_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -580,15 +582,26 @@ impl TantivySource {
         directory: impl AsRef<Path>,
         budget: DurableCacheBudget,
     ) -> Result<Self, TantivySourceError> {
+        Self::open_in_dir_controlled(state, limits, directory.as_ref(), budget, None)
+    }
+
+    fn open_in_dir_controlled(
+        state: &DocumentState,
+        limits: Limits,
+        directory: &Path,
+        budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
         preflight_ordinal_map_capacity(state.iter().count())?;
-        let directory = directory.as_ref();
         let _directory_handle =
             backend_platform::durability::open_directory_readonly_nofollow(directory)?;
         verify_projection_manifest(directory, projection_fingerprint(state.binding()), budget)?;
+        check_projection_cancelled(cancelled)?;
         let persisted = read_binding_stamp(directory)?;
         if persisted != projection_fingerprint(state.binding()) {
             return Err(Error::StaleRoot.into());
@@ -602,8 +615,12 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let mut documents =
-            read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
+        let mut documents = read_ordinal_map(
+            state,
+            projection_fingerprint(state.binding()),
+            directory,
+            cancelled,
+        )?;
         let _binding_work = bind_document_addresses(
             &reader,
             &mut documents,
@@ -611,7 +628,9 @@ impl TantivySource {
             state,
             projected.fields,
             true,
+            cancelled,
         )?;
+        check_projection_cancelled(cancelled)?;
         let fields = projected.fields;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -845,7 +864,7 @@ impl TantivySource {
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
         retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
-            Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
+            Self::open_selected_root(state, limits, namespace, &key, budget, &fence, cancelled)?
         {
             let source =
                 Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
@@ -860,7 +879,7 @@ impl TantivySource {
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
         retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
-            Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
+            Self::open_selected_root(state, limits, namespace, &key, budget, &fence, cancelled)?
         {
             stage
                 .discard_under(&fence)
@@ -895,8 +914,11 @@ impl TantivySource {
 
         sample_test_cancel_after_publication();
         check_projection_cancelled(cancelled)?;
-        let source = Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "published root vanished"))?;
+        let source =
+            Self::open_selected_root(state, limits, namespace, &key, budget, &fence, cancelled)?
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "published root vanished")
+                })?;
         let source = Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
         fence.verify_for(namespace)?;
         Ok((source, action))
@@ -909,7 +931,9 @@ impl TantivySource {
         key: &str,
         budget: DurableCacheBudget,
         fence: &NamespaceFence,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Option<Self>, TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         fence.verify_for(namespace)?;
         let selected = namespace.path().join(key);
         if !path_exists(&selected)? || !path_is_real_directory(&selected)? {
@@ -917,7 +941,7 @@ impl TantivySource {
             return Ok(None);
         }
         namespace.verify_child_path(key)?;
-        let opened = Self::open_in_dir_with_budget(state, limits, &selected, budget);
+        let opened = Self::open_in_dir_controlled(state, limits, &selected, budget, cancelled);
         namespace.verify_child_path(key)?;
         fence.verify_for(namespace)?;
         match opened {
@@ -1173,6 +1197,7 @@ impl TantivySource {
             &next_key,
             cache_budget,
             &fence,
+            cancelled,
         )? {
             let source = Self::retain_selected_root(
                 source,
@@ -1214,8 +1239,13 @@ impl TantivySource {
                 namespace.verify_child_path(&previous_key)?;
                 copy_projection_tree(&previous_path, stage.path())?;
                 namespace.verify_child_path(&previous_key)?;
-                let mut staged =
-                    Self::open_in_dir_with_budget(previous, limits, stage.path(), cache_budget)?;
+                let mut staged = Self::open_in_dir_controlled(
+                    previous,
+                    limits,
+                    stage.path(),
+                    cache_budget,
+                    cancelled,
+                )?;
                 let revision = match staged.maintain_for_publication(next, budget, cancelled) {
                     Ok(MaintainOutcome::Applied(revision)) => revision,
                     Ok(MaintainOutcome::RebuildRequired) => {
@@ -1274,6 +1304,7 @@ impl TantivySource {
             &next_key,
             cache_budget,
             &fence,
+            cancelled,
         )? {
             stage
                 .discard_under(&fence)
@@ -1307,11 +1338,16 @@ impl TantivySource {
         sample_test_cancel_after_publication();
         check_projection_cancelled(cancelled)?;
         drop(previous_source);
-        let source =
-            Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "published root vanished")
-                })?;
+        let source = Self::open_selected_root(
+            next,
+            limits,
+            namespace,
+            &next_key,
+            cache_budget,
+            &fence,
+            cancelled,
+        )?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "published root vanished"))?;
         let source =
             Self::retain_selected_root(source, namespace, &selected, cache_budget, &fence)?;
         fence.verify_for(namespace)?;
@@ -1373,8 +1409,15 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let _binding_work =
-            bind_document_addresses(&reader, &mut documents, limits, state, fields, false)?;
+        let _binding_work = bind_document_addresses(
+            &reader,
+            &mut documents,
+            limits,
+            state,
+            fields,
+            false,
+            cancelled,
+        )?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
@@ -2434,6 +2477,12 @@ struct SearchableToken<'a> {
 }
 
 fn searchable_tokens(text: &str) -> Vec<SearchableToken<'_>> {
+    #[cfg(test)]
+    TEST_TOKENIZATION_PASSES.with(|counter| {
+        if let Some(count) = counter.get() {
+            counter.set(Some(count + 1));
+        }
+    });
     // Keep token text borrowed from the already-bounded source field. A tree
     // allocates one node per token, while owned token strings duplicate the
     // same input bytes many times for punctuation and identifier splits.
@@ -2937,6 +2986,7 @@ fn read_ordinal_map(
     state: &DocumentState,
     fingerprint: [u8; 32],
     directory: &Path,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<DocumentTable, TantivySourceError> {
     let path = directory.join(ORDINAL_MAP_FILE);
     let bytes = match read_bounded_regular_file(&path, MAX_ORDINAL_MAP_BYTES) {
@@ -2986,7 +3036,13 @@ fn read_ordinal_map(
             "durable projection ordinal map size overflows",
         ));
     };
-    let expected = state.iter().collect::<Vec<_>>();
+    let expected = state
+        .iter()
+        .map(|entry| {
+            check_projection_cancelled(cancelled)?;
+            Ok(entry)
+        })
+        .collect::<Result<Vec<_>, TantivySourceError>>()?;
     if slot_count > MAX_ORDINAL_SLOTS
         || live_count > slot_count
         || live_count != expected.len()
@@ -3000,6 +3056,7 @@ fn read_ordinal_map(
     let mut documents = Vec::with_capacity(live_count);
     let mut previous_ordinal = None;
     for _ in 0..live_count {
+        check_admission_cancelled(cancelled, "ordinal")?;
         let Some(ordinal) =
             take_u64(&bytes, &mut offset).and_then(|ordinal| usize::try_from(ordinal).ok())
         else {
@@ -3045,8 +3102,10 @@ fn read_ordinal_map(
         }
         let (id, fields) = expected[expected_index];
         let expected_digest = document_fields_digest(fields);
-        let expected_postings = posting_count(fields)?;
-        if fields_digest != expected_digest || postings != expected_postings {
+        // Exact source posting cardinality is checked by the compulsory row
+        // binding below, together with the source rank tail and posting edges.
+        // Do not tokenize every source field here and repeat that work there.
+        if fields_digest != expected_digest {
             return Err(TantivySource::corrupt(
                 "durable projection ordinal does not match its bound document",
             ));
@@ -4073,6 +4132,52 @@ fn sync_directory(path: &Path) -> Result<(), io::Error> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::mem;
+
+    pub(crate) struct TokenizationMeasurement;
+    impl TokenizationMeasurement {
+        pub(crate) fn start() -> Self {
+            super::TEST_TOKENIZATION_PASSES.with(|counter| counter.set(Some(0)));
+            Self
+        }
+        pub(crate) fn passes(&self) -> usize {
+            super::TEST_TOKENIZATION_PASSES.with(|counter| counter.get().unwrap_or(0))
+        }
+    }
+    impl Drop for TokenizationMeasurement {
+        fn drop(&mut self) {
+            super::TEST_TOKENIZATION_PASSES.with(|counter| counter.set(None));
+        }
+    }
+
+    pub(crate) fn cancel_on_admission_step(
+        point: &'static str,
+        step: usize,
+        control: std::sync::Arc<super::AtomicBool>,
+    ) {
+        super::TEST_ADMISSION_CANCEL.with(|slot| *slot.borrow_mut() = Some((point, step, control)));
+    }
+
+    pub(crate) fn forge_ordinal_posting_count(
+        state: &super::DocumentState,
+        directory: &std::path::Path,
+        count: u32,
+    ) -> Result<(), super::TantivySourceError> {
+        let fingerprint = super::projection_fingerprint(state.binding());
+        let mut documents = super::read_ordinal_map(state, fingerprint, directory, None)?;
+        let entry = documents
+            .live
+            .first_mut()
+            .ok_or(super::Error::MalformedInput)?;
+        entry.document.postings = count;
+        // Recompute the witness and file manifest, so refusal must be from
+        // the admitted source count rather than superficial file corruption.
+        super::write_ordinal_map(directory, fingerprint, &documents)?;
+        super::write_projection_manifest(
+            directory,
+            fingerprint,
+            super::DurableCacheBudget::default(),
+        )
+    }
 
     pub(crate) fn cancel_after_next_publication(control: std::sync::Arc<super::AtomicBool>) {
         super::TEST_CANCEL_AFTER_PUBLICATION.with(|slot| *slot.borrow_mut() = Some(control));
@@ -5150,9 +5255,20 @@ fn hash_rank_material_length(
 fn canonical_rank_material_tail(
     fields: &[(String, String)],
 ) -> Result<(u32, [u8; 32]), TantivySourceError> {
+    visit_canonical_rank_material(fields, None, |_, _| Ok(()))
+}
+
+/// The exact canonical tail and borrowed source edge descriptors share one
+/// tokenizer pass. Consumers do not own or change the source field bytes.
+fn visit_canonical_rank_material<'a>(
+    fields: &'a [(String, String)],
+    cancelled: Option<&AtomicBool>,
+    mut visit: impl FnMut(&'a str, SearchableToken<'a>) -> Result<(), TantivySourceError>,
+) -> Result<(u32, [u8; 32]), TantivySourceError> {
     let mut hasher = blake3::Hasher::new();
     let mut postings = 0_u32;
     for (field, text) in fields {
+        check_admission_cancelled(cancelled, "source")?;
         let weight = field_weight(field);
         if field.is_empty() || weight == 0 {
             return Err(Error::MalformedInput.into());
@@ -5163,10 +5279,12 @@ fn canonical_rank_material_tail(
         hasher.update(&[u8::try_from(weight).map_err(|_| Error::SizeLimit)?]);
         hash_rank_material_length(&mut hasher, tokens.len())?;
         for token in tokens {
+            check_projection_cancelled(cancelled)?;
             postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
             hash_rank_material_length(&mut hasher, token.searchable.len())?;
             hasher.update(token.searchable.as_bytes());
             hash_rank_material_length(&mut hasher, token.ranking_bytes)?;
+            visit(field, token)?;
         }
     }
     Ok((postings, *hasher.finalize().as_bytes()))
@@ -5239,6 +5357,8 @@ impl PostingEdgeCounts {
 /// and live posting coverage count each (field, term, document) edge once.
 struct SourcePostingEdges<'a> {
     terms: Vec<SourcePostingTerm<'a>>,
+    postings: u32,
+    rank_tail_digest: [u8; 32],
 }
 
 #[derive(Clone, Copy)]
@@ -5273,10 +5393,20 @@ impl PostingFamily {
 }
 
 impl<'a> SourcePostingEdges<'a> {
+    #[cfg(test)]
     fn admit(
         source_fields: &'a [(String, String)],
         expected_postings: u32,
     ) -> Result<Self, TantivySourceError> {
+        Self::admit_controlled(source_fields, expected_postings, None)
+    }
+
+    fn admit_controlled(
+        source_fields: &'a [(String, String)],
+        expected_postings: u32,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         let expected_postings = usize::try_from(expected_postings).map_err(|_| Error::SizeLimit)?;
         // Retained borrowed (field, term) pairs fit the existing per-token
         // preflight. Tokenizer temporary storage keeps its existing source-text
@@ -5286,6 +5416,16 @@ impl<'a> SourcePostingEdges<'a> {
             .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
             .ok_or(Error::SizeLimit)?;
         if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+            // Preserve corruption precedence for a forged oversized ordinal
+            // count without allocating its claimed descriptor vector.
+            let (source_postings, _) =
+                visit_canonical_rank_material(source_fields, cancelled, |_, _| Ok(()))?;
+            if usize::try_from(source_postings).map_err(|_| Error::SizeLimit)? != expected_postings
+            {
+                return Err(TantivySource::corrupt(
+                    "durable projection ordinal does not match its bound document",
+                ));
+            }
             return Err(TantivySourceError::PostingCoverBudgetExceeded {
                 budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
                 required_bytes,
@@ -5308,33 +5448,47 @@ impl<'a> SourcePostingEdges<'a> {
                 required_bytes: allocated_bytes,
             });
         }
-        for (field, text) in source_fields {
-            for token in searchable_tokens(text) {
+        let (postings, rank_tail_digest) =
+            visit_canonical_rank_material(source_fields, cancelled, |field, token| {
                 // Refuse a mismatched witness before any vector growth beyond
-                // the preflighted row allocation.
+                // the preflighted row allocation. This is the same source count
+                // formerly checked by read_ordinal_map's separate tokenization.
                 if terms.len() == expected_postings {
                     return Err(TantivySource::corrupt(
-                        "source token count changed during cold posting validation",
+                        "durable projection ordinal does not match its bound document",
                     ));
                 }
                 terms.push(SourcePostingTerm {
                     field,
                     term: token.searchable,
                 });
-            }
-        }
-        if terms.len() != expected_postings {
+                Ok(())
+            })?;
+        if usize::try_from(postings).map_err(|_| Error::SizeLimit)? != expected_postings {
             return Err(TantivySource::corrupt(
-                "source token count changed during cold posting validation",
+                "durable projection ordinal does not match its bound document",
             ));
         }
-        Ok(Self { terms })
+        Ok(Self {
+            terms,
+            postings,
+            rank_tail_digest,
+        })
     }
 
     /// Enumerate the very same distinct edges for positive membership checks
     /// and the cardinality used to reject surplus live postings.
+    #[cfg(test)]
     fn visit(
         &mut self,
+        visit: impl FnMut(PostingFamily, SourcePostingTerm<'a>) -> Result<(), TantivySourceError>,
+    ) -> Result<PostingEdgeCounts, TantivySourceError> {
+        self.visit_controlled(None, visit)
+    }
+
+    fn visit_controlled(
+        &mut self,
+        cancelled: Option<&AtomicBool>,
         mut visit: impl FnMut(PostingFamily, SourcePostingTerm<'a>) -> Result<(), TantivySourceError>,
     ) -> Result<PostingEdgeCounts, TantivySourceError> {
         let mut counts = PostingEdgeCounts::default();
@@ -5344,10 +5498,12 @@ impl<'a> SourcePostingEdges<'a> {
             (PostingFamily::FieldRaw, &mut counts.field_raw),
             (PostingFamily::FieldFolded, &mut counts.field_folded),
         ] {
+            check_projection_cancelled(cancelled)?;
             self.terms
                 .sort_unstable_by(|left, right| family.compare(*left, *right));
             let mut previous = None;
             for term in &self.terms {
+                check_projection_cancelled(cancelled)?;
                 if previous.is_none_or(|prior| family.compare(prior, *term).is_ne()) {
                     visit(family, *term)?;
                     *count = count.checked_add(1).ok_or(Error::SizeLimit)?;
@@ -5395,12 +5551,30 @@ fn consume_posting_cover_work_unit(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_exact_live_posting_cover(
     searcher: &tantivy::Searcher,
     fields: ProjectionFields,
     expected: PostingEdgeCounts,
     maximum_work_units: u64,
 ) -> Result<PostingCoverScanWork, TantivySourceError> {
+    validate_exact_live_posting_cover_controlled(
+        searcher,
+        fields,
+        expected,
+        maximum_work_units,
+        None,
+    )
+}
+
+fn validate_exact_live_posting_cover_controlled(
+    searcher: &tantivy::Searcher,
+    fields: ProjectionFields,
+    expected: PostingEdgeCounts,
+    maximum_work_units: u64,
+    cancelled: Option<&AtomicBool>,
+) -> Result<PostingCoverScanWork, TantivySourceError> {
+    check_projection_cancelled(cancelled)?;
     let mut total_edges_scanned = 0u64;
     let mut total_work_units = 0u64;
     for (field, expected_edges) in [
@@ -5414,6 +5588,7 @@ fn validate_exact_live_posting_cover(
             let inverted_index = segment.inverted_index(field)?;
             let mut terms = inverted_index.terms().stream()?;
             while let Some((term, term_info)) = terms.next() {
+                check_admission_cancelled(cancelled, "cover")?;
                 // Charge the dictionary entry plus its key bytes; term iteration can otherwise
                 // hide a large amount of work behind a small number of very long forged terms.
                 let term_units = u64::try_from(term.len())
@@ -5432,6 +5607,7 @@ fn validate_exact_live_posting_cover(
                     if doc == TERMINATED {
                         break;
                     }
+                    check_projection_cancelled(cancelled)?;
                     consume_posting_cover_work_unit(&mut total_work_units, 1, maximum_work_units)?;
                     total_edges_scanned =
                         total_edges_scanned.checked_add(1).ok_or(Error::SizeLimit)?;
@@ -5468,8 +5644,11 @@ fn bind_document_addresses(
     state: &DocumentState,
     fields: ProjectionFields,
     validate_exact_posting_cover: bool,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<BindingWork, TantivySourceError> {
+    check_projection_cancelled(cancelled)?;
     for entry in &mut documents.live {
+        check_projection_cancelled(cancelled)?;
         entry.address = None;
         entry.segment_id = None;
     }
@@ -5508,6 +5687,7 @@ fn bind_document_addresses(
             .bytes(RANK_MATERIAL_FIELD_NAME)?
             .ok_or_else(|| TantivySource::corrupt("rank payload fast field is missing"))?;
         for doc in segment.doc_ids_alive() {
+            check_admission_cancelled(cancelled, "row")?;
             work.payload_rows_scanned = work
                 .payload_rows_scanned
                 .checked_add(1)
@@ -5543,7 +5723,13 @@ fn bind_document_addresses(
                 )
                 .into());
             }
-            let postings = validate_rank_material_tail(bytes, offset, field_count, limits)?;
+            let postings = validate_rank_material_tail_controlled(
+                bytes,
+                offset,
+                field_count,
+                limits,
+                &mut || check_projection_cancelled(cancelled),
+            )?;
             let index = documents
                 .live
                 .binary_search_by_key(&ordinal, |entry| entry.ordinal)
@@ -5559,8 +5745,21 @@ fn bind_document_addresses(
                     "Tantivy row identity is outside the selected document state",
                 )
             })?;
-            let (source_postings, source_tail_digest) =
-                canonical_rank_material_tail(source_fields)?;
+            // Cold admission needs borrowed edge descriptors anyway. Admit
+            // those and the exact canonical rank tail in one source pass.
+            let mut source_edges = if validate_exact_posting_cover {
+                Some(SourcePostingEdges::admit_controlled(
+                    source_fields,
+                    entry.document.postings,
+                    cancelled,
+                )?)
+            } else {
+                None
+            };
+            let (source_postings, source_tail_digest) = match &source_edges {
+                Some(edges) => (edges.postings, edges.rank_tail_digest),
+                None => canonical_rank_material_tail(source_fields)?,
+            };
             if entry.address.is_some()
                 || entry.segment_id.is_some()
                 || id != *entry.document.id.as_bytes()
@@ -5577,6 +5776,7 @@ fn bind_document_addresses(
             }
             let [raw_index, folded_index, field_raw_index, field_folded_index] = &posting_indexes;
             let mut require_edge = |family, source: SourcePostingTerm<'_>| {
+                check_admission_cancelled(cancelled, "membership")?;
                 let ((field, inverted_index), value) = match family {
                     PostingFamily::Raw => (raw_index, std::borrow::Cow::Borrowed(source.term)),
                     PostingFamily::Folded => (
@@ -5611,8 +5811,10 @@ fn bind_document_addresses(
                 Ok(())
             };
             if validate_exact_posting_cover {
-                let mut edges = SourcePostingEdges::admit(source_fields, entry.document.postings)?;
-                expected_postings.add(edges.visit(require_edge)?)?;
+                let edges = source_edges.as_mut().ok_or_else(|| {
+                    TantivySource::corrupt("cold source edge admission is missing")
+                })?;
+                expected_postings.add(edges.visit_controlled(cancelled, require_edge)?)?;
             } else {
                 // Freshly built ephemeral projections retain their prior streaming
                 // envelope; the row scratch bound belongs to durable cold admission.
@@ -5645,11 +5847,12 @@ fn bind_document_addresses(
         .into());
     }
     if validate_exact_posting_cover {
-        work.posting_cover_edges_scanned = validate_exact_live_posting_cover(
+        work.posting_cover_edges_scanned = validate_exact_live_posting_cover_controlled(
             &searcher,
             fields,
             expected_postings,
             MAX_POSTING_COVER_SCAN_WORK_UNITS,
+            cancelled,
         )?
         .edges_scanned;
     }
@@ -5976,6 +6179,26 @@ fn field_weight(field: &str) -> u16 {
         "documentation" => 2,
         _ => 1,
     }
+}
+
+fn check_admission_cancelled(
+    cancelled: Option<&AtomicBool>,
+    _point: &'static str,
+) -> Result<(), TantivySourceError> {
+    #[cfg(test)]
+    TEST_ADMISSION_CANCEL.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((point, remaining, control)) = slot.as_mut()
+            && *point == _point
+        {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                control.store(true, Ordering::Release);
+                *slot = None;
+            }
+        }
+    });
+    check_projection_cancelled(cancelled)
 }
 
 fn check_projection_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), TantivySourceError> {
