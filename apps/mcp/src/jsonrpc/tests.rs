@@ -580,6 +580,7 @@ fn actual_go_25_row_summary_retains_typed_facts_and_a_valid_binary_owner_mac() {
 /// A fixture product with one project, one module, and one declaration.
 #[derive(Default)]
 struct Fake {
+    surface_dispatches: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     health_calls: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// When set, every probe reports the endpoint as unreachable.
     offline: bool,
@@ -1166,6 +1167,9 @@ impl Engine for Fake {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        if let Some(counter) = &self.surface_dispatches {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.surface_commands.push(command.clone());
         if let (SurfaceCommand::PackageSourceMembership { request }, Some(rows)) =
             (&command, &self.membership_rows)

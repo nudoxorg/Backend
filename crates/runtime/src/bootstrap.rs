@@ -534,8 +534,8 @@ fn resolve_candidate_executable(
     resolve()
 }
 
-/// Only Ready/Pending relinquishes the exact child to the existing owner
-/// lifecycle. Errors and unwinding retain custody through kill and kernel wait.
+/// Only Ready/Pending transfers the exact child to its exit waiter. Errors and
+/// unwinding retain custody through kill and kernel wait.
 /// Kernel process retirement, like spawn itself, is not claimed interruptible.
 struct StartupChild {
     child: Child,
@@ -587,8 +587,44 @@ fn observe_owned_candidate_cancellable(
         progress,
         keep_waiting,
     )?;
-    candidate.handed_off = true;
+    // Observation timeout is not owner cancellation. The candidate keeps its
+    // ordinary idle lifecycle, while an exact Child waiter prevents a zombie
+    // if this long-lived surface is still attached when that owner later exits.
+    drop(handoff_candidate(candidate).map_err(RuntimeError::Io)?);
     Ok(result)
+}
+
+fn handoff_candidate(candidate: StartupChild) -> io::Result<std::thread::JoinHandle<()>> {
+    handoff_candidate_with(candidate, |waiter| {
+        std::thread::Builder::new()
+            .name("locald-exit".to_owned())
+            .spawn(waiter)
+    })
+}
+
+fn handoff_candidate_with(
+    candidate: StartupChild,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<std::thread::JoinHandle<()>>,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    // Keep one guard outside the spawn closure until thread creation succeeds.
+    // A failed handoff drops that guard and retires only this exact child.
+    let retained = std::sync::Arc::new(std::sync::Mutex::new(candidate));
+    let waiter = std::sync::Arc::clone(&retained);
+    spawn(Box::new(move || {
+        let mut candidate = waiter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match candidate.child.wait() {
+            Ok(_) => candidate.handed_off = true,
+            // Another exact-child waiter may already have reaped the process.
+            // ECHILD cannot authorize signalling a possibly reused numeric PID.
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::CHILD.raw_os_error()) => {
+                candidate.handed_off = true;
+            }
+            Err(_) => {}
+        }
+        // A wait failure retains the original guard's kill-and-wait cleanup.
+    }))
 }
 
 fn not_started() -> LocaldStartup {
@@ -1374,6 +1410,75 @@ mod tests {
                 let _ = waitpid(Some(self.0), WaitOptions::empty());
             }
         }
+    }
+
+    #[test]
+    fn successful_handoff_keeps_the_candidate_alive_then_kernel_reaps_its_exit() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "IFS= read -r release; exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("exact owned child");
+        let input = child.stdin.take();
+        let pid = Pid::from_raw(child.id().cast_signed()).expect("PID");
+        let peer = UnreapedPeer(pid);
+        let waiter = handoff_candidate(StartupChild {
+            child,
+            handed_off: false,
+        })
+        .expect("handoff");
+        let live = matches!(waitpid(Some(pid), WaitOptions::NOHANG), Ok(None));
+        if let Some(mut input) = input {
+            let _ = input.write_all(b"release\n");
+        }
+        waiter.join().expect("exact exit waiter");
+        let reaped = matches!(
+            waitpid(Some(pid), WaitOptions::NOHANG),
+            Err(rustix::io::Errno::CHILD)
+        );
+        drop(peer);
+        assert!(
+            live,
+            "successful Ready/Pending handoff must not kill a live owner"
+        );
+        assert!(
+            reaped,
+            "later exit must be kernel-reaped by its exact Child waiter"
+        );
+    }
+
+    #[test]
+    fn failed_exit_waiter_spawn_retains_exact_child_cleanup() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+        let child = Command::new("/bin/sh")
+            .args(["-c", "kill -STOP $$"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("exact owned child");
+        let pid = Pid::from_raw(child.id().cast_signed()).expect("PID");
+        let peer = UnreapedPeer(pid);
+        let result = handoff_candidate_with(
+            StartupChild {
+                child,
+                handed_off: false,
+            },
+            |_waiter| Err(io::Error::other("controlled exit waiter spawn failure")),
+        );
+        let reaped = matches!(
+            waitpid(Some(pid), WaitOptions::NOHANG),
+            Err(rustix::io::Errno::CHILD)
+        );
+        drop(peer);
+        assert!(result.is_err());
+        assert!(
+            reaped,
+            "failed thread handoff must not orphan or forget its child"
+        );
     }
 
     #[test]
