@@ -486,8 +486,8 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
     assert!(help.contains("--passive"));
     assert!(help.contains("nudox add ."));
     assert!(help.contains("nudox search \"error handling\""));
-    assert!(help.contains("claude mcp add --scope user --transport stdio nudox"));
-    assert!(help.contains("--project '${CLAUDE_PROJECT_DIR:-.}'"));
+    assert!(help.contains("nudox mcp-config"));
+    assert!(help.contains("no config writes or service start"));
 }
 
 #[test]

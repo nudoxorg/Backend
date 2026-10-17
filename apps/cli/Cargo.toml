@@ -29,6 +29,7 @@ sha2.workspace = true
 
 [dev-dependencies]
 blake3.workspace = true
+tempfile.workspace = true
 
 # The FIFO-refusal test (Linux only) makes its FIFO with mkfifoat.
 [target.'cfg(unix)'.dev-dependencies]
