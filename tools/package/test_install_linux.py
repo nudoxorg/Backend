@@ -150,7 +150,7 @@ class InstallerFilesystemTests(unittest.TestCase):
             prefix = Path(directory).resolve() / "prefix"
             with patch.object(installer.sys, "platform", "linux"), \
                  patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
-                 patch.object(installer, "_system_elf_loader_target", return_value=installer.KNOWN_NIXOS_STUB_INTERPRETER), \
+                 patch.object(installer, "_system_elf_loader_target", return_value="/nix/store/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"), \
                  patch.object(installer, "load_release") as load_release, \
                  patch.object(installer, "download_archive") as download_archive, \
                  patch.dict(os.environ, {"HOME": directory}):
@@ -162,7 +162,7 @@ class InstallerFilesystemTests(unittest.TestCase):
 
     def test_real_glibc_and_nix_ld_interpreters_are_not_refused(self):
         from types import SimpleNamespace
-        for target in ("ld-linux-x86-64.so.2", "nix-ld", None):
+        for target in ("/lib64/ld-linux-x86-64.so.2", "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-nix-ld", None):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
                 with patch.object(installer.sys, "platform", "linux"), \
                      patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
@@ -181,7 +181,16 @@ class InstallerFilesystemTests(unittest.TestCase):
             link = root / "ld-linux-x86-64.so.2"
             link.symlink_to(target)
             with patch.object(installer, "SYSTEM_ELF_INTERPRETER", link):
-                self.assertEqual(installer._system_elf_loader_target(), installer.KNOWN_NIXOS_STUB_INTERPRETER)
+                self.assertEqual(installer._system_elf_loader_target(), target.resolve().as_posix())
+
+    def test_known_stub_match_requires_nix_store_hash_for_resolved_paths(self):
+        self.assertTrue(installer._is_known_nixos_stub_target(installer.KNOWN_NIXOS_STUB_INTERPRETER))
+        self.assertTrue(installer._is_known_nixos_stub_target(
+            "/nix/store/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"))
+        self.assertFalse(installer._is_known_nixos_stub_target(
+            "/tmp/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"))
+        self.assertFalse(installer._is_known_nixos_stub_target(
+            "/nix/store/invalidhash-stub-ld-x86_64-unknown-linux-musl"))
 
     def test_channel_rerun_skips_archive_only_after_receipt_and_file_recheck(self):
         with tempfile.TemporaryDirectory() as directory:

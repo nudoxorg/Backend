@@ -400,20 +400,32 @@ def _nixos_stub_loader_diagnosis(stderr) -> str | None:
 
 SYSTEM_ELF_INTERPRETER = Path("/lib64/ld-linux-x86-64.so.2")
 KNOWN_NIXOS_STUB_INTERPRETER = "stub-ld-x86_64-unknown-linux-musl"
+KNOWN_NIXOS_STUB_TARGET = re.compile(
+    r"/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-"
+    + re.escape(KNOWN_NIXOS_STUB_INTERPRETER)
+)
 
 
 def _system_elf_loader_target() -> str | None:
-    """Return the resolved system ELF interpreter basename when available."""
+    """Return the resolved system ELF interpreter path when available."""
     try:
-        return SYSTEM_ELF_INTERPRETER.resolve(strict=True).name
+        return SYSTEM_ELF_INTERPRETER.resolve(strict=True).as_posix()
     except (OSError, RuntimeError):
         return None
 
 
+def _is_known_nixos_stub_target(target: str | None) -> bool:
+    # Keep the bare value useful for unit fixtures, but on real hosts require
+    # the exact Nix store path shape seen in the failing NixOS loader.
+    return target == KNOWN_NIXOS_STUB_INTERPRETER or bool(
+        isinstance(target, str) and KNOWN_NIXOS_STUB_TARGET.fullmatch(target)
+    )
+
+
 def _reject_known_unsupported_loader() -> None:
-    # Refuse only the exact generic stub observed on ILO. A real glibc loader
-    # or nix-ld target remains eligible regardless of the distribution ID.
-    if _system_elf_loader_target() == KNOWN_NIXOS_STUB_INTERPRETER:
+    # Refuse only the exact Nix store stub target observed on ILO. A real
+    # glibc loader or nix-ld target remains eligible regardless of distro ID.
+    if _is_known_nixos_stub_target(_system_elf_loader_target()):
         raise InstallError(
             "the system ELF interpreter resolves to the NixOS generic stub loader, "
             "which cannot start these packaged executables. Use a working glibc loader "
