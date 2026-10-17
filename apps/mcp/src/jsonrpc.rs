@@ -34,7 +34,7 @@ use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
-    McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer,
+    McpInvocation, Probe, Request, answer_paged, bounded_text,
     encode_answer_with_call, encode_serializable, estimate_tokens, fault_value, lower_with_opener,
     markdown, oversized_fault, record_list,
 };
