@@ -62,7 +62,7 @@ fn fixture(docs: &[DocInput<'_>], depth: usize) -> Vec<u8> {
     let item = TreeItemInput {
         name: b"enabled",
         anonymous_callable_anchor: None,
-        kind: ItemKind::Variable,
+        kind: ItemKind::Static,
         visibility: Visibility::Public,
         authority,
         parent: None,
