@@ -365,30 +365,34 @@ mod tests {
     struct TraceFile(PathBuf);
 
     impl TraceFile {
-        fn create() -> (Self, File) {
+        fn create() -> Result<(Self, File), String> {
             static NEXT: AtomicU64 = AtomicU64::new(0);
+            let unix_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| format!("read trace fixture clock: {error}"))?
+                .as_nanos();
             let path = std::env::temp_dir().join(format!(
                 "nudox-frame-collection-{}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
+                unix_nanos,
                 NEXT.fetch_add(1, Ordering::Relaxed),
             ));
             let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
-                .unwrap();
-            (Self(path), file)
+                .map_err(|error| format!("create trace fixture {}: {error}", path.display()))?;
+            Ok((Self(path), file))
         }
 
-        fn lines(&self) -> Vec<serde_json::Value> {
+        fn lines(&self) -> Result<Vec<serde_json::Value>, String> {
             std::fs::read_to_string(&self.0)
-                .unwrap()
+                .map_err(|error| format!("read trace fixture {}: {error}", self.0.display()))?
                 .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
+                .map(|line| {
+                    serde_json::from_str(line)
+                        .map_err(|error| format!("parse trace fixture line: {error}"))
+                })
                 .collect()
         }
     }
@@ -413,8 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn a_collection_watermark_follows_the_flushed_batch_and_keeps_loss_visible() {
-        let (file, output) = TraceFile::create();
+    fn a_collection_watermark_follows_the_flushed_batch_and_keeps_loss_visible()
+    -> Result<(), String> {
+        let (file, output) = TraceFile::create()?;
         let cut = Instant::now();
         let sink = Sink {
             #[cfg(target_os = "linux")]
@@ -462,7 +467,7 @@ mod tests {
                 dropped: 2
             }
         ));
-        let lines = file.lines();
+        let lines = file.lines()?;
         assert_eq!(lines.len(), 5);
         assert_eq!(lines[0]["name"], "frame");
         assert_eq!(lines[1]["name"], "frame_lifecycle_dropped");
@@ -479,15 +484,21 @@ mod tests {
         assert_eq!(watermark["pid"], std::process::id());
         assert_eq!(watermark["collection"], 7);
         assert_eq!(watermark["collected_through_ms"], 0.0);
-        assert!(watermark["t_ms"].as_f64().unwrap() >= 0.0);
+        assert!(
+            watermark["t_ms"]
+                .as_f64()
+                .ok_or_else(|| "trace watermark has no numeric timestamp".to_owned())?
+                >= 0.0
+        );
         assert_eq!(watermark["timings"], 1);
         assert_eq!(watermark["lifecycle"], 2);
         assert_eq!(watermark["dropped"], 2);
+        Ok(())
     }
 
     #[test]
-    fn an_empty_collection_still_reports_completion_without_a_frame() {
-        let (file, output) = TraceFile::create();
+    fn an_empty_collection_still_reports_completion_without_a_frame() -> Result<(), String> {
+        let (file, output) = TraceFile::create()?;
         let cut = Instant::now();
         let sink = Sink {
             #[cfg(target_os = "linux")]
@@ -511,13 +522,17 @@ mod tests {
                 }
             ));
         }
-        let lines = file.lines();
+        let lines = file.lines()?;
         assert_eq!(lines.len(), 2);
         assert_eq!(
             lines
                 .iter()
-                .map(|line| line["collection"].as_u64().unwrap())
-                .collect::<Vec<_>>(),
+                .map(|line| {
+                    line["collection"]
+                        .as_u64()
+                        .ok_or_else(|| "trace collection id is not an unsigned integer".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             [1, 2]
         );
         for line in lines {
@@ -527,18 +542,22 @@ mod tests {
             assert_eq!(line["lifecycle"], 0);
             assert_eq!(line["dropped"], 0);
         }
+        Ok(())
     }
 
     #[test]
-    fn a_failed_batch_write_cannot_publish_a_collection_watermark() {
-        let (file, output) = TraceFile::create();
+    fn a_failed_batch_write_cannot_publish_a_collection_watermark() -> Result<(), String> {
+        let (file, output) = TraceFile::create()?;
         drop(output);
         let sink = Sink {
             #[cfg(target_os = "linux")]
             _native_clock: None,
             epoch: Instant::now(),
             out: Mutex::new(Output {
-                writer: BufWriter::new(File::open(&file.0).unwrap()),
+                writer: BufWriter::new(
+                    File::open(&file.0)
+                        .map_err(|error| format!("open trace fixture for failure test: {error}"))?,
+                ),
                 failed: false,
             }),
         };
@@ -554,13 +573,21 @@ mod tests {
             }
         ));
         assert!(
-            file.lines().is_empty(),
+            file.lines()?.is_empty(),
             "failed records cannot be followed by a success watermark"
         );
         // Repair only the test's file handle. The sticky loss state must still
         // reject later completion; a collector has already consumed that batch.
-        sink.out.lock().unwrap().writer =
-            BufWriter::new(OpenOptions::new().write(true).open(&file.0).unwrap());
+        let repaired_writer = OpenOptions::new()
+            .write(true)
+            .open(&file.0)
+            .map_err(|error| format!("reopen trace fixture for failure test: {error}"))?;
+        let mut output = sink
+            .out
+            .lock()
+            .map_err(|_| "trace output mutex poisoned during failure test".to_owned())?;
+        output.writer = BufWriter::new(repaired_writer);
+        drop(output);
         assert!(!write_frame_collection(
             &sink,
             "app-ui",
@@ -573,8 +600,9 @@ mod tests {
             }
         ));
         assert!(
-            file.lines().is_empty(),
+            file.lines()?.is_empty(),
             "IO recovery cannot conceal an earlier unrecorded batch"
         );
+        Ok(())
     }
 }

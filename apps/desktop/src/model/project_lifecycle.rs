@@ -440,7 +440,8 @@ mod tests {
     }
 
     #[test]
-    fn typed_installed_compiler_refusal_keeps_shared_words_and_ignores_raw_owner_text() {
+    fn typed_installed_compiler_refusal_keeps_shared_words_and_ignores_raw_owner_text()
+    -> Result<(), String> {
         use backend_library::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
             SourceAuthority, TypeScriptCompilerAdmissionCause as C,
@@ -449,10 +450,15 @@ mod tests {
         };
         use backend_semantic::vocabulary::{Language, Stage};
         use backend_version::ContentId;
-        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), C::RuntimeFiles {
+        let detail = D::new(
+            R::SelectedCompiler,
+            V::new("7.0.2"),
+            C::RuntimeFiles {
                 observed: 257,
                 maximum: 256,
-            }).unwrap();
+            },
+        )
+        .ok_or_else(|| "compiler refusal detail is not representable".to_owned())?;
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {
@@ -472,9 +478,10 @@ mod tests {
                 .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
             },
         )
-        .unwrap()
-        .unwrap();
-        let mut row = WorkspaceProject::indexing("/tmp/nx-installed-compiler").unwrap();
+        .map_err(|error| format!("project compiler terminal: {error}"))?
+        .ok_or_else(|| "installed compiler refusal did not produce a package failure".to_owned())?;
+        let mut row = WorkspaceProject::indexing("/tmp/nx-installed-compiler")
+            .map_err(|error| format!("construct project row: {error}"))?;
         row.error = Some("untrusted /private/sdk authority.secret".into());
         let mut saved = claim(&row.id, 0x75);
         saved.observation = Some(observation(
@@ -494,13 +501,25 @@ mod tests {
             row.compiler_refusal_words(),
             Some(format!("{}; {}", failure.kind_tag(), detail.detail()))
         );
-        assert!(!row.compiler_refusal_words().unwrap().contains("/private"));
-        row.operation.as_mut().unwrap().key =
-            backend_library::IndexOperationKey::from_bytes([0x76; 32]).unwrap();
+        assert!(
+            !row.compiler_refusal_words()
+                .ok_or_else(
+                    || "matching compiler refusal should have presentation words".to_owned()
+                )?
+                .contains("/private")
+        );
+        row.operation
+            .as_mut()
+            .ok_or_else(|| {
+                "saved operation claim is required for identity-mismatch control".to_owned()
+            })?
+            .key = backend_library::IndexOperationKey::from_bytes([0x76; 32])
+            .map_err(|error| format!("construct mismatched operation key: {error}"))?;
         assert_eq!(
             row.compiler_refusal_words(),
             None,
             "unmatched evidence cannot supply compiler words"
         );
+        Ok(())
     }
 }
