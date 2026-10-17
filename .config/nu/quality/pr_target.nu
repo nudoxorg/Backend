@@ -14,9 +14,9 @@ export def managed-pr-target-dir [workspace_root: string, cache_root: string, ca
         error make {msg: "managed PR target roots must already exist and resolve physically"}
     }
 
-    let physical_cache = ($cache.stdout | str trim)
-    let physical_home = ($home.stdout | str trim)
-    let physical_workspace = ($workspace.stdout | str trim)
+    let physical_cache = $cache.stdout | str trim
+    let physical_home = $home.stdout | str trim
+    let physical_workspace = $workspace.stdout | str trim
     let roots_exist = (
         [$physical_cache $physical_home $physical_workspace]
         | all {|path| (^test -d $path | complete).exit_code == 0 }
@@ -24,12 +24,12 @@ export def managed-pr-target-dir [workspace_root: string, cache_root: string, ca
     if not $roots_exist {
         error make {msg: "managed PR target roots must already exist and be directories"}
     }
-    let expected_cache = ($physical_home | path dirname | path join "managed")
+    let expected_cache = $physical_home | path dirname | path join "managed"
     if $physical_cache != $expected_cache {
         error make {msg: "managed PR target cache does not match the lane Cargo home"}
     }
 
-    let target = ($physical_cache | path join "target")
+    let target = $physical_cache | path join "target"
     if ($target == $physical_workspace) or ($target | str starts-with $"($physical_workspace)/") {
         error make {msg: "managed PR target must remain outside the source worktree"}
     }
