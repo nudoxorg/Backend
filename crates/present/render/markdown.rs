@@ -893,6 +893,10 @@ fn product_projection(
     {
         lines.push(format!("Continue: `{command}`"));
     }
+    if matches!(target, None | Some(ContinuationTarget::CliOption))
+        && let Some(command) = view.semantic_versions_cli_continuation(detail.unwrap_or(Detail::Standard)) {
+        lines.push(format!("Continue: `{command}`"));
+    }
     index_search_page_footer(view, &mut lines, target);
     index_job_footer(view, detail, &mut lines);
     lines.finish()

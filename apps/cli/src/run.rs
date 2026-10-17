@@ -218,6 +218,20 @@ pub(crate) fn execute_with_output_admission(
     let Request::Surface(command) = request else {
         return backend_present::answer(&mut engine, request);
     };
+    if let SurfaceCommand::SemanticVersions { package, limit, cursor } = command.as_ref() {
+        let original_context = engine.session.request_context().cloned();
+        let lifetime = original_context.clone().unwrap_or_default();
+        lifetime.read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        engine.session.set_request_context(Some(lifetime.clone()))
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        let result = versions_with_output_admission(&mut engine, package, *limit, cursor.as_ref(),
+            || lifetime.check().map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole)),
+            &mut admit);
+        let restored = engine.session.set_request_context(original_context)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     if let SurfaceCommand::PackageSourceMembership { request } = command.as_ref() {
         let mut selection = backend_present::PackageSourceMembershipSelection::new(request)?;
         let original_context = engine.session.request_context().cloned();
@@ -310,6 +324,48 @@ pub(crate) fn execute_with_output_admission(
     result.and_then(|answer| restored.map(|()| answer))
 }
 
+/// The first native descriptor page may shrink under actual output admission;
+/// a continuation's authenticated credit is never changed. Each attempt keeps
+/// the same source/compiler root pair, total and original request lifetime.
+fn versions_with_output_admission(
+    engine: &mut dyn Engine,
+    package: &backend_library::PackageReference,
+    limit: u16,
+    cursor: Option<&backend_library::SemanticVersionsCursor>,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&Answer) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    let mut effective = limit;
+    let mut pinned = None;
+    loop {
+        check()?;
+        let command = SurfaceCommand::SemanticVersions { package: package.clone(), limit: effective, cursor: cursor.cloned() };
+        command.admit().map_err(|error| Fault::admission(error, backend_present::Operand::Whole))?;
+        let reply = engine.surface(command.clone())
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        backend_library::admit_surface_reply(&command, &reply)
+            .map_err(|error| Fault::from_client_error(&ClientError::Protocol(error.to_string()), backend_present::Operand::Whole))?;
+        let SurfaceReply::SemanticVersionsPage(page) = &reply else {
+            return Err(Fault::from_client_error(&ClientError::Protocol("native semantic versions page changed shape".to_owned()), backend_present::Operand::Whole));
+        };
+        let basis = (page.source_relation_root, page.semantic_relation_root, page.total);
+        if pinned.is_some_and(|expected| expected != basis) {
+            return Err(Fault::from_client_error(&ClientError::Protocol("semantic version roots changed while selecting a bounded page; restart discovery explicitly".to_owned()), backend_present::Operand::Whole));
+        }
+        pinned = Some(basis);
+        let answer = Answer::Product(Box::new(backend_present::product_view_for_owned_command(&command, reply)));
+        let result = admit(&answer);
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault) if cursor.is_none() && effective > 1 && fault.cause().slug() == backend_present::CauseSlug::Oversized => {
+                effective = effective.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
 fn membership_with_output_admission(
     engine: &mut dyn Engine,
     selection: &mut backend_present::PackageSourceMembershipSelection,
@@ -341,6 +397,10 @@ fn membership_with_output_admission(
 #[cfg(test)]
 #[path = "tests/membership_admission.rs"]
 mod membership_admission_tests;
+
+#[cfg(test)]
+#[path = "tests/versions_admission.rs"]
+mod versions_admission_tests;
 
 /// One surface exchange with no owner replacement. A command that changes
 /// state cannot be proven undelivered once its connection is lost, so the

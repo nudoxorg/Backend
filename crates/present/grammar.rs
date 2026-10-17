@@ -988,10 +988,10 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "A pinned purl or an exact local package label.",
         )],
         options: &[
-            LIMIT.with_page_limit(PageLimitDomain::new(backend_library::QueryLimit::MAX, 1)),
+            LIMIT.with_page_limit(PageLimitDomain::new(backend_library::QueryLimit::MAX, backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT)),
             CURSOR.with_continuation_domain(ContinuationDomain::NativeOwnerToken),
         ],
-        when: "Use before select-semantic-version to discover exact retained compiler identities. Default returns one bounded descriptor with complete history counts and a portable native semantic-source reference; resume the returned cursor for all versions.",
+        when: "Use before select-semantic-version to discover exact retained compiler identities. Default requests up to eight complete descriptors with history counts and portable native semantic-source references. The first page may be smaller to fit the complete response budget; copy the returned continuation with its effective page bound.",
     },
     CommandGrammar {
         name: "semantic-shapes",

@@ -60,6 +60,7 @@ mod rich_graph;
 mod semantic_shape;
 mod semantic_source;
 pub use semantic_source::{
+    DEFAULT_SEMANTIC_VERSIONS_LIMIT,
     AdmittedSemanticSourceChunk, SemanticHistoryProofReference, SemanticSourceAssembly,
     SemanticSourceChunk, SemanticSourceDocument, SemanticSourceError, SemanticSourceHistory,
     SemanticSourceIdentity, SemanticSourceMetadata, SemanticSourceRange,
