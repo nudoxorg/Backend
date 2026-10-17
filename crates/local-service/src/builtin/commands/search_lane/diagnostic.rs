@@ -528,9 +528,45 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn shared_observation_parent_is_refused_without_creating_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().expect("observation parent");
+        // Set the deliberately invalid mode explicitly too: this negative
+        // control must keep rejecting it even under an owner-only umask.
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("nonprivate parent");
+        let destination = directory.path().join(FILE_NAME);
+        let error = backend_platform::durable::write_private_atomic_unflushed(
+            &destination,
+            b"must remain unpublished",
+        )
+        .expect_err("nonprivate parents do not admit private diagnostics");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        publish(
+            Some(&destination),
+            b"optional diagnostic failure remains nonfatal",
+        );
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("parent entries")
+                .count(),
+            0,
+            "no destination or temporary bytes may be created in a rejected parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn latest_observation_is_private_bounded_and_never_follows_a_destination_link() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
-        let directory = tempfile::tempdir().expect("private observation directory");
+        // tempfile's default directory mode follows the process umask. The
+        // publisher requires an owner-only parent, just like the admitted
+        // production workspace; make that requirement explicit at creation.
+        let directory = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("private observation directory");
         let destination = directory.path().join(FILE_NAME);
         publish(None, b"not opted in");
         assert!(!destination.exists());
