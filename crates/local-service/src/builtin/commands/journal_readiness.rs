@@ -48,6 +48,11 @@ enum Wake {
     Close,
     #[cfg(test)]
     Barrier(mpsc::SyncSender<()>),
+    #[cfg(test)]
+    Hold {
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +229,12 @@ impl JournalReadiness {
                         #[cfg(test)]
                         Wake::Barrier(ready) => {
                             let _ = ready.send(());
+                            continue;
+                        }
+                        #[cfg(test)]
+                        Wake::Hold { entered, release } => {
+                            let _ = entered.send(());
+                            let _ = release.recv();
                             continue;
                         }
                         Wake::Changed => {}
@@ -448,6 +459,39 @@ impl JournalReadiness {
             );
             std::thread::yield_now();
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_reader(&mut self) -> mpsc::SyncSender<()> {
+        self.reader_barrier();
+        let (entered, receipt) = mpsc::sync_channel(1);
+        let (release, gate) = mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut hold = Wake::Hold {
+            entered,
+            release: gate,
+        };
+        loop {
+            match self.changed.wake.try_send(hold) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(returned)) => hold = returned,
+                Err(mpsc::TrySendError::Disconnected(_)) => panic!("reader disconnected"),
+            }
+            assert!(std::time::Instant::now() < deadline, "reader hold queued");
+            self.poll();
+            std::thread::yield_now();
+        }
+        loop {
+            self.poll();
+            match receipt.try_recv() {
+                Ok(()) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected(_)) => panic!("reader hold disconnected"),
+            }
+            assert!(std::time::Instant::now() < deadline, "reader is held");
+            std::thread::yield_now();
+        }
+        release
     }
 
     pub(super) fn close(&mut self) {
