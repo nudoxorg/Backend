@@ -3473,8 +3473,7 @@ impl CommandTransport for BoundedMembersTransport {
     }
 }
 
-#[test]
-fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_requests() {
+fn direct_member_fixture() -> (Arc<Mutex<Library>>, Arc<Mutex<Vec<Command>>>, SymbolKey) {
     let base = owner_with_package(1, 406, 0, &["pkg::models.py:994::Document"], Some("pkg"));
     let center = symbol_key("pkg::Thing000");
     let mut rows = base.view().rows().to_vec();
@@ -3495,6 +3494,12 @@ fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_req
     let library = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("catalog");
     let owner = Arc::new(Mutex::new(library));
     let requests = Arc::new(Mutex::new(Vec::new()));
+    (owner, requests, center)
+}
+
+#[test]
+fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_requests() {
+    let (owner, requests, center) = direct_member_fixture();
     let mut client = Session::from_transport(
         "/private/test-owner.sock",
         BoundedMembersTransport(Transport {
@@ -3609,4 +3614,117 @@ fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_req
             .iter()
             .any(|command| matches!(command, Command::Outline(_) | Command::OutlinePage { .. }))
     );
+}
+
+// Fault injection after the inner transport's strict reply admission exercises
+// the Session's last source guard independently of wire rejection. Every
+// replacement view and offered cursor is constructed through public typed APIs.
+struct ChangedMemberReplySource {
+    inner: BoundedMembersTransport,
+    source: Basis,
+    offered: Arc<Mutex<Option<PageContinuation>>>,
+}
+impl CommandTransport for ChangedMemberReplySource {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        let members = matches!(&request.command, Command::MembersPage { .. });
+        let mut reply = self.inner.request(request)?;
+        if members {
+            let CommandReply::ProjectionPage(page) = &mut reply.reply else {
+                panic!("actual member page");
+            };
+            assert!(
+                matches!(page.terminal, PageTerminal::More(_)),
+                "real fixture offers a successor"
+            );
+            let rows = page
+                .snapshot
+                .root
+                .rows()
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.basis = self.source;
+                    row
+                })
+                .collect();
+            let frontier = Frontier::new(
+                self.source.branch,
+                self.source.log,
+                self.source.schema,
+                self.source.root,
+                page.snapshot.root.frontier().sequence,
+            );
+            let changed = ViewRoot::new_incomplete(
+                page.snapshot.root.recipe(),
+                self.source,
+                frontier,
+                rows,
+                vec![],
+            )
+            .expect("consistent source-bound fault view");
+            let next = PageContinuation::from_cursor(Cursor::for_view_root(&changed));
+            page.snapshot.root = changed;
+            page.snapshot.next = Some(next.cursor());
+            page.terminal = PageTerminal::More(next);
+            *self.offered.lock().expect("offered") = Some(next);
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn direct_member_session_refuses_changed_reply_sources_before_retaining_any_cursor() {
+    let (owner, requests, center) = direct_member_fixture();
+    let source = {
+        let library = owner.lock().expect("owner");
+        Basis {
+            root: library.revision_root(),
+            ..library.view().basis()
+        }
+    };
+    let mut sources = [source; 5];
+    sources[0].root = view_state_root(&[]);
+    sources[1].object = object_version(b"changed returned object");
+    sources[2].branch = backend_library::branch_key("changed returned branch");
+    sources[3].log = backend_library::log_key("changed returned log");
+    sources[4].schema = source.schema + 1;
+    for changed in sources {
+        assert_ne!(changed, source);
+        let offered = Arc::new(Mutex::new(None));
+        let mut client = Session::from_transport(
+            "/private/test-owner.sock",
+            ChangedMemberReplySource {
+                inner: BoundedMembersTransport(Transport {
+                    owner: owner.clone(),
+                    requests: requests.clone(),
+                    graph_ids: None,
+                }),
+                source: changed,
+                offered: offered.clone(),
+            },
+        );
+        let reply = client
+            .document_symbol(center)
+            .expect("actual admitted owner document");
+        let CommandReply::Document(document) = reply.reply else {
+            panic!("document")
+        };
+        assert!(
+            matches!(
+                client.members_page(&document, 1, None),
+                Err(ClientError::StaleCursor)
+            ),
+            "changed returned source must refuse: {changed:?}"
+        );
+        let successor = offered
+            .lock()
+            .expect("offered")
+            .expect("transport offered a cursor");
+        assert!(
+            client.continuations.is_empty(),
+            "no rejected member cursor is retained"
+        );
+        assert!(!client.has_portable_query_continuation(successor));
+        assert!(client.encode_query_continuation(successor).is_err());
+    }
 }
