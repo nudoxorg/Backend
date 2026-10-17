@@ -1,9 +1,14 @@
 //! Real actor lanes keep an explicit cancellation independent of busy reads.
-#![allow(clippy::expect_used, clippy::panic)]
 use super::*;
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
 use std::time::Duration;
+
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn wrong_lane(message: &str) -> EngineFault {
+    EngineFault::Failed(ErrorValue::new(crate::core::FaultCode::Protocol, message))
+}
 
 struct HeldRead {
     entered: mpsc::Sender<()>,
@@ -33,7 +38,9 @@ impl EngineClient for Cancel {
             ..
         } = request
         else {
-            panic!("the mutation lane received a non-cancellation request");
+            return Err(wrong_lane(
+                "the mutation lane received a non-cancellation request",
+            ));
         };
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(EngineDto::IndexOperation {
@@ -55,14 +62,14 @@ impl EngineClient for Main {
     fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
         self.observer
             .lock()
-            .expect("observer")
+            .ok()?
             .take()
             .map(|client| Box::new(client) as Box<dyn EngineClient>)
     }
     fn index_cancellation_client(&self) -> Option<Box<dyn EngineClient>> {
         self.canceller
             .lock()
-            .expect("canceller")
+            .ok()?
             .take()
             .map(|client| Box::new(client) as Box<dyn EngineClient>)
     }
@@ -73,20 +80,20 @@ impl EngineClient for Main {
         Err(EngineFault::Cancelled)
     }
 }
-fn cancellation(owner: Option<IndexMutationLease>, id: u64) -> EngineRequest {
-    let project = LocalProjectId::new("/fixture/owned-cancel-lane").expect("project");
-    EngineRequest::CancelIndexOperation {
+fn cancellation(owner: Option<IndexMutationLease>, id: u64) -> TestResult<EngineRequest> {
+    let project = LocalProjectId::new("/fixture/owned-cancel-lane")?;
+    Ok(EngineRequest::CancelIndexOperation {
         owner,
         operation: crate::model::index_operation::tests::claim(&project, 0x81),
         project,
         request: RequestId::new(id),
         basis: VersionedRoot::unserved(),
         cancel: CancellationToken::new(),
-    }
+    })
 }
 
 #[test]
-fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() {
+fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() -> TestResult {
     let (main_entered, main_seen) = mpsc::channel();
     let (main_release, main_held) = mpsc::channel();
     let (read_entered, read_seen) = mpsc::channel();
@@ -105,8 +112,7 @@ fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() {
             release: main_held,
         },
         4,
-    )
-    .expect("three independent actor clients");
+    )?;
     assert!(matches!(
         actor.try_submit(EngineRequest::Root {
             project: None,
@@ -116,10 +122,8 @@ fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() {
         }),
         PushResult::Enqueued
     ));
-    main_seen
-        .recv_timeout(Duration::from_secs(1))
-        .expect("main read entered");
-    let project = LocalProjectId::new("/fixture/owned-cancel-lane").expect("project");
+    main_seen.recv_timeout(Duration::from_secs(1))?;
+    let project = LocalProjectId::new("/fixture/owned-cancel-lane")?;
     assert!(matches!(
         actor.try_submit(EngineRequest::IndexOperationStatus {
             operation: crate::model::index_operation::tests::claim(&project, 0x81),
@@ -130,10 +134,8 @@ fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() {
         }),
         PushResult::Enqueued
     ));
-    read_seen
-        .recv_timeout(Duration::from_secs(1))
-        .expect("status read entered");
-    let request = cancellation(IndexMutationLease::capture(None, None), 3);
+    read_seen.recv_timeout(Duration::from_secs(1))?;
+    let request = cancellation(IndexMutationLease::capture(None, None), 3)?;
     assert_eq!(
         request.coalesce_key(),
         None,
@@ -152,10 +154,11 @@ fn cancellation_has_a_one_shot_lane_while_main_and_status_reads_are_held() {
     actor.shutdown();
     assert!(matches!(event.result, Ok(EngineDto::IndexOperation { .. })));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
 }
 
 #[test]
-fn cancellation_without_a_current_mutation_lease_never_enters_the_client() {
+fn cancellation_without_a_current_mutation_lease_never_enters_the_client() -> TestResult {
     struct Factory(Arc<AtomicUsize>);
     impl EngineClient for Factory {
         fn index_cancellation_client(&self) -> Option<Box<dyn EngineClient>> {
@@ -164,23 +167,26 @@ fn cancellation_without_a_current_mutation_lease_never_enters_the_client() {
             }))
         }
         fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> {
-            panic!("cancellation must not run on the normal read client");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(wrong_lane(
+                "cancellation must not run on the normal read client",
+            ))
         }
     }
     let calls = Arc::new(AtomicUsize::new(0));
-    let actor = EngineActor::start(Factory(calls.clone()), 4).expect("actor");
+    let actor = EngineActor::start(Factory(calls.clone()), 4)?;
     let gate = super::super::owner::OwnerGate::ready(
         VersionedRoot::unserved(),
         crate::model::ServiceMode::Attached,
     );
     let lease = IndexMutationLease::capture(Some(&gate), gate.ready_epoch())
-        .expect("actual gate generation");
+        .ok_or("actual gate generation")?;
     gate.publish(super::super::owner::OwnerState::Failed(
         "old owner stopped".into(),
     ));
     for (id, owner) in [(4, None), (5, Some(lease))] {
         assert!(matches!(
-            actor.try_submit(cancellation(owner, id)),
+            actor.try_submit(cancellation(owner, id)?),
             PushResult::Enqueued
         ));
         let event = crate::runtime::wait::until_some(
@@ -199,4 +205,5 @@ fn cancellation_without_a_current_mutation_lease_never_enters_the_client() {
     }
     actor.shutdown();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    Ok(())
 }
