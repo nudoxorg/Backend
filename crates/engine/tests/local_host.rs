@@ -459,7 +459,10 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                     "select the exact function declaration, never its named result carrier"
                 );
                 let drive = drive.id;
-                let expected_start = u32::try_from(caller.find("set_note").unwrap()).unwrap();
+                let call_start = caller
+                    .find("set_note")
+                    .ok_or_else(|| std::io::Error::other("the source fixture contains set_note"))?;
+                let expected_start = u32::try_from(call_start).map_err(std::io::Error::other)?;
                 let mut count = 0;
                 for (_, occurrence) in reader.link_occurrences() {
                     let link = reader

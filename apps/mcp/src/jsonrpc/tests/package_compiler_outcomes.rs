@@ -307,7 +307,8 @@ fn compiler_selector_invalid_call_then_valid_and_typed_stale_keep_exact_request(
 }
 
 #[test]
-fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_and_mcp_budgets() {
+fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_and_mcp_budgets()
+-> Result<(), String> {
     use backend_library::{PackageCompilerCoveragePage, PackageCompilerCoverageSelector};
     use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
     let current = discovery();
@@ -317,7 +318,9 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
     let selector = PackageCompilerCoverageSelector {
         outcome: PackageCompilerOutcomeSelector {
             basis: basis.identity(),
-            profile: SemanticLanguageProfile::from_name("typescript").unwrap(),
+            profile: SemanticLanguageProfile::from_name("typescript").ok_or_else(|| {
+                "the TypeScript profile is present in the canonical test registry".to_owned()
+            })?,
         },
         catalog: [6; 32],
         generation: [7; 32],
@@ -342,14 +345,20 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
         completed: 41,
         row_count: 10,
         rows: vec![row.clone()].into_boxed_slice(),
-        next: Some(PackageCompilerOutcomeRead::Coverage(PackageCompilerCoverageSelector {
-            offset: 2,
-            ..selector
-        })),
+        next: Some(PackageCompilerOutcomeRead::Coverage(
+            PackageCompilerCoverageSelector {
+                offset: 2,
+                ..selector
+            },
+        )),
     };
-    assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
+    let page_bytes = serde_json::to_vec(&page)
+        .map_err(|error| format!("serialize the bounded coverage page: {error}"))?;
+    assert!(page_bytes.len() <= 4096);
+    let package = PackageReference::parse(PROJECT)
+        .map_err(|error| format!("parse the coverage test package: {error}"))?;
     let outcomes = PackageCompilerOutcomes::Coverage {
-        package: PackageReference::parse(PROJECT).unwrap(),
+        package: package.clone(),
         basis,
         selector,
         page,
@@ -358,22 +367,25 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
     let native = SurfaceReply::PackageCompilerOutcomes(outcomes.clone());
     backend_library::admit_surface_reply(
         &SurfaceCommand::PackageProfile {
-            package: PackageReference::parse(PROJECT).unwrap(),
+            package,
             compiler_outcome: Some(read),
         },
         &native,
     )
-    .unwrap();
+    .map_err(|error| format!("admit the captured coverage reply: {error:?}"))?;
     for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
         let answer = Answer::Product(Box::new(backend_present::product_view(&native)));
         let cli =
             backend_present::encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
                 .expect("complete bounded CLI coverage page");
         assert!(cli.bytes.len() <= 49152);
-        assert!(
-            backend_present::cl100k_tokens(std::str::from_utf8(&cli.bytes).unwrap()).unwrap()
-                <= MCP_CL100K_TOKEN_LIMIT
-        );
+        let cli_json = std::str::from_utf8(&cli.bytes)
+            .map_err(|error| format!("encoded CLI product is valid UTF-8: {error}"))?;
+        let cli_token_count = backend_present::cl100k_tokens(cli_json)
+            .map_err(|error| format!("count tokens in the encoded CLI product: {error:?}"))?;
+        assert!(cli_token_count <= MCP_CL100K_TOKEN_LIMIT);
+        let cli_value: Value = serde_json::from_slice(&cli.bytes)
+            .map_err(|error| format!("decode the encoded CLI product: {error}"))?;
         for registered in [false, true] {
             let mut server = ready(Fake {
                 surface_reply: Some(native.clone()),
@@ -387,18 +399,28 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
             };
             let response = request(&mut server, "tools/call", &params);
             assert_context_bounded(&response);
-            assert!(wire_tokens(&response).unwrap() <= MCP_CL100K_TOKEN_LIMIT);
+            let response_tokens = wire_tokens(&response)
+                .map_err(|error| format!("count tokens in the MCP response: {error:?}"))?;
+            assert!(response_tokens <= MCP_CL100K_TOKEN_LIMIT);
             // request() returns the actual encoded complete JSON-RPC envelope,
             // whose tools/call result owns both isError and structuredContent.
             assert_eq!(response["jsonrpc"], "2.0", "{response}");
             assert_eq!(response["id"], 9, "{response}");
             assert!(response.get("error").is_none(), "{response}");
-            let result = response.get("result").expect("correlated tools/call result");
+            let result = response
+                .get("result")
+                .expect("correlated tools/call result");
             assert_eq!(result["isError"], false, "{response}");
-            assert_eq!(result["structuredContent"], serde_json::from_slice::<Value>(&cli.bytes).unwrap(), "the complete CLI and MCP DTOs agree at the same detail");
+            assert_eq!(
+                result["structuredContent"], cli_value,
+                "the complete CLI and MCP DTOs agree at the same detail"
+            );
             let dto: backend_present::ProductDto =
-                serde_json::from_value(result["structuredContent"].clone()).unwrap();
-            let observed = dto.compiler_outcomes.expect("complete typed coverage observation");
+                serde_json::from_value(result["structuredContent"].clone())
+                    .map_err(|error| format!("decode the typed MCP product DTO: {error}"))?;
+            let observed = dto
+                .compiler_outcomes
+                .expect("complete typed coverage observation");
             assert_eq!(
                 observed, outcomes,
                 "full path/cause/source and continuation survive final transport envelope"
@@ -409,4 +431,5 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
             assert_eq!(page.rows.as_ref(), [row.clone()].as_slice());
         }
     }
+    Ok(())
 }
