@@ -214,6 +214,16 @@ impl RecordList {
         self
     }
 
+    /// Keeps the response's name-only scope separate from full search readiness.
+    #[must_use]
+    pub fn with_published_names(
+        mut self,
+        readiness: backend_library::PublishedSearchReadiness,
+    ) -> Self {
+        self.coverage = self.coverage.with_published_names(readiness);
+        self
+    }
+
     /// The sentence a renderer prints when [`Self::is_empty`] is true.
     #[must_use]
     pub fn empty_explanation(&self) -> String {

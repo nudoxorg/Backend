@@ -21,7 +21,13 @@ struct Envelope<'a> {
 enum CatalogReply<'a> {
     Names(Snapshot<'a>),
     Search(Snapshot<'a>),
+    PublishedNameSearch(PublishedNames<'a>),
     ProjectionPage(Page<'a>),
+}
+#[derive(Serialize)]
+struct PublishedNames<'a> {
+    snapshot: Snapshot<'a>,
+    readiness: crate::PublishedSearchReadiness,
 }
 #[derive(Serialize)]
 struct Page<'a> {
@@ -288,6 +294,12 @@ pub(super) fn serialize<S: serde::Serializer>(
     let body = match &reply.reply {
         CommandReply::Names(snapshot) => CatalogReply::Names(Snapshot::new(snapshot)),
         CommandReply::Search(snapshot) => CatalogReply::Search(Snapshot::new(snapshot)),
+        CommandReply::PublishedNameSearch(page) => {
+            CatalogReply::PublishedNameSearch(PublishedNames {
+                snapshot: Snapshot::new(&page.snapshot),
+                readiness: page.readiness,
+            })
+        }
         CommandReply::ProjectionPage(page) => CatalogReply::ProjectionPage(Page {
             snapshot: Snapshot::new(&page.snapshot),
             terminal: match page.terminal {

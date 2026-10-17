@@ -3476,3 +3476,126 @@ fn graph_confidence_versions_round_trip_without_promoting_legacy_or_conflicting_
     disagreement["rich_graph"]["edges"][0]["provenance"]["confidence"] = "compiler".into();
     assert!(decode(disagreement).unwrap_err().contains("confidence"));
 }
+
+#[test]
+fn published_name_stage_admission_cannot_claim_full_search_or_vector_success() {
+    let (library, _) = paged_query_fixture(0);
+    let query = Query::new(
+        "Thing",
+        library.revision_root(),
+        QueryLimit::new(1).expect("credit"),
+    );
+    let names = crate::PublishedNameSearchQuery::admit(query.clone()).expect("name grammar");
+    let snapshot = library
+        .search_published_names(&names)
+        .expect("current published names");
+    let page = crate::PublishedNameSearchPage {
+        snapshot: snapshot.clone(),
+        readiness: crate::PublishedSearchReadiness {
+            full_search: crate::FullSearchReadiness::Preparing,
+            semantic: crate::PublishedSemanticReadiness::Pending,
+        },
+    };
+    let reply = ReplyDto::new(71, CommandReply::PublishedNameSearch(page.clone()));
+    let initial = CommandDto::new(71, Command::Search(query.clone()));
+    assert_eq!(admit_reply(&initial, &reply), Ok(()));
+    let names_command = CommandDto::new(71, Command::SearchPublishedNames(names.clone()));
+    assert_eq!(admit_reply(&names_command, &reply), Ok(()));
+    let encoded = serde_json::to_vec(&names_command).expect("command wire");
+    assert_eq!(
+        CommandDto::decode_against(&encoded, &names_command).expect("exact stage"),
+        names_command
+    );
+    let bytes = serde_json::to_vec(&reply).expect("distinct tagged reply");
+    assert_eq!(
+        ReplyDto::decode_against(&bytes, &reply).expect("exact stage wire"),
+        reply
+    );
+    let ready = ReplyDto::new(
+        71,
+        CommandReply::PublishedNameSearch(crate::PublishedNameSearchPage {
+            readiness: crate::PublishedSearchReadiness {
+                full_search: crate::FullSearchReadiness::Ready,
+                semantic: crate::PublishedSemanticReadiness::NotQueried,
+            },
+            ..page.clone()
+        }),
+    );
+    assert!(
+        admit_reply(&initial, &ready).is_err(),
+        "initial auto search cannot needlessly degrade a ready projection"
+    );
+    assert_eq!(
+        admit_reply(&names_command, &ready),
+        Ok(()),
+        "name cursors remain name cursors after readiness"
+    );
+    for (full_search, semantic) in [
+        (
+            crate::FullSearchReadiness::Ready,
+            crate::PublishedSemanticReadiness::Pending,
+        ),
+        (
+            crate::FullSearchReadiness::Preparing,
+            crate::PublishedSemanticReadiness::NotQueried,
+        ),
+        (
+            crate::FullSearchReadiness::Retiring,
+            crate::PublishedSemanticReadiness::NotQueried,
+        ),
+    ] {
+        let inconsistent = ReplyDto::new(
+            71,
+            CommandReply::PublishedNameSearch(crate::PublishedNameSearchPage {
+                readiness: crate::PublishedSearchReadiness {
+                    full_search,
+                    semantic,
+                },
+                ..page.clone()
+            }),
+        );
+        assert!(admit_reply(&names_command, &inconsistent).is_err());
+        assert!(serde_json::to_vec(&inconsistent).is_err());
+    }
+    let wrong_basis = Query::new(
+        query.text(),
+        view_state_root(&[("changed".to_owned(), "source".to_owned())]),
+        query.limit(),
+    );
+    let wrong_basis = CommandDto::new(
+        71,
+        Command::SearchPublishedNames(
+            crate::PublishedNameSearchQuery::admit(wrong_basis).expect("same grammar"),
+        ),
+    );
+    assert!(
+        admit_reply(&wrong_basis, &reply).is_err(),
+        "no current-source substitution"
+    );
+    let cursor = snapshot.next.expect("bounded page");
+    let full_continued = CommandDto::new(71, Command::Search(query.clone().with_cursor(cursor)));
+    assert!(
+        admit_reply(&full_continued, &reply).is_err(),
+        "no cross-stage continuation"
+    );
+    let full_reply = ReplyDto::new(71, CommandReply::Search(snapshot));
+    assert!(admit_reply(&names_command, &full_reply).is_err());
+    let vector = reply
+        .clone()
+        .with_semantic_search_status(crate::SemanticSearchStatus::Available);
+    assert!(admit_reply(&names_command, &vector).is_err());
+    assert!(
+        serde_json::to_vec(&vector).is_err(),
+        "name evidence cannot report semantic ranking"
+    );
+    let mut page = page;
+    page.readiness.semantic = crate::PublishedSemanticReadiness::Unavailable {
+        reason: crate::SemanticSearchReason::Unconfigured,
+    };
+    let missing_setup = ReplyDto::new(71, CommandReply::PublishedNameSearch(page))
+        .with_semantic_search_status(crate::SemanticSearchStatus::Unavailable {
+            reason: crate::SemanticSearchReason::Unconfigured,
+        });
+    assert_eq!(admit_reply(&names_command, &missing_setup), Ok(()));
+    assert!(serde_json::to_vec(&missing_setup).is_ok());
+}

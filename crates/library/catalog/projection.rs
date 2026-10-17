@@ -111,6 +111,47 @@ impl QueryPageRecipe {
         ))
     }
 
+    /// Binds a current published-name stage independently of full lexical search.
+    #[must_use]
+    pub fn published_names(root: ViewStateRoot, request: &crate::PublishedNameSearchQuery) -> Self {
+        let query = request.query();
+        Self::published_names_at_window(root, request, query.window())
+    }
+
+    /// Authenticates this stage's exact previous delivery credit.
+    #[must_use]
+    pub fn published_names_predecessor(
+        root: ViewStateRoot,
+        request: &crate::PublishedNameSearchQuery,
+    ) -> Option<Self> {
+        let window = Self::predecessor_window(request.query().window(), request.query().cursor())?;
+        Some(Self::published_names_at_window(root, request, window))
+    }
+
+    fn published_names_at_window(
+        root: ViewStateRoot,
+        request: &crate::PublishedNameSearchQuery,
+        window: QueryWindow,
+    ) -> Self {
+        let query = request.query();
+        let base = Self::new(
+            QueryPageKind::Names,
+            query.text(),
+            window,
+            root,
+            query.read_manifest(),
+        );
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"published-name-search-v1",
+            base.canonical_preimage(),
+        ])
+        .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
     /// Authenticates legacy predecessors before issuing a new windowed graph recipe.
     #[must_use]
     pub fn graph_predecessor(
@@ -382,15 +423,49 @@ impl Library {
     /// Returns [`LibraryError::WrongBasis`] for a stale query and
     /// [`LibraryError::View`] when the bounded snapshot cannot be constructed.
     pub fn names(&self, query: &NameQuery) -> Result<ViewSnapshot, LibraryError> {
-        self.check_basis(query.basis)?;
         let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
+        let predecessor = QueryPageRecipe::names_predecessor(self.revision_root(), query)
+            .ok_or(LibraryError::CursorMismatch)?
+            .identity();
+        self.names_at_recipe(query, recipe, predecessor)
+    }
+
+    /// Reads current owner-bound names without opening compiler images.
+    /// This cursor belongs exclusively to the published-name search stage.
+    ///
+    /// # Errors
+    /// Refuses stale source roots and changed stage/query/credit continuations.
+    pub fn search_published_names(
+        &self,
+        request: &crate::PublishedNameSearchQuery,
+    ) -> Result<ViewSnapshot, LibraryError> {
+        let query = request.query();
+        let names = NameQuery {
+            text: query.text.clone(),
+            basis: query.basis,
+            window: query.window,
+            cursor: query.cursor,
+            read_manifest: query.read_manifest.clone(),
+        };
+        let recipe = QueryPageRecipe::published_names(self.revision_root(), request).identity();
+        let predecessor =
+            QueryPageRecipe::published_names_predecessor(self.revision_root(), request)
+                .ok_or(LibraryError::CursorMismatch)?
+                .identity();
+        self.names_at_recipe(&names, recipe, predecessor)
+    }
+
+    fn names_at_recipe(
+        &self,
+        query: &NameQuery,
+        recipe: ViewRecipeId,
+        previous_recipe: ViewRecipeId,
+    ) -> Result<ViewSnapshot, LibraryError> {
+        self.check_basis(query.basis)?;
         self.work.record_seek();
         let window = query.window();
         let limit = usize::from(window.issued().get());
         let delivery = usize::from(window.delivery().get());
-        let previous_recipe = QueryPageRecipe::names_predecessor(self.revision_root(), query)
-            .ok_or(LibraryError::CursorMismatch)?
-            .identity();
         let fetch = |offset, count| {
             self.arrangement.names_page(
                 query.selection(),

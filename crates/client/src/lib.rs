@@ -2547,6 +2547,7 @@ impl Session {
         let portable = matches!(
             &command,
             Command::Search(_)
+                | Command::SearchPublishedNames(_)
                 | Command::Name(_)
                 | Command::GraphQuery(_)
                 | Command::GraphPage { .. }
@@ -2598,6 +2599,11 @@ impl Session {
     ) {
         let terminal = match &reply.reply {
             CommandReply::ProjectionPage(page) => page.terminal,
+            CommandReply::PublishedNameSearch(page) => {
+                page.snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+                    PageTerminal::More(PageContinuation::from_cursor(cursor))
+                })
+            }
             CommandReply::GraphQueryPage(page) => page.terminal,
             CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => {
                 snapshot.next.map_or(PageTerminal::Complete, |cursor| {
