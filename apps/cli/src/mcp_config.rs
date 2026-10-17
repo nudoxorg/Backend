@@ -53,7 +53,11 @@ fn launchers(
     } else {
         bin.join(name("backend-locald"))
     };
-    for path in [&mcp, &locald] {
+    // The known macOS wrappers exec these raw siblings. A script's execute
+    // bit alone cannot establish that its required payload still exists.
+    let raw_mcp = bin.join(name("backend-mcp"));
+    let raw_locald = bin.join(name("backend-locald"));
+    for path in [&mcp, &locald, &raw_mcp, &raw_locald] {
         if !executable(path)
             || std::fs::canonicalize(path)
                 .ok()
@@ -353,6 +357,11 @@ mod tests {
             admit(&current, None, &[public])?.mcp,
             bin.join("nudox-mcp"),
             "an incomplete public companion set cannot be saved as a stable alias"
+        );
+        fs::remove_file(bin.join("backend-mcp"))?;
+        assert!(
+            launchers(&current, None, &[]).is_err(),
+            "a surviving public wrapper cannot conceal its missing raw payload"
         );
         Ok(())
     }
