@@ -215,13 +215,18 @@ fn append_compiler_query_facts(
     }
 
     let mut ids = BTreeSet::new();
+    // These package-wide sets are immutable throughout projection. Borrow the
+    // one admitted context instead of cloning all declaration identities and
+    // owned path strings once per selected package/profile publication.
+    let empty_paths = BTreeSet::new();
+    let empty_published = BTreeSet::new();
     for publication in &opened {
         let package = publication.package;
         let label = publication.label;
         let coordinate = publication.coordinate;
         let profile = publication.profile;
-        let project_paths = package_paths.get(&package).cloned().unwrap_or_default();
-        let published = package_published.get(&package).cloned().unwrap_or_default();
+        let project_paths = package_paths.get(&package).unwrap_or(&empty_paths);
+        let published = package_published.get(&package).unwrap_or(&empty_published);
         let callable_index = package_indexes.get(&package);
         for opened_image in &publication.images {
             let image = &opened_image.view;
@@ -324,9 +329,9 @@ fn append_compiler_query_facts(
                                     link.kind,
                                     external,
                                     &caller_path,
-                                    &project_paths,
+                                    project_paths,
                                     callable_index,
-                                    &published,
+                                    published,
                                 )? {
                                     related.push(query_semantic_id(package, joined));
                                     continue;
@@ -336,9 +341,9 @@ fn append_compiler_query_facts(
                                     link.kind,
                                     external,
                                     &caller_path,
-                                    &project_paths,
+                                    project_paths,
                                     callable_index,
-                                    &published,
+                                    published,
                                 )? {
                                     related.push(query_semantic_id(package, joined));
                                     continue;
@@ -348,9 +353,9 @@ fn append_compiler_query_facts(
                                     link.kind,
                                     external,
                                     &caller_path,
-                                    &project_paths,
+                                    project_paths,
                                     callable_index,
-                                    &published,
+                                    published,
                                 )? {
                                     related.push(query_semantic_id(package, joined));
                                     continue;
@@ -360,9 +365,9 @@ fn append_compiler_query_facts(
                                     link.kind,
                                     external,
                                     &caller_path,
-                                    &project_paths,
+                                    project_paths,
                                     callable_index,
-                                    &published,
+                                    published,
                                 )? {
                                     related.push(query_semantic_id(package, joined));
                                     continue;
