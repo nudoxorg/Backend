@@ -55,10 +55,13 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
             if let Some(domain) = spec.page_limit_domain() {
                 assert!(domain.contains(domain.default_limit()));
                 assert_eq!(domain.minimum(), 1);
-                let (maximum, default) = if grammar.name() == "package-graph" {
-                    (backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS, 64)
-                } else {
-                    (200, DEFAULT_LIMIT)
+                let (maximum, default) = match grammar.name() {
+                    "package-graph" => (backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS, 64),
+                    "semantic-versions" => (
+                        backend_library::QueryLimit::MAX,
+                        backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
+                    ),
+                    _ => (200, DEFAULT_LIMIT),
                 };
                 assert_eq!(
                     (domain.maximum(), domain.default_limit()),
