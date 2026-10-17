@@ -4321,9 +4321,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .as_ref()
             .is_some_and(|sources| sources.is_forest())
         {
-            use backend_semantic::ir::{
-                ImageProvenance, SemanticCoreReader, SemanticImageIdentity, SemanticReader,
-            };
+            use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticImageIdentity};
             let owners = native_program_sources.as_ref().expect("forest present");
             let toolchain = owners.toolchain();
             let mappings = owners
@@ -6290,10 +6288,7 @@ mod tests {
         error::Error as StdError,
         fmt,
         path::Path,
-        sync::{
-            OnceLock,
-            atomic::{AtomicBool, Ordering},
-        },
+        sync::{OnceLock, atomic::AtomicBool},
     };
 
     use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
