@@ -143,11 +143,13 @@ class InstallerFilesystemTests(unittest.TestCase):
         from types import SimpleNamespace
         with patch.object(installer.sys, "platform", "linux"), \
              patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
+             patch.object(installer, "_system_elf_loader_target", return_value="/lib64/ld-linux-x86-64.so.2") as loader_target, \
              patch.object(installer, "load_release", return_value=(entry, manifest, "https://example.invalid/archive")), \
              patch.object(installer, "download_archive", side_effect=download_archive) as download, \
              patch.object(installer, "_glibc_version", return_value=(99, 0)), \
              patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
             result = installer.main(["--prefix", str(prefix)])
+        loader_target.assert_called_once_with()
         return result, download
 
     def test_known_nixos_stub_loader_is_refused_before_channel_or_archive_download(self):
