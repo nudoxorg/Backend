@@ -249,6 +249,13 @@ impl RemoteSemantic {
         }
     }
 
+    /// Signal owned local inference before any owner lane is joined.
+    pub(crate) fn request_close_local(&mut self) {
+        if let Self::Local(owner) = self {
+            owner.request_close();
+        }
+    }
+
     /// Cancels and joins owned local work during owner shutdown.
     pub(crate) fn close_local(&mut self) {
         if let Self::Local(owner) = self {
