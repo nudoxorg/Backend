@@ -1,6 +1,12 @@
 use super::*;
 use crate::{IndexOperationSourceProfile, PackageCompilerFailure};
 
+type TestResult = Result<(), String>;
+
+fn checked<T, E: std::fmt::Debug>(result: Result<T, E>) -> Result<T, String> {
+    result.map_err(|error| format!("{error:?}"))
+}
+
 fn fixture() -> (PackageReference, PackageCompilerOutcomes) {
     let package = PackageReference::parse("/compiler-outcomes").expect("local");
     let basis = PackageCompilerOutcomeBasis {
@@ -445,7 +451,8 @@ fn package_profile_correlates_explicit_capture_mode_and_preserves_registry_absen
 
 #[test]
 fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_refusal_substitution()
- {
+    -> TestResult
+{
     use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
     let (package, summary) = fixture();
     let PackageCompilerOutcomes::Summary { basis, .. } = summary else {
@@ -454,7 +461,8 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
     let first = PackageCompilerCoverageSelector {
         outcome: PackageCompilerOutcomeSelector {
             basis: basis.identity(),
-            profile: SemanticLanguageProfile::from_name("typescript").unwrap(),
+            profile: SemanticLanguageProfile::from_name("typescript")
+                .ok_or_else(|| "missing TypeScript profile fixture".to_owned())?,
         },
         catalog: [6; 32],
         generation: [7; 32],
@@ -490,7 +498,7 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
         page,
     };
     let request = PackageCompilerOutcomeRead::Coverage(first);
-    observed.admit_request(&package, Some(&request)).unwrap();
+    checked(observed.admit_request(&package, Some(&request)))?;
     assert!(observed.admit_request(&package, None).is_err());
     assert!(
         observed
@@ -546,18 +554,19 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
     let PackageCompilerOutcomes::Coverage { selector, page, .. } = &mut tsx else {
         unreachable!()
     };
-    selector.outcome.profile = SemanticLanguageProfile::from_name("tsx").unwrap();
+    selector.outcome.profile = SemanticLanguageProfile::from_name("tsx")
+        .ok_or_else(|| "missing TSX profile fixture".to_owned())?;
     if let Some(PackageCompilerOutcomeRead::Coverage(next)) = &mut page.next {
         next.outcome.profile = selector.outcome.profile;
     }
     let tsx_read = PackageCompilerOutcomeRead::Coverage(*selector);
-    tsx.admit_request(&package, Some(&tsx_read)).unwrap();
+    checked(tsx.admit_request(&package, Some(&tsx_read)))?;
     // A persisted observation is distinct from honest legacy absence, even when 41/50 is known.
     let unavailable = PackageCompilerOutcomes::Unavailable {
         package: package.clone(),
         reason: PackageCompilerOutcomesUnavailable::CoverageNotRecorded,
     };
-    unavailable.admit_request(&package, Some(&request)).unwrap();
+    checked(unavailable.admit_request(&package, Some(&request)))?;
     let mut changed = first;
     changed.catalog[0] ^= 1;
     assert!(
@@ -568,10 +577,13 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             )
             .is_err()
     );
+    Ok(())
 }
 
 #[test]
-fn coverage_summary_distinguishes_legacy_absence_from_complete_published_profile_partition() {
+fn coverage_summary_distinguishes_legacy_absence_from_complete_published_profile_partition()
+    -> TestResult
+{
     let (package, mut summary) = fixture();
     let PackageCompilerOutcomes::Summary {
         source_capture,
@@ -597,7 +609,7 @@ fn coverage_summary_distinguishes_legacy_absence_from_complete_published_profile
         })
         .collect::<Vec<_>>();
     *coverage = Some(published.clone().into_boxed_slice());
-    summary.admit_request(&package, None).unwrap();
+    checked(summary.admit_request(&package, None))?;
     for entries in [
         vec![],
         published[..1].to_vec(),
@@ -610,10 +622,12 @@ fn coverage_summary_distinguishes_legacy_absence_from_complete_published_profile
         *coverage = Some(entries.into_boxed_slice());
         assert!(incomplete.admit().is_err());
     }
-    let mut old = serde_json::to_value(&summary).unwrap();
-    old.as_object_mut().unwrap().remove("coverage");
-    let old: PackageCompilerOutcomes = serde_json::from_value(old).unwrap();
-    old.admit_request(&package, None).unwrap();
+    let mut old = checked(serde_json::to_value(&summary))?;
+    old.as_object_mut()
+        .ok_or_else(|| "serialized summary should be an object".to_owned())?
+        .remove("coverage");
+    let old: PackageCompilerOutcomes = checked(serde_json::from_value(old))?;
+    checked(old.admit_request(&package, None))?;
     let PackageCompilerOutcomes::Summary { coverage, .. } = old else {
         panic!("legacy")
     };
@@ -621,10 +635,13 @@ fn coverage_summary_distinguishes_legacy_absence_from_complete_published_profile
         coverage.is_none(),
         "old wire absence remains distinguishable"
     );
+    Ok(())
 }
 
 #[test]
-fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surface_read_mode() {
+fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surface_read_mode()
+    -> TestResult
+{
     let (package, summary) = fixture();
     let PackageCompilerOutcomes::Summary { basis, .. } = summary else {
         panic!("basis")
@@ -632,7 +649,8 @@ fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surfa
     let selector = PackageCompilerCoverageSelector {
         outcome: PackageCompilerOutcomeSelector {
             basis: basis.identity(),
-            profile: SemanticLanguageProfile::from_name("typescript").unwrap(),
+            profile: SemanticLanguageProfile::from_name("typescript")
+                .ok_or_else(|| "missing TypeScript profile fixture".to_owned())?,
         },
         catalog: [4; 32],
         generation: [5; 32],
@@ -650,7 +668,7 @@ fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surfa
     let stale = crate::SurfaceReply::PackageCompilerOutcomes(PackageCompilerOutcomes::Stale {
         package: package.clone(),
     });
-    crate::admit_surface_reply(&command, &stale).unwrap();
+    checked(crate::admit_surface_reply(&command, &stale))?;
     for reason in [
         PackageCompilerOutcomesUnavailable::CoverageNotRecorded,
         PackageCompilerOutcomesUnavailable::CoverageNotRecordedCapacity,
@@ -662,13 +680,16 @@ fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surfa
                 package: package.clone(),
                 reason,
             });
-        crate::admit_surface_reply(&command, &reply).unwrap();
+        checked(crate::admit_surface_reply(&command, &reply))?;
         assert!(crate::admit_surface_reply(&diagnostic, &reply).is_err());
     }
+    Ok(())
 }
 
 #[test]
-fn coverage_capacity_summary_preserves_published_partial_and_never_advertises_a_cause_read() {
+fn coverage_capacity_summary_preserves_published_partial_and_never_advertises_a_cause_read()
+    -> TestResult
+{
     let (package, mut summary) = fixture();
     let PackageCompilerOutcomes::Summary {
         source_capture,
@@ -681,7 +702,8 @@ fn coverage_capacity_summary_preserves_published_partial_and_never_advertises_a_
     };
     let mut profiles = source_capture.profiles.to_vec();
     profiles.truncate(1);
-    profiles[0].profile = SemanticLanguageProfile::from_name("typescript").unwrap();
+    profiles[0].profile = SemanticLanguageProfile::from_name("typescript")
+        .ok_or_else(|| "missing TypeScript profile fixture".to_owned())?;
     profiles[0].source_count = 20_001;
     profiles[0].state = State::Published {
         generation: [7; 32],
@@ -700,17 +722,16 @@ fn coverage_capacity_summary_preserves_published_partial_and_never_advertises_a_
         }]
         .into_boxed_slice(),
     );
-    summary
-        .admit_request(&package, Some(&PackageCompilerOutcomeRead::Current))
-        .unwrap();
-    let encoded = serde_json::to_value(&summary).unwrap();
+    checked(summary.admit_request(&package, Some(&PackageCompilerOutcomeRead::Current)))?;
+    let encoded = checked(serde_json::to_value(&summary))?;
     assert_eq!(encoded["coverage"][0]["state"], "not-recorded-capacity");
     assert!(encoded["coverage"][0].get("read").is_none());
     assert_eq!(
         encoded["source_capture"]["profiles"][0]["state"]["state"],
         "published"
     );
-    let cold: PackageCompilerOutcomes = serde_json::from_value(encoded).unwrap();
+    let cold: PackageCompilerOutcomes = checked(serde_json::from_value(encoded))?;
     assert_eq!(cold, summary);
-    cold.admit_request(&package, None).unwrap();
+    checked(cold.admit_request(&package, None))?;
+    Ok(())
 }
