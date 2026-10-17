@@ -814,8 +814,12 @@ impl Reader {
         self.map.as_ref().is_some_and(|map| map.read(cx).focused(cx))
     }
 
-    pub(crate) fn open_graph_current(&mut self, target: bodies::graph::OpenView, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
+    /// Enter the graph controller after releasing the Reader borrow. Opening
+    /// captures the live Reader departure through Links before queueing the
+    /// exact navigation, so this must not hold a Reader update lease.
+    pub(crate) fn open_graph_current(reader: &Entity<Self>, target: bodies::graph::OpenView, window: &mut Window, cx: &mut App) {
+        let map = reader.read(cx).map.clone();
+        if let Some(map) = map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
     }
 
     #[cfg(test)]
