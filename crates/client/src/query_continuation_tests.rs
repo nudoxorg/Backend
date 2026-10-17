@@ -111,7 +111,9 @@ impl CommandTransport for Transport {
         let library = self.owner.lock().expect("owner");
         if matches!(
             &request.command,
-            Command::GraphPage { .. } | Command::MembersPage { .. } | Command::SearchPublishedNames(_)
+            Command::GraphPage { .. }
+                | Command::MembersPage { .. }
+                | Command::SearchPublishedNames(_)
         ) {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
@@ -3576,33 +3578,125 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
     );
 }
 
-// Emulate the real local service's bounded revision proof, and cross the
-// strict command codec for the center document as well as the graph request.
-struct BoundedMembersTransport(Transport);
+// Emulate the real service's bounded owner revision, while retaining the
+// canonical predecessor PAGE required by the strict continuation decoder.
+struct BoundedMembersTransport {
+    inner: Transport,
+    predecessor: Option<(Cursor, WireClaim, u64, u16)>,
+}
+impl BoundedMembersTransport {
+    fn new(inner: Transport) -> Self {
+        Self {
+            inner,
+            predecessor: None,
+        }
+    }
+
+    fn admit_request_proof(&self, request: &CommandDto) -> Result<(), ClientError> {
+        let owner_root = self.inner.owner.lock().expect("owner").revision_root();
+        let owner_id = encode_id(owner_root.as_bytes());
+        let proof = request
+            .certificate()
+            .ok_or_else(|| ClientError::Protocol("missing owner commitment".to_owned()))?;
+        if !proof.claims.iter().any(|claim| {
+            matches!(claim,
+            WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id }
+                if id == &owner_id)
+        }) {
+            return Err(ClientError::Protocol(
+                "missing exact owner commitment".to_owned(),
+            ));
+        }
+        let roots = proof
+            .claims
+            .iter()
+            .filter(|claim| {
+                matches!(
+                    claim,
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        ..
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+        if roots.iter().any(|claim| {
+            matches!(claim,
+            WireClaim::Root { id, .. } if id == &owner_id)
+        }) {
+            return Err(ClientError::Protocol(
+                "whole owner relation disclosed".to_owned(),
+            ));
+        }
+        match &request.command {
+            Command::MembersPage { page, .. } if page.continuation().is_some() => {
+                let continuation = page.continuation().ok_or(ClientError::StaleCursor)?;
+                let (cursor, claim, rows, credit) =
+                    self.predecessor.as_ref().ok_or(ClientError::StaleCursor)?;
+                if continuation.cursor() != *cursor
+                    || *credit != page.limit().get()
+                    || *rows > u64::from(*credit)
+                    || roots.as_slice() != [claim]
+                    || !matches!(claim, WireClaim::Root { id, .. }
+                        if id == &encode_id(cursor.root().as_bytes()))
+                {
+                    return Err(ClientError::Protocol(
+                        "not the exact bounded predecessor page".to_owned(),
+                    ));
+                }
+            }
+            _ if !roots.is_empty() => {
+                return Err(ClientError::Protocol(
+                    "initial member/document request has a canonical relation".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
 impl CommandTransport for BoundedMembersTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         if matches!(
             &request.command,
             Command::Document(_) | Command::MembersPage { .. }
         ) {
-            let proof = request.certificate().expect("revision proof");
-            assert!(proof.claims.iter().any(|claim| matches!(
-                claim,
-                WireClaim::RootCommitment {
-                    schema: WireSchema::ViewRelation,
-                    ..
-                }
-            )));
-            assert!(
-                !proof.claims.iter().any(|claim| matches!(
-                    claim,
-                    WireClaim::Root {
-                        schema: WireSchema::ViewRelation,
-                        ..
-                    }
-                )),
-                "member request must not ship the whole owner relation"
+            // A real canonical owner witness must still be rejected. This
+            // fault injection would catch a leak even on continued pages.
+            let owner_proof = self
+                .inner
+                .owner
+                .lock()
+                .expect("owner")
+                .execute_dto(CommandDto::new(1, Command::Revision));
+            let owner_claim = owner_proof
+                .certificate()
+                .expect("owner certificate")
+                .claims
+                .iter()
+                .find(|claim| {
+                    matches!(
+                        claim,
+                        WireClaim::Root {
+                            schema: WireSchema::ViewRelation,
+                            ..
+                        }
+                    )
+                })
+                .expect("canonical owner witness")
+                .clone();
+            let leaked = request.clone().with_certificate(
+                request
+                    .certificate()
+                    .expect("request proof")
+                    .clone()
+                    .with_claim(owner_claim),
             );
+            assert!(
+                matches!(self.admit_request_proof(&leaked), Err(ClientError::Protocol(message))
+                if message == "whole owner relation disclosed")
+            );
+            self.admit_request_proof(&request)?;
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
             let admitted =
@@ -3612,10 +3706,14 @@ impl CommandTransport for BoundedMembersTransport {
                 "actual document/member request wire admission"
             );
         }
+        let member_credit = match &request.command {
+            Command::MembersPage { page, .. } => Some(page.limit().get()),
+            _ => None,
+        };
         let revision = matches!(&request.command, Command::Revision);
-        let mut reply = self.0.request(request)?;
+        let mut reply = self.inner.request(request)?;
         if revision {
-            let root = self.0.owner.lock().expect("owner").revision_root();
+            let root = self.inner.owner.lock().expect("owner").revision_root();
             let certificate = reply.certificate().expect("owner revision proof");
             let claims = certificate
                 .claims
@@ -3643,9 +3741,39 @@ impl CommandTransport for BoundedMembersTransport {
                 id: encode_id(root.as_bytes()),
             }));
             let bytes = serde_json::to_vec(&reply).expect("bounded owner revision wire");
-            let library = self.0.owner.lock().expect("owner");
+            let library = self.inner.owner.lock().expect("owner");
             reply = ReplyDto::decode_with_certificate(&bytes, library.view().capability())
                 .map_err(ClientError::Protocol)?;
+        }
+        if let Some(credit) = member_credit {
+            let CommandReply::ProjectionPage(page) = &reply.reply else {
+                return Err(ClientError::Protocol("missing member page".to_owned()));
+            };
+            assert!(page.snapshot.root.row_count() <= u64::from(credit));
+            self.predecessor = match page.terminal {
+                PageTerminal::More(next) => {
+                    assert_eq!(next.cursor().root(), page.snapshot.root.root());
+                    let claim = WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        id: encode_id(page.snapshot.root.root().as_bytes()),
+                        canonical: page
+                            .snapshot
+                            .root
+                            .canonical_relation_bytes()
+                            .expect("bounded page preimage")
+                            .into_boxed_slice(),
+                    };
+                    assert!(
+                        reply
+                            .certificate()
+                            .expect("page certificate")
+                            .claims
+                            .contains(&claim)
+                    );
+                    Some((next.cursor(), claim, page.snapshot.root.row_count(), credit))
+                }
+                PageTerminal::Complete | PageTerminal::Cancelled => None,
+            };
         }
         Ok(reply)
     }
@@ -3680,7 +3808,7 @@ fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_req
     let (owner, requests, center) = direct_member_fixture();
     let mut client = Session::from_transport(
         "/private/test-owner.sock",
-        BoundedMembersTransport(Transport {
+        BoundedMembersTransport::new(Transport {
             owner: owner.clone(),
             requests: requests.clone(),
             graph_ids: None,
@@ -3990,7 +4118,7 @@ fn direct_member_session_refuses_changed_reply_sources_before_retaining_any_curs
         let mut client = Session::from_transport(
             "/private/test-owner.sock",
             ChangedMemberReplySource {
-                inner: BoundedMembersTransport(Transport {
+                inner: BoundedMembersTransport::new(Transport {
                     owner: owner.clone(),
                     requests: requests.clone(),
                     graph_ids: None,
