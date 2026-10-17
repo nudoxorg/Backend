@@ -22,7 +22,7 @@ pub(super) struct ClassMemberPropertyArgs {
 impl<'work> ParserStateCore<'work> {
     /// Construct the body of a property class member: parse type annotation,
     /// optional/definite tokens, and initializer expression.
-    pub(crate) fn construct_class_member_property(
+    pub(super) fn construct_class_member_property(
         &mut self,
         args: ClassMemberPropertyArgs,
     ) -> NodeIndex {
