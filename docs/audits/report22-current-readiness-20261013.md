@@ -1,5 +1,7 @@
 # Report 22: current execution and repair checkpoint
 
+Current brief: [Report 27 verification checkpoint](report27-current-readiness-20261017.md). Dated sections below retain historical results, not cumulative acceptance.
+
 ## Follow-up: 2026-10-17, Native37 results and current four-binary cohort
 
 On `1fc3e0a3ab703c34d0af4288fab6dfd1e29df4e7` / tree `b0a7a53279d06511c2c4b81e0ba10929971dfe90`, **85 of 289 selected native bodies executed: 84 passed, one failed, 204 remain unrun**. Engine13, parser2, semantic-render7 and desktop26 selections passed; the cancellation selection passed35 and failed one TSZ retained-library-origin case. The 204 package bodies were blocked by two Rust type errors at one stale cfg(test) call in retained_locations.rs. The separate parser Clippy command failed on three excessive-argument signatures; semantic-render Clippy passed. All-crate Clippy retained24,246 warnings, and warnings are not closed.
