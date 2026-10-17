@@ -46,3 +46,13 @@ The embedded native-authority digest domain and frontend producer/contract are
 advanced. The digest already includes the lowering source and feeds the native
 toolchain, runtime configuration, host witness and direct-program identity, so
 the repaired ownership producer cannot reuse buggy IR under its old identity.
+
+Actual Native32 H2 executed all nine selected bodies: the three existing guards
+passed and all six new class/parameter-property bodies refused collection with
+`Lowering(NoSupportedDeclaration)`. This was not a test-assertion failure. The
+class route walker treated TSZ's `Some(NodeIndex::NONE)` root-parent sentinel as
+another node and refused every anonymous class route. The additive repair now
+requires reaching the exact admitted source-file node with that native sentinel;
+missing parent cells, premature sentinels and nonterminating ancestry still
+refuse. The existing exact symbol, declaration, stable-file and span checks are
+unchanged. Revalidation of the repaired producer remains pending.
