@@ -279,11 +279,20 @@ pub(crate) fn indexed_package_source_root(
     ))
 }
 
-/// Reads the manifest package name for one indexed project label.
-pub(crate) fn indexed_package_manifest_name(
+/// Names an indexed package row from its retained registry coordinate or local manifest.
+///
+/// A registry label already retains its admitted name and namespace. Rebuilding
+/// its authenticated source projection must not require a mutable staging cache.
+/// Actual source acquisition still uses `indexed_package_source_root`.
+pub(crate) fn indexed_package_row_name(
     label: &str,
     workspace: &Path,
 ) -> Result<String, String> {
+    if let PackageReference::Purl(coordinate) =
+        PackageReference::parse(label).map_err(|error| error.to_string())?
+    {
+        return Ok(coordinate.lineage_name().to_owned());
+    }
     let source_root = indexed_package_source_root(label, workspace)?;
     let manifest = require_local_manifest(&source_root)?;
     Ok(manifest.record.name.as_str().to_owned())
@@ -1434,8 +1443,9 @@ mod tests {
     use super::{
         LanguageProfile, PythonVersion, RustEdition, RustManifestKind, TypeScriptSource,
         cargo_language_profile, cargo_package_fields, directory_version,
-        indexed_package_source_root, read_local_manifest, read_python_metadata,
-        read_python_metadata_with_preopen, require_local_manifest, rust_manifest_kind,
+        indexed_package_row_name, indexed_package_source_root, read_local_manifest,
+        read_python_metadata, read_python_metadata_with_preopen, require_local_manifest,
+        rust_manifest_kind,
     };
     use backend_semantic::vocabulary::{GoVersion, JavaRelease};
     use std::fs;
@@ -2088,6 +2098,54 @@ mod tests {
             .expect_err("Cargo manifest without package or workspace is malformed");
         assert!(error.contains("neither a [package] nor a [workspace] table"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retained_registry_row_names_do_not_require_live_staging() {
+        let workspace = fixture("retained-registry-name");
+        let packages = [
+            (
+                "pkg:npm/source-correlation-sibling@1.0.0",
+                "source-correlation-sibling",
+            ),
+            ("pkg:npm/%40types/node@24.3.0", "%40types/node"),
+            ("pkg:cargo/serde@1.0.228", "serde"),
+            (
+                "pkg:golang/github.com/pkg/errors@v0.9.1",
+                "github.com/pkg/errors",
+            ),
+        ];
+        for (label, expected) in packages {
+            assert_eq!(
+                indexed_package_row_name(label, &workspace).expect("retained name"),
+                expected
+            );
+            assert!(indexed_package_source_root(label, &workspace).is_err());
+        }
+        // An unavailable mutable cache cannot rename or erase a retained row.
+        write(
+            &workspace.join("registry/registry-staging"),
+            "unavailable cache",
+        );
+        for (label, expected) in packages {
+            assert_eq!(
+                indexed_package_row_name(label, &workspace).expect("same retained name"),
+                expected
+            );
+            assert!(indexed_package_source_root(label, &workspace).is_err());
+        }
+        assert!(indexed_package_row_name("pkg:npm/unpinned", &workspace).is_err());
+        let local = workspace.join("local-package");
+        write(
+            &local.join("Cargo.toml"),
+            "[package]\nname = \"actual-local-name\"\nversion = \"1.0.0\"\n",
+        );
+        assert_eq!(
+            indexed_package_row_name(local.to_str().expect("local path"), &workspace)
+                .expect("local manifest name"),
+            "actual-local-name"
+        );
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
