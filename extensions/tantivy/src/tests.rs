@@ -1849,6 +1849,28 @@ fn state_for(
     DocumentState::new(binding, coverage, documents, Limits::default()).expect("document state")
 }
 
+fn state_for_canonical_fields(
+    mut documents: Vec<(EntityId, Vec<(String, String)>)>,
+    frontier: [u8; 32],
+) -> DocumentState {
+    for (_, fields) in &mut documents {
+        fields.sort();
+    }
+    let coverage = authorized_coverage(&[7; 32]);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("canonical document relation");
+    let binding = Binding::new(
+        workspace(),
+        relation.root(),
+        Recipe::from_value(&[1; 32]),
+        Authority::from_value(&[2; 32]),
+        ReadManifest::from_value(b"reads".as_slice()),
+    );
+    let binding = binding.with_frontier(Frontier::from_value(&frontier));
+    DocumentState::from_relation(binding, relation, Limits::default())
+        .expect("document state from its bound relation")
+}
+
 #[test]
 fn failed_final_stage_barriers_preserve_the_old_search_root_and_allow_retry() {
     for directory_failure in [false, true] {
@@ -4036,7 +4058,7 @@ fn controlled_hit_and_direct_candidate_scoring_stop_inside_token_work() {
 
 #[test]
 fn cold_admission_tokenizes_source_fields_once_and_preserves_exact_hits() {
-    let state = state_for(
+    let state = state_for_canonical_fields(
         vec![
             (
                 document(81),
@@ -4151,7 +4173,7 @@ fn cancelled_cold_admission_retires_at_real_source_membership_and_cover_boundari
             .expect("clock")
             .as_nanos()
     ));
-    std::fs::create_dir(&root).expect("cache root");
+    let _private_root = OwnedWorkspaceDirectory::open(&root).expect("private cache root");
     drop(
         TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
             .expect("prime complete durable generation"),
@@ -4227,7 +4249,7 @@ fn cancelled_oversized_ordinal_count_scan_is_interrupted_before_corruption_rebui
             .expect("clock")
             .as_nanos()
     ));
-    std::fs::create_dir(&root).expect("cache root");
+    let _private_root = OwnedWorkspaceDirectory::open(&root).expect("private cache root");
     drop(
         TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
             .expect("prime complete durable generation"),
