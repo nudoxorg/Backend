@@ -177,6 +177,15 @@ impl SessionProduct {
 }
 
 impl Engine for SessionProduct {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0.members_page(document, limit, continuation)
+    }
+
     fn index(
         &mut self,
         package: PackageReference,

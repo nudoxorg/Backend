@@ -1608,6 +1608,39 @@ impl Session {
         self.send_success(command, Some(certificate))
     }
 
+    /// Reads only the admitted document owner's immediate members at its exact
+    /// immutable source. A revision change refuses this composite read rather
+    /// than re-resolving its coordinate or substituting a new owner.
+    ///
+    /// # Errors
+    /// Returns owner, transport, source-basis or continuation admission failures.
+    pub fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        if revision.root != document.basis {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::WrongBasis {
+                    expected: document.basis.into(),
+                    observed: revision.root.into(),
+                },
+            ));
+        }
+        let mut owner = DocumentQuery::selected(document.symbol, document.basis);
+        if let Some(source) = document.source_basis() {
+            owner = owner.with_source_basis(source);
+        }
+        let certificate = selected_symbol_certificate(revision.certificate, document.symbol);
+        let page = page_request(document.basis, limit, continuation)?;
+        self.send_success(
+            Command::MembersPage { owner, page },
+            Some(self.page_certificate(certificate, continuation)),
+        )
+    }
+
     /// Reads a graph window while retaining the exact selected ID and optional label.
     ///
     /// # Errors

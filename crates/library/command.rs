@@ -1214,6 +1214,13 @@ pub enum Command {
         /// Shared root/query-bound paging request.
         page: PageRequest,
     },
+    /// Read the selected declaration and its immediate owned members only.
+    MembersPage {
+        /// Exact selected owner and complete source basis, when captured.
+        owner: DocumentQuery,
+        /// Root/query-bound fixed page credit and continuation.
+        page: PageRequest,
+    },
     /// Execute or resume one structured graph query at an immutable revision.
     GraphQuery(crate::GraphQueryRequest),
     /// Read compiler-owned callable and member shapes at one exact view root.
@@ -1234,7 +1241,7 @@ impl Command {
             Self::Packages | Self::PackagePage(_) => CommandId::Packages,
             Self::Add { .. } => CommandId::Add,
             Self::Remove { .. } => CommandId::Remove,
-            Self::Document(_) => CommandId::Document,
+            Self::Document(_) | Self::MembersPage { .. } => CommandId::Document,
             Self::Source(_) => CommandId::Source,
             Self::Show { .. } => CommandId::Show,
             Self::Outline(_) | Self::OutlinePage { .. } => CommandId::Outline,

@@ -4,8 +4,8 @@
 //! normal exact document, member and relation admissions, then checks a content
 //! commitment including the complete source basis. They cannot turn stale page
 //! bytes into a current read or hide a failed required subread.
-//! Each section request currently repeats the complete outline read/admission;
-//! this bounds delivery, and does not optimize producer-side member selection.
+//! Each section request repeats exact owner/direct-member and relation admissions.
+//! Member selection seeks the retained parent arrangement, never the package outline.
 
 use backend_library::{Document, DocumentVersion, encode_id};
 use serde::{Deserialize, Serialize};

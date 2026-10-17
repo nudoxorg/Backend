@@ -146,6 +146,20 @@ impl Probe<'_> {
 /// session; the implementations in tests return canned library values. Nothing
 /// in this crate knows which it is holding.
 pub trait Engine {
+    /// Pages one admitted document's immediate members without walking its
+    /// package. Older engines explicitly refuse; incomplete/unsupported member
+    /// reads remain composite faults, never empty successful membership.
+    fn members_page(
+        &mut self,
+        _document: &backend_library::Document,
+        _limit: u16,
+        _continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        Err(ClientError::Protocol(
+            "engine does not expose direct member pages".to_owned(),
+        ))
+    }
+
     /// Reads the current immutable product revision.
     ///
     /// # Errors
@@ -346,11 +360,18 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::Remove(path) => remove(engine, path),
         Request::Page(at) => page(engine, at, None).map(Box::new).map(Answer::Page),
         Request::ResumePage { selector, cursor } => {
-            if selector.selected_id().is_none() { return Err(Fault::usage("cursor", "document continuation requires the original full selected row ID")); }
+            if selector.selected_id().is_none() {
+                return Err(Fault::usage(
+                    "cursor",
+                    "document continuation requires the original full selected row ID",
+                ));
+            }
             selected_declaration(engine, selector, DeclarationRead::Document, Some(cursor))
-        },
+        }
         Request::Source(at) => source(engine, at),
-        Request::Declaration { selector, read } => selected_declaration(engine, selector, *read, None),
+        Request::Declaration { selector, read } => {
+            selected_declaration(engine, selector, *read, None)
+        }
         Request::Neighbourhood {
             coordinate,
             incoming,
@@ -770,7 +791,9 @@ fn selected_declaration(
             };
             let page = if kind == DeclarationRead::Document {
                 crate::document_sections::window(page, &document, cursor)?
-            } else { page };
+            } else {
+                page
+            };
             if kind == DeclarationRead::Source {
                 if let Some(fault) = page.source().fault() {
                     return Err(fault.clone());
@@ -1085,10 +1108,9 @@ fn probe_members(
     }
 }
 
-/// Streams the existing owner-issued package projection without retaining its
-/// unrelated rows. A first package page cannot prove a declaration has no more
-/// members; only the terminal page closes this retained-row observation.
-/// This does not promote structural coverage to native/source completeness.
+/// Streams the selected owner's immediate-parent arrangement only. A first
+/// member page cannot prove completion; the authenticated terminal closes the
+/// retained-row observation. Native/source completeness is not promoted.
 fn document_member_rows(
     engine: &mut dyn Engine,
     path: &str,
@@ -1100,22 +1122,9 @@ fn document_member_rows(
     let mut frontier = None;
     let mut source_basis = document.source_basis();
     loop {
-        let reply = engine.probe_page(
-            Probe::OutlinePage {
-                path,
-                limit: PROBE_ROWS,
-            },
-            continuation,
-        )?;
+        let reply = engine.members_page(document, PROBE_ROWS, continuation)?;
         let (snapshot, terminal) = match reply.reply {
             CommandReply::ProjectionPage(page) => (page.snapshot, Some(page.terminal)),
-            // Root-only in-process constructors retain their compatibility
-            // shape. A real continuation still goes through probe_page, which
-            // refuses unsupported transports instead of restarting page one.
-            CommandReply::Packages(snapshot)
-            | CommandReply::Names(snapshot)
-            | CommandReply::Search(snapshot)
-            | CommandReply::Graph(snapshot) => (snapshot, None),
             _ => {
                 return Err(ClientError::Protocol(
                     "document member projection changed shape".to_owned(),
@@ -1137,7 +1146,7 @@ fn document_member_rows(
             ));
         }
         // Legacy root-only documents cannot attest their object. Once the
-        // first outline page does, all later pages must retain that exact
+        // first member page does, all later pages must retain that exact
         // object as well; the stream frontier does not include object identity.
         source_basis = Some(source);
         let observed = snapshot.root.frontier();
@@ -1173,7 +1182,9 @@ fn document_member_rows(
             if row.id != backend_library::RowId::Symbol(document.symbol)
                 && row.parent != Some(document.symbol)
             {
-                continue;
+                return Err(ClientError::Protocol(
+                    "document member projection contains another owner".to_owned(),
+                ));
             }
             if row.package != Some(package) || !matches!(row.id, backend_library::RowId::Symbol(_))
             {
@@ -1409,7 +1420,7 @@ mod document_member_paging_controls {
         "sectionsByClass",
     ];
 
-    fn catalog() -> Library {
+    fn catalog(extra_members: usize) -> Library {
         let basis = Basis::new(
             view_state_root(&[(PATH.to_owned(), "retained member observation".to_owned())]),
             object_version(b"structural source"),
@@ -1442,7 +1453,18 @@ mod document_member_paging_controls {
                 ),
             );
         }
-        rows.extend((0..532).map(|index| {
+        rows.extend((0..extra_members).map(|index| {
+            let coordinate = format!("{OWNER}::additional_{index}");
+            Row::in_package(
+                RowId::Symbol(symbol_key(&coordinate)),
+                basis,
+                package,
+                coordinate,
+            )
+            .with_parent(owner)
+            .with_kind(DeclarationKind::Constant)
+        }));
+        rows.extend((0..35_300).map(|index| {
             let coordinate = format!("{PATH}::a-unrelated.ts:{}::function_{index}", index + 1);
             Row::in_package(
                 RowId::Symbol(symbol_key(&coordinate)),
@@ -1489,10 +1511,16 @@ mod document_member_paging_controls {
     impl Reader {
         fn new(disturbance: Disturbance) -> Self {
             Self {
-                catalog: catalog(),
+                catalog: catalog(0),
                 disturbance,
                 calls: 0,
                 cursors: Vec::new(),
+            }
+        }
+        fn large(disturbance: Disturbance) -> Self {
+            Self {
+                catalog: catalog(400),
+                ..Self::new(disturbance)
             }
         }
         fn document(&self) -> Document {
@@ -1528,15 +1556,12 @@ mod document_member_paging_controls {
                 _ => self.probe_page(probe, None),
             }
         }
-        fn probe_page(
+        fn members_page(
             &mut self,
-            probe: Probe<'_>,
+            document: &Document,
+            limit: u16,
             continuation: Option<PageContinuation>,
         ) -> Result<ReplyDto, ClientError> {
-            let Probe::OutlinePage { path, limit } = probe else {
-                return Err(ClientError::Protocol("wrong probe".to_owned()));
-            };
-            assert_eq!(path, PATH);
             assert_eq!(limit, PROBE_ROWS);
             self.calls += 1;
             self.cursors.push(continuation);
@@ -1552,8 +1577,23 @@ mod document_member_paging_controls {
             let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
             let mut page: ProjectionPage = self
                 .catalog
-                .outline_page(package_key(path), request)
-                .expect("actual native-style page selector");
+                .members_page(
+                    DocumentQuery::selected(symbol_key(OWNER), document.basis),
+                    request,
+                )
+                .expect("actual direct-parent page selector");
+            if document.symbol != symbol_key(OWNER) {
+                page.snapshot.root = ViewRoot::new_incomplete(
+                    page.snapshot.root.recipe(),
+                    page.snapshot.root.basis(),
+                    page.snapshot.root.frontier(),
+                    Vec::new(),
+                    page.snapshot.root.coverage().to_vec(),
+                )
+                .expect("negative complete projection omits the selected owner");
+                page.snapshot.next = None;
+                page.terminal = PageTerminal::Complete;
+            }
             if self.calls == 2 {
                 match self.disturbance {
                     Disturbance::ChangedBasis
@@ -1637,7 +1677,7 @@ mod document_member_paging_controls {
         );
         let rows =
             document_member_rows(&mut reader, PATH, &document).expect("all retained member pages");
-        assert_eq!(reader.calls, 3);
+        assert_eq!(reader.calls, 1);
         assert_eq!(
             rows.len(),
             NAMES.len() + 1,
@@ -1670,14 +1710,14 @@ mod document_member_paging_controls {
     #[test]
     fn legacy_root_only_document_pins_first_page_object_before_reading_members() {
         for disturbance in [Disturbance::None, Disturbance::ChangedBasis] {
-            let mut reader = Reader::new(disturbance);
+            let mut reader = Reader::large(disturbance);
             let selected = reader.document();
             let document = Document::new(selected.symbol, selected.basis, []);
             assert_eq!(document.source_basis(), None);
             let mut notes = Vec::new();
             let rows = probe_members(&mut reader, OWNER, &document, &mut notes);
             if matches!(disturbance, Disturbance::None) {
-                assert_eq!(rows.len(), NAMES.len() + 1);
+                assert_eq!(rows.len(), NAMES.len() + 401);
                 assert_eq!(reader.calls, 3);
                 assert!(notes.is_empty());
             } else {
@@ -1749,8 +1789,8 @@ mod document_member_paging_controls {
             let mut notes = Vec::new();
             assert!(probe_members(&mut reader, &coordinate, &document, &mut notes).is_empty());
             assert_eq!(
-                reader.calls, 3,
-                "complete original package walk was required"
+                reader.calls, 1,
+                "one direct projection must still prove the selected owner"
             );
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0].slug(), crate::FaultSlug::Protocol);
@@ -1773,7 +1813,7 @@ mod document_member_paging_controls {
             Disturbance::WrongTerminal,
             Disturbance::ForeignMember,
         ] {
-            let mut reader = Reader::new(disturbance);
+            let mut reader = Reader::large(disturbance);
             let document = reader.document();
             let mut notes = Vec::new();
             let rows = probe_members(&mut reader, OWNER, &document, &mut notes);
@@ -1793,6 +1833,118 @@ mod document_member_paging_controls {
                 "exact original owner cursor was forwarded"
             );
         }
+    }
+
+    #[test]
+    fn authored_document_direct_sites_include_meta_and_both_accessor_bindings_in_one_query() {
+        let mut reader = Reader::new(Disturbance::None);
+        let basis = reader.catalog.view().basis();
+        let package = package_key(PATH);
+        let owner = symbol_key(OWNER);
+        let source = include_str!("fixtures/docs-document/models.py");
+        let members: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/docs-document/members.json"))
+                .expect("source-derived member sites");
+        assert_eq!(members.len(), 47);
+        let mut rows = reader
+            .catalog
+            .view()
+            .rows()
+            .iter()
+            .filter(|row| row.id != RowId::Symbol(owner) && row.parent != Some(owner))
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.push(
+            Row::in_package(
+                RowId::Symbol(owner),
+                basis,
+                package,
+                format!("{PATH}::models.py:994::Document"),
+            )
+            .with_kind(DeclarationKind::Class)
+            .with_source(SourceLocation::new("models.py", 994).expect("owner site")),
+        );
+        let mut expected = std::collections::BTreeSet::new();
+        for site in &members {
+            let line = u32::try_from(site["line"].as_u64().expect("line")).expect("line width");
+            let name = site["name"].as_str().expect("name");
+            assert!(
+                source
+                    .lines()
+                    .nth(line as usize - 1)
+                    .expect("authored source line")
+                    .contains(name)
+            );
+            let id = RowId::Symbol(symbol_key(&format!("native Document member at {line}")));
+            assert!(expected.insert(id));
+            rows.push(
+                Row::in_package(
+                    id,
+                    basis,
+                    package,
+                    format!("{PATH}::models.py:{line}::{name}"),
+                )
+                .with_parent(owner)
+                .with_kind(if site["kind"] == "function" {
+                    DeclarationKind::Function
+                } else {
+                    DeclarationKind::Variable
+                })
+                .with_source(SourceLocation::new("models.py", line).expect("member site")),
+            );
+        }
+        assert!(
+            source
+                .lines()
+                .nth(1041)
+                .expect("nested type site")
+                .contains("class Meta:")
+        );
+        let meta = RowId::Symbol(symbol_key("native Document Meta at 1042"));
+        expected.insert(meta);
+        rows.push(
+            Row::in_package(
+                meta,
+                basis,
+                package,
+                format!("{PATH}::models.py:1042::Meta"),
+            )
+            .with_parent(owner)
+            .with_kind(DeclarationKind::Class)
+            .with_source(SourceLocation::new("models.py", 1042).expect("nested type")),
+        );
+        let root = ViewRoot::new_incomplete(
+            reader.catalog.view().recipe(),
+            basis,
+            reader.catalog.view().frontier(),
+            rows,
+            reader.catalog.view().coverage().to_vec(),
+        )
+        .expect("retained source projection");
+        reader.catalog = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+            .expect("direct-parent arrangement");
+        let document = reader.document();
+        let rows =
+            document_member_rows(&mut reader, PATH, &document).expect("48 exact direct sites");
+        assert_eq!(
+            reader.calls, 1,
+            "35,300 unrelated declarations cause no additional query"
+        );
+        assert_eq!(rows.len(), 49);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.parent == Some(owner))
+                .map(|row| row.id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| Identity::parse(&row.label).name() == "ancestors_link_definition")
+                .count(),
+            2
+        );
+        assert_eq!(reader.catalog.work_counters().scan_rows, 0);
     }
 }
 

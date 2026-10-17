@@ -109,7 +109,10 @@ impl CommandTransport for Transport {
             .expect("requests")
             .push(request.command.clone());
         let library = self.owner.lock().expect("owner");
-        if matches!(&request.command, Command::GraphPage { .. }) {
+        if matches!(
+            &request.command,
+            Command::GraphPage { .. } | Command::MembersPage { .. }
+        ) {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
             let admitted =
@@ -194,6 +197,11 @@ impl CommandTransport for Transport {
                     .to_vec(),
                 Command::GraphPage { symbol, page } => {
                     QueryPageRecipe::graph_window(library.revision_root(), *symbol, page.window())
+                        .canonical_preimage()
+                        .to_vec()
+                }
+                Command::MembersPage { owner, page } => {
+                    QueryPageRecipe::members(library.revision_root(), owner.symbol(), page.limit())
                         .canonical_preimage()
                         .to_vec()
                 }
@@ -3387,5 +3395,75 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
             .decode_page_continuation(&token)
             .is_err(),
         "foreign issuing scope"
+    );
+}
+
+#[test]
+fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_requests() {
+    let base = owner_with_package(1, 406, 0, &["pkg::models.py:994::Document"], Some("pkg"));
+    let center = symbol_key("pkg::Thing000");
+    let mut rows = base.view().rows().to_vec();
+    for row in &mut rows {
+        if matches!(row.id, RowId::Symbol(symbol) if symbol != center) {
+            row.parent = Some(center);
+        }
+    }
+    let root = ViewRoot::new_checked(
+        base.view().recipe(),
+        base.view().basis(),
+        base.view().frontier(),
+        rows,
+        base.view().coverage().to_vec(),
+        base.view().capability().expect("same fixture authority"),
+    )
+    .expect("exact parents");
+    let library = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("catalog");
+    let owner = Arc::new(Mutex::new(library));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut client = session(&owner, &requests);
+    let reply = client.document_symbol(center).expect("selected document");
+    let CommandReply::Document(document) = reply.reply else {
+        panic!("document");
+    };
+    let mut continuation = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let reply = client
+            .members_page(&document, 200, continuation)
+            .expect("admitted member wire");
+        let CommandReply::ProjectionPage(page) = reply.reply else {
+            panic!("member page");
+        };
+        for row in page.snapshot.root.rows() {
+            assert!(seen.insert(row.id));
+        }
+        match page.terminal {
+            PageTerminal::More(next) => continuation = Some(next),
+            PageTerminal::Complete => break,
+            PageTerminal::Cancelled => panic!("not a cancelled fixture"),
+        }
+    }
+    assert_eq!(seen.len(), 406);
+    let requests = requests.lock().expect("requests");
+    let members = requests
+        .iter()
+        .filter_map(|command| match command {
+            Command::MembersPage { owner, page } => Some((owner, page)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 3);
+    assert!(
+        members
+            .iter()
+            .all(|(owner, page)| owner.symbol().is_selected()
+                && owner.symbol().claimed_bytes() == *center.as_bytes()
+                && owner.source_basis() == document.source_basis()
+                && page.limit().get() == 200)
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|command| matches!(command, Command::Outline(_) | Command::OutlinePage { .. }))
     );
 }
