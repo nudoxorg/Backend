@@ -2125,7 +2125,9 @@ mod tsz_source_coordinate_tests {
                     LanguageProfile::TypeScript(TypeScriptSource::TypeScript), initial.basis(), false, path, &[])
                     .map_err(|error| error.to_string())?.rows.into_iter().map(|row| row.row));
             }
-            rows[0].document = vec![Fragment::Link { label: "authored use".to_owned(), target: endpoint }].into_boxed_slice();
+            let caller_key = RowId::Symbol(identity::semantic_symbol(package, owner));
+            rows.iter_mut().find(|row| row.id == caller_key).expect("actual caller row").document =
+                vec![Fragment::Link { label: "authored use".to_owned(), target: endpoint }].into_boxed_slice();
             let mut aliases = NativeTargetAliases::default();
             aliases.record_image(package, digest, &caller_image, &index, &published).map_err(|error| error.to_string())?;
             // Defensive projection boundary: even a correctly recorded
@@ -2138,7 +2140,8 @@ mod tsz_source_coordinate_tests {
                 "only an exact selected endpoint becomes the existing declaration row");
             assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(owned)), target_present,
                 "the arrangement never filters an authored target");
-            assert!(matches!(rows[0].document[0], Fragment::Link { target, .. }
+            let document = &rows.iter().find(|row| row.id == caller_key).expect("retained actual caller").document;
+            assert!(matches!(document[0], Fragment::Link { target, .. }
                 if target == if admitted { owned } else { endpoint }), "document links share the exact same key arrangement");
         }
         Ok(())
