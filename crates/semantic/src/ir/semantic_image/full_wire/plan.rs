@@ -453,8 +453,7 @@ fn plan_signature_carrier_roles(
         .into());
     }
     let byte_count = semantic.entities.rows.len().div_ceil(4);
-    let mut roles = Vec::with_capacity(byte_count);
-    roles.resize(byte_count, 0_u8);
+    let mut roles = vec![0_u8; byte_count];
     for (canonical_index, row) in semantic.entities.rows.iter().enumerate() {
         let canonical_row = count(
             canonical_index,
