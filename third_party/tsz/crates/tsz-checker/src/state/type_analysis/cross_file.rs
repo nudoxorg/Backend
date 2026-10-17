@@ -228,10 +228,8 @@ impl CheckerState<'_> {
         // lives in the user arena), causing property access on the instantiated type to fail.
         // If the type alias declaration exists in the current arena, handle it locally.
         //
-        // Resolved once and reused across the read-only guard blocks below (the first
-        // guard already required it unconditionally): avoids re-running the alias-pin +
-        // `resolve_symbol_file_index` + binder lookups (and the fallback O(N) binder
-        // scan) several times per delegation. Byte-identical — no guard mutates state.
+        // Reuse the lookup across the read-only guards before lib delegation below;
+        // reacquire it after that mutable call for the remaining guard blocks.
         let cross_file_symbol = self.get_cross_file_symbol(sym_id);
         let requester_default_import_cache_file_idx = self
             .local_import_alias(sym_id)
@@ -373,6 +371,10 @@ impl CheckerState<'_> {
         {
             return Some(result);
         }
+
+        // End the earlier symbol borrow before mutable lib delegation, then reuse
+        // a fresh lookup for the remaining read-only guards.
+        let cross_file_symbol = self.get_cross_file_symbol(sym_id);
 
         let mut delegate_arena: Option<&tsz_parser::NodeArena> = self
             .ctx
