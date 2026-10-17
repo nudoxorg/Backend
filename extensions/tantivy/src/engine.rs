@@ -5412,10 +5412,9 @@ impl<'a> SourcePostingEdges<'a> {
         // preflight. Tokenizer temporary storage keeps its existing source-text
         // bound; it can exceed the final deduplicated token count. No folded or
         // qualified strings are retained between membership lookups.
-        let required_bytes = expected_postings
-            .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
-            .ok_or(Error::SizeLimit)?;
-        if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+        let required_bytes =
+            expected_postings.checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN);
+        if required_bytes.is_none_or(|bytes| bytes > MAX_POSTING_COVER_SCRATCH_BYTES) {
             // Preserve corruption precedence for a forged oversized ordinal
             // count without allocating its claimed descriptor vector.
             let (source_postings, _) =
@@ -5428,9 +5427,10 @@ impl<'a> SourcePostingEdges<'a> {
             }
             return Err(TantivySourceError::PostingCoverBudgetExceeded {
                 budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
-                required_bytes,
+                required_bytes: required_bytes.ok_or(Error::SizeLimit)?,
             });
         }
+        let required_bytes = required_bytes.ok_or(Error::SizeLimit)?;
         let mut terms = Vec::new();
         terms.try_reserve_exact(expected_postings).map_err(|_| {
             TantivySourceError::PostingCoverBudgetExceeded {
