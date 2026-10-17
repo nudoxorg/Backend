@@ -3454,7 +3454,7 @@ mod tests {
         recipe.checker.no_lib = true;
         let mut no_lib = TszProjectAuthority::new();
         no_lib
-            .update(changed, recipe, &[Arc::clone(&readmitted)])
+            .update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)])
             .test_value()?;
         let no_lib_project = no_lib.project().test_value()?;
         assert_eq!(no_lib_project.lib_files.len(), 1);
@@ -3478,6 +3478,31 @@ mod tests {
             .test_value()?
             .test_value()?;
         assert_eq!(observed(&no_lib).test_value()?, "any");
+
+        // Changing the policy of the already checked authority must not replay
+        // the previous string body through its warm project or library cache.
+        let disabled = authority
+            .update(changed, recipe, &[Arc::clone(&readmitted)])
+            .test_value()?;
+        assert!(!disabled.reused_project_result);
+        let disabled_session = authority
+            .project()
+            .test_value()?
+            .checked_query_session_unmetered_for_test()
+            .test_value()?;
+        let index = disabled_session.file_index("src/b.ts").test_value()?;
+        disabled_session
+            .with_file_checker_and_types(index, |checker, binder, _, _| {
+                let alias = binder.file_locals.get("LibraryLabel").test_value()?;
+                assert!(checker.ctx.symbol_is_from_lib(alias));
+                assert!(!checker.ctx.has_lib_loaded());
+                let value = binder.file_locals.get("b").test_value()?;
+                assert_eq!(checker.get_type_of_symbol(value), TszTypeId::ERROR);
+                Ok::<_, TestFailure>(())
+            })
+            .test_value()?
+            .test_value()?;
+        assert_eq!(observed(&authority).test_value()?, "any");
         Ok(())
     }
 
