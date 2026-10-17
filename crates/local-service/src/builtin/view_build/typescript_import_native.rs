@@ -244,7 +244,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
     let project_record = ProductSourceRecord::project(
         key.package().as_str(),
         *version.finalize().as_bytes(),
-        files.iter().map(|(id, _)| *id).collect(),
+        files.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
     )
     .expect("selected authored project");
     let mut changes = vec![BuiltinSourceChange {
