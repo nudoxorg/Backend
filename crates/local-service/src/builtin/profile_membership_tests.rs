@@ -1678,55 +1678,68 @@ mod prepared_read_head_tests;
 #[test]
 fn search_source_cancellation_preserves_the_complete_persisted_frontier() -> Result<(), String> {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let temp = TempWorkspace::new();
-    let mut daemon = open_daemon(temp.0.path());
-    let label = "pkg:generic/cancel-search-sources@1";
-    let package = backend_engine::PackageKey::from_value(label);
-    let files = file_frontier(1025, package);
-    let (intent, _) = paged_index_intent(package, label, &files);
-    super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
-        .map_err(|error| error.to_string())?;
-    let snapshot = daemon.engine().daemon().owner().snapshot();
-    let baseline =
-        super::super::read_indexed_sources(&snapshot).map_err(|error| error.to_string())?;
-    let token = Arc::new(AtomicBool::new(true));
-    assert!(super::super::read_indexed_sources_controlled(&snapshot, Some(&token)).is_err());
-    for (point, visits) in [
-        ("source-row", 512),
-        ("source-membership-key", 512),
-        ("source-file", 512),
-        ("source-membership-cover", 1),
-        ("source-sort", 1),
-        ("source-sort-step", 1000),
-        ("source-snapshot", 1),
-    ] {
-        token.store(false, Ordering::Release);
-        let _cancel =
-            super::super::cancel_search_preparation_after(point, visits, Arc::clone(&token));
-        let error = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
-            .err()
-            .ok_or("cancelled source walk returned a partial source set")?;
-        assert!(
-            error.to_string().contains("search preparation cancelled"),
-            "{point}: {error}"
-        );
-        assert!(
-            token.load(Ordering::Acquire),
-            "the real source walk reached {point}"
-        );
+    // The fixed 1025-file case is inline at today's encoded row bound. The
+    // second case crosses the actual bound, so both cover-stage entry and a
+    // genuine membership-page checkpoint must reject without source loss.
+    for (count, cover_visits) in [(1025, 1), (BuiltinPackageRecord::MAX_FRONTIER_FILES + 1, 2)] {
+        let temp = TempWorkspace::new();
+        let mut daemon = open_daemon(temp.0.path());
+        let label = "pkg:generic/cancel-search-sources@1";
+        let package = backend_engine::PackageKey::from_value(label);
+        let files = file_frontier(count, package);
+        let (intent, update) = paged_index_intent(package, label, &files);
         assert_eq!(
-            daemon.engine().daemon().owner().snapshot().root(),
-            snapshot.root()
+            update.membership_pages().is_empty(),
+            cover_visits == 1,
+            "the cancellation control must exercise the declared membership layout",
         );
+        super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+            .map_err(|error| error.to_string())?;
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let baseline =
+            super::super::read_indexed_sources(&snapshot).map_err(|error| error.to_string())?;
+        assert_eq!(baseline.files.len(), count);
+        let token = Arc::new(AtomicBool::new(true));
+        assert!(super::super::read_indexed_sources_controlled(&snapshot, Some(&token)).is_err());
+        for (point, visits) in [
+            ("source-row", 512),
+            ("source-membership-key", 512),
+            ("source-file", 512),
+            ("source-membership-cover", cover_visits),
+            ("source-sort", 1),
+            ("source-sort-step", 1000),
+            ("source-snapshot", 1),
+        ] {
+            token.store(false, Ordering::Release);
+            let _cancel =
+                super::super::cancel_search_preparation_after(point, visits, Arc::clone(&token));
+            let error = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
+                .err()
+                .ok_or_else(|| {
+                    format!("source walk did not reach cancellation checkpoint {point}")
+                })?;
+            assert!(
+                error.to_string().contains("search preparation cancelled"),
+                "{point}: {error}"
+            );
+            assert!(
+                token.load(Ordering::Acquire),
+                "the real source walk reached {point}"
+            );
+            assert_eq!(
+                daemon.engine().daemon().owner().snapshot().root(),
+                snapshot.root()
+            );
+        }
+        token.store(false, Ordering::Release);
+        let resumed = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(resumed.files, baseline.files);
+        assert_eq!(
+            resumed.projects[&package.to_bytes()].files,
+            baseline.projects[&package.to_bytes()].files
+        );
+        assert_eq!(resumed.files.len(), count);
     }
-    token.store(false, Ordering::Release);
-    let resumed = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
-        .map_err(|error| error.to_string())?;
-    assert_eq!(resumed.files, baseline.files);
-    assert_eq!(
-        resumed.projects[&package.to_bytes()].files,
-        baseline.projects[&package.to_bytes()].files
-    );
-    assert_eq!(resumed.files.len(), 1025);
     Ok(())
 }

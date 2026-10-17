@@ -953,6 +953,9 @@ fn read_indexed_relation_controlled(
             "source relation contains an unreferenced membership page".to_owned(),
         ));
     }
+    // Inline frontiers have no page pairs. Enter the coverage boundary even
+    // when the per-page loop is empty, retaining its per-row checkpoints below.
+    check_search_preparation(cancelled, "source-membership-cover")?;
     for (selected, present) in selected_pages.iter().zip(&membership_pages) {
         check_search_preparation(cancelled, "source-membership-cover")?;
         if selected != present {
