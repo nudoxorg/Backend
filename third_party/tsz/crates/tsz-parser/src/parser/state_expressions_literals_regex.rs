@@ -407,17 +407,20 @@ impl<'work> ParserStateCore<'work> {
                             // judge, so the strings answer is discarded; only
                             // the `\P` rejection above can fire here.
                             let mut may_contain_strings = false;
+                            let mut property_cursor = RegexScanCursor {
+                                body,
+                                end,
+                                pos: &mut *pos,
+                            };
                             scan_unicode_property_value_expression(
                                 parser,
                                 emit,
-                                body,
+                                &mut property_cursor,
                                 PropertyExpressionMode {
                                     unicode: strict_mode,
                                     unicode_sets: scan_ctx.unicode_sets_mode,
                                     negated: escape_char == b'P',
                                 },
-                                end,
-                                pos,
                                 escape_start,
                                 &mut may_contain_strings,
                             );
@@ -651,18 +654,27 @@ impl<'work> ParserStateCore<'work> {
                 negated: bool,
             }
 
+            /// Byte bounds and mutable cursor shared by nested scanners for
+            /// one regex escape.
+            struct RegexScanCursor<'a> {
+                body: &'a [u8],
+                end: usize,
+                pos: &'a mut usize,
+            }
+
             fn scan_unicode_property_value_expression(
                 parser: &mut ParserStateCore<'_>,
                 emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
-                body: &[u8],
+                cursor: &mut RegexScanCursor<'_>,
                 mode: PropertyExpressionMode,
-                end: usize,
-                pos: &mut usize,
                 escape_start: usize,
                 // Set when this expression names a property of *strings*, so
                 // the enclosing class can judge TS1518 for itself.
                 may_contain_strings: &mut bool,
             ) {
+                let body = cursor.body;
+                let end = cursor.end;
+                let pos = &mut *cursor.pos;
                 let PropertyExpressionMode {
                     unicode: unicode_mode,
                     unicode_sets: unicode_sets_mode,
@@ -803,16 +815,17 @@ impl<'work> ParserStateCore<'work> {
             fn scan_character_class_escape(
                 parser: &mut ParserStateCore<'_>,
                 emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
-                body: &[u8],
+                cursor: &mut RegexScanCursor<'_>,
                 strict_mode: bool,
                 unicode_sets_mode: bool,
-                end: usize,
-                pos: &mut usize,
                 // Set when this escape denotes a set that can match something
                 // other than exactly one character, which is what the
                 // enclosing negated class rejects with TS1518.
                 may_contain_strings: &mut bool,
             ) -> Option<ClassAtomKind> {
+                let body = cursor.body;
+                let end = cursor.end;
+                let pos = &mut *cursor.pos;
                 if *pos >= body.len() {
                     return None;
                 }
@@ -932,17 +945,20 @@ impl<'work> ParserStateCore<'work> {
                         let negated = body[*pos] == b'P';
                         *pos += 1;
                         if *pos < body.len() && body[*pos] == b'{' {
+                            let mut property_cursor = RegexScanCursor {
+                                body,
+                                end,
+                                pos: &mut *pos,
+                            };
                             scan_unicode_property_value_expression(
                                 parser,
                                 emit,
-                                body,
+                                &mut property_cursor,
                                 PropertyExpressionMode {
                                     unicode: strict_mode,
                                     unicode_sets: unicode_sets_mode,
                                     negated,
                                 },
-                                end,
-                                pos,
                                 start - 1,
                                 may_contain_strings,
                             );
@@ -1059,11 +1075,13 @@ impl<'work> ParserStateCore<'work> {
                     match scan_character_class_escape(
                         parser,
                         ctx.emit,
-                        &ctx.body[..ctx.body_end],
+                        &mut RegexScanCursor {
+                            body: &ctx.body[..ctx.body_end],
+                            end: ctx.body_end,
+                            pos: &mut *pos,
+                        },
                         ctx.strict_mode,
                         ctx.unicode_sets_mode,
-                        ctx.body_end,
-                        pos,
                         may_contain_strings,
                     ) {
                         Some(atom) => range.push(atom),
