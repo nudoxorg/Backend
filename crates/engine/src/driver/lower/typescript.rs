@@ -32,7 +32,6 @@ use backend_semantic::ir::{
     OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
     SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
     TypeParameterListId, TypeReason, TypeScriptSourceCoordinate, TypeWidth,
-    typescript_program_identity,
 };
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
@@ -4298,24 +4297,6 @@ pub(crate) fn collect_with_checker<'source, 'report>(
     .map_err(TypeScriptCollectError::Authority)?
 }
 
-/// Projects one exact file from the caller-owned native TSZ project directly
-/// into the existing TypeScript fact lanes. The checker and type database are
-/// borrowed only inside TSZ's file transaction; no JSON report or parallel
-/// type tree is materialized.
-fn native_tsz_program_identity(files: &[TszBoundFile]) -> Option<[u8; 32]> {
-    let mut sources = Vec::with_capacity(files.len());
-    for file in files {
-        let source = file
-            .arena
-            .get_source_file_at(file.source_file)?
-            .text
-            .as_bytes();
-        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
-        sources.push((file.file_name.clone(), *identity));
-    }
-    typescript_program_identity(&sources)
-}
-
 /// Returns the one TSZ binder symbol attached to an exact identifier source
 /// span. The parser node and byte range are checked together; matching names
 /// elsewhere in the file cannot lend an identity.
@@ -5160,9 +5141,15 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
         || source_path.ends_with(".d.mts")
         || source_path.ends_with(".d.cts");
     let program_files = &project.program().files;
-    let program_identity = native_tsz_program_identity(program_files);
-    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
-    facts.set_native_tsz_identity(program_identity, *source_identity);
+    let program_identity = session.native_program_identity();
+    let source_identity = session
+        .native_source_identity(file_index, source.as_bytes())
+        .ok_or_else(|| {
+            TypeScriptCollectError::TszAuthority(TszAuthorityError::SourceMismatch {
+                path: source_path.to_owned(),
+            })
+        })?;
+    facts.set_native_tsz_identity(program_identity, source_identity);
     macro_rules! lower_with_tsz_checker {
         ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
             let build = |module: OxcModule<'_>| {
@@ -13094,6 +13081,297 @@ describe('suite', () => {\n\
                 .count(),
             2,
             "each call site has one exact target, without a global name-only guess"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_session_identity_cache_preserves_outputs_and_exact_source_ownership()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, SourceIdentity,
+            encode_full_semantic_image, full_semantic_image_len, typescript_program_identity,
+        };
+
+        fn manifest(project: &TszProject, wrong_length: bool) -> NativeProgramSourceManifest {
+            let rows = project
+                .program()
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    let source = file
+                        .arena
+                        .get_source_file_at(file.source_file)
+                        .expect("actual source");
+                    NativeProgramSource {
+                        program_path: file.file_name.clone(),
+                        source: SourceIdentity {
+                            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                                source.text.as_bytes(),
+                            ),
+                            byte_len: u32::try_from(source.text.len())
+                                .expect("fixture source length")
+                                + if wrong_length && index == 0 { 1 } else { 0 },
+                        },
+                        package_path: Some(file.file_name.clone()),
+                    }
+                })
+                .collect();
+            NativeProgramSourceManifest::from_sources(
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"native-identity-cache-fixture",
+                ),
+                rows,
+            )
+            .expect("actual native membership")
+        }
+        fn bytes(facts: &FactSet<'_>, source: &str) -> Result<Vec<u8>, LaneError> {
+            let identity = SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"native-identity-cache-fixture",
+                ),
+            );
+            let ir = facts.build_ir(
+                recipe.profile,
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )?;
+            let mut encoded = vec![
+                0;
+                full_semantic_image_len(&ir)
+                    .map_err(|_| LaneError::Missing("canonical image size"))?
+            ];
+            encode_full_semantic_image(&ir, &mut encoded)
+                .map_err(|_| LaneError::Missing("canonical image encoding"))?;
+            Ok(encoded)
+        }
+        let models = "export function alpha(value: number): number { return value; }\n";
+        let caller =
+            "import { alpha } from './models';\nexport function read() { return alpha(1); }\n";
+        let resolutions = [module_resolution(
+            "caller.ts",
+            "./models",
+            TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File {
+                path: "models.ts".to_owned(),
+            },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[("models.ts", models), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native cache project"))?;
+        let actual_manifest = manifest(project, false);
+        let expected_members = project
+            .program()
+            .files
+            .iter()
+            .map(|file| {
+                let source = file
+                    .arena
+                    .get_source_file_at(file.source_file)
+                    .expect("native source");
+                (
+                    file.file_name.clone(),
+                    *ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected_program = typescript_program_identity(&expected_members);
+        let expected_bytes = project
+            .program()
+            .files
+            .iter()
+            .map(|file| {
+                file.arena
+                    .get_source_file_at(file.source_file)
+                    .expect("source")
+                    .text
+                    .len() as u64
+            })
+            .sum::<u64>();
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .expect("native session")
+            .authenticate_native_program_sources(&actual_manifest)
+            .expect("exact captured source membership");
+        assert_eq!(session.native_program_identity(), expected_program);
+        assert_eq!(
+            session.native_program_identity(),
+            Some(actual_manifest.program())
+        );
+        let initial_work = session.native_identity_hash_work_for_test();
+        assert_eq!(
+            initial_work,
+            (project.program().files.len(), expected_bytes)
+        );
+        let mut outputs = std::collections::BTreeMap::new();
+        for (path, source) in [
+            ("models.ts", models),
+            ("caller.ts", caller),
+            ("caller.ts", caller),
+            ("models.ts", models),
+        ] {
+            let index = session.file_index(path).expect("exact selected file");
+            assert_eq!(
+                session.native_source_identity(index, source.as_bytes()),
+                Some(*ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    source.as_bytes()
+                ))
+            );
+            assert_eq!(
+                session.native_source_identity(index, b"different compile bytes"),
+                None
+            );
+            let mut facts = FactSet::new();
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                source.as_bytes(),
+                project,
+                path,
+                &session,
+                &mut facts,
+            )?;
+            assert_eq!(facts.tsz_program_identity, expected_program);
+            assert_eq!(
+                facts.tsz_source_identity,
+                Some(*ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    source.as_bytes()
+                ))
+            );
+            let encoded = bytes(&facts, source)?;
+            if let Some(previous) = outputs.insert(path, encoded.clone()) {
+                assert_eq!(
+                    previous, encoded,
+                    "query order cannot change canonical output"
+                );
+            }
+        }
+        assert_eq!(
+            session.native_identity_hash_work_for_test(),
+            initial_work,
+            "repeated actual lowering never rehashes the whole program in the identity cache"
+        );
+        assert!(
+            project
+                .checked_query_session_unmetered_for_test()
+                .expect("native session")
+                .authenticate_native_program_sources(&manifest(project, true))
+                .is_err(),
+            "equal source hashes cannot admit a false byte length"
+        );
+
+        // These are real separate TSZ programs, not fabricated IR. Reordering
+        // inputs preserves identity; source edits, adopted files and path moves
+        // must not borrow the original program's cached ownership.
+        let edited = "export function alpha(value: number): number { return value + 1; }\n";
+        for (files, target, same_program) in [
+            (
+                vec![("caller.ts", caller), ("models.ts", models)],
+                "models.ts",
+                true,
+            ),
+            (
+                vec![("caller.ts", caller), ("models.ts", edited)],
+                "models.ts",
+                false,
+            ),
+            (
+                vec![
+                    ("caller.ts", caller),
+                    ("models.ts", models),
+                    ("adopted.ts", models),
+                ],
+                "models.ts",
+                false,
+            ),
+            (
+                vec![("caller.ts", caller), ("moved.ts", models)],
+                "moved.ts",
+                false,
+            ),
+        ] {
+            let resolutions = [module_resolution(
+                "caller.ts",
+                "./models",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: target.to_owned(),
+                },
+            )];
+            let other_authority = native_tsz_project_with_resolutions(&files, &resolutions)?;
+            let other = other_authority
+                .project()
+                .ok_or(LaneError::Missing("other native program"))?;
+            let other_manifest = manifest(other, false);
+            let other_session = other
+                .checked_query_session_unmetered_for_test()
+                .expect("native session")
+                .authenticate_native_program_sources(&other_manifest)
+                .expect("other exact source membership");
+            assert_eq!(
+                other_session.native_program_identity() == expected_program,
+                same_program
+            );
+            if !same_program {
+                assert!(
+                    other
+                        .checked_query_session_unmetered_for_test()
+                        .expect("native session")
+                        .authenticate_native_program_sources(&actual_manifest)
+                        .is_err(),
+                    "changed/adopted/moved source cannot adopt a stale membership"
+                );
+            }
+            let mut facts = FactSet::new();
+            let result = collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                caller.as_bytes(),
+                other,
+                "caller.ts",
+                &session,
+                &mut facts,
+            );
+            assert!(matches!(
+                result,
+                Err(TypeScriptCollectError::TszAuthority(
+                    backend_frontend_typescript::TszAuthorityError::ProjectSessionMismatch
+                ))
+            ));
+            assert_eq!(
+                facts.len(),
+                0,
+                "wrong owner is refused before any fact publication"
+            );
+        }
+        let mut facts = FactSet::new();
+        assert!(
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                b"different source",
+                project,
+                "caller.ts",
+                &session,
+                &mut facts
+            )
+            .is_err()
+        );
+        assert_eq!(
+            facts.len(),
+            0,
+            "changed compile bytes publish no cached facts"
         );
         Ok(())
     }
