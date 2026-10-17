@@ -245,17 +245,23 @@ pub(super) const fn default_limits() -> EmbeddingRuntimeLimits {
 mod tests {
     use super::*;
     #[test]
-    fn normal_preset_defaults_fit_existing_runtime_admission_without_implicit_growth() {
+    fn normal_preset_defaults_fit_existing_runtime_admission_without_implicit_growth()
+    -> Result<(), String> {
         default_limits()
             .validate(
                 90_868_376,
                 466_247,
-                std::num::NonZeroU16::new(384).unwrap(),
-                std::num::NonZeroU32::new(64 * 1024).unwrap(),
+                std::num::NonZeroU16::new(384)
+                    .ok_or_else(|| "the embedding dimensions are nonzero".to_owned())?,
+                std::num::NonZeroU32::new(64 * 1024)
+                    .ok_or_else(|| "the embedding token bound is nonzero".to_owned())?,
             )
-            .unwrap();
+            .map_err(|error| {
+                format!("admit the normal preset against existing limits: {error:?}")
+            })?;
         assert!(canonical_hex(&"a".repeat(64), 32));
         assert!(!canonical_hex(&"A".repeat(64), 32));
+        Ok(())
     }
     #[test]
     fn packaged_receipt_binds_cli_source_and_exact_dependency_identity_without_execution()
