@@ -6201,6 +6201,7 @@ fn package_authority_projection(
         | PackageAuthorityError::ClangToolchainExecutableMismatch { .. }
         | PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. }
         | PackageAuthorityError::GoAuthorityInputsChanged { .. }
+        | PackageAuthorityError::GoModuleLanguage { .. }
         | PackageAuthorityError::GoAuthorityUnavailable { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),

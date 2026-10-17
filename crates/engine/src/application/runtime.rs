@@ -1186,6 +1186,7 @@ fn compiler_unit_supported(profile: LanguageProfile, unit_key: &CompilationUnitK
 pub struct LocalCompilerCapabilities {
     advertised: [LocalCompilerCapability; LanguageProfile::PRODUCT_PROFILES.len()],
     rust_editions: [LocalCompilerCapability; 3],
+    go_versions: [LocalCompilerCapability; 4],
 }
 
 impl LocalCompilerCapabilities {
@@ -1321,6 +1322,13 @@ impl LocalCompilerCapabilities {
                 backend_semantic::vocabulary::RustEdition::Rust2021,
             ]
             .map(|edition| capability_for_profile(LanguageProfile::Rust(edition))),
+            go_versions: [
+                backend_semantic::vocabulary::GoVersion::Go122,
+                backend_semantic::vocabulary::GoVersion::Go123,
+                backend_semantic::vocabulary::GoVersion::Go124,
+                backend_semantic::vocabulary::GoVersion::Go125,
+            ]
+            .map(|version| capability_for_profile(LanguageProfile::Go(version))),
         }
     }
 
@@ -1334,9 +1342,9 @@ impl LocalCompilerCapabilities {
     /// consulting ambient state.
     ///
     /// The public table advertises one current product profile per language.
-    /// Earlier Rust editions have their own exact, internally attested rows:
-    /// their environment, options, and recipe identities must bind the selected
-    /// edition instead of borrowing the Rust 2024 row.
+    /// Earlier Rust editions and Go versions have their own internally attested rows:
+    /// their environment, options, and recipe identities bind the selected
+    /// edition/version instead of borrowing the currently advertised row.
     #[must_use]
     pub fn for_profile(&self, profile: LanguageProfile) -> LocalCompilerCapability {
         self.advertised
@@ -1348,6 +1356,12 @@ impl LocalCompilerCapabilities {
                     return None;
                 };
                 self.rust_editions
+                    .iter()
+                    .copied()
+                    .find(|capability| capability.profile == profile)
+            })
+            .or_else(|| {
+                self.go_versions
                     .iter()
                     .copied()
                     .find(|capability| capability.profile == profile)
@@ -5743,6 +5757,51 @@ mod input_witness_store_tests {
         ));
         assert!(!restarted.is_current(&package_root, profile, lineage, witness, [6; 32],));
         let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+#[cfg(test)]
+mod go_profile_capability_tests {
+    use super::*;
+    use backend_semantic::vocabulary::GoVersion;
+
+    #[test]
+    fn current_and_historical_go_profiles_keep_distinct_capability_rows() {
+        let root = crate::test_support::host_path("/test/go-profiles");
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                root.join("artifacts"),
+                root.join("journal"),
+                root.join("native"),
+            )
+            .unwrap(),
+            Box::new([]),
+            Box::new([]),
+            LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(Duration::from_secs(1)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::MIN).unwrap(),
+        )
+        .unwrap();
+        let capabilities = configuration.capabilities();
+        assert!(
+            capabilities
+                .as_slice()
+                .iter()
+                .any(|row| row.profile == LanguageProfile::Go(GoVersion::Go126))
+        );
+        for version in [
+            GoVersion::Go122,
+            GoVersion::Go123,
+            GoVersion::Go124,
+            GoVersion::Go125,
+            GoVersion::Go126,
+        ] {
+            let profile = LanguageProfile::Go(version);
+            let row = capabilities.for_profile(profile);
+            assert_eq!(row.profile, profile);
+            assert_eq!(row.state(), LocalCompilerCapabilityState::Unavailable);
+        }
     }
 }
 

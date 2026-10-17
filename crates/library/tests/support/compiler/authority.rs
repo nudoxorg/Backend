@@ -83,6 +83,7 @@ pub(crate) enum GoldenGoVersion {
     Go123,
     Go124,
     Go125,
+    Go126,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -246,6 +247,7 @@ impl From<backend_semantic::vocabulary::LanguageProfile> for GoldenLanguageProfi
                 backend_semantic::vocabulary::GoVersion::Go123 => GoldenGoVersion::Go123,
                 backend_semantic::vocabulary::GoVersion::Go124 => GoldenGoVersion::Go124,
                 backend_semantic::vocabulary::GoVersion::Go125 => GoldenGoVersion::Go125,
+                backend_semantic::vocabulary::GoVersion::Go126 => GoldenGoVersion::Go126,
             }),
             LanguageProfile::Java(value) => Self::Java(match value {
                 backend_semantic::vocabulary::JavaRelease::Java8 => GoldenJavaRelease::Java8,

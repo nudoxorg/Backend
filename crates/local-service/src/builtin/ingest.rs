@@ -4,6 +4,9 @@
 use super::source_budget::SourceAdmissionLimits;
 use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
+#[path = "ingest/go_project.rs"]
+mod go_project;
+use self::go_project::GoProjectCapture;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
 };
@@ -198,6 +201,7 @@ pub(super) struct FileSystemRevision {
 pub(super) struct CompilerConfigurationSnapshot {
     pub(super) files: Vec<CompilerConfigurationFile>,
     pub(super) complete_languages: BTreeSet<Language>,
+    go_capture: GoProjectCapture,
 }
 
 /// One bounded, confined read of a compiler configuration input.
@@ -447,6 +451,59 @@ impl ProjectRoot {
             let file = std::fs::File::open(canonical)
                 .map_err(|error| SourceFault::from_open(error.kind()))?;
             read_bounded(file, maximum_bytes)
+        }
+    }
+
+    fn compiler_configuration_revision_or_absent(
+        &self,
+        relative: &Path,
+    ) -> Result<Option<FileSystemRevision>, String> {
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err("Go module candidate is not confined".to_owned());
+        }
+        #[cfg(unix)]
+        let opened = self.open_confined(relative);
+        #[cfg(windows)]
+        let opened = self
+            .directory
+            .open_file_read(&windows_relative_segments(relative)?)
+            .map_err(|error| SourceFault::from_open(error.kind()));
+        #[cfg(not(any(unix, windows)))]
+        let opened = (|| {
+            let path = self.canonical.join(relative);
+            let canonical = path
+                .canonicalize()
+                .map_err(|error| SourceFault::from_open(error.kind()))?;
+            if canonical != path || !canonical.starts_with(&self.canonical) {
+                return Err(SourceFault::Fatal(
+                    "Go module candidate escaped its root".to_owned(),
+                ));
+            }
+            fs::File::open(canonical).map_err(|error| SourceFault::from_open(error.kind()))
+        })();
+        match opened {
+            Ok(file) => {
+                if !file
+                    .metadata()
+                    .map_err(|error| error.to_string())?
+                    .is_file()
+                {
+                    return Err(format!(
+                        "Go module candidate {} is not a regular file",
+                        relative.display()
+                    ));
+                }
+                file_system_revision_from_open_file(&file).map(Some)
+            }
+            Err(SourceFault::Vanished) => Ok(None),
+            Err(_) => Err(format!(
+                "Go module candidate {} is not safely readable",
+                relative.display()
+            )),
         }
     }
 
@@ -1280,6 +1337,7 @@ fn scan_source_paths(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
@@ -1326,6 +1384,7 @@ fn scan_source_paths(
                             reusable,
                             frontends,
                             python_version,
+                            go_capture,
                             delta,
                             source_policy,
                             cancellation,
@@ -1437,6 +1496,7 @@ fn scan_source_path(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
@@ -1459,14 +1519,18 @@ fn scan_source_path(
                 .ok_or_else(|| {
                     "source frontier row lost its exact source-fact identity".to_owned()
                 })?;
-            let profile = project_profile_fault(frontends, path, python_version).map_err(
-                |fault| match fault {
-                    SourceFault::Unavailable(_)
-                    | SourceFault::UnavailableRead(_, _)
-                    | SourceFault::Vanished => "source frontier profile changed".to_owned(),
-                    SourceFault::Fatal(error) => error,
-                },
-            )?;
+            let profile = project_profile_fault(
+                frontends,
+                path,
+                python_version,
+                go_capture.literal_version(Path::new(&cached.relative_path)),
+            )
+            .map_err(|fault| match fault {
+                SourceFault::Unavailable(_)
+                | SourceFault::UnavailableRead(_, _)
+                | SourceFault::Vanished => "source frontier profile changed".to_owned(),
+                SourceFault::Fatal(error) => error,
+            })?;
             let source_bytes = usize::try_from(cached.revision.length)
                 .map_err(|_| "source byte length exceeds this target".to_owned())?;
             let mut file = reused_scanned_file(
@@ -1492,6 +1556,7 @@ fn scan_source_path(
         reusable,
         frontends,
         python_version,
+        go_capture,
         source_policy,
     )
 }
@@ -1797,6 +1862,54 @@ fn scan_project_with_configuration_policy_attempt(
         files: file_revisions.values().cloned().collect(),
         typescript_reuse: None,
     };
+    // Parse module languages from the same bounded/confined configuration
+    // bytes used by freshness, before any analysis/frontier/row key is made.
+    let relevant_languages = paths
+        .iter()
+        .filter_map(|path| profile_of(frontends, path))
+        .map(LanguageProfile::language)
+        .collect::<BTreeSet<_>>();
+    let has_go = relevant_languages.contains(&Language::Go);
+    let mut compiler_configuration = if capture_configuration_contents || has_go {
+        read_compiler_configuration_snapshot(
+            &root,
+            &root_capability,
+            project_paths.configurations.clone(),
+            project_paths.incomplete_configurations.clone(),
+            if capture_configuration_contents {
+                relevant_languages
+            } else {
+                BTreeSet::from([Language::Go])
+            },
+            cancellation,
+        )?
+    } else {
+        CompilerConfigurationSnapshot::default()
+    };
+    if has_go
+        && !compiler_configuration
+            .complete_languages
+            .contains(&Language::Go)
+    {
+        return Err(
+            "Go module language requires a complete bounded configuration capture".to_owned(),
+        );
+    }
+    for directory in &project_paths.go_absent_modules {
+        compiler_configuration.go_capture.absent(directory.clone());
+    }
+    let go_capture = &compiler_configuration.go_capture;
+    for path in &paths {
+        if frontends
+            .for_path(path)
+            .is_some_and(|frontend| frontend.language() == SourceLanguage::Go)
+        {
+            go_capture.validate_source(
+                path.strip_prefix(&root)
+                    .map_err(|_| "Go source escaped root")?,
+            )?;
+        }
+    }
     let frontier_sources = paths
         .iter()
         .filter_map(|path| {
@@ -1806,11 +1919,17 @@ fn scan_project_with_configuration_policy_attempt(
                 .ok()?
                 .to_str()?
                 .replace(std::path::MAIN_SEPARATOR, "/");
+            let analysis = project_analysis_version(
+                frontend,
+                python_version,
+                go_capture,
+                Path::new(&relative),
+            );
             Some(source_frontier::SourcePath {
                 absolute: path.clone(),
                 relative,
                 language: frontend.language(),
-                analysis: project_analysis_version(frontend, python_version),
+                analysis,
                 revision: project_paths.file_revisions.get(path).copied().flatten(),
             })
         })
@@ -1868,6 +1987,7 @@ fn scan_project_with_configuration_policy_attempt(
         reusable,
         frontends,
         python_version,
+        go_capture,
         source_delta.as_ref(),
         source_policy,
         cancellation,
@@ -1942,27 +2062,6 @@ fn scan_project_with_configuration_policy_attempt(
     }
     files.sort_by_key(|(key, _)| *key);
     encoded_fact_bytes.sort_unstable_by_key(|(key, _)| *key);
-    let relevant_languages = compiler_sources
-        .iter()
-        .map(|source| source.profile.language())
-        .chain(
-            reused_compiler_files
-                .iter()
-                .map(|source| source.profile.language()),
-        )
-        .collect();
-    let compiler_configuration = if capture_configuration_contents {
-        read_compiler_configuration_snapshot(
-            &root,
-            &root_capability,
-            project_paths.configurations,
-            project_paths.incomplete_configurations,
-            relevant_languages,
-            cancellation,
-        )?
-    } else {
-        CompilerConfigurationSnapshot::default()
-    };
     let snapshot = IndexSnapshot {
         python_environment: python_environment.map(PythonEnvironmentInput::Captured),
         source_version: *source.finalize().as_bytes(),
@@ -2142,6 +2241,7 @@ struct ProjectPaths {
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
     file_revisions: BTreeMap<PathBuf, Option<FileSystemRevision>>,
     incomplete_configurations: BTreeSet<Language>,
+    go_absent_modules: Vec<PathBuf>,
 }
 
 fn project_paths_with_policy(
@@ -2226,12 +2326,77 @@ fn project_paths_with_policy(
             directories.push((relative, revision));
         }
     }
+    // Go consumes module files even when ignore rules hide them from ordinary
+    // source discovery. Admit each unique ancestor candidate once, with a hard
+    // count bound. Missing candidates are witnessed by their already captured
+    // parent directory revisions; existing candidates enter the same bounded
+    // configuration byte reader and final file fence as visible go.mod files.
+    let mut go_candidates = BTreeSet::new();
+    for source in &sources {
+        check_scan_cancellation(cancellation)?;
+        if !frontends
+            .and_then(|frontends| frontends.for_path(source))
+            .is_some_and(|frontend| frontend.language() == SourceLanguage::Go)
+        {
+            continue;
+        }
+        let mut directory = source.parent();
+        while let Some(parent) = directory.filter(|parent| parent.starts_with(root)) {
+            if !go_candidates.insert(parent.join("go.mod")) {
+                break; // This directory's entire ancestor chain was already admitted.
+            }
+            if go_candidates.len() > MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE {
+                return Err(
+                    "Go module candidate count exceeds bounded configuration capture".to_owned(),
+                );
+            }
+            directory = parent.parent();
+        }
+    }
+    let captured_directories = directories
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut go_absent_modules = Vec::new();
+    for candidate in go_candidates {
+        if configurations.iter().any(|(_, path)| path == &candidate) {
+            continue;
+        }
+        let relative = candidate
+            .strip_prefix(root)
+            .map_err(|_| "Go module candidate escaped root")?;
+        if !relative
+            .parent()
+            .is_some_and(|parent| captured_directories.contains(parent))
+        {
+            return Err("Go module absence has no captured directory fence".to_owned());
+        }
+        if let Some(revision) =
+            _root_capability.compiler_configuration_revision_or_absent(relative)?
+        {
+            let count = configuration_counts.entry(Language::Go).or_default();
+            if *count >= MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE {
+                return Err("Go module file count exceeds bounded configuration capture".to_owned());
+            }
+            *count += 1;
+            file_revisions.insert(candidate.clone(), Some(revision));
+            configurations.push((Language::Go, candidate));
+        } else {
+            go_absent_modules.push(
+                relative
+                    .parent()
+                    .ok_or("Go module candidate parent")?
+                    .to_path_buf(),
+            );
+        }
+    }
     Ok(ProjectPaths {
         sources,
         configurations,
         directories,
         file_revisions,
         incomplete_configurations,
+        go_absent_modules,
     })
 }
 
@@ -2249,6 +2414,7 @@ fn read_compiler_configuration_snapshot(
         .collect::<BTreeSet<_>>();
     let mut used_bytes = BTreeMap::<Language, usize>::new();
     let mut files = Vec::with_capacity(configurations.len());
+    let mut go_capture = GoProjectCapture::default();
     for (language, path) in configurations {
         check_scan_cancellation(cancellation)?;
         if !complete_languages.contains(&language) {
@@ -2265,10 +2431,18 @@ fn read_compiler_configuration_snapshot(
             continue;
         };
         *used_bytes.entry(language).or_default() = used.saturating_add(bytes.len());
+        let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
+        if language == Language::Go
+            && relative_path
+                .file_name()
+                .is_some_and(|name| name == "go.mod")
+        {
+            go_capture.admit(relative_path, &bytes, content)?;
+        }
         files.push(CompilerConfigurationFile {
             language,
             relative_path: relative_path.to_path_buf(),
-            content: typed_of::<InputContentSchema>(&bytes).to_bytes(),
+            content,
         });
     }
     files.sort_by(|left, right| {
@@ -2277,6 +2451,7 @@ fn read_compiler_configuration_snapshot(
     Ok(CompilerConfigurationSnapshot {
         files,
         complete_languages,
+        go_capture,
     })
 }
 
@@ -2445,6 +2620,7 @@ fn scan_file(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
     source_policy: SourceAdmissionPolicy,
 ) -> Result<Option<ScannedFile>, String> {
     match scan_one(
@@ -2455,6 +2631,7 @@ fn scan_file(
         reusable,
         frontends,
         python_version,
+        go_capture,
         source_policy,
     ) {
         Ok(file) => Ok(Some(file)),
@@ -2462,15 +2639,24 @@ fn scan_file(
         Err(SourceFault::Fatal(message)) => {
             Err(format!("read source {}: {message}", path.display()))
         }
-        Err(SourceFault::Unavailable(reason)) => {
-            unavailable_file(root, path, project, frontends, python_version, reason, 0).map(Some)
-        }
+        Err(SourceFault::Unavailable(reason)) => unavailable_file(
+            root,
+            path,
+            project,
+            frontends,
+            python_version,
+            go_capture,
+            reason,
+            0,
+        )
+        .map(Some),
         Err(SourceFault::UnavailableRead(reason, bytes_read)) => unavailable_file(
             root,
             path,
             project,
             frontends,
             python_version,
+            go_capture,
             reason,
             bytes_read,
         )
@@ -2485,6 +2671,7 @@ fn unavailable_file(
     project: [u8; 32],
     frontends: &FrontendSet,
     python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
     reason: SourceUnavailableReason,
     source_bytes_read: usize,
 ) -> Result<ScannedFile, String> {
@@ -2497,10 +2684,15 @@ fn unavailable_file(
         project,
         relative.clone(),
         frontend.language(),
-        project_analysis_version(frontend, python_version),
+        project_analysis_version(frontend, python_version, go_capture, Path::new(&relative)),
         reason,
         (frontend.language() == SourceLanguage::Python).then_some(python_version),
-    )?;
+    )?
+    .with_go_version(if frontend.language() == SourceLanguage::Go {
+        go_capture.literal_version(Path::new(&relative))
+    } else {
+        None
+    })?;
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
     Ok(ScannedFile {
@@ -2537,6 +2729,7 @@ fn scan_one(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
     source_policy: SourceAdmissionPolicy,
 ) -> Result<ScannedFile, SourceFault> {
     let relative_path = path
@@ -2554,7 +2747,12 @@ fn scan_one(
     let frontend = frontends
         .for_path(path)
         .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
-    let profile = match project_profile_fault(frontends, path, python_version) {
+    let go_version = if frontend.language() == SourceLanguage::Go {
+        go_capture.literal_version(relative_path)
+    } else {
+        None
+    };
+    let profile = match project_profile_fault(frontends, path, python_version, go_version) {
         Ok(profile) => profile,
         Err(SourceFault::Unavailable(reason)) => {
             return Err(SourceFault::UnavailableRead(reason, bytes.len()));
@@ -2563,7 +2761,8 @@ fn scan_one(
     };
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
-    let analysis = project_analysis_version(frontend, python_version);
+    let analysis =
+        project_analysis_version(frontend, python_version, go_capture, Path::new(&relative));
     let reusable_record = reusable.get(&key).filter(|record| {
         record.file_fields().is_some_and(|fields| {
             fields.project == project
@@ -2575,6 +2774,7 @@ fn scan_one(
                 // and this fence keeps such a row from becoming compiler input.
                 && fields.content_version != [0; 32]
                 && fields.python_version == (frontend.language() == SourceLanguage::Python).then_some(python_version)
+                && fields.go_version == go_version
                 && fields.analysis_version == analysis
                 && fields.source_identity.is_some()
         })
@@ -2595,6 +2795,7 @@ fn scan_one(
                 project,
                 frontends,
                 python_version,
+                go_capture,
                 SourceUnavailableReason::NotText,
                 source_bytes,
             )
@@ -2632,6 +2833,7 @@ fn scan_one(
                 project,
                 frontends,
                 python_version,
+                go_capture,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -2676,6 +2878,17 @@ fn scan_one(
     // whole project when the relation delta is later prepared.
     let record = if let Some(record) = reusable_record {
         record.clone()
+    } else if let Some(go_version) = go_version {
+        ProductSourceRecord::go_profiled_file_within_row_capacity(
+            project,
+            relative.clone(),
+            analyzed.content().to_bytes(),
+            analysis,
+            analyzed.declarations().clone(),
+            Some(source_fact_identity),
+            go_version,
+        )
+        .map_err(SourceFault::Fatal)?
     } else {
         // Bind identity before compaction: its final wire format also encodes
         // containment per declaration, so reserving only a header is insufficient.
@@ -3176,6 +3389,11 @@ fn profile_of(frontends: &FrontendSet, path: &Path) -> Option<LanguageProfile> {
 pub(super) fn source_record_profile(
     file: backend_engine::builtin::ProductFileRef<'_>,
 ) -> Result<Option<LanguageProfile>, String> {
+    if file.language == SourceLanguage::Go {
+        return Ok(Some(LanguageProfile::Go(
+            file.go_version.unwrap_or(GoVersion::Go125),
+        )));
+    }
     if file.language == SourceLanguage::Python {
         return Ok(Some(LanguageProfile::Python(
             file.python_version.unwrap_or(PythonVersion::Python314),
@@ -3184,8 +3402,16 @@ pub(super) fn source_record_profile(
     source_profile(Path::new(file.path))
 }
 
-fn project_analysis_version(frontend: &ProductFrontend, python_version: PythonVersion) -> [u8; 32] {
+fn project_analysis_version(
+    frontend: &ProductFrontend,
+    python_version: PythonVersion,
+    go_capture: &GoProjectCapture,
+    relative: &Path,
+) -> [u8; 32] {
     let analysis = frontend.analysis_version();
+    if frontend.language() == SourceLanguage::Go {
+        return go_capture.analysis_identity(analysis, relative);
+    }
     if frontend.language() != SourceLanguage::Python {
         return analysis;
     }
@@ -3203,10 +3429,12 @@ fn project_profile_fault(
     frontends: &FrontendSet,
     path: &Path,
     python_version: PythonVersion,
+    go_version: Option<GoVersion>,
 ) -> Result<LanguageProfile, SourceFault> {
     let profile = profile_fault(frontends, path)?;
     Ok(match profile {
         LanguageProfile::Python(_) => LanguageProfile::Python(python_version),
+        LanguageProfile::Go(_) => LanguageProfile::Go(go_version.unwrap_or(GoVersion::Go125)),
         other => other,
     })
 }
@@ -3282,7 +3510,12 @@ mod tests {
             .ok_or("missing Python parser")?;
         let mut analyses = BTreeSet::new();
         for version in backend_frontend_python::legacy::checker::SUPPORTED_PYTHON_VERSIONS {
-            let analysis = project_analysis_version(frontend, version);
+            let analysis = project_analysis_version(
+                frontend,
+                version,
+                &GoProjectCapture::default(),
+                Path::new("main.py"),
+            );
             assert!(
                 analyses.insert(analysis),
                 "each minor must fence parser facts and reuse"
@@ -3304,7 +3537,7 @@ mod tests {
                 Some(LanguageProfile::Python(version))
             );
             assert_eq!(
-                project_profile_fault(frontends, Path::new("main.py"), version)
+                project_profile_fault(frontends, Path::new("main.py"), version, None)
                     .map_err(|_| "Python source profile")?,
                 LanguageProfile::Python(version)
             );
@@ -3418,7 +3651,9 @@ mod tests {
                     frontends()?
                         .for_path(Path::new("main.py"))
                         .ok_or("Python parser")?,
-                    *expected
+                    *expected,
+                    &GoProjectCapture::default(),
+                    Path::new("main.py")
                 )
             );
             let main_source = scan
@@ -4137,6 +4372,200 @@ mod tests {
 
     fn reusable_rows(snapshot: &IndexSnapshot) -> BTreeMap<[u8; 32], ProductSourceRecord> {
         snapshot.files.iter().cloned().collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn go_module_profiles_bind_fresh_reused_and_cold_source_frontiers() -> Result<(), String> {
+        let repository = git_test_repo(
+            "go-module-profiles",
+            &[
+                ("go.mod", b"module example.com/root\ngo 1.25.0\n"),
+                ("main.go", b"package main\nfunc main() {}\n"),
+                ("nested/go.mod", b"module example.com/nested\ngo 1.24.3\n"),
+                ("nested/child.go", b"package nested\nfunc Child() {}\n"),
+            ],
+        )?
+        .ok_or("Git is required for the actual frontier control")?;
+        let root = &repository.0;
+        let coordinate = root.to_str().ok_or("non-UTF-8 Go fixture")?;
+        let project = git_project_key(root);
+        let cold = scan_project(coordinate, project, &BTreeMap::new())?;
+        let saved = reusable_rows(&cold);
+        let check = |snapshot: &IndexSnapshot,
+                     path: &str,
+                     version: Option<GoVersion>|
+         -> Result<(), String> {
+            let record = snapshot
+                .files
+                .iter()
+                .find(|(_, row)| row.label() == path)
+                .ok_or("missing Go source row")?;
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(&record.1, &mut bytes);
+            let reopened =
+                ProductSourceRelation::decode_value(&bytes).map_err(|_| "cold Go row decode")?;
+            let fields = reopened.file_fields().ok_or("cold Go row fields")?;
+            assert_eq!(fields.go_version, version, "{path}");
+            assert_eq!(
+                source_record_profile(fields)?,
+                Some(LanguageProfile::Go(version.unwrap_or(GoVersion::Go125)))
+            );
+            let profiles = snapshot
+                .compiler_sources
+                .iter()
+                .map(|source| (source.relative_path.as_str(), source.profile))
+                .chain(
+                    snapshot
+                        .reused_compiler_files
+                        .iter()
+                        .map(|source| (source.relative_path.as_str(), source.profile)),
+                )
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                profiles.get(path),
+                Some(&LanguageProfile::Go(version.unwrap_or(GoVersion::Go125)))
+            );
+            Ok(())
+        };
+        check(&cold, "main.go", Some(GoVersion::Go125))?;
+        check(&cold, "nested/child.go", Some(GoVersion::Go124))?;
+        let warm = scan_project(coordinate, project, &saved)?;
+        assert_eq!(
+            warm.source_bytes_read, 0,
+            "unchanged Git frontier avoids source reads"
+        );
+        check(&warm, "main.go", Some(GoVersion::Go125))?;
+        check(&warm, "nested/child.go", Some(GoVersion::Go124))?;
+        fs::write(root.join("go.mod"), b"module example.com/root\ngo 1.26.2\n")
+            .map_err(|error| error.to_string())?;
+        assert!(!compiler_revision_is_current(&cold.revision_fence)?);
+        let changed = scan_project(coordinate, project, &saved)?;
+        check(&changed, "main.go", Some(GoVersion::Go126))?;
+        check(&changed, "nested/child.go", Some(GoVersion::Go124))?;
+        assert_eq!(
+            cold.files
+                .iter()
+                .find(|(_, row)| row.label() == "nested/child.go"),
+            changed
+                .files
+                .iter()
+                .find(|(_, row)| row.label() == "nested/child.go"),
+            "another module's manifest edit preserves this file's exact row/analysis key",
+        );
+        assert_ne!(
+            cold.source_version, changed.source_version,
+            "manifest-only change renews source/analysis keys"
+        );
+        // Reopening old rows never consults the now-newer live manifest.
+        check(&cold, "main.go", Some(GoVersion::Go125))?;
+        fs::remove_file(root.join("nested/go.mod")).map_err(|error| error.to_string())?;
+        let boundary_removed = scan_project(coordinate, project, &reusable_rows(&changed))?;
+        check(&boundary_removed, "nested/child.go", Some(GoVersion::Go126))?;
+        assert_eq!(
+            changed
+                .files
+                .iter()
+                .find(|(_, row)| row.label() == "main.go"),
+            boundary_removed
+                .files
+                .iter()
+                .find(|(_, row)| row.label() == "main.go"),
+            "nested boundary deletion does not invalidate the parent's own file",
+        );
+        fs::remove_file(root.join("go.mod")).map_err(|error| error.to_string())?;
+        let legacy = scan_project(coordinate, project, &reusable_rows(&boundary_removed))?;
+        check(&legacy, "main.go", None)?;
+        check(&legacy, "nested/child.go", None)?;
+        let live = live_compiler_profiles(
+            root,
+            &legacy.compiler_sources,
+            &legacy.reused_compiler_files,
+        );
+        assert_eq!(
+            live,
+            BTreeSet::from([LanguageProfile::Go(GoVersion::Go125)])
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_go_module_creation_is_admitted_and_fenced() -> Result<(), String> {
+        let repository = git_test_repo(
+            "go-hidden-module",
+            &[
+                (".gitignore", b"go.mod\n"),
+                ("main.go", b"package main\nfunc main() {}\n"),
+            ],
+        )?
+        .ok_or("Git is required for module absence control")?;
+        let root = &repository.0;
+        let coordinate = root.to_str().ok_or("Go fixture path")?;
+        let project = git_project_key(root);
+        let absent = scan_project(coordinate, project, &BTreeMap::new())?;
+        assert_eq!(
+            absent.files[0].1.file_fields().ok_or("Go row")?.go_version,
+            None
+        );
+        fs::write(
+            root.join("go.mod"),
+            b"module example.com/hidden\ngo 1.26.2\n",
+        )
+        .map_err(|error| error.to_string())?;
+        assert!(!compiler_revision_is_current(&absent.revision_fence)?);
+        let present = scan_project(coordinate, project, &reusable_rows(&absent))?;
+        assert_eq!(
+            present.files[0].1.file_fields().ok_or("Go row")?.go_version,
+            Some(GoVersion::Go126)
+        );
+        assert!(
+            present
+                .compiler_configuration
+                .files
+                .iter()
+                .any(|file| file.relative_path == Path::new("go.mod"))
+        );
+        fs::remove_file(root.join("go.mod")).map_err(|error| error.to_string())?;
+        assert!(!compiler_revision_is_current(&present.revision_fence)?);
+        std::os::unix::fs::symlink(root.join(".gitignore"), root.join("go.mod"))
+            .map_err(|error| error.to_string())?;
+        assert!(
+            scan_project(coordinate, project, &reusable_rows(&present)).is_err(),
+            "a symlink module cannot acquire the legacy fallback"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn go_future_module_is_refused_before_source_rows_or_frontiers() -> Result<(), String> {
+        let root = crate::test_support::private_temp_dir("go-future-module")
+            .map_err(|error| error.to_string())?;
+        fs::write(
+            root.path().join("go.mod"),
+            b"module example.com/future\ngo 1.27.0\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(
+            root.path().join("main.go"),
+            b"package main\nfunc main() {}\n",
+        )
+        .map_err(|error| error.to_string())?;
+        let result = scan_project(
+            root.path().to_str().ok_or("Go fixture path")?,
+            [31; 32],
+            &BTreeMap::new(),
+        );
+        let Err(error) = result else {
+            return Err("future Go module acquired a supported source profile".to_owned());
+        };
+        assert!(
+            error.contains("go.mod")
+                && error.contains("1.27.0")
+                && error.contains("unsupported Go language"),
+            "{error}"
+        );
+        Ok(())
     }
 
     fn scan_with_source_policy(
@@ -5798,6 +6227,7 @@ mod robustness_tests {
             &BTreeMap::new(),
             frontends,
             PythonVersion::Python314,
+            &GoProjectCapture::default(),
             source_policy,
         )?;
         assert!(

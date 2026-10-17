@@ -73,5 +73,17 @@ const fn go_language(profile: GoVersion) -> &'static str {
         GoVersion::Go123 => "-lang=go1.23",
         GoVersion::Go124 => "-lang=go1.24",
         GoVersion::Go125 => "-lang=go1.25",
+        GoVersion::Go126 => "-lang=go1.26",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn go_126_native_flag_is_distinct_from_older_language_profiles() {
+        assert_eq!(go_language(GoVersion::Go126), "-lang=go1.26");
+        assert_eq!(go_language(GoVersion::Go125), "-lang=go1.25");
     }
 }

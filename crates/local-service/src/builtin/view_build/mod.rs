@@ -232,13 +232,14 @@ fn semantic_profile_is_complete(
     package: Option<backend_engine::PackageKey>,
     path: &str,
     python_version: Option<backend_semantic::vocabulary::PythonVersion>,
+    go_version: Option<backend_semantic::vocabulary::GoVersion>,
 ) -> Result<bool, super::BuiltinModelError> {
     let Some(package) = package else {
         return Ok(false);
     };
     // A file whose extension has no semantic profile is never covered by a
     // completed compile, so it keeps its structural facts.
-    let Some(profile) = super::ingest::source_profile_with_python_version(
+    let Some(mut profile) = super::ingest::source_profile_with_python_version(
         std::path::Path::new(path),
         python_version,
     )
@@ -246,6 +247,14 @@ fn semantic_profile_is_complete(
     else {
         return Ok(false);
     };
+    if matches!(
+        profile,
+        backend_semantic::vocabulary::LanguageProfile::Go(_)
+    ) {
+        profile = backend_semantic::vocabulary::LanguageProfile::Go(
+            go_version.unwrap_or(backend_semantic::vocabulary::GoVersion::Go125),
+        );
+    }
     Ok(complete.contains(&(package.to_bytes(), profile)))
 }
 
@@ -2191,12 +2200,23 @@ pub fn execute() {}
     }
 
     #[test]
+    fn complete_go_publication_only_suppresses_its_literal_module_profile() -> Result<(), String> {
+        use backend_semantic::vocabulary::GoVersion;
+        let package = package_key("mixed-go-modules");
+        let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::Go(GoVersion::Go125))]);
+        assert!(semantic_profile_is_complete(&complete, Some(package), "main.go", None, Some(GoVersion::Go125)).map_err(|error| error.to_string())?);
+        assert!(!semantic_profile_is_complete(&complete, Some(package), "nested/main.go", None, Some(GoVersion::Go126)).map_err(|error| error.to_string())?);
+        assert!(semantic_profile_is_complete(&complete, Some(package), "historical.go", None, None).map_err(|error| error.to_string())?);
+        Ok(())
+    }
+
+    #[test]
     fn complete_c_publication_does_not_suppress_cxx_fallback() -> Result<(), String> {
         let package = package_key("mixed-c-cxx");
         let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::C(CStandard::C23))]);
-        if !semantic_profile_is_complete(&complete, Some(package), "source.c", None)
+        if !semantic_profile_is_complete(&complete, Some(package), "source.c", None, None)
             .map_err(|error| error.to_string())?
-            || semantic_profile_is_complete(&complete, Some(package), "source.cpp", None)
+            || semantic_profile_is_complete(&complete, Some(package), "source.cpp", None, None)
                 .map_err(|error| error.to_string())?
         {
             return Err("C and C++ semantic fallback profiles collapsed".to_owned());
