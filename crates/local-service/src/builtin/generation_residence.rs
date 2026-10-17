@@ -957,13 +957,14 @@ mod tests {
 
         let driver = std::env::var_os("NUDOX_CLANG").map(std::path::PathBuf::from);
         let library = std::env::var_os("LIBCLANG_PATH").map(std::path::PathBuf::from);
-        let candidates = match (driver, library) {
-            (Some(driver), Some(library)) => vec![(driver, library)],
-            (None, None) => system_clang_fixture().unwrap_or_else(|error| {
+        let discovered = match (&driver, &library) {
+            (Some(driver), Some(library)) => vec![(driver.clone(), library.clone())],
+            _ => system_clang_fixture().unwrap_or_else(|error| {
                 panic!("find a real Clang fixture for semantic residence tests: {error}")
             }),
-            _ => panic!("set both NUDOX_CLANG and LIBCLANG_PATH for the Clang fixture"),
         };
+        let candidates = restrict_clang_fixture_candidates(driver, library, discovered)
+            .unwrap_or_else(|error| panic!("select an exact real Clang fixture pair: {error}"));
 
         let thread = std::thread::current();
         let test_name = thread
@@ -1003,6 +1004,120 @@ mod tests {
             "all isolated compiler-backed fixture pairs failed:\n{}",
             failures.join("\n")
         )
+    }
+
+    /// A build may supply LIBCLANG_PATH without an application driver override.
+    /// Complete that pair only from discovered real pairs matching every supplied
+    /// selector. An unmatched explicit half is never silently replaced.
+    fn restrict_clang_fixture_candidates(
+        driver: Option<std::path::PathBuf>,
+        library: Option<std::path::PathBuf>,
+        candidates: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    ) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {
+        fn canonical_selector(
+            selector: &Option<std::path::PathBuf>,
+        ) -> Result<Option<std::path::PathBuf>, String> {
+            selector
+                .as_ref()
+                .map(|path| {
+                    if !path.is_absolute() {
+                        return Err("explicit Clang fixture selectors must be absolute".to_owned());
+                    }
+                    path.canonicalize().map_err(|error| error.to_string())
+                })
+                .transpose()
+        }
+        let selected_driver = canonical_selector(&driver)?;
+        let selected_library = canonical_selector(&library)?;
+        let mut selected = Vec::new();
+        for (candidate_driver, candidate_library) in candidates {
+            let (Ok(actual_driver), Ok(actual_library)) =
+                (candidate_driver.canonicalize(), candidate_library.canonicalize())
+            else {
+                continue;
+            };
+            if !actual_driver.is_file() || !(actual_library.is_file() || actual_library.is_dir()) {
+                continue;
+            }
+            if selected_driver.as_ref().is_some_and(|path| path != &actual_driver)
+                || selected_library.as_ref().is_some_and(|path| {
+                    path != &actual_library
+                        && !(path.is_dir() && actual_library.parent() == Some(path.as_path()))
+                })
+            {
+                continue;
+            }
+            let pair = (
+                driver.clone().unwrap_or(candidate_driver),
+                library.clone().unwrap_or(candidate_library),
+            );
+            if !selected.contains(&pair) {
+                selected.push(pair);
+            }
+        }
+        if selected.is_empty() {
+            Err("no discovered real Clang pair matches the explicit fixture selectors".to_owned())
+        } else {
+            Ok(selected)
+        }
+    }
+
+    #[test]
+    fn clang_fixture_library_only_preserves_exact_selector_and_rejects_unrelated_pair() {
+        let root = tempfile::tempdir().expect("selector paths");
+        let driver = root.path().join("clang");
+        let library_root = root.path().join("lib");
+        std::fs::create_dir(&library_root).expect("library directory");
+        let library = library_root.join("libclang.so");
+        let unrelated = root.path().join("unrelated.so");
+        for path in [&driver, &library, &unrelated] {
+            std::fs::write(path, b"selector-path-only").expect("selector path");
+        }
+        let selected = restrict_clang_fixture_candidates(
+            None,
+            Some(library_root.clone()),
+            vec![(driver.clone(), unrelated.clone()), (driver.clone(), library.clone())],
+        )
+        .expect("only the matching directory is admitted");
+        assert_eq!(selected, vec![(driver.clone(), library_root.clone())]);
+        assert!(restrict_clang_fixture_candidates(
+            None,
+            Some(library_root),
+            vec![(driver.clone(), unrelated.clone())],
+        )
+        .is_err());
+        assert!(restrict_clang_fixture_candidates(
+            Some(unrelated.clone()),
+            None,
+            vec![(driver.clone(), library.clone())],
+        )
+        .is_err());
+        assert_eq!(
+            restrict_clang_fixture_candidates(
+                Some(driver.clone()),
+                None,
+                vec![(driver.clone(), library.clone())],
+            )
+            .expect("only the exact supplied driver is admitted"),
+            vec![(driver, library)],
+        );
+    }
+
+    #[test]
+    fn clang_fixture_missing_or_relative_selector_never_falls_back() {
+        let root = tempfile::tempdir().expect("selector paths");
+        assert!(restrict_clang_fixture_candidates(
+            Some(root.path().join("missing-clang")),
+            None,
+            Vec::new(),
+        )
+        .is_err());
+        assert!(restrict_clang_fixture_candidates(
+            None,
+            Some(std::path::PathBuf::from("relative-lib")),
+            Vec::new(),
+        )
+        .is_err());
     }
 
     fn system_clang_fixture() -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {

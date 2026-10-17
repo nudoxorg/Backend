@@ -8775,21 +8775,30 @@ mod tests {
     fn install_mixed_native_compiler(fixture: &mut AdapterFixture) {
         let compiler = backend_engine::application::LocalCompilerHost::new(
             MixedNativeEnvironment(fixture.root.0.join("compiler-native")),
-            // ExplicitOnly deliberately permits TypeScript platform discovery;
-            // this control owns a closed host with an absent SDK on every host.
+            // The closed environment exposes neither a Clang selector nor PATH.
+            // Linked TSZ remains available; the deliberately absent SDK is Clang.
             backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
         )
         .open()
-        .expect("compiled native Python producer and explicitly absent TypeScript SDK");
+        .expect("compiled native Python producer and explicitly absent Clang SDK");
         let capabilities = compiler.capabilities();
+        assert_eq!(
+            capabilities
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::C(
+                    backend_semantic::vocabulary::CStandard::C23,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Unavailable,
+            "closed fixture must retain an actual absent Clang SDK",
+        );
         assert_eq!(
             capabilities
                 .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
                     backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                 ))
                 .state(),
-            backend_engine::application::LocalCompilerCapabilityState::Unavailable,
-            "closed fixture must retain an actual absent TypeScript SDK",
+            backend_engine::application::LocalCompilerCapabilityState::Ready,
+            "closing external discovery must retain linked TSZ",
         );
         let python =
             capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
@@ -9002,12 +9011,12 @@ mod tests {
         assert!(python.session_lineage().is_some());
         assert_eq!(
             capabilities
-                .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
-                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::C(
+                    backend_semantic::vocabulary::CStandard::C23,
                 ))
                 .state(),
             backend_engine::application::LocalCompilerCapabilityState::Unavailable,
-            "native Python admission cannot configure the absent TypeScript SDK",
+            "native Python admission cannot configure the absent Clang SDK",
         );
     }
 
@@ -9075,10 +9084,10 @@ mod tests {
         )
         .expect("Python source");
         fs::write(
-            Path::new(&label).join("panel.ts"),
-            "export function refused_name(): number { return 7; }\n",
+            Path::new(&label).join("panel.c"),
+            "int refused_name(void) { return 7; }\n",
         )
-        .expect("TypeScript source");
+        .expect("C source");
         for attempt in 0..2 {
             install_mixed_native_compiler(&mut fixture);
             let (adapter, daemon) = fixture.parts();
@@ -9125,8 +9134,8 @@ mod tests {
             let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,None).expect("current unkeyed partial captures").expect("local");
             let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };
             assert_eq!(source_capture.profiles,partial.source_capture.profiles);
-            assert_eq!(refusals.len(),1,"published Python and refused TS remain separate");
-            let backend_library::PackageCompilerDiagnostic::Retained { read }=&refusals[0].diagnostic else { panic!("retained TS failure") };
+            assert_eq!(refusals.len(),1,"published Python and refused C remain separate");
+            let backend_library::PackageCompilerDiagnostic::Retained { read }=&refusals[0].diagnostic else { panic!("retained C failure") };
             let full=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,Some(read)).expect("exact full failure").expect("local");
             let backend_library::PackageCompilerOutcomes::Diagnostic { refusal,.. }=full else { panic!("diagnostic") };
             assert_eq!(refusal,partial.refused_profiles[0],"reuse the exact typed refused fact");
@@ -9135,13 +9144,13 @@ mod tests {
                     .profile
                     .name()
                     .expect("language"),
-                "typescript"
+                "c"
             );
             assert!(
                 partial.refused_profiles[0]
                     .compiler_failure
                     .as_ref()
-                    .expect("actual TS refusal")
+                    .expect("actual C refusal")
                     .requires_tool_configuration()
             );
             let source = crate::builtin::commands::index::source_capture_summary_for_root(
@@ -9193,7 +9202,7 @@ mod tests {
     }
 
     #[test]
-    fn native_python_publication_survives_missing_typescript_sdk_and_cold_refusal_retry() {
+    fn native_python_publication_survives_missing_clang_sdk_and_cold_refusal_retry() {
         use backend_library::{
             IndexOperationSemanticProfileState as ProfileState, IndexOperationState as State,
         };
@@ -9210,10 +9219,10 @@ mod tests {
         )
         .expect("Python source");
         fs::write(
-            Path::new(&label).join("panel.ts"),
-            "export function unavailable_name(): number { return 7; }\n",
+            Path::new(&label).join("panel.c"),
+            "int unavailable_name(void) { return 7; }\n",
         )
-        .expect("TypeScript source");
+        .expect("C source");
         install_mixed_native_compiler(&mut fixture);
         let terminal = run_mixed_native_operation(&mut fixture, &label, 0x71);
         let State::PartiallyPublished {
@@ -9223,17 +9232,17 @@ mod tests {
             panic!("typed partial publication: {:?}", terminal.state)
         };
         assert_eq!(refused_profiles.len(), 1);
-        let ts =
-            backend_library::SemanticLanguageProfile::from_name("typescript").expect("TypeScript");
+        let unavailable =
+            backend_library::SemanticLanguageProfile::from_name("c").expect("C");
         let py = backend_library::SemanticLanguageProfile::from_name("python").expect("Python");
-        assert_eq!(refused_profiles[0].profile, ts);
+        assert_eq!(refused_profiles[0].profile, unavailable);
         let failure = refused_profiles[0]
             .compiler_failure
             .as_ref()
             .expect("closed missing SDK refusal");
         assert_eq!(
             failure.cause().required_native_tool(),
-            Some(backend_library::CompilerNativeToolFact::TypeScriptCompiler)
+            Some(backend_library::CompilerNativeToolFact::Clang)
         );
         assert!(failure.cause().requires_tool_configuration());
         let capture = terminal
@@ -9261,8 +9270,8 @@ mod tests {
             capture
                 .profiles()
                 .iter()
-                .find(|profile| profile.profile == ts)
-                .expect("TS profile")
+                .find(|profile| profile.profile == unavailable)
+                .expect("C profile")
                 .state,
             ProfileState::Unavailable { .. }
         ));
