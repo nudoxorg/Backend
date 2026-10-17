@@ -6,6 +6,7 @@ use super::{call_join, identity, source_availability::SelectedSourceArtifacts};
 use super::super::BuiltinModelError;
 use backend_engine::{Fragment, PackageKey, Row, RowId, SymbolKey};
 use backend_engine::application::DocumentationSession;
+use backend_semantic::ir::SemanticCoreReader;
 use backend_semantic::ir::{ExternalTarget, ExternalTargetIdentity, ForeignTargetOrigin, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM};
 use std::collections::{BTreeMap, BTreeSet};
 
