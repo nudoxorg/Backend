@@ -632,6 +632,8 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
         let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
         rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
         rig.settle();
+        let retained = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("selected graph");
+        let reading = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
         let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
             .expect("painted selected graph control");
         let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
@@ -651,7 +653,11 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
         rig.cx.simulate_click(back.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(3)"),
+        let returned = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("returned graph");
+        assert_eq!(returned.entity_id(), retained.entity_id(), "Back retains the exact scene without publication");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), reading,
+            "Back restores the graph's own reading visit");
+        assert_eq!(returned.read_with(rig.cx, |graph, _| graph.focused()), Some(RELATION_LABEL_FN),
             "Back restores the chosen graph node and its retained scene");
     }
 }
