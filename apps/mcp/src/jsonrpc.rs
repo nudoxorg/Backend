@@ -387,13 +387,12 @@ impl reconnect::Endpoint for SessionEndpoint {
                 connected
             },
             || {
-                let read_budget = context
-                    .map(RequestContext::remaining_read_budget)
-                    .transpose()?
-                    .flatten();
-                backend_runtime::ensure_locald_cancellable(&self.paths, read_budget, || {
-                    context.is_none_or(|context| context.cancellation_reason().is_none())
-                })
+                let startup_budget = session_owner_startup_budget(context)?;
+                backend_runtime::ensure_locald_cancellable(
+                    &self.paths,
+                    Some(startup_budget),
+                    || context.is_none_or(|context| context.cancellation_reason().is_none()),
+                )
                 .map_err(|error| map_runtime_startup_error(error, context))
             },
         )?;
@@ -409,10 +408,27 @@ impl reconnect::Endpoint for SessionEndpoint {
     }
 }
 
+// Owner startup precedes command admission. Bound that observation separately
+// so a cold first mutation can report Starting without installing a deadline
+// on the mutation itself or manufacturing an accepted operation receipt.
+const MCP_OWNER_STARTUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn session_owner_startup_budget(
+    context: Option<&RequestContext>,
+) -> Result<std::time::Duration, ClientError> {
+    Ok(context
+        .map(RequestContext::remaining_read_budget)
+        .transpose()?
+        .flatten()
+        .map_or(MCP_OWNER_STARTUP_BUDGET, |remaining| {
+            remaining.min(MCP_OWNER_STARTUP_BUDGET)
+        }))
+}
+
 /// Initial safe-read connections use the same bounded owner convergence as
 /// CLI recovery. A readiness probe is not a lease: its final dial may refuse.
-/// Unbounded mutation contexts keep their existing single startup/dial policy;
-/// connection recovery never submits a product command or installs a deadline.
+/// Mutation contexts keep one startup/dial and acquire no execution deadline;
+/// their separate startup observation can return honest Pending before dispatch.
 fn connect_session_owner_with<T>(
     endpoint: &std::path::Path,
     context: Option<&RequestContext>,
