@@ -11233,7 +11233,7 @@ mod lane_tests {
         AnonymousCallableAnchorView, AnonymousCallableFamilyMultiplicity, CallableChildRole,
         CallableParentShape, CallableTypeContainerKind, ComputedType, DeclarationFamilyId,
         EntityId, EntityKind, FragmentError, FragmentView, ItemName, LinkKind, OccurrenceFault,
-        OccurrenceTarget, ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr,
+        OccurrenceTarget, ProductChildRole, ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr,
         TypeId, TypeQuery, TypeScriptSourceCoordinate, VariantFingerprint,
     };
     use backend_semantic::vocabulary::{
