@@ -212,9 +212,12 @@ fn pocketbase_exact_captured45_reports_native_program_and_checker_phases() {
             "kind":format!("{:?}",request.request_kind),"mode":format!("{:?}",request.resolution_mode),
             "target":format!("{:?}",request.target)
         })).collect::<Vec<_>>();
+        let config = node.config.as_ref().map(|(path, content_version)| {
+            serde_json::json!({"path":path,"content_version":hex(content_version.as_ref())})
+        });
         record(
             serde_json::json!({"phase":"native-program-admitted-before-check", "program":index,
-            "elapsed_millis":started.elapsed().as_millis(),"config":node.config,"references":node.references,
+            "elapsed_millis":started.elapsed().as_millis(),"config":config,"references":node.references,
             "source_count":members.len(),"sources":members,"library_count":libraries.len(),"libraries":libraries,
             "module_request_count":resolutions.len(),"module_resolutions":resolutions,
             "options":format!("{:?}",native.options.checker),"environment":hex(native.options.environment.as_bytes()),
