@@ -1561,15 +1561,9 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::TszResolutionModeOverride;
-    use std::sync::atomic::AtomicBool;
-    use std::time::{Duration, Instant};
-    use tsz::parser::node::NodeAccess;
-
+mod test_support {
     #[derive(Debug)]
-    struct TestFailure(String);
+    pub(super) struct TestFailure(String);
 
     impl std::fmt::Display for TestFailure {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1579,7 +1573,7 @@ mod tests {
 
     impl std::error::Error for TestFailure {}
 
-    trait TestValue<T> {
+    pub(super) trait TestValue<T> {
         fn test_value(self) -> Result<T, TestFailure>;
     }
 
@@ -1594,6 +1588,18 @@ mod tests {
             self.ok_or_else(|| TestFailure("expected test fixture value was absent".to_owned()))
         }
     }
+}
+
+#[cfg(test)]
+use test_support::{TestFailure, TestValue};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TszResolutionModeOverride;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tsz::parser::node::NodeAccess;
 
     include!("tsz_authority/json_value_import_tests.rs");
 
@@ -1678,7 +1684,7 @@ mod tests {
                     &[],
                 )
                 .expect("actual checker");
-            authority
+            Ok::<_, TestFailure>(authority
                 .project()
                 .test_value()?
                 .check_result()
@@ -1686,7 +1692,7 @@ mod tests {
                 .iter()
                 .flat_map(|file| &file.diagnostics)
                 .map(|d| d.code)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>())
         };
         assert!(run(true).test_value()?.contains(&1294));
         assert!(!run(false).test_value()?.contains(&1294));
@@ -1744,7 +1750,7 @@ mod tests {
         let session = project.checked_query_session(&fresh_budget).test_value()?;
         let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
             let ty = checker.get_type_of_symbol(binder.file_locals.get("value").test_value()?);
-            checker.format_type(ty)
+            Ok::<_, TestFailure>(checker.format_type(ty))
         }).test_value()?.test_value()?;
         assert_eq!(value, "number");
         drop(session);
@@ -1775,7 +1781,7 @@ mod tests {
         let session = authority.project().test_value()?.checked_query_session(&other).test_value()?;
         let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
             let ty = checker.get_type_of_symbol(binder.file_locals.get("value").test_value()?);
-            checker.format_type(ty)
+            Ok::<_, TestFailure>(checker.format_type(ty))
         }).test_value()?.test_value()?;
         assert_eq!(value, "number");
         drop(session);
@@ -1953,8 +1959,8 @@ mod tests {
             let index = session.file_index("src/main.ts").test_value()?;
             session.with_file_checker_and_types(index, |checker, binder, _, _| {
                 let ty = checker.get_type_of_symbol(binder.file_locals.get("actual").test_value()?);
-                checker.format_type(ty)
-            }).test_value()?.test_value()?
+                Ok::<_, TestFailure>(checker.format_type(ty))
+            }).test_value()?
         }
         let main = input("src/main.ts", "import { value } from './dep'; export const actual = value;");
         let mut recipe = options();
@@ -1983,8 +1989,8 @@ mod tests {
         let mut fresh = TszProjectAuthority::new();
         fresh.update(changed.clone(), recipe.clone(), &[]).test_value()?;
         assert_eq!(observed(&authority).test_value()?, observed(&fresh).test_value()?);
-        let diagnostics = |authority: &TszProjectAuthority| authority.project().test_value()?.check_result().file_results.iter()
-            .map(|file| (file.file_name.clone(), file.diagnostics.clone())).collect::<Vec<_>>();
+        let diagnostics = |authority: &TszProjectAuthority| Ok::<_, TestFailure>(authority.project().test_value()?.check_result().file_results.iter()
+            .map(|file| (file.file_name.clone(), file.diagnostics.clone())).collect::<Vec<_>>());
         assert_eq!(diagnostics(&authority).test_value()?, diagnostics(&fresh).test_value()?);
 
         recipe.checker.strict_null_checks = !recipe.checker.strict_null_checks;
@@ -2227,6 +2233,7 @@ mod tests {
                         checker.ctx.resolve_import_target_from_file(index, path),
                         None
                     );
+                    Ok::<_, TestFailure>(())
                 })
                 .test_value()?.test_value()?;
         }
@@ -2488,7 +2495,7 @@ mod tests {
                 opposite_target, target,
                 "the other admitted mode cannot borrow this syntax target"
             );
-            target
+            Ok::<_, TestFailure>(target)
         };
         let sources = vec![
             input(
@@ -2552,8 +2559,9 @@ mod tests {
                         checker.ctx.file_is_esm_map.as_ref().test_value()?,
                         &project.program().file_is_esm_map
                     ));
-                    let target = syntax_target(checker, main, expected_mode);
+                    let target = syntax_target(checker, main, expected_mode).test_value()?;
                     assert_eq!(project.program().files[target].file_name, expected);
+                    Ok::<_, TestFailure>(())
                 })
                 .test_value()?.test_value()?;
             let cancelled = AtomicBool::new(false);
@@ -2569,8 +2577,9 @@ mod tests {
                         checker.ctx.file_is_esm_map.as_ref().test_value()?,
                         &project.program().file_is_esm_map
                     ));
-                    let target = syntax_target(checker, main, expected_mode);
+                    let target = syntax_target(checker, main, expected_mode).test_value()?;
                     assert_eq!(project.program().files[target].file_name, expected);
+                    Ok::<_, TestFailure>(())
                 })
                 .test_value()?.test_value()?;
             let actual_error = project
@@ -2623,6 +2632,7 @@ mod tests {
                         )
                         .is_some()
                 );
+                Ok::<_, TestFailure>(())
             })
             .test_value()?.test_value()?;
         assert!(
@@ -2658,6 +2668,7 @@ mod tests {
                         )
                         .is_some()
                 );
+                Ok::<_, TestFailure>(())
             })
             .test_value()?.test_value()?;
         assert!(matches!(
@@ -2990,7 +3001,7 @@ mod tests {
                         .iter()
                         .find(|file| file.file_name == path)
                         .test_value()?;
-                    file.arena
+                    Ok::<_, TestFailure>(file.arena
                         .nodes
                         .iter()
                         .enumerate()
@@ -3007,7 +3018,7 @@ mod tests {
                                 .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
                                 .flatten()
                         })
-                        .expect("owner declaration itself has a real binder symbol")
+                        .expect("owner declaration itself has a real binder symbol"))
                 };
             let symbol = owner_symbol("types.ts", "Owner").test_value()?;
             let foreign_symbol = owner_symbol("foreign.d.ts", "Owner").test_value()?;
@@ -3359,9 +3370,9 @@ mod tests {
 
     #[test]
     fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() -> Result<(), TestFailure> {
-        let library = || TszLibraryInput::from_utf8(
+        let library = || Ok::<_, TestFailure>(TszLibraryInput::from_utf8(
             "lib.fixture.d.ts", b"declare type LibraryLabel = string;".to_vec(),
-        ).test_value()?.into_lib_file();
+        ).test_value()?.into_lib_file());
         let original = library().test_value()?;
         let first = vec![
             input("src/a.ts", "export const a: LibraryLabel = 'a';"),
@@ -3389,8 +3400,8 @@ mod tests {
             session.with_file_checker_and_types(index, |checker, binder, _, _| {
                 let ty = checker.get_type_of_symbol(binder.file_locals.get("b").test_value()?);
                 let ty = checker.resolve_lazy_type(ty);
-                checker.format_type(ty)
-            }).test_value()?.test_value()?
+                Ok::<_, TestFailure>(checker.format_type(ty))
+            }).test_value()?
         };
         let mut cold = TszProjectAuthority::new();
         cold.update(changed, recipe, &[readmitted]).test_value()?;
@@ -3638,7 +3649,7 @@ mod tests {
             let index = session.file_index("src/value.ts").test_value()?;
             let field = session
                 .with_file_checker_and_types(index, |checker, binder, _file, _types| {
-                    checker.get_type_of_symbol(binder.file_locals.get("Value").test_value()?)
+                    Ok::<_, TestFailure>(checker.get_type_of_symbol(binder.file_locals.get("Value").test_value()?))
                 })
                 .test_value()?.test_value()?;
             assert_ne!(
@@ -3792,7 +3803,7 @@ mod tests {
         let session = project.checked_query_session(&budget).test_value()?;
         let file = session.file_index("src/value.ts").test_value()?;
         let child = session.with_file_checker_and_types(file, |checker, binder, _file, _types| {
-            checker.get_type_of_symbol(binder.file_locals.get("Child").test_value()?)
+            Ok::<_, TestFailure>(checker.get_type_of_symbol(binder.file_locals.get("Child").test_value()?))
         }).test_value()?.test_value()?;
         assert_ne!(child, TszTypeId::UNKNOWN);
         Ok(())
@@ -3855,14 +3866,14 @@ mod tests {
         baseline.update(sources, opts, &[]).test_value()?;
         for name in ["src/a.ts", "src/b.ts"] {
             let diagnostics = |project: &TszProject| {
-                project
+                Ok::<_, TestFailure>(project
                     .check_result()
                     .file_results
                     .iter()
                     .find(|file| file.file_name == name)
                     .test_value()?
                     .diagnostics
-                    .clone()
+                    .clone())
             };
             let actual = diagnostics(isolated.project().test_value()?).test_value()?;
             assert!(!actual.is_empty(), "{name} keeps its real diagnostics");
@@ -3917,7 +3928,7 @@ mod tests {
             let project = authority.project().test_value()?;
             assert!(project.file_work_skipped().is_empty());
             let codes = |name: &str| {
-                project
+                Ok::<_, TestFailure>(project
                     .check_result()
                     .file_results
                     .iter()
@@ -3926,9 +3937,9 @@ mod tests {
                     .diagnostics
                     .iter()
                     .map(|diagnostic| diagnostic.code)
-                    .collect::<BTreeSet<_>>()
+                    .collect::<BTreeSet<_>>())
             };
-            (codes("src/types.d.ts").test_value()?, codes("src/main.ts").test_value()?)
+            Ok::<_, TestFailure>((codes("src/types.d.ts").test_value()?, codes("src/main.ts").test_value()?))
         };
         let (declaration_checked, application_checked) = diagnostics(true).test_value()?;
         let (declaration_skipped, application_skipped) = diagnostics(false).test_value()?;
