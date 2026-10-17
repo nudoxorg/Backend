@@ -46,3 +46,16 @@ The embedded native-authority digest domain and frontend producer/contract are
 advanced. The digest already includes the lowering source and feeds the native
 toolchain, runtime configuration, host witness and direct-program identity, so
 the repaired ownership producer cannot reuse buggy IR under its old identity.
+
+The layered parameter-property follow-up retains both Field and Parameter
+roles for unnamed classes too. It computes the native class proofs once per
+file, indexes their exact ranges, and gives only the Field a typed class-owner
+override. The Parameter remains owned by its constructor. The nearest actual
+class wins even inside an outer named class; a missing exact native join is a
+refusal rather than permission to borrow that outer Record. Named-class roles
+remain on their existing path. Focused tests cover private/readonly parameters,
+nested property/method classes, same-route siblings and unrelated-edit lineage.
+The Record-based compatibility `this.member` lookup refuses to borrow an outer
+class for an anonymous class; this does not claim complete anonymous-member
+lookup. Only an independently proven native TSZ occurrence can upgrade a site.
+These added native bodies and package acceptance remain unrun.
