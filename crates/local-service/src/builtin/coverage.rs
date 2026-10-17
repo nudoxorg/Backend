@@ -187,13 +187,15 @@ impl SemanticTally {
             if !capture_matches_source(source, key, capture)? {
                 // Still check a Published claim against its retained selection.
                 // Source staleness must not launder an unrelated selected claim.
-                // A stale capture promises no progress and certifies nothing:
-                // the scratch tally validates the claim, and only its terminal
-                // reason survives, so the stale profile is neither in flight
-                // nor usable.
+                // A stale capture promises no progress and certifies nothing.
+                // Validate its retained claim, but cancellation belongs only
+                // to that operation's captured frontier: it cannot cancel the
+                // current source. Other native refusals remain visible.
                 let mut scratch = Self::default();
                 scratch.observe_current(key, selected, Some(capture.outcome()), activated)?;
-                if let Some(reason) = scratch.terminal {
+                if let Some(reason) = scratch.terminal
+                    && !matches!(reason, SemanticUnavailableReason::Cancelled)
+                {
                     self.retain_terminal(reason);
                 }
                 self.incomplete = true;
