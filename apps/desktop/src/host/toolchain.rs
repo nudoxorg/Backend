@@ -456,18 +456,23 @@ mod tests {
                 let owner = LocalCompilerHostSelection::from_closed_snapshot(transported)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 assert_eq!(owner.go_authority_failure(), Some(cause));
-                assert_eq!(
-                    owner
-                        .snapshot()
-                        .path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
-                    Some(tsc.as_path())
-                );
-                assert_eq!(
-                    owner
-                        .snapshot()
-                        .path(LocalHostVariable::NudoxTypeScriptDefaultNode),
-                    Some(node.as_path())
-                );
+                // With no explicit TypeScript override, the linked TSZ checker is
+                // selected directly. Even executable PATH decoys must not become
+                // a captured external compiler/runtime while Go is refused.
+                for variable in [
+                    LocalHostVariable::NudoxTypeScriptCompiler,
+                    LocalHostVariable::NudoxTypeScriptDefaultCompiler,
+                    LocalHostVariable::NudoxTypeScriptNode,
+                    LocalHostVariable::NudoxTypeScriptDefaultNode,
+                    LocalHostVariable::NudoxTypeScriptBundledNode,
+                    LocalHostVariable::NudoxTypeScriptBundledApplication,
+                    LocalHostVariable::NudoxTypeScriptModuleRoot,
+                    LocalHostVariable::NudoxTypeScriptDefaultModuleRoot,
+                    LocalHostVariable::NudoxTypeScriptReportProgram,
+                ] {
+                    assert_eq!(owner.snapshot().path(variable), None,
+                        "ambient TypeScript paths must not replace linked TSZ authority: {variable:?}");
+                }
             }
             captured.remove(name);
         }
