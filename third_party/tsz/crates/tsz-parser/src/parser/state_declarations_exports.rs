@@ -1503,10 +1503,20 @@ impl<'work> ParserStateCore<'work> {
             NodeIndex::NONE
         };
 
+        // This path parses `for` headers separately from ordinary variable
+        // statements. The current token is lookahead (`;`, `,`, `in` or `of`),
+        // so use the same owned-child end as a plain declarator.
+        let end_pos = self.parse_variable_declaration_end_pos(
+            decl_start,
+            type_annotation,
+            name,
+            initializer,
+            None,
+        );
         self.arena.add_variable_declaration(
             syntax_kind_ext::VARIABLE_DECLARATION,
             decl_start,
-            self.token_end(),
+            end_pos,
             VariableDeclarationData {
                 name,
                 exclamation_token,
