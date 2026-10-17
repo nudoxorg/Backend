@@ -17,3 +17,56 @@ The fixture tests pin SHA-256 and byte length, run the real in-process TSZ proje
 and lower the entire source through normal canonical image admission. They do not
 claim that this isolated source test reproduces the original package environment.
 Actual package acceptance remains a separate gate. Native execution is pending.
+
+`migration.spec.ts` was subsequently captured from the same Docs commit during
+actual backend `549d1998` acceptance: `src/yhub-server/__tests__/migration.spec.ts`,
+21,322 bytes, Git blob `6230dbc4edb2cafbc1842525649f4c7e6532c2df`, SHA-256
+`d6ea04f08213179eab0e4b1eb6c208c55c10e7b7f193a8e08be76c2177d7d532`.
+The actual profile `[1,0]` preparation rejected it with
+`build_duplicate_declaration_identity`; the reported native content identity
+`0ea9b985a87ff8fdeaf3c6f22724551a78f5c48a1aa4189580c59deb3fb17ac8`
+is distinct from the plain file SHA-256. The entire authored source, including
+its anonymous mock classes, is retained without a synthetic dependency stub.
+The isolated TSZ test uses no standard libraries and unresolved imports, so
+it does not establish acceptance of the original complete Docs environment.
+
+The repair admits unnamed class owners only from TSZ's real class symbol,
+single declaration/value declaration, and matching stable file/range. It keeps
+that site proof separate from the family: native enclosing names and expression
+roles (including the real object property value role) identify the owner route.
+Same-route classes share a family and retain distinct native source-order
+instance ordinals in member variants. Inserting another indistinguishable
+same-route class can change those ambiguous instance ordinals; this does not
+claim exact instance lineage through arbitrary ambiguous sibling insertion.
+Unrelated same-file prefix/trailing edits preserve the tested class member and
+constructor parameter families. No named class row is invented, and no field,
+constructor, parameter, or parameter-property role is removed.
+
+The embedded native-authority digest domain and frontend producer/contract are
+advanced. The digest already includes the lowering source and feeds the native
+toolchain, runtime configuration, host witness and direct-program identity, so
+the repaired ownership producer cannot reuse buggy IR under its old identity.
+
+The layered parameter-property follow-up retains both Field and Parameter
+roles for unnamed classes too. It computes the native class proofs once per
+file, indexes their exact ranges, and gives only the Field a typed class-owner
+override. The Parameter remains owned by its constructor. The nearest actual
+class wins even inside an outer named class; a missing exact native join is a
+refusal rather than permission to borrow that outer Record. Named-class roles
+remain on their existing path. Focused tests cover private/readonly parameters,
+nested property/method classes, same-route siblings and unrelated-edit lineage.
+The Record-based compatibility `this.member` lookup refuses to borrow an outer
+class for an anonymous class; this does not claim complete anonymous-member
+lookup. Only an independently proven native TSZ occurrence can upgrade a site.
+Revalidation of these roles on the repaired producer and package acceptance
+remain pending.
+
+Actual Native32 H2 executed all nine selected bodies: the three existing guards
+passed and all six new class/parameter-property bodies refused collection with
+`Lowering(NoSupportedDeclaration)`. This was not a test-assertion failure. The
+class route walker treated TSZ's `Some(NodeIndex::NONE)` root-parent sentinel as
+another node and refused every anonymous class route. The additive repair now
+requires reaching the exact admitted source-file node with that native sentinel;
+missing parent cells, premature sentinels and nonterminating ancestry still
+refuse. The existing exact symbol, declaration, stable-file and span checks are
+unchanged. Revalidation of the repaired producer remains pending.
