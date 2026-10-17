@@ -1933,9 +1933,20 @@ mod tests {
         .expect("source-bound incomplete fixture");
         let library =
             Library::from_view(view.clone(), Cursor::for_view_root(&view)).expect("owner");
-        let names = PublishedNameSearchQuery::admit(Query::new(
+        // The producer stream root and the materialized query revision are
+        // different authorities. Keep the stale-source rejection exercised,
+        // then ask the actual owner for its current published-name revision.
+        let source_names = PublishedNameSearchQuery::admit(Query::new(
             "Document",
             root,
+            QueryLimit::new(1).expect("bounded credit"),
+        )).expect("source-root query has valid shape");
+        assert!(matches!(library.search_published_names(&source_names),
+            Err(backend_library::LibraryError::WrongBasis { .. })),
+            "a source stream root must not substitute for the current query revision");
+        let names = PublishedNameSearchQuery::admit(Query::new(
+            "Document",
+            library.revision_root(),
             QueryLimit::new(1).expect("bounded credit"),
         ))
         .expect("name");
