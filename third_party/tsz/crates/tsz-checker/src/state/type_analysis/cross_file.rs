@@ -363,6 +363,17 @@ impl CheckerState<'_> {
             return None;
         }
 
+        // A compacted per-file binder can expose a program-global library
+        // alias without retaining its declaration arena locally. Its shared
+        // reverse identity still selects one exact retained library context;
+        // use the existing lib-local delegation rather than a raw-id lookup
+        // in this source arena. Preserve all local-declaration guards above.
+        if !self.ctx.binder.symbol_arenas.contains_key(&sym_id)
+            && let Some(result) = self.delegate_lib_merged_symbol_type(sym_id)
+        {
+            return Some(result);
+        }
+
         let mut delegate_arena: Option<&tsz_parser::NodeArena> = self
             .ctx
             .binder

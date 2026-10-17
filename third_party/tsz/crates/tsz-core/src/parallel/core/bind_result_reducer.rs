@@ -12,6 +12,7 @@ struct BindResultReducer<'checkpoint> {
     lib_binders: Vec<Arc<BinderState>>,
     lib_binder_arena_map: FxHashMap<usize, Arc<NodeArena>>,
     lib_symbol_remap: FxHashMap<(usize, SymbolId), SymbolId>,
+    global_lib_symbol_reverse_remap: FxHashMap<SymbolId, (usize, SymbolId)>,
     lib_name_to_global: FxHashMap<AstAtom, SymbolId>,
 
     // Global symbol accumulators
@@ -168,6 +169,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
             lib_binders,
             lib_binder_arena_map,
             lib_symbol_remap,
+            global_lib_symbol_reverse_remap: FxHashMap::default(),
             lib_name_to_global,
             global_symbols,
             symbol_arenas,
@@ -389,6 +391,12 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
                     self.lib_symbol_remap
                         .insert((lib_binder_ptr, local_id), global_id);
+                    // Retain the exact origin chosen when the merged symbol was
+                    // first allocated. Per-file compaction can discard its local
+                    // reverse entry even though program globals expose it again.
+                    self.global_lib_symbol_reverse_remap
+                        .entry(global_id)
+                        .or_insert((lib_binder_ptr, local_id));
                     self.global_lib_symbol_ids.insert(global_id);
 
                     // Set arena mappings for this lib symbol using the lib file's arena.
@@ -1679,6 +1687,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
             wildcard_reexports: Arc::new(self.wildcard_reexports),
             lib_binders: Arc::new(self.lib_binders),
             lib_symbol_ids: Arc::new(self.global_lib_symbol_ids),
+            lib_symbol_reverse_remap: Arc::new(self.global_lib_symbol_reverse_remap),
             type_interner,
             alias_partners: Arc::new(self.alias_partners),
             semantic_defs: Arc::new(self.semantic_defs),

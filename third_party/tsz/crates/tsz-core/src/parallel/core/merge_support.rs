@@ -405,6 +405,11 @@ pub struct MergedProgram {
     /// (cheap atomic increment) instead of deep-cloning the
     /// `FxHashSet` for each of N per-file binders.
     pub lib_symbol_ids: Arc<FxHashSet<SymbolId>>,
+    /// Exact merged-library symbol -> retained binder/local-symbol origin.
+    /// Built alongside library ID allocation, before per-file compaction can
+    /// erase unused library entries. Checker binders share this one map rather
+    /// than copying the complete library identity set for every source file.
+    pub lib_symbol_reverse_remap: Arc<FxHashMap<SymbolId, (usize, SymbolId)>>,
     /// Global type interner - shared across all threads for type deduplication
     pub type_interner: TypeInterner,
     /// Alias partners: maps `TYPE_ALIAS` `SymbolId` → `ALIAS` `SymbolId` for merged type+namespace exports.
