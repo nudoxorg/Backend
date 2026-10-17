@@ -4994,6 +4994,47 @@ fn native_tsz_declaration_coordinate(
     fields.into_iter().next()
 }
 
+/// The binder records a destructured variable symbol at its exact identifier
+/// leaf. Follow only native binding-name edges to its variable declaration;
+/// property labels, default initializers and parameter patterns are not owners.
+fn native_tsz_destructured_variable_kind(
+    arena: &TszNodeArena,
+    identifier: TszNodeIndex,
+) -> Option<EntityKind> {
+    arena.get_identifier_at(identifier)?;
+    let mut current = identifier;
+    let mut in_pattern = false;
+    // Every admitted edge must advance in the finite native node graph. A
+    // malformed parent cycle cannot manufacture declaration authority.
+    for _ in 0..arena.nodes.len() {
+        let parent = arena.get_extended(current)?.parent;
+        let node = arena.get(parent)?;
+        if let Some(binding) = arena.get_binding_element(node) {
+            if binding.name != current {
+                return None;
+            }
+        } else if let Some(pattern) = arena.get_binding_pattern(node) {
+            if !pattern.elements.nodes.contains(&current) {
+                return None;
+            }
+            in_pattern = true;
+        } else if let Some(variable) = arena.get_variable_declaration(node) {
+            if !in_pattern || variable.name != current {
+                return None;
+            }
+            return Some(if arena.is_const_variable_declaration(parent) {
+                EntityKind::Constant
+            } else {
+                EntityKind::Static
+            });
+        } else {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
 /// Import aliases may denote a value or a type. The importing spelling never
 /// chooses that role: only the terminal TSZ symbol's unique stable declaration
 /// in this admitted program can supply it. Callable overload selection keeps
@@ -5058,10 +5099,17 @@ fn native_tsz_import_declaration_coordinate(
             EntityKind::Static
         };
         (variable.name, kind)
+    } else if arena.get_identifier_at(*declaration).is_some() {
+        (
+            *declaration,
+            native_tsz_destructured_variable_kind(arena, *declaration)?,
+        )
     } else {
         return None;
     };
-    // Destructured/export-assignment carriers do not prove a named target.
+    // Aggregate patterns/export assignments do not prove a named target.
+    // A destructured leaf above retains its exact identifier primary extent,
+    // matching the already published authored leaf rather than the aggregate.
     let identifier = arena.get_identifier_at(name)?;
     let (name_start, name_end) = arena.pos_end_at(name)?;
     if identifier.escaped_text.is_empty()
@@ -13148,6 +13196,285 @@ describe('suite', () => {\n\
                 span.start + facts.occurrences[index].span.start == shadow)
                 && matches!(facts.occurrences[index].target, OccurrenceTarget::Local(_))
         }), "a same-spelled local parameter never borrows the import's target");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_named_imports_of_destructured_exports_keep_exact_leaf_targets()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{
+            DeclarationPublicationRole, ExternalTarget, ForeignTargetOrigin,
+            SemanticCoreReader as _, SemanticImageView, encode_full_semantic_image,
+            full_semantic_image_len,
+        };
+
+        fn canonical_bytes<'source>(
+            facts: &FactSet<'source>,
+            source: &str,
+            path: &'source str,
+        ) -> Result<Vec<u8>, LaneError> {
+            let identity = backend_semantic::ir::SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"tsz-destructured-import-fixture",
+                ),
+            );
+            let lineage =
+                backend_semantic::ir::PackageLineage::new("npm", "destructured-import-fixture")
+                    .map_err(|_| LaneError::Missing("fixture package lineage"))?;
+            let scope = crate::driver::types::DeclarationScope::new(lineage, path)
+                .map_err(|_| LaneError::Missing("exact package source scope"))?;
+            let ir = facts.build_ir(recipe.profile, identity, recipe, scope)?;
+            let length = full_semantic_image_len(&ir)
+                .map_err(|_| LaneError::Missing("canonical native image length"))?;
+            let mut bytes = vec![0; length];
+            assert_eq!(
+                encode_full_semantic_image(&ir, &mut bytes)
+                    .map_err(|_| LaneError::Missing("canonical native image encoding"))?,
+                length
+            );
+            Ok(bytes)
+        }
+
+        let dependency = concat!(
+            "declare function fallback(): number;\n",
+            "declare const input: { source?: number; nested: { count: number }; extra: boolean };\n",
+            "export const { source: workout = fallback(), nested: { count }, ...rest } = input;\n",
+            "export let [head, , ...tail]: number[] = [1, 2, 3];\n",
+            "export function parameter({ workout }: { workout: number }) { return workout; }\n",
+        );
+        let caller = concat!(
+            "import { workout as localWorkout, count, rest, head, tail } from '@/models';\n",
+            "import { remote } from 'vendor';\n",
+            "export function read() { return localWorkout + count + head + tail.length + rest.extra + remote(); }\n",
+            "export function shadow(localWorkout: number) { return localWorkout; }\n",
+        );
+        let resolutions = [
+            module_resolution(
+                "caller.ts",
+                "@/models",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "models.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "caller.ts",
+                "vendor",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("models.ts", dependency), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native import project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let targets = collect_native_tsz_file(project, "models.ts", dependency)?;
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let target_bytes = canonical_bytes(&targets, dependency, "models.ts")?;
+        let caller_bytes = canonical_bytes(&facts, caller, "caller.ts")?;
+        let target_image = SemanticImageView::reopen(&target_bytes)
+            .map_err(|_| LaneError::Missing("reopened actual target image"))?;
+        let caller_image = SemanticImageView::reopen(&caller_bytes)
+            .map_err(|_| LaneError::Missing("reopened actual caller image"))?;
+        let bound_file = project
+            .program()
+            .files
+            .iter()
+            .find(|file| file.file_name == "models.ts")
+            .ok_or(LaneError::Missing("native target file"))?;
+
+        for (local, target_name, expected_kind) in [
+            ("localWorkout", "workout", EntityKind::Constant),
+            ("count", "count", EntityKind::Constant),
+            ("rest", "rest", EntityKind::Constant),
+            ("head", "head", EntityKind::Static),
+            ("tail", "tail", EntityKind::Static),
+        ] {
+            let leaves = (0..targets.len())
+                .filter(|&index| {
+                    targets.names[index] == target_name.as_bytes()
+                        && targets.kinds[index] == expected_kind
+                        && targets.publication_roles[index]
+                            == DeclarationPublicationRole::PrimaryOwned
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(leaves.len(), 1, "one actual authored target: {target_name}");
+            let extent =
+                targets.provenance.source_spans()[leaves[0]].expect("authored leaf extent");
+            assert_eq!(
+                &dependency.as_bytes()[extent.start as usize..extent.end as usize],
+                target_name.as_bytes()
+            );
+            let native_leaf = bound_file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, _)| {
+                    let node = super::TszNodeIndex(u32::try_from(raw).ok()?);
+                    (bound_file.arena.get_identifier_at(node).is_some()
+                        && bound_file.arena.pos_end_at(node) == Some((extent.start, extent.end)))
+                    .then_some(node)
+                })
+                .expect("actual native identifier leaf");
+            assert_eq!(
+                super::native_tsz_destructured_variable_kind(&bound_file.arena, native_leaf),
+                Some(expected_kind)
+            );
+            let imported = (0..facts.len())
+                .find(|&index| {
+                    facts.names[index] == local.as_bytes()
+                        && facts.kinds[index] == EntityKind::Reexport
+                })
+                .expect("actual authored import binding");
+            let import_sites = (0..facts.occurrence_len)
+                .filter(|&index| {
+                    facts.occurrence_owners[index] == imported as u32
+                        && facts.occurrences[index].kind == ReferenceKind::Import
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(import_sites.len(), 1, "one written import edge: {local}");
+            let slot = facts.occurrence_source_coordinate_slot[import_sites[0]]
+                .expect("destructured export must have native source target");
+            assert_eq!(
+                facts.occurrences[import_sites[0]].confidence,
+                OccurrenceConfidence::Oracle
+            );
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            )
+            .expect("typed native target");
+            assert_eq!(coordinate.path, "models.ts");
+            assert_eq!(
+                coordinate.source,
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(dependency.as_bytes())
+            );
+            assert_eq!(
+                (
+                    coordinate.declaration_start,
+                    coordinate.declaration_end,
+                    coordinate.name_start
+                ),
+                (extent.start, extent.end, extent.start)
+            );
+            // The native coordinate survives actual canonical image encoding
+            // and names the exact owned target extent, never the aggregate.
+            assert_eq!(
+                target_image
+                    .canonical_entities()
+                    .filter(|entity| entity.kind == expected_kind
+                        && entity.authority.publication == DeclarationPublicationRole::PrimaryOwned
+                        && entity
+                            .name
+                            .named_atom()
+                            .and_then(|atom| target_image.atom(atom))
+                            == Some(target_name.as_bytes())
+                        && entity.source.is_some_and(
+                            |span| (span.start(), span.end()) == (extent.start, extent.end())
+                        ))
+                    .count(),
+                1
+            );
+            assert!(
+                caller_image.canonical_externals().any(|(_, target)| {
+                    let ExternalTarget::Foreign(foreign) = target else {
+                        return false;
+                    };
+                    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else {
+                        return false;
+                    };
+                    if caller_image.atom(ecosystem)
+                        != Some(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes())
+                        || foreign.kind != Some(expected_kind)
+                    {
+                        return false;
+                    }
+                    caller_image
+                        .atom(foreign.path)
+                        .and_then(|path| std::str::from_utf8(path).ok())
+                        .and_then(TypeScriptSourceCoordinate::decode)
+                        .is_some_and(|reopened| reopened == coordinate)
+                }),
+                "canonical endpoint retains exact leaf identity: {local}"
+            );
+            let body = caller.find("return localWorkout").expect("read body");
+            let start = (body + caller[body..].find(local).expect("bare imported use")) as u32;
+            assert!(
+                (0..facts.occurrence_len).any(|index| facts.occurrence_source_coordinate_slot
+                    [index]
+                    .is_some()
+                    && facts.occurrences[index].confidence == OccurrenceConfidence::Oracle
+                    && facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                        .is_some_and(
+                            |owner| owner.start + facts.occurrences[index].span.start == start
+                        )),
+                "bare use retains native leaf authority: {local}"
+            );
+        }
+        // Native parent edges must exclude property labels, default-expression
+        // callees and parameter-pattern leaves from variable-target authority.
+        for prefix in [
+            "source: workout",
+            "fallback(), nested",
+            "workout }: { workout",
+        ] {
+            let start = dependency.find(prefix).expect("opposing native site") as u32;
+            let end = start
+                + prefix
+                    .split(|c: char| !c.is_alphanumeric())
+                    .next()
+                    .expect("identifier")
+                    .len() as u32;
+            let node = bound_file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, _)| {
+                    let node = super::TszNodeIndex(u32::try_from(raw).ok()?);
+                    (bound_file.arena.get_identifier_at(node).is_some()
+                        && bound_file.arena.pos_end_at(node) == Some((start, end)))
+                    .then_some(node)
+                })
+                .expect("actual opposing native identifier");
+            assert_eq!(
+                super::native_tsz_destructured_variable_kind(&bound_file.arena, node),
+                None,
+                "{prefix}"
+            );
+        }
+        let remote = (0..facts.len())
+            .find(|&index| {
+                facts.names[index] == b"remote" && facts.kinds[index] == EntityKind::Reexport
+            })
+            .expect("vendor binding");
+        assert!(
+            (0..facts.occurrence_len).any(|index| facts.occurrence_owners[index] == remote as u32
+                && facts.occurrences[index].confidence == OccurrenceConfidence::Import
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Foreign(key)
+                    if matches!(key.origin, ForeignOrigin::Package(_)))),
+            "unresolved vendor remains foreign"
+        );
+        let shadow = caller.rfind("localWorkout;").expect("shadow use") as u32;
+        assert!(
+            (0..facts.occurrence_len).any(|index| facts.provenance.source_spans()
+                [facts.occurrence_owners[index] as usize]
+                .is_some_and(|owner| owner.start + facts.occurrences[index].span.start == shadow)
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Local(_))),
+            "same-spelled parameter never borrows the imported target"
+        );
         Ok(())
     }
 
