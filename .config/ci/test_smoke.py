@@ -71,7 +71,7 @@ class SmokeContract(unittest.TestCase):
             out.write('\n{"name":"frame","draw_ms":0.8}\n')
         self.assertTrue(smoke.drew_a_frame(trace))
 
-    def gui(self, visible=True, quit_code=0):
+    def gui(self, visible=True, quit_code=0, stuck=False):
         def executable(name, code):
             path = self.bin_dir / name
             path.write_text(f"#!{os.sys.executable}\n" + code)
@@ -109,7 +109,12 @@ class SmokeContract(unittest.TestCase):
                    "while not Path(os.environ['HOME'], 'quit').exists():\n"
                    "    if time.monotonic() > deadline: sys.exit(9)\n"
                    "    time.sleep(0.01)\n"
+                   "with Path(os.environ['NUDOX_TRACE']).open('a') as trace:\n"
+                   "    trace.write('{\"name\":\"close.quit_action\"}\\n{\"name\":\"close.workers_blocked\"}\\n')\n"
+                   "print('controlled close worker remains pending', flush=True)\n"
+                   f"time.sleep(30) if {stuck!r} else None\n"
                    f"sys.exit({quit_code})\n")
+        errors = io.StringIO()
         with patch.dict(os.environ, {
             "PATH": str(self.bin_dir),
             "GENERIC_CREDENTIAL_SENTINEL": "must-not-cross-boundary",
@@ -122,8 +127,10 @@ class SmokeContract(unittest.TestCase):
             "VK_ICD_FILENAMES": "/nix/mesa/lvp.json",
             "FONTCONFIG_FILE": "/nix/fonts/fonts.conf",
         }), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return smoke.smoke_gui(self.bin_dir, self.home, 5)
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            result = smoke.smoke_gui(self.bin_dir, self.home, 5)
+        self.gui_errors = errors.getvalue()
+        return result
 
     def test_gui_requires_visible_window_and_successful_public_quit(self):
         self.assertEqual(self.gui(), 0)
@@ -133,6 +140,34 @@ class SmokeContract(unittest.TestCase):
 
     def test_gui_crash_on_quit_fails(self):
         self.assertEqual(self.gui(quit_code=7), 1)
+
+    def test_gui_quit_timeout_keeps_phase_evidence_before_cleanup(self):
+        # Controlled executables exercise the driver's real timeout/cleanup,
+        # not a product GUI or proof of successful native shutdown.
+        self.assertEqual(self.gui(stuck=True), 1)
+        self.assertIn("did not shut down within 10s after Quit", self.gui_errors)
+        self.assertIn('"name":"close.quit_action"', self.gui_errors)
+        self.assertIn('"name":"close.workers_blocked"', self.gui_errors)
+        self.assertIn("controlled close worker remains pending", self.gui_errors)
+
+    def test_gui_failure_bounds_trace_and_log_and_labels_absent_evidence(self):
+        (self.home / "desktop.log").write_text("x" * 100_000 + "LOG-END")
+        (self.home / "trace.jsonl").write_text(
+            '{"name":"close.quit_action"}\n' + "x" * 100_000 + '\n'
+            + '{"name":"shutdown.platform_returned"}\n')
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(smoke.gui_failure(self.home, "failed"), 1)
+        result = errors.getvalue()
+        self.assertIn("shutdown.platform_returned", result)
+        self.assertNotIn("close.quit_action", result)
+        self.assertIn("LOG-END", result)
+        self.assertLess(len(result.encode()), 17_000)
+        (self.home / "trace.jsonl").write_text('{"name":"frame"}\n')
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            smoke.gui_failure(self.home, "failed")
+        self.assertIn("no close/shutdown events in final 64 KiB", errors.getvalue())
 
     def test_environment_cannot_attach_to_real_workspace(self):
         with patch.dict(os.environ, {

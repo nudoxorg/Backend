@@ -345,8 +345,11 @@ fn run(mut boot: Boot) {
         }
     });
     application.run(move |cx: &mut App| open_the_window(cx, parts, starting_platform));
+    crate::runtime::trace::mark("shutdown.platform_returned", "native event loop returned");
     gate.close();
+    let finishing_owner = Instant::now();
     drop(owner);
+    crate::runtime::trace::span("shutdown.owner_joined", finishing_owner, "local owner released");
 }
 
 /// What the platform's launch closure needs, moved into it.

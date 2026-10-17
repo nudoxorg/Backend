@@ -194,6 +194,33 @@ def drew_a_frame(trace: Path) -> bool:
     return False
 
 
+def gui_failure(home: Path, message: str) -> int:
+    """Keep bounded shutdown evidence before the private smoke HOME is removed."""
+    def tail(name: str, limit: int) -> str:
+        try:
+            with (home / name).open("rb") as source:
+                source.seek(0, os.SEEK_END)
+                size = source.tell()
+                source.seek(max(0, size - limit))
+                return source.read(limit).decode("utf-8", errors="replace")
+        except OSError as error:
+            return f"unavailable: {error}"
+
+    # Never scan an unbounded frame trace on a failing CI worker. Absence in
+    # this tail is not proof that the shortcut was never delivered.
+    trace = tail("trace.jsonl", 64 * 1024)
+    lifecycle = []
+    for line in trace.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(event, dict) and str(event.get("name", "")).startswith(("close.", "shutdown.")):
+            lifecycle.append(line)
+    evidence = "\n".join(lifecycle[-16:])[-8192:] or "no close/shutdown events in final 64 KiB of trace"
+    return fail(f"{message}\nclose trace (bounded tail):\n{evidence}\ndesktop log (final 8 KiB):\n{tail('desktop.log', 8192)}")
+
+
 def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     xvfb = shutil.which("Xvfb")
     xdotool = shutil.which("xdotool")
@@ -255,9 +282,9 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
                 try:
                     code = app.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    return fail("desktop did not shut down within 10s after Quit")
+                    return gui_failure(home, "desktop did not shut down within 10s after Quit")
                 if code != 0:
-                    return fail(f"desktop quit with exit {code}")
+                    return gui_failure(home, f"desktop quit with exit {code}")
                 print(f"gui: visible window and first frame after {first_frame:.1f}s; clean Quit")
                 return 0
             if app.poll() is not None:
