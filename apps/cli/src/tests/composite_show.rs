@@ -317,48 +317,198 @@ fn show_optional_scope_notices_do_not_mask_first_required_failure() {
     assert!(output.contains("OPTIONAL_SCOPE"));
 }
 
-#[test]
-fn large_show_defaults_keep_exact_identity_and_page_all_members_with_zero_exit() {
+fn exact_section_rows<'a>(
+    value: &'a serde_json::Value,
+    section: &str,
+    rows: &str,
+    expected: usize,
+) -> Vec<&'a serde_json::Value> {
+    if expected == 0 {
+        assert!(
+            value.get(section).is_none(),
+            "empty sections are omitted by the ordinary PageDto contract"
+        );
+        return Vec::new();
+    }
+    let groups = value[section].as_array().expect("nonempty section groups");
+    let actual = groups
+        .iter()
+        .flat_map(|group| group[rows].as_array().expect("section rows"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual.len(),
+        expected,
+        "section extent must match actual rows"
+    );
+    actual
+}
+
+fn large_show_reader() -> (Reader, std::collections::BTreeSet<String>) {
     let mut reader = Reader::new(false, false, true);
     let view = reader.catalog.view();
     let basis = view.basis();
     let package = package_key("/abs/app");
     let mut rows = view.rows().to_vec();
+    let mut expected = std::collections::BTreeSet::new();
     for index in 0..80 {
         let label = format!("{COORDINATE}::member_{index:03}");
-        rows.push(Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, &label)
-            .with_parent(symbol_key(COORDINATE))
-            .with_kind(backend_library::DeclarationKind::Method)
-            .with_signature(format!("def member_{index:03}(self, document: Document) -> Document:")));
+        expected.insert(label.clone());
+        rows.push(
+            Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, &label)
+                .with_parent(symbol_key(COORDINATE))
+                .with_kind(backend_library::DeclarationKind::Method)
+                .with_signature(format!(
+                    "def member_{index:03}(self, document: Document) -> Document:"
+                )),
+        );
     }
     let view = backend_library::ViewRoot::new_incomplete(
-        view.recipe(), basis, view.frontier(), rows, Vec::new()).expect("expanded fixture view");
-    reader.catalog = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view)).expect("catalog");
+        view.recipe(),
+        basis,
+        view.frontier(),
+        rows,
+        Vec::new(),
+    )
+    .expect("expanded fixture view");
+    reader.catalog =
+        Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view))
+            .expect("catalog");
+    (reader, expected)
+}
+
+fn default_show_json(answer: &Answer, options: &options::Options) -> serde_json::Value {
+    let output = render::try_answer_with_cursor(answer, options, None)
+        .expect("ordinary default response fits");
+    let value: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+    assert_eq!(value["identity"]["coordinate"], COORDINATE);
+    assert_eq!(
+        value["identity"]["semantic_data"]["value"],
+        serde_json::json!(symbol_key(COORDINATE).as_bytes())
+    );
+    assert!(
+        value["signature"]
+            .as_str()
+            .expect("useful signature")
+            .contains("generateSchedule")
+    );
+    assert!(output.contains("RETAINED_DOCUMENT"));
+    assert!(
+        value.get("source").is_some(),
+        "default source remains captured on every page"
+    );
+    for format in ["human", "markdown"] {
+        let (mode, _) = options::split(&words(&format!(
+            "--no-color --format {format} show {COORDINATE}"
+        )))
+        .expect("ordinary default mode");
+        assert_eq!(mode.detail(), backend_present::Detail::Standard);
+        let rendered =
+            render::try_answer_with_cursor(answer, &mode, None).expect("default page mode");
+        assert!(rendered.contains("generateSchedule") && rendered.contains("RETAINED_DOCUMENT"));
+        if let Some(cursor) = value["section_page"]["next_cursor"].as_str() {
+            assert!(
+                rendered.contains(cursor),
+                "default mode must expose the exact next cursor"
+            );
+        }
+    }
+    value
+}
+
+#[test]
+fn large_show_defaults_keep_exact_identity_and_page_all_members_with_zero_exit() {
+    let (mut reader, expected) = large_show_reader();
     let mut request = Request::Page(COORDINATE.to_owned());
-    let (options, _) = options::split(&words(&format!("--json show {COORDINATE}"))).expect("useful default");
+    let (options, _) =
+        options::split(&words(&format!("--json show {COORDINATE}"))).expect("useful default");
+    assert_eq!(options.detail(), backend_present::Detail::Standard);
     let mut seen = std::collections::BTreeSet::new();
+    let mut related = std::collections::BTreeSet::new();
+    let mut expected_related = expected.clone();
+    expected_related.insert("/abs/app".to_owned());
+    let mut offset = 0;
+    let mut relation_only_pages = 0;
     loop {
         let answer = backend_present::answer(&mut reader, &request).expect("shared driver");
         assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
-        let output = render::try_answer_with_cursor(&answer, &options, None).expect("ordinary default response fits");
-        let value: serde_json::Value = serde_json::from_str(&output).expect("JSON");
-        assert_eq!(value["identity"]["coordinate"], COORDINATE);
-        assert_eq!(value["identity"]["semantic_data"]["value"], serde_json::json!(symbol_key(COORDINATE).as_bytes()));
-        assert!(value["signature"].as_str().expect("useful signature").contains("generateSchedule"));
-        for group in value["members"].as_array().expect("member groups") {
-            for row in group["members"].as_array().expect("rows") {
-                assert!(seen.insert(row["identity"]["coordinate"].as_str().expect("exact address").to_owned()));
+        let value = default_show_json(&answer, &options);
+        let extent: backend_present::DocumentSectionPage =
+            serde_json::from_value(value["section_page"].clone()).expect("exact section extent");
+        // The fixture has80 authored members and81 related rows (the whole
+        // test graph includes the package row). These later relation rows
+        // occupy pages whose absent members field means zero rows on
+        // this page, never missing members from the complete continuation.
+        assert_eq!((extent.total_members, extent.total_relations), (80, 81));
+        assert_eq!(extent.start, offset);
+        assert!(extent.start < extent.end && extent.end <= 161);
+        let member_count = extent.end.min(80) - extent.start.min(80);
+        let relation_count = extent.end.saturating_sub(80) - extent.start.saturating_sub(80);
+        for row in exact_section_rows(&value, "members", "members", member_count) {
+            let address = row["identity"]["coordinate"]
+                .as_str()
+                .expect("exact address");
+            assert!(expected.contains(address) && seen.insert(address.to_owned()));
+            assert_eq!(
+                row["identity"]["semantic_data"]["value"],
+                serde_json::json!(symbol_key(address).as_bytes())
+            );
+        }
+        for identity in exact_section_rows(&value, "relations", "relations", relation_count) {
+            let address = identity["coordinate"]
+                .as_str()
+                .expect("exact related address");
+            assert!(expected_related.contains(address) && related.insert(address.to_owned()));
+            if address == "/abs/app" {
+                assert!(
+                    identity.get("semantic_data").is_none(),
+                    "a package row cannot impersonate a selected symbol"
+                );
+            } else {
+                assert_eq!(
+                    identity["semantic_data"]["value"],
+                    serde_json::json!(symbol_key(address).as_bytes())
+                );
             }
         }
-        let Some(next) = value["section_page"]["continuation"].as_object() else { break; };
-        let continuation: backend_present::DocumentContinuation = serde_json::from_value(serde_json::Value::Object(next.clone())).expect("complete selected continuation");
-        assert_eq!(continuation.selected_symbol, backend_present::IdentitySemanticData::SelectedSymbolId(backend_library::SelectedSymbolId::new(*symbol_key(COORDINATE).as_bytes()).expect("selected id")));
-        let invocation = invoke::parse(&continuation.cli_arguments(), None).expect("copied CLI continuation grammar");
+        relation_only_pages += usize::from(member_count == 0 && relation_count > 0);
+        assert_eq!(extent.continuation.is_some(), extent.end < 161);
+        assert_eq!(extent.next_cursor.is_some(), extent.end < 161);
+        offset = extent.end;
+        let Some(continuation) = extent.continuation else {
+            break;
+        };
+        assert_eq!(continuation.coordinate, COORDINATE);
+        assert_eq!(Some(&continuation.cursor), extent.next_cursor.as_ref());
+        assert_eq!(
+            continuation.selected_symbol,
+            backend_present::IdentitySemanticData::SelectedSymbolId(
+                backend_library::SelectedSymbolId::new(*symbol_key(COORDINATE).as_bytes())
+                    .expect("selected id")
+            )
+        );
+        let invocation = invoke::parse(&continuation.cli_arguments(), None)
+            .expect("copied CLI continuation grammar");
         request = backend_present::lower(&invocation, "/abs/app").expect("shared lowering");
     }
-    assert_eq!(seen.len(), 80, "no member dropped or repeated");
-    assert_eq!(reader.calls.iter().filter(|call| **call == "document").count(), 1,
-        "only the initial legacy call used coordinate lookup");
+    assert_eq!(seen, expected, "no member dropped or repeated");
+    assert_eq!(
+        related, expected_related,
+        "relation-only pages retain every related row, including the package"
+    );
+    assert_eq!(offset, 161, "complete member and relation frontier");
+    assert!(
+        relation_only_pages > 0,
+        "exercise the absent-empty member counterexample"
+    );
+    assert_eq!(
+        reader
+            .calls
+            .iter()
+            .filter(|call| **call == "document")
+            .count(),
+        1,
+        "only the initial legacy call used coordinate lookup"
+    );
 }
 
 #[test]
