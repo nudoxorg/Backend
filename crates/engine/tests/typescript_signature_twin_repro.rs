@@ -18,7 +18,7 @@ use std::{
 
 use backend_engine::driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection, compile_semantic,
+    SemanticAuthorityInput, ToolchainSelection,
 };
 use backend_frontend_typescript::legacy::{Checker, Report};
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};

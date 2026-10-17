@@ -12,7 +12,7 @@ use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
 use backend_frontend_go::legacy::{
-    ConfiguredGoOracle, GoImage, GoOracle, GoOracleChildEnvironment, GoOracleConfiguration,
+    GoImage, GoOracle, GoOracleChildEnvironment, GoOracleConfiguration,
 };
 use backend_semantic::ir::{FragmentView, ImageProvenance};
 use backend_semantic::vocabulary::{
