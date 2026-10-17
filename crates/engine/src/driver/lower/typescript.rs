@@ -1475,6 +1475,18 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         }
         let ordinal = self.push(fact)?;
         self.register(ordinal, declaration, name, EntityKind::Function)?;
+        // FunctionParameter product children prove their callable owner.
+        // A parameter-property Field mirrors the same syntax, but its wider
+        // modifier/type span must not capture the Parameter in the later
+        // lexical parentage sweep.
+        for (&parameter, _) in param_ordinals.iter().zip(params.iter()) {
+            let parent = self.member_parents.get_mut(parameter as usize)
+                .ok_or_else(lane_rejection)?;
+            if *parent != UNSET {
+                return Err(lane_rejection());
+            }
+            *parent = ordinal;
+        }
         Ok(ordinal)
     }
 
@@ -13542,6 +13554,11 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             return Err(LaneError::Missing("parameter constructor owner"));
         };
         assert_eq!(facts.names[constructor.raw as usize], b"constructor");
+        assert_eq!(facts.kinds[constructor.raw as usize], EntityKind::Function);
+        let children = facts.child_starts[constructor.raw as usize] as usize;
+        assert_eq!(facts.child_roles[children], ProductChildRole::FunctionParameter);
+        assert_eq!(facts.child_targets[children], parameter as u32);
+        assert_ne!(constructor.raw as usize, field);
         assert_eq!(
             facts.provenance.parentage()[constructor.raw as usize],
             ParentageState::UnrepresentedAuthorityOwner { identity }
@@ -13641,6 +13658,10 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 return Err(LaneError::Missing("nested constructor parameter parent"));
             };
             assert_eq!(facts.names[parent.raw as usize], b"constructor");
+            assert_eq!(facts.kinds[parent.raw as usize], EntityKind::Function);
+            let children = facts.child_starts[parent.raw as usize] as usize;
+            assert_eq!(facts.child_roles[children], ProductChildRole::FunctionParameter);
+            assert_eq!(facts.child_targets[children], parameter as u32);
         }
         assert!(
             !(0..facts.occurrence_len).any(|index| facts.occurrences[index].target
