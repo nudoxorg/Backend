@@ -388,10 +388,17 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
             let response = request(&mut server, "tools/call", &params);
             assert_context_bounded(&response);
             assert!(wire_tokens(&response).unwrap() <= MCP_CL100K_TOKEN_LIMIT);
-            assert_eq!(response["isError"], false, "{response}");
-            let observed: PackageCompilerOutcomes =
-                serde_json::from_value(response["structuredContent"]["compiler_outcomes"].clone())
-                    .unwrap();
+            // request() returns the actual encoded complete JSON-RPC envelope,
+            // whose tools/call result owns both isError and structuredContent.
+            assert_eq!(response["jsonrpc"], "2.0", "{response}");
+            assert_eq!(response["id"], 9, "{response}");
+            assert!(response.get("error").is_none(), "{response}");
+            let result = response.get("result").expect("correlated tools/call result");
+            assert_eq!(result["isError"], false, "{response}");
+            assert_eq!(result["structuredContent"], serde_json::from_slice::<Value>(&cli.bytes).unwrap(), "the complete CLI and MCP DTOs agree at the same detail");
+            let dto: backend_present::ProductDto =
+                serde_json::from_value(result["structuredContent"].clone()).unwrap();
+            let observed = dto.compiler_outcomes.expect("complete typed coverage observation");
             assert_eq!(
                 observed, outcomes,
                 "full path/cause/source and continuation survive final transport envelope"

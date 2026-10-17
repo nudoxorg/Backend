@@ -2388,7 +2388,7 @@ mod tests {
         let directory = scratch_store();
         let store = FileStore::open(&directory, 1024 * 1024).unwrap();
         let receipt = store
-            .write_closure(&ClosureManifest::new(vec![object.clone(), program_object.clone()]).unwrap())
+            .write_closure(&ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap())
             .unwrap();
         let verified = store
             .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
@@ -2438,7 +2438,7 @@ mod tests {
             let capacity=backend_semantic::ir::SourceCoverageObservation::not_recorded_capacity([3;32],[1,0],program.membership_identity(),20_001,1,reason).unwrap();
             let bytes=capacity.encode();
             let object=TypedObject::from_value(&ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),bytes.as_slice());
-            let receipt=store.write_closure(&ClosureManifest::new(vec![object.clone(),program_object.clone()]).unwrap()).unwrap();
+            let receipt=store.write_closure(&ClosureManifest::new(vec![program_object.clone(),object.clone()]).unwrap()).unwrap();
             let verified=store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
             let mut unavailable=current.clone();
             unavailable.source_coverage=Some(CompilerSourceCoverageMember::from_verified_object(verified,&capacity).unwrap());
@@ -2508,7 +2508,7 @@ mod tests {
             );
             let id = store
                 .write_closure(
-                    &ClosureManifest::new(vec![object.clone(), program_object.clone()]).unwrap(),
+                    &ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap(),
                 )
                 .unwrap();
             let verified = store
