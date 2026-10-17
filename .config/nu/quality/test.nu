@@ -218,17 +218,26 @@ def "main test workspace" []: nothing -> record {
 def "main test pr" []: nothing -> record {
     require-command "test-workspace"
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default $env.BACKEND_STABLE_CARGO
+    let cache_root = $env.NUDOX_BUILD_CACHE_ROOT? | default ""
+    let target_root = if ($env.CI? | default "false") == "true" and ($cache_root | is-not-empty) {
+        let cargo_home = $env.CARGO_HOME? | default ($env.NUDOX_CARGO_HOME? | default "")
+        managed-pr-target-dir (repository-root) $cache_root $cargo_home
+    } else {
+        $env.CARGO_TARGET_DIR
+    }
     # A test compile is not a product build. Require every shipped process
     # surface explicitly before running the platform's behavioral closure.
-    process-require $cargo [
-        "build"
-        "--locked"
-        "--package" "backend-cli"
-        "--package" "backend-mcp"
-        "--package" "backend-locald"
-        "--package" "backend-worker"
-        "--package" "backend-desktop"
-    ] | ignore
+    with-env {CARGO_TARGET_DIR: $target_root} {
+        process-require $cargo [
+            "build"
+            "--locked"
+            "--package" "backend-cli"
+            "--package" "backend-mcp"
+            "--package" "backend-locald"
+            "--package" "backend-worker"
+            "--package" "backend-desktop"
+        ] | ignore
+    }
     # The PR lane proves the product works: every shipped binary builds, and
     # unit, MCP, CLI, locald, desktop, journey, storage, and crash tests pass.
     # Deep engine-accuracy suites (real-package corpora, pinned reference and
@@ -257,7 +266,9 @@ def "main test pr" []: nothing -> record {
             threads: "2"
         }
     ]
-    let results = $passes | each {|pass| run-pr-pass $cargo $pass.filter $pass.threads }
+    let results = with-env {CARGO_TARGET_DIR: $target_root} {
+        $passes | each {|pass| run-pr-pass $cargo $pass.filter $pass.threads }
+    }
     let failures = $results | where failure != null
     if not ($failures | is-empty) {
         error make {

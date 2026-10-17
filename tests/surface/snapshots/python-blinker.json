@@ -1364,7 +1364,7 @@
             "readiness": "ready"
           }
         ],
-        "revision": "9cf9af16"
+        "revision": "5bea5596"
       }
     },
     "cli search NamedSignal": {
@@ -1372,9 +1372,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2702,
+          "bytes": 2700,
           "bytesPerToken": 4,
-          "estimatedTokens": 676
+          "estimatedTokens": 675
         },
         "coverage": [
           {
@@ -1564,7 +1564,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:5749571618dfd1f478263a6a915b83a7f4bd5f7e15ae7046143ba077b069e890::NamedSignal",
+              "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:703e4845bdfd3f4599d03392d74ca590f913352952282217cbba64edb06a359b::NamedSignal",
               "name": "NamedSignal",
               "segments": [
                 "NamedSignal"
@@ -1572,38 +1572,38 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  87,
-                  73,
-                  87,
-                  22,
-                  24,
-                  223,
-                  209,
-                  244,
-                  120,
-                  38,
-                  58,
-                  106,
-                  145,
-                  91,
-                  131,
-                  167,
-                  244,
-                  189,
-                  95,
-                  126,
-                  21,
-                  174,
                   112,
-                  70,
-                  20,
-                  59,
-                  160,
-                  119,
+                  62,
+                  72,
+                  69,
+                  189,
+                  253,
+                  63,
+                  69,
+                  153,
+                  208,
+                  51,
+                  146,
+                  215,
+                  76,
+                  165,
+                  144,
+                  249,
+                  19,
+                  53,
+                  41,
+                  82,
+                  40,
+                  34,
+                  23,
+                  203,
+                  186,
+                  100,
+                  237,
                   176,
-                  105,
-                  232,
-                  144
+                  106,
+                  53,
+                  155
                 ]
               },
               "shape": "external",
@@ -1625,9 +1625,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 2035,
+          "bytes": 2038,
           "bytesPerToken": 4,
-          "estimatedTokens": 509
+          "estimatedTokens": 510
         },
         "coverage": [
           {
@@ -1762,7 +1762,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:c3347ddbf99d4b7432d6316e20c0bd30068007763c6432c303129e2eb96cec98::make_id",
+              "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:04df4e577f731bc4e2846adc1d85a9122bba78da3bf7d0ec680fb8058e3cefa2::make_id",
               "name": "make_id",
               "segments": [
                 "make_id"
@@ -1770,38 +1770,38 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  195,
-                  52,
-                  125,
-                  219,
-                  249,
-                  157,
-                  75,
-                  116,
-                  50,
-                  214,
-                  49,
-                  110,
-                  32,
-                  192,
-                  189,
-                  48,
-                  6,
-                  128,
-                  7,
-                  118,
-                  60,
-                  100,
-                  50,
-                  195,
-                  3,
+                  4,
+                  223,
+                  78,
+                  87,
+                  127,
+                  115,
+                  27,
+                  196,
+                  226,
+                  132,
+                  106,
+                  220,
+                  29,
+                  133,
+                  169,
                   18,
-                  158,
-                  46,
-                  185,
-                  108,
+                  43,
+                  186,
+                  120,
+                  218,
+                  59,
+                  247,
+                  208,
                   236,
-                  152
+                  104,
+                  15,
+                  184,
+                  5,
+                  142,
+                  60,
+                  239,
+                  162
                 ]
               },
               "shape": "external",
@@ -2062,9 +2062,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 3336,
+                "bytes": 3339,
                 "bytesPerToken": 4,
-                "estimatedTokens": 834,
+                "estimatedTokens": 835,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -2075,7 +2075,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `make_id` · function · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id`\n• `make_id` · type · unknown\n  `/tmp/nudox-surface/python-blinker/project::semantic::fd5d8977c60984185603614de620248c84157b8b7ae9d972f78c6eb23c60e790::make_id`\n• `make_id` · unknown\n  `/tmp/nudox-surface/python-blinker/project::external::symbol:c3347ddbf99d4b7432d6316e20c0bd30068007763c6432c303129e2eb96cec98::make_id`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `make_id` · function · python\n  `/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id`\n• `make_id` · type · unknown\n  `/tmp/nudox-surface/python-blinker/project::semantic::fd5d8977c60984185603614de620248c84157b8b7ae9d972f78c6eb23c60e790::make_id`\n• `make_id` · unknown\n  `/tmp/nudox-surface/python-blinker/project::external::symbol:04df4e577f731bc4e2846adc1d85a9122bba78da3bf7d0ec680fb8058e3cefa2::make_id`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -2083,9 +2083,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 2035,
+                "bytes": 2038,
                 "bytesPerToken": 4,
-                "estimatedTokens": 509
+                "estimatedTokens": 510
               },
               "coverage": [
                 {
@@ -2220,7 +2220,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:c3347ddbf99d4b7432d6316e20c0bd30068007763c6432c303129e2eb96cec98::make_id",
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::external::symbol:04df4e577f731bc4e2846adc1d85a9122bba78da3bf7d0ec680fb8058e3cefa2::make_id",
                     "name": "make_id",
                     "segments": [
                       "make_id"
@@ -2228,38 +2228,38 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        195,
-                        52,
-                        125,
-                        219,
-                        249,
-                        157,
-                        75,
-                        116,
-                        50,
-                        214,
-                        49,
-                        110,
-                        32,
-                        192,
-                        189,
-                        48,
-                        6,
-                        128,
-                        7,
-                        118,
-                        60,
-                        100,
-                        50,
-                        195,
-                        3,
+                        4,
+                        223,
+                        78,
+                        87,
+                        127,
+                        115,
+                        27,
+                        196,
+                        226,
+                        132,
+                        106,
+                        220,
+                        29,
+                        133,
+                        169,
                         18,
-                        158,
-                        46,
-                        185,
-                        108,
+                        43,
+                        186,
+                        120,
+                        218,
+                        59,
+                        247,
+                        208,
                         236,
-                        152
+                        104,
+                        15,
+                        184,
+                        5,
+                        142,
+                        60,
+                        239,
+                        162
                       ]
                     },
                     "shape": "external",
@@ -2350,7 +2350,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "9cf9af16cf6c39eb75f46e066b1b78d6c0ca7d3d202dc5c7db782df9606dbadd"
+                "source_root": "5bea55967717ca50bfd80ef865c01f16e481259a72c470d57126a8b916ad6979"
               },
               "roots": [
                 {

@@ -1,0 +1,35 @@
+{
+  "task": "W2",
+  "reviewer": "Codex / GPT-6 recursive answer comparison against previously source-reviewed goldens",
+  "source_sha": "c36f478da1bb9792f859f3da0047617a8643ef9d",
+  "build": "nudox-triage-proof/linux/40 global500715",
+  "scope": "answers only, not a performance or full T2 acceptance",
+  "reviews": [
+    {
+      "case": "python-cachetools",
+      "before_sha256": "19e620743e8140502cf8d3efe0a345e43fe701d6faa5702e6de6ce33fc8712d5",
+      "after_sha256": "c83d885918e4da9578daad6dfc807a577bd0973bc82bc27cc96dcf4ef6ea59b0",
+      "performance_suffix_sha256": "6203bf839772f149e2764475d8f8c7aa83c7c65c1b7083a30d47c25eeec0710b",
+      "answer_repeatability": "two exact-source fresh-owner rounds identical",
+      "answer_changes": [
+        "image revision/source_root",
+        "one external TTLCache image identity, repeated typed bytes and derived wire accounting"
+      ],
+      "unchanged": "all authored names, source locations, readiness, kinds, coverage, ordering and request/response fields outside the listed image-derived identities",
+      "performance": "existing baseline retained verbatim; current timing failures remain failures"
+    },
+    {
+      "case": "python-itsdangerous",
+      "before_sha256": "a05cbe6edbf97160fa420fb4d6b0a3b184a63cc2010ab1bbca9ec89ee334fdcd",
+      "after_sha256": "ac0b9bacb7dedf33cbe6258266f9641b9fc75892663f804fc5d80f4fa324fecd",
+      "performance_suffix_sha256": "2d47f2b28e2ef17f21c27b428795a1aad69b750d7609c65cc10459b971a95062",
+      "answer_repeatability": "two exact-source fresh-owner rounds identical",
+      "answer_changes": [
+        "image revision/source_root"
+      ],
+      "unchanged": "all authored names, source locations, readiness, kinds, coverage, ordering and request/response fields outside the listed image-derived identities",
+      "performance": "existing baseline retained verbatim; current timing failures remain failures"
+    }
+  ],
+  "reason": "Current native semantic image scopes external IDs and published root identity. Image-derived identities changed after product repairs; both fresh-owner rounds return identical current answers. Existing selected authored-source witnesses and all non-identity semantic fields remain equal. No identity field is normalized away by the runtime comparator."
+}

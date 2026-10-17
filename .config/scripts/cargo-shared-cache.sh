@@ -826,18 +826,22 @@ acquire_slot() {
   candidate="$1"
   lock="$cache_root/locks/slot-$candidate.lock"
   [ ! -L "$lock" ] || return 1
-  if mkdir "$lock" 2>/dev/null; then
-    # Publish ownership to the EXIT trap before any metadata write. A signal
-    # in the tiny initialization window must still remove this fresh lock.
-    selected_lock="$lock"
-    selected="$candidate"
-    selected_slot="$candidate"
-    selected_lock_acquired=true
-    printf '%s\n' "$$" > "$lock/pid"
-    process_start_token "$$" > "$lock/start"
-    printf '%s\n' "$workspace_root" > "$lock/workspace"
-    return 0
-  fi
+  # New permits are persistent regular files, so cancellation or SIGKILL
+  # cannot leave an apparently occupied slot. O_EXCL plus O_NOFOLLOW makes
+  # file creation atomic against both a sibling flock runner and older
+  # mkdir-only runners. If the latter wins the race, this invocation treats
+  # its directory as occupied below.
+  @python3@ - "$lock" <<'PY' >/dev/null 2>&1 || true
+import os
+import sys
+
+try:
+    descriptor = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+except OSError:
+    pass
+else:
+    os.close(descriptor)
+PY
   # Existing legacy directories remain occupied, including apparently stale
   # owners. A different runner may own them; admission must never rename or
   # remove another protocol's permit. Existing regular files use kernel flock

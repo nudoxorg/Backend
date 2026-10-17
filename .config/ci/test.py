@@ -53,7 +53,7 @@ def main() -> int:
     parser.add_argument("--worktree", action="store_true", help="selection preview: include local tracked/untracked changes")
     parser.add_argument("--bin-dir", type=Path)
     parser.add_argument("--case", action="append")
-    parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 1)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 2)")
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--ci-report", type=Path, help="exact-artifact case evidence; requires --source-sha")

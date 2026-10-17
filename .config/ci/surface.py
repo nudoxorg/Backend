@@ -12,8 +12,9 @@ a diff for the author to explain. The same run records wall time per
 operation and the owner's peak RSS and CPU time, compared with the reviewed
 baseline in the snapshot under a tolerance band.
 
-Projects and workspaces live at fixed paths (/tmp/nudox-surface/<case>/...),
-so coordinates and content-derived identities are identical on every worker
+Projects live at fixed paths (/tmp/nudox-surface/<case>/project); private
+owner state lives on the writable source/task volume. Project coordinates
+and content-derived identities are identical on every worker
 and snapshots need no path rewriting. --update rewrites snapshots and
 baselines for review instead of comparing.
 
@@ -23,7 +24,7 @@ Exit 0 when every case matches, 1 otherwise.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import ContextVar
 from contextlib import contextmanager
 import difflib
@@ -33,6 +34,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,8 @@ VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finish
 
 
 OUTPUT_LOCK = threading.Lock()
+CI_SIGTERM = threading.Event()
+CI_SIGTERM_AT = None
 CURRENT_CASE = ContextVar("surface_case", default=None)
 RUN_PROVENANCE = ContextVar("run_provenance", default=None)
 CASE_DIAGNOSTICS = ContextVar("case_diagnostics", default=None)
@@ -62,6 +66,9 @@ CASE_DIAGNOSTICS = ContextVar("case_diagnostics", default=None)
 def log(message: str) -> None:
     case = CURRENT_CASE.get()
     prefix = f"[{case}] " if case else ""
+    if CI_SIGTERM.is_set():
+        print(f"surface: {prefix}{message}", flush=True)
+        return
     with OUTPUT_LOCK:
         print(f"surface: {prefix}{message}", flush=True)
 
@@ -69,9 +76,13 @@ def log(message: str) -> None:
 def emit_performance(name: str, performance: dict) -> None:
     # Successful Concourse containers can expire after the next no-op poll.
     # Keep exact metrics in the retained event log as well as the report file.
+    line = "SURFACE-PERFORMANCE " + json.dumps(
+        {"schema": 1, "case": name, "performance": performance}, sort_keys=True)
+    if CI_SIGTERM.is_set():
+        print(line, flush=True)
+        return
     with OUTPUT_LOCK:
-        print("SURFACE-PERFORMANCE " + json.dumps(
-            {"schema": 1, "case": name, "performance": performance}, sort_keys=True), flush=True)
+        print(line, flush=True)
 
 
 @contextmanager
@@ -145,12 +156,30 @@ def stable(value):
 class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
-    def __init__(self, bin_dir: Path, case_root: Path):
+    def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
         self.bin_dir = bin_dir
-        self.home = case_root / "home"
-        self.workspace = case_root / "workspace"
+        # Keep public project/endpoint coordinates stable, but place durable
+        # owner writes on the task volume, not its rootfs /tmp overlay. The
+        # same file/directory durability barriers still run on this state.
+        state_parent = ROOT / ".local"
+        state_parent.mkdir(mode=0o700, exist_ok=True)
+        self.state_directory = tempfile.TemporaryDirectory(prefix="surface-owner-", dir=state_parent)
+        state = Path(self.state_directory.name)
+        self.home = state / "home"
+        self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
+        if cargo_vendor is not None:
+            # Pinned lockfile sources are outside the upstream project. Keep
+            # the owner offline and give this case its own writable Cargo home.
+            cargo_home = case_root / "cargo-home"
+            cargo_home.mkdir(mode=0o700)
+            (cargo_home / "config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "nudox-surface-vendor"\n'
+                '[source.nudox-surface-vendor]\ndirectory = '
+                + json.dumps(str(cargo_vendor)) + '\n[net]\noffline = true\n')
+            self.env["NUDOX_CARGO_HOME"] = str(cargo_home)
+
         self.workspace.mkdir(parents=True, mode=0o700)
         authority = self.workspace / "authority.secret"
         self.env["BACKEND_LOCALD_WORKSPACE"] = str(self.workspace)
@@ -158,33 +187,43 @@ class Owner:
         authority.write_bytes(bytes([0x5A]) * 32)
         authority.chmod(0o600)
         self.log = open(case_root / "locald.log", "w")
-        self.process = subprocess.Popen(
-            [
-                bin_dir / "backend-locald",
-                "--endpoint", str(self.endpoint),
-                "--workspace", str(self.workspace),
-                "--profile", "builtin",
-                "--authority-secret-file", str(authority),
-                "--max-frame", "1048576",
-                "--timeout-ms", "180000",
-                "--registry-offline",
-                "--registry-discovery-offline",
-                "--advisory-offline",
-                "--forge-offline",
-                "--idle-timeout-ms", "5000",
-            ],
-            env=self.env,
-            cwd=case_root,
-            stdin=subprocess.DEVNULL,
-            stdout=self.log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        deadline = time.monotonic() + 30
-        while not self.endpoint.exists():
-            if self.process.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError(f"backend-locald did not open its endpoint:\n{self.tail()}")
-            time.sleep(0.05)
+        self.process = None
+        try:
+            self.process = subprocess.Popen(
+                [
+                    bin_dir / "backend-locald",
+                    "--endpoint", str(self.endpoint),
+                    "--workspace", str(self.workspace),
+                    "--profile", "builtin",
+                    "--authority-secret-file", str(authority),
+                    "--max-frame", "1048576",
+                    "--timeout-ms", "180000",
+                    "--registry-offline",
+                    "--registry-discovery-offline",
+                    "--advisory-offline",
+                    "--forge-offline",
+                    "--idle-timeout-ms", "5000",
+                ],
+                env=self.env,
+                cwd=case_root,
+                stdin=subprocess.DEVNULL,
+                stdout=self.log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + 30
+            while not self.endpoint.exists():
+                if self.process.poll() is not None or time.monotonic() > deadline:
+                    raise RuntimeError(f"backend-locald did not open its endpoint:\n{self.tail()}")
+                time.sleep(0.05)
+        except BaseException as error:
+            # A constructor failure never reaches run_case's finally block.
+            # Reap this owner before removing its state or starting a peer.
+            try:
+                self.stop()
+            except Exception as cleanup_error:
+                raise RuntimeError(f"{error}\nowner cleanup failed: {cleanup_error}") from error
+            raise
 
     def tail(self) -> str:
         self.log.flush()
@@ -201,16 +240,31 @@ class Owner:
         return {"peak_rss_kib": peak, "cpu_seconds": round(cpu, 2)}
 
     def stop(self) -> None:
-        if self.process.poll() is None:
-            try:
-                self.process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                self.process.wait()
-                raise RuntimeError("backend-locald failed to retire through its idle timeout")
-        self.log.close()
-        if self.process.returncode != 0:
-            raise RuntimeError(f"backend-locald exited {self.process.returncode}")
+        try:
+            if self.process is None:
+                return
+            if self.process.poll() is None:
+                log("owner stop: waiting for idle retirement")
+                try:
+                    self.process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    log("owner stop: idle retirement timed out; sending SIGKILL")
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                    reap_started = time.monotonic()
+                    log("owner stop: waiting to reap SIGKILLed process")
+                    self.process.wait()
+                    log(f"owner stop: reaped SIGKILLed process after {time.monotonic() - reap_started:.3f}s")
+                    raise RuntimeError("backend-locald failed to retire through its idle timeout")
+                else:
+                    log("owner stop: idle retirement completed")
+            if self.process.returncode != 0:
+                raise RuntimeError(f"backend-locald exited {self.process.returncode}")
+        finally:
+            cleanup_started = time.monotonic()
+            log("owner stop: closing log and removing private state")
+            self.log.close()
+            self.state_directory.cleanup()
+            log(f"owner stop: private state cleanup completed after {time.monotonic() - cleanup_started:.3f}s")
 
 
 def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
@@ -238,15 +292,27 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
 
 def run_cli(owner: Owner, project: Path, args: list[str], timeout: float) -> tuple[dict, float]:
     started = time.monotonic()
-    result = subprocess.run(
-        [owner.bin_dir / "backend-cli", "--endpoint", str(owner.endpoint), "--project", str(project), "--json", *args],
-        env=owner.env,
-        cwd=project,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    operation = f"cli {args[0]}" if args else "cli"
+    log(f"{operation}: started (timeout={timeout:g}s)")
+    outcome = "completed"
+    try:
+        result = subprocess.run(
+            [owner.bin_dir / "backend-cli", "--endpoint", str(owner.endpoint), "--project", str(project), "--json", *args],
+            env=owner.env,
+            cwd=project,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        outcome = "timed out"
+        raise
+    except BaseException:
+        outcome = "raised"
+        raise
+    finally:
+        log(f"{operation}: {outcome} after {time.monotonic() - started:.3f}s")
     seconds = time.monotonic() - started
     try:
         body = json.loads(result.stdout) if result.stdout.strip() else None
@@ -301,6 +367,8 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
 
     started = time.monotonic()
     deadline = started + timeout
+    log(f"MCP interactive: started ({len(calls)} calls; timeout={timeout:g}s)")
+    outcome = "completed"
     answers = []
     pending = b""
     continuation_id = 10000
@@ -370,6 +438,9 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
             process.stdin.close()
             process.wait(timeout=max(0.01, deadline - time.monotonic()))
             return {"tools": tools, "calls": answers, "exit": process.returncode}, time.monotonic() - started
+        except BaseException:
+            outcome = "raised"
+            raise
         finally:
             selector.close()
             # Match subprocess.run(timeout=...) cleanup for this owned client.
@@ -379,6 +450,7 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
             process.stdout.close()
             if not process.stdin.closed:
                 process.stdin.close()
+            log(f"MCP interactive: {outcome} after {time.monotonic() - started:.3f}s")
 
 
 def require_cli_success(name: str, answer: dict) -> None:
@@ -400,7 +472,7 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
         or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
         for p in profiles
     ):
-        raise RuntimeError("index setup: every fixture profile must publish complete native coverage")
+        raise RuntimeError("index setup: every fixture profile must publish complete native coverage; profiles=" + json.dumps(profiles, sort_keys=True)[:4096])
     root = terminal.get("detail", {}).get("view_root")
     if not isinstance(root, str) or not re.fullmatch(r"[0-9a-f]{64}", root):
         raise RuntimeError("index setup: missing exact published view root")
@@ -596,7 +668,7 @@ def walk_search_pages(reference: dict, fetch_page, limit: int = 1) -> tuple[int,
         more = offset < len(expected)
         if page.get("more") is not more:
             raise RuntimeError("continuation: incorrect completeness flag")
-        token = page.get("nextCursor")
+        token = offered_cursor(page)
         if not more:
             if token is not None:
                 raise RuntimeError("continuation: exhausted page still offers a cursor")
@@ -699,12 +771,29 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     return times
 
 
+def offered_cursor(answer: dict) -> str | None:
+    """Read either public cursor representation, rejecting contradictory proofs."""
+    direct = answer.get("nextCursor")
+    executable = answer.get("continuation_call")
+    advertised = None
+    if executable is not None:
+        if not isinstance(executable, dict) or not isinstance(executable.get("arguments"), dict):
+            raise RuntimeError("snapshot continuation: malformed executable call")
+        advertised = executable["arguments"].get("cursor")
+    if direct is not None and advertised is not None and direct != advertised:
+        raise RuntimeError("snapshot continuation: contradictory offered tokens")
+    token = direct if direct is not None else advertised
+    if token is not None and (not isinstance(token, str) or not token):
+        raise RuntimeError("snapshot continuation: invalid offered token")
+    return token
+
+
 def require_continuation_reply(first: dict, following: dict, published_root: str) -> None:
     """Prove an offered token works through a fresh public client before normalizing it."""
-    token = first.get("nextCursor")
+    token = offered_cursor(first)
     if not isinstance(token, str) or not token or following.get("answer") != first.get("answer"):
         raise RuntimeError("snapshot continuation: missing token or changed answer kind")
-    if following.get("nextCursor") == token:
+    if offered_cursor(following) == token:
         raise RuntimeError("snapshot continuation: repeated cursor")
     if first["answer"] == "records":
         if first.get("more") is not True:
@@ -736,13 +825,21 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         more = next_page.get("more")
     else:
         raise RuntimeError("snapshot continuation: unsupported answer")
-    next_token = following.get("nextCursor")
+    next_token = offered_cursor(following)
     if not isinstance(more, bool) or (more and (not isinstance(next_token, str) or not next_token)) or (not more and next_token is not None):
         raise RuntimeError("snapshot continuation: dishonest continuation flag")
 
 
 def mcp_continuation_call(call: dict, first: dict) -> dict:
-    arguments = dict(call.get("arguments", {}), cursor=first["nextCursor"])
+    token = offered_cursor(first)
+    if token is None:
+        raise RuntimeError("snapshot continuation: no offered token")
+    executable = first.get("continuation_call")
+    if executable is not None:
+        if executable.get("name") != call["tool"] or executable["arguments"].get("cursor") != token:
+            raise RuntimeError("snapshot continuation: executable call changed tool or token")
+        return {"tool": executable["name"], "arguments": dict(executable["arguments"])}
+    arguments = dict(call.get("arguments", {}), cursor=token)
     if call["tool"] == "backend.outline":
         # MCP can reduce the first page to fit its response budget. Its
         # continuation is bound to that effective limit, not the omitted or
@@ -763,7 +860,7 @@ def normalize_continuations(value, proven_tokens: set[str]):
     if not isinstance(value, dict):
         return value
     result = {key: normalize_continuations(item, proven_tokens) for key, item in value.items()}
-    token = value.get("nextCursor")
+    token = offered_cursor(value)
     if token is not None:
         if not isinstance(token, str) or token not in proven_tokens:
             raise RuntimeError("snapshot continuation: unconsumed token cannot be normalized")
@@ -774,13 +871,21 @@ def normalize_continuations(value, proven_tokens: set[str]):
         size, width, estimated = (budget.get(key) for key in ("bytes", "bytesPerToken", "estimatedTokens"))
         if any(type(number) is not int for number in (size, width, estimated)) or width <= 0 or size < len(token.encode()) or estimated != (size + width - 1) // width:
             raise RuntimeError("snapshot continuation: invalid encoded-byte budget")
-        payload_size = size - len(token.encode())
+        advertised = value.get("continuation_call", {}).get("arguments", {}).get("cursor")
+        copies = int(value.get("nextCursor") == token) + int(advertised == token)
+        payload_size = size - copies * len(token.encode())
+        if payload_size < 0:
+            raise RuntimeError("snapshot continuation: cursor copies exceed encoded-byte budget")
         result["budget"] = dict(result["budget"])
         result["budget"].pop("bytes")
         result["budget"].pop("estimatedTokens")
         result["budget"].update(bytesExcludingCursor=payload_size,
                                 estimatedTokensExcludingCursor=(payload_size + width - 1) // width)
-        result["nextCursor"] = prefix + "-<live-validated>"
+        placeholder = prefix + "-<live-validated>"
+        if value.get("nextCursor") is not None:
+            result["nextCursor"] = placeholder
+        if advertised == token:
+            result["continuation_call"]["arguments"]["cursor"] = placeholder
     return result
 
 
@@ -802,7 +907,7 @@ def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
     raw_calls = answers.get("mcp", {}).get("calls", [])
     for identifier, (raw, projected) in enumerate(zip(raw_calls, normalized.get("mcp", {}).get("calls", [])), start=2):
         reply = raw["reply"]
-        if reply.get("structuredContent", {}).get("nextCursor") is None:
+        if offered_cursor(reply.get("structuredContent", {})) is None:
             continue
         budget = reply.get("_meta", {}).get("backend/wireBudget", {})
         # The interactive driver already validated the raw line length.
@@ -824,7 +929,16 @@ def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
 
 
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
-    for name, filename in expected.items():
+    for query, declaration in expected.items():
+        # Search text need not be the compiler's canonical identity. Java,
+        # for example, finds a type by its short name but reports its FQN.
+        if isinstance(declaration, str):
+            name, filename = query, declaration
+        elif (isinstance(declaration, dict) and set(declaration) == {"name", "path"}
+              and all(isinstance(value, str) and value for value in declaration.values())):
+            name, filename = declaration["name"], declaration["path"]
+        else:
+            raise RuntimeError(f"real corpus: invalid authored declaration for {query}")
         if not any(row.get("identity", {}).get("name") == name
                    and row.get("identity", {}).get("path") == filename and row.get("language") == language
                    and row.get("state") == "ready"
@@ -834,9 +948,24 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
             raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
 
 
+def make_case_directories_writable(root: Path) -> None:
+    """Only our copied directories need write permission for a repeat run.
+
+    Nix source directories are read-only. copytree preserves those modes;
+    do not change the pinned source or follow a link out of the case tree.
+    """
+    for directory, _, _ in os.walk(root, followlinks=False):
+        path = Path(directory)
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise RuntimeError("surface case cleanup requires owned directories")
+        path.chmod(stat.S_IMODE(metadata.st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
+        make_case_directories_writable(case_root)
         shutil.rmtree(case_root)
     case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
@@ -847,8 +976,16 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(source, project)
     else:
         shutil.copytree(ROOT / case["project"], project)
+    make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
-    owner = Owner(bin_dir, case_root)
+    cargo_vendor = None
+    if "cargo_vendor_env" in case:
+        vendor = os.environ.get(case["cargo_vendor_env"], "")
+        cargo_vendor = Path(vendor)
+        if not cargo_vendor.is_absolute() or not cargo_vendor.is_dir() or not str(cargo_vendor.resolve()).startswith("/nix/store/"):
+            raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
+    owner = Owner(bin_dir, case_root, cargo_vendor)
+
     record = {"answers": {}, "performance": {"seconds": {}}}
     proven_tokens = set()
     try:
@@ -887,7 +1024,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         if case.get("mcp"):
             def prove_session_outline(call, reply, exchange):
                 first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
-                token = first.get("nextCursor")
+                token = offered_cursor(first)
                 if call["tool"] != "backend.outline" or token is None:
                     return
                 following = exchange(mcp_continuation_call(call, first))
@@ -910,8 +1047,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
                     require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
                 first = reply.get("structuredContent", {})
-                if first.get("nextCursor") is not None and first["nextCursor"] not in proven_tokens:
-                    token = first["nextCursor"]
+                if offered_cursor(first) is not None and offered_cursor(first) not in proven_tokens:
+                    token = offered_cursor(first)
                     call = result["call"]
                     continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)
                     if continued["exit"] != 0 or len(continued["calls"]) != 1:
@@ -928,13 +1065,27 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"]["seconds"].update(
                 run_live_contracts(owner, project, case["live_contracts"], published_root)
             )
+        if case.get("gui"):
+            from gui_contract import run_gui
+            answer, usage, evidence = run_gui(owner, project, case["gui"])
+            record["answers"]["gui"] = answer
+            record["performance"]["seconds"].update(usage.pop("seconds"))
+            record["performance"].update(usage)
+            with OUTPUT_LOCK:
+                print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
         record["performance"].update(owner.usage())
     finally:
+        case_error = sys.exc_info()[1]
         try:
             diagnostics = CASE_DIAGNOSTICS.get()
             _record_owner_threads(diagnostics, owner.process.pid)
         finally:
-            owner.stop()
+            try:
+                owner.stop()
+            except Exception as cleanup_error:
+                if case_error is not None:
+                    raise RuntimeError(f"{case_error}\nowner cleanup failed: {cleanup_error}") from case_error
+                raise
     record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
     return record
 
@@ -949,9 +1100,10 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
     for name, old in baseline.get("seconds", {}).items():
         if name in measured["seconds"]:
             check("seconds", f"seconds[{name}]", old, measured["seconds"][name])
-    for metric in ("peak_rss_kib", "cpu_seconds"):
+    for metric in ("peak_rss_kib", "cpu_seconds", "gui_peak_rss_kib", "gui_cpu_seconds"):
         if metric in baseline and metric in measured:
-            check(metric, metric, baseline[metric], measured[metric])
+            policy = metric.removeprefix("gui_")
+            check(policy, metric, baseline[metric], measured[metric])
     return found
 
 
@@ -1054,67 +1206,197 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     provenance = ({"source_sha": args.source_sha,
                    "artifact_manifest_sha256": args.artifact_digest}
                   if args.ci_report else None)
-    with ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface") as executor:
-        results = list(executor.map(
-            lambda case: _invoke_case(case, args.bin_dir.resolve(), provenance), cases))
-    for case, (record, elapsed, error) in zip(cases, results):
+    global CI_SIGTERM_AT
+    CI_SIGTERM.clear()
+    CI_SIGTERM_AT = None
+    interrupted = CI_SIGTERM
+    started: set[str] = set()
+    completed_at: dict[str, float] = {}
+    start_lock = threading.Lock()
+    previous_sigterm = None
+    if args.ci_report:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def handle_sigterm(_signum, _frame):
+            global CI_SIGTERM_AT
+            if CI_SIGTERM_AT is None:
+                CI_SIGTERM_AT = time.monotonic()
+            interrupted.set()
+
+        signal.signal(signal.SIGTERM, handle_sigterm)
+
+    def invoke_tracked(case: dict) -> tuple[dict | None, float, str | None]:
+        with start_lock:
+            if interrupted.is_set():
+                return None, 0.0, "not run: CI runner received SIGTERM before the case started"
+            started.add(case["name"])
+        try:
+            return _invoke_case(case, args.bin_dir.resolve(), provenance)
+        finally:
+            with start_lock:
+                completed_at[case["name"]] = time.monotonic()
+
+    def emit_evidence(case: dict, entry: dict) -> None:
+        if args.ci_report:
+            print("SURFACE-CASE-EVIDENCE " + json.dumps({
+                **provenance, "case": case["name"], "verdict": entry,
+            }, sort_keys=True, separators=(",", ":")), flush=True)
+
+    def record_result(case: dict, future) -> None:
+        record, elapsed, error = future.result()
         entry = {"state": "failed", "seconds": {}}
         evidence[case["name"]] = entry
-        if error is not None:
-            entry["detail"] = bounded_text(error, 4096)
-            log(f"case {case['name']} could not run: {error}")
-            failed.append(case["name"])
-            continue
-        entry.update(record["performance"])
-        if case.get("kind") == "cli-contract":
-            entry["state"] = "passed"
+        try:
+            if error is not None:
+                with start_lock:
+                    case_started = case["name"] in started
+                    finished = completed_at.get(case["name"])
+                if interrupted.is_set() and case_started and (
+                    finished is None or CI_SIGTERM_AT is None or finished > CI_SIGTERM_AT
+                ):
+                    entry["failure_kind"] = "sigterm-interrupted"
+                    entry["detail"] = "case started but completed with an error after the CI runner received SIGTERM; no product verdict"
+                    log(f"case {case['name']} returned an error after SIGTERM; classified as interrupted")
+                    failed.append(case["name"])
+                    return
+                if not case_started:
+                    entry["failure_kind"] = "infrastructure-not-run"
+                    entry["detail"] = "not run: CI runner received SIGTERM before this case started; no product verdict"
+                else:
+                    entry["detail"] = bounded_text(error, 4096)
+                log(f"case {case['name']} could not run: {error}")
+                failed.append(case["name"])
+                return
+            with start_lock:
+                finished = completed_at.get(case["name"])
+            if interrupted.is_set() and finished is not None and (
+                CI_SIGTERM_AT is None or finished > CI_SIGTERM_AT
+            ):
+                entry["failure_kind"] = "sigterm-interrupted"
+                entry["detail"] = "case returned after the CI runner received SIGTERM; no complete pre-deadline verdict"
+                failed.append(case["name"])
+                log(f"case {case['name']} completed after SIGTERM; classified as interrupted")
+                return
+            entry.update(record["performance"])
+            if case.get("kind") == "cli-contract":
+                entry["state"] = "passed"
+                report[case["name"]] = record["performance"]
+                emit_performance(case["name"], record["performance"])
+                log(f"case {case['name']} passed ({elapsed:.1f}s)")
+                return
             report[case["name"]] = record["performance"]
             emit_performance(case["name"], record["performance"])
-            log(f"case {case['name']} passed ({elapsed:.1f}s)")
-            continue
-        report[case["name"]] = record["performance"]
-        emit_performance(case["name"], record["performance"])
-        snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
-        if args.update:
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-            log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
-            continue
-        if not snapshot_path.exists():
-            entry["detail"] = "No reviewed snapshot; explicit review/update required."
-            log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
-            if args.print_missing:
-                print_candidate(case["name"], record)
-            failed.append(case["name"])
-            continue
-        reviewed = json.loads(snapshot_path.read_text())
-        baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
-        indexed = record["performance"].get("seconds", {}).get("cli add")
-        if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
-            entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
-        problems = []
-        if reviewed["answers"] != record["answers"]:
-            old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-            diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
-            entry["snapshot_diff"] = bounded_text(diff, 8192)
-            problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
-        problems += regressions(reviewed.get("performance", {}), record["performance"])
-        if problems:
-            entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
-            failed.append(case["name"])
-            for problem in problems:
-                log(f"case {case['name']}: {problem}")
-            if args.print_missing and reviewed["answers"] != record["answers"]:
-                print_candidate(case["name"], record)
-        else:
-            entry["state"] = "passed"
-            log(f"case {case['name']} matches ({elapsed:.1f}s, "
-                f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+            snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
+            if args.update:
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+                log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
+                return
+            if not snapshot_path.exists():
+                entry["detail"] = "No reviewed snapshot; explicit review/update required."
+                log(f"case {case['name']} has no reviewed snapshot; run with --update and commit it")
+                if args.print_missing:
+                    print_candidate(case["name"], record)
+                failed.append(case["name"])
+                return
+            reviewed = json.loads(snapshot_path.read_text())
+            baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
+            indexed = record["performance"].get("seconds", {}).get("cli add")
+            if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
+                entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
+            problems = []
+            if reviewed["answers"] != record["answers"]:
+                old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+                diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
+                entry["snapshot_diff"] = bounded_text(diff, 8192)
+                problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
+            problems += regressions(reviewed.get("performance", {}), record["performance"])
+            if problems:
+                entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
+                failed.append(case["name"])
+                for problem in problems:
+                    log(f"case {case['name']}: {problem}")
+                if args.print_missing and reviewed["answers"] != record["answers"]:
+                    print_candidate(case["name"], record)
+            else:
+                entry["state"] = "passed"
+                log(f"case {case['name']} matches ({elapsed:.1f}s, "
+                    f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+        finally:
+            emit_evidence(case, entry)
+
+    executor = ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface")
+    futures = {executor.submit(invoke_tracked, case): case for case in cases}
+    pending = set(futures)
+    processed = set()
+    was_interrupted = False
+    try:
+        while pending:
+            done, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            for future in done:
+                case = futures[future]
+                record_result(case, future)
+                pending.remove(future)
+                processed.add(future)
+            if interrupted.is_set():
+                was_interrupted = True
+                break
+    except BaseException:
+        executor.shutdown(wait=not interrupted.is_set(), cancel_futures=interrupted.is_set())
+        if previous_sigterm is not None and not interrupted.is_set():
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        raise
+
+    was_interrupted = was_interrupted or interrupted.is_set()
+    executor.shutdown(wait=not was_interrupted, cancel_futures=was_interrupted)
+    if was_interrupted:
+        with start_lock:
+            started_at_signal = set(started)
+        # Include results that finished as the signal arrived, then label only
+        # genuinely unfinished or never-started work as interruption evidence.
+        for future, case in futures.items():
+            if future in processed:
+                continue
+            if case["name"] in started_at_signal and future.done() and not future.cancelled():
+                record_result(case, future)
+            elif case["name"] in started_at_signal:
+                entry = {"state": "failed", "seconds": {}, "failure_kind": "sigterm-interrupted",
+                         "detail": "case started but did not complete before the CI runner received SIGTERM; outer exit status determines the deadline outcome"}
+                evidence[case["name"]] = entry
+                failed.append(case["name"])
+                log(f"case {case['name']} interrupted by SIGTERM before completion")
+                emit_evidence(case, entry)
+            else:
+                entry = {"state": "failed", "seconds": {}, "failure_kind": "infrastructure-not-run",
+                         "detail": "not run: CI runner received SIGTERM before this case started; no product verdict"}
+                evidence[case["name"]] = entry
+                failed.append(case["name"])
+                log(f"case {case['name']} not run: SIGTERM arrived before it started")
+                emit_evidence(case, entry)
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if args.ci_report:
         write_ci_evidence(args.ci_report, args.source_sha, args.artifact_digest, evidence, bool(args.case))
+    if was_interrupted or interrupted.is_set():
+        if previous_sigterm is not None:
+            final_packet = {
+                "schema": 1,
+                "source_sha": args.source_sha,
+                "artifact_manifest_sha256": args.artifact_digest,
+                "selection": "All catalog cases; no product-path narrowing." if not args.case else
+                             "Explicit case filter; see the case list.",
+                "cases": evidence,
+                "packet_kind": "harness-interruption-summary",
+                "verification": "source/artifact admission was checked before execution; this final log packet was not reread or adapter-reverified",
+            }
+            print("SURFACE-CI-EVIDENCE " + json.dumps(final_packet, sort_keys=True,
+                                                        separators=(",", ":")), flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(128 + signal.SIGTERM)
+    if previous_sigterm is not None:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     if failed:
         log(f"failed: {', '.join(failed)}")
         return 1
@@ -1125,8 +1407,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--case", action="append", help="run only these cases (default: all)")
-    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=1,
-                        help="concurrent isolated cases, 1–4 (default: 1)")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), default=2,
+                        help="concurrent isolated cases, 1–4 (default: 2)")
     parser.add_argument("--update", action="store_true", help="rewrite snapshots and baselines for review")
     parser.add_argument("--report", type=Path, help="write measured performance here as JSON")
     parser.add_argument("--ci-report", type=Path, help="write versioned exact-artifact case verdicts/diffs/performance")

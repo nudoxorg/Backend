@@ -92,7 +92,9 @@ def main []: nothing -> nothing {
         []
     }
     let artifact_root = $env.CI_T1_ARTIFACT_ROOT? | default ""
-    let published = if $built and ($smoke | all {|passed| $passed }) and ($artifact_root | is-not-empty) {
+    # Publish successful builds even when a smoke is red. Artifact presence
+    # enables T2 diagnosis; the smoke results remain part of finish-lane below.
+    let published = if $built and ($artifact_root | is-not-empty) {
         ci-step "t1" "publish exact binaries and runtime" {||
             let sha = (^git rev-parse HEAD | str trim)
             run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--bin-dir" $bin_dir "--output" ($artifact_root | path join $sha)

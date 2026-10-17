@@ -1,0 +1,83 @@
+{
+  "artifact_manifest": "/private/tmp/nudox-mac-functional-a072238-manifest.json",
+  "candidate_artifact_kind": "Mac arm64 functional diagnostic only; not T1, Linux T2, or performance acceptance",
+  "candidate_source_sha": "a072238658ffcdd24a73960c32a19f45017f5d64",
+  "capture_method": "Corrected executable-only MCP continuation replay; all offered continuations consumed for successful captures. Candidate answer bytes captured with diagnostic harness. No --update and no T1 identity or Linux owner metrics.",
+  "cases": {
+    "python-cachetools": {
+      "answer_delta": "Capped outline roots change 61 to 59 at the same 200-entry cap. TTLCache search changes 9 rows to 7; the current answer omits the prior source-backed ttl property at src/cachetools/__init__.py:540. That property is documented and belongs to TTLCache, so source-category validation alone does not justify treating its loss as a correction.",
+      "candidate_snapshot_sha256": "331223ce4224820c78b1ece49be6504dbf7afb361ae341cb47b5623e1581110e",
+      "coverage": "The answer is retained in /private/tmp for review only; tracked golden remains unchanged. cached remains 25 rows. Continuations were consumed.",
+      "decision": "Hold snapshot update pending semantic review of a dropped source-backed result.",
+      "performance_object_preserved": true,
+      "source": "Pinned source files __init__.py and _cachedmethod.py match the prior review SHA-256s; package AST check found no unmatched current outline name/kind, and 34 current source-located search records matched exact file/line/name."
+    },
+    "python-itsdangerous": {
+      "answer_delta": "CLI outline remains capped at 200 declarations. The captured top-level root count changes from 138 to 135: the old top-level class entries Other and BadUnsign are now nested under TestSerializer.test_signer_cls and TestSerializer.test_loads_unsafe respectively; the old top-level coerce_str function entry is absent from the capped result. This is a tree-shape/capped-selection delta, not evidence that source declarations were deleted. Current 200 names/kinds match pinned Python AST declarations/imports/bindings. Signer search remains 25; URLSafeSerializer changes 5 to 6 and all 18 authored locations match exact source file/line/name.",
+      "candidate_snapshot_sha256": "b7f65d02e067d4afbf139edaa344d06b7e4f9085f1886815eeaa25f400418ffd",
+      "coverage": "Methods are nested in class ASTs; classes and imports map to pinned source. Capped outline remains partial, and no ranking optimality claim is made. CLI and MCP continuations were consumed.",
+      "decision": "Apply answer-only update; current source-backed categories and locations are confirmed; preserve capped and pathless limitations.",
+      "outline_root_delta": {
+        "cap": 200,
+        "current_outline_declarations": 200,
+        "current_root_count": 135,
+        "moved_under_existing_test_functions": [
+          {
+            "current_parent": "TestSerializer.test_loads_unsafe",
+            "kind": "class",
+            "name": "BadUnsign"
+          },
+          {
+            "current_parent": "TestSerializer.test_signer_cls",
+            "kind": "class",
+            "name": "Other"
+          }
+        ],
+        "no_longer_a_top_level_captured_root": {
+          "interpretation": "not present among capped current outline roots; no source-deletion claim",
+          "kind": "function",
+          "name": "coerce_str",
+          "source": "tests/test_itsdangerous/test_serializer.py"
+        },
+        "old_root_count": 138
+      },
+      "performance_object_preserved": true,
+      "source": {
+        "coordinate": "pypi:itsdangerous@2.2.0",
+        "source_tree": "/nix/store/rynbql3g0q2yhj29lys5ix9scj7j88dr-nudox-surface-python-itsdangerous-2.2.0",
+        "verified_files": {
+          "src/itsdangerous/serializer.py": "3e67700032ea912c902d9d2338a0200ec016e24fc7d13940ef5122df3d02e5a2",
+          "src/itsdangerous/signer.py": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+          "src/itsdangerous/url_safe.py": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+        }
+      }
+    },
+    "rust-percent-encoding": {
+      "answer_delta": "CLI outline remains 169 declarations / 40 roots / complete. Root order changes. AsciiSet search remains 25 rows (more=true), PercentEncode remains 11 (more=false); captured order changes, but the same source-backed identities remain and all 31 source-located CLI/MCP result identities match exact file/line/name.",
+      "candidate_snapshot_sha256": "0845273635b77f26d1ad519290cd7de10f5e88fc379c3f70a2e73472a9823b00",
+      "coverage": "No source names or kinds unmatched in the complete outline. Pathless/external records remain unassigned to invented source locations. CLI and MCP continuations were consumed; pagination flags remain recorded.",
+      "decision": "Apply answer-only update; current records/categories are grounded in exact pinned source.",
+      "performance_object_preserved": true,
+      "source": {
+        "coordinate": "cargo:percent-encoding@2.3.2",
+        "method": "Recomputed sorted relative-path/NUL/per-file SHA/newline manifest; exact match to prior pinned review.",
+        "source_tree_manifest_sha256": "6721650111e46abc153f94f5c8d84595607b025ab028aa5d1509f4b96d9083d7"
+      }
+    }
+  },
+  "integration_status": "Functional source review only. Raw Mac /private/tmp coordinates and derived identities cannot be used as Linux /tmp goldens; answer changes withdrawn pending matching Linux capture. Performance bands remain unchanged.",
+  "limits": [
+    "Mac functional diagnostic only; not exact Linux T1/T2 acceptance.",
+    "No performance result or band is claimed.",
+    "Search ranking and capped-result completeness are not inferred from source AST."
+  ],
+  "performance_policy": {
+    "action": "Preserve existing snapshot performance object exactly; no measurements or bands changed.",
+    "python-cachetools_baseline_sha256": "8e2ff90c5c4a33c1b303f9d526647e854e7cc080b6b073810850a40d37e0268f",
+    "python-itsdangerous_baseline_sha256": "516b5cecdca012706cb638928d04932ade23f35b6a671b4c658a9ab472e9218d",
+    "rust-percent-encoding_baseline_sha256": "19a0186682eee7971ceca6af996fd4154667ad25ce41925ee55dc8ae7f315215"
+  },
+  "raw_capture_log": "/private/tmp/nudox-t2-five-mac-diagnostic-a072238.log",
+  "schema": 1,
+  "task": "W2.4: review current corrected-continuation T2 answer captures"
+}
