@@ -15,7 +15,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64},
     time::{Duration, Instant},
 };
 

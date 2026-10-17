@@ -17,7 +17,7 @@ use backend_engine::driver::{
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use backend_frontend_go::legacy::GoOracle;
-use backend_semantic::ir::{EntityKind, Ir};
+use backend_semantic::ir::EntityKind;
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

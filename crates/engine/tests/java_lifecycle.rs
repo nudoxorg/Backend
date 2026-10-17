@@ -9,7 +9,7 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{EntityKind, ForeignOrigin, FragmentView, ItemKind, OccurrenceTarget};
+use backend_semantic::ir::{ForeignOrigin, FragmentView, ItemKind, OccurrenceTarget};
 use backend_frontend_java::legacy::{
     JavaRelease as HarnessRelease,
     central::{Central, FetchError},
