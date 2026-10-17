@@ -3275,7 +3275,7 @@ impl IndexJobObservation {
     }
 }
 
-fn default_semantic_versions_limit() -> u16 { 1 }
+fn default_semantic_versions_limit() -> u16 { crate::DEFAULT_SEMANTIC_VERSIONS_LIMIT }
 
 /// Exact request for one daemon-owned product operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

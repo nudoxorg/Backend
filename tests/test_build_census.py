@@ -28,6 +28,7 @@ def process(
     executable: str = "/toolchain/bin/cargo",
     argv_error: str | None = None,
     state: str | None = None,
+    environment_cargo_jobs: int | None = None,
 ) -> census.ProcessRecord:
     return census.ProcessRecord(
         pid=pid,
@@ -38,6 +39,7 @@ def process(
         argv=argv,
         argv_error=argv_error,
         state=state,
+        environment_cargo_jobs=environment_cargo_jobs,
     )
 
 
@@ -170,6 +172,75 @@ class CargoCensusTests(unittest.TestCase):
             groups[0]["admission_slot_provenance"]["cargo_root_pids"],
             [810, 811],
         )
+
+    def test_cargo_jobs_environment_accepts_only_one_positive_ascii_integer(self) -> None:
+        self.assertEqual(
+            census._cargo_build_jobs_from_environ(
+                b"UNRELATED_SECRET=do-not-report\0CARGO_BUILD_JOBS=2\0"
+            ),
+            2,
+        )
+        large_environment = b"FILLER=" + b"x" * 69_369 + b"\0CARGO_BUILD_JOBS=2\0"
+        self.assertEqual(len(large_environment), 69_396)
+        self.assertEqual(census._cargo_build_jobs_from_environ(large_environment), 2)
+        for value in (b"", b"0", b"-1", b"+2", b"2x", b"\xff"):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    census._cargo_build_jobs_from_environ(
+                        b"CARGO_BUILD_JOBS=" + value + b"\0"
+                    )
+                )
+        self.assertIsNone(census._cargo_build_jobs_from_environ(b"CARGO_BUILD_JOBS=2"))
+        self.assertIsNone(census._cargo_build_jobs_from_environ(b"OTHER=value\0"))
+        self.assertIsNone(
+            census._cargo_build_jobs_from_environ(
+                b"CARGO_BUILD_JOBS=2\0CARGO_BUILD_JOBS=3\0"
+            )
+        )
+        self.assertIsNone(
+            census._cargo_build_jobs_from_environ(
+                b"CARGO_BUILD_JOBS=2\0" + b"X" * census.MAX_CARGO_BUILD_ENV_BYTES
+            )
+        )
+
+    def test_cli_jobs_precede_environment_and_malformed_cli_never_falls_back(self) -> None:
+        valid_cli = process(
+            840,
+            ("cargo", "test", "--jobs", "3"),
+            environment_cargo_jobs=7,
+        )
+        self.assertEqual(census.classify_cargo_process(valid_cli).requested_jobs, 3)
+
+        malformed_cli = [
+            ("cargo", "test", "--jobs=x"),
+            ("cargo", "test", "--jobs=2", "--jobs=3"),
+            ("cargo", "test", "-j"),
+            ("cargo", "test", "-j-1"),
+        ]
+        for argv in malformed_cli:
+            with self.subTest(argv=argv):
+                record = process(841, argv, environment_cargo_jobs=7)
+                entry = census.classify_cargo_process(record)
+                self.assertIsNotNone(entry)
+                self.assertIsNone(entry.requested_jobs)
+
+        no_cli = process(842, ("cargo", "test"), environment_cargo_jobs=5)
+        self.assertEqual(census.classify_cargo_process(no_cli).requested_jobs, 5)
+        after_separator = process(
+            843,
+            ("cargo", "test", "--", "--jobs=11"),
+            environment_cargo_jobs=5,
+        )
+        self.assertEqual(census.classify_cargo_process(after_separator).requested_jobs, 5)
+        unavailable_argv = process(844, None, environment_cargo_jobs=5)
+        self.assertIsNone(census.classify_cargo_process(unavailable_argv).requested_jobs)
+
+    def test_cargo_environment_reads_have_a_scan_wide_process_cap(self) -> None:
+        budget = census._CargoEnvironmentBudget()
+        for _ in range(census.MAX_CARGO_BUILD_ENVIRONMENT_READS):
+            self.assertTrue(budget.admit())
+        self.assertFalse(budget.admit())
+        self.assertEqual(budget.reads, census.MAX_CARGO_BUILD_ENVIRONMENT_READS)
 
     def test_nested_cargo_process_still_consumes_its_own_slot(self) -> None:
         parent = process(815, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)

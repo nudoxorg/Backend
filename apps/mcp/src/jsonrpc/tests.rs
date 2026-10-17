@@ -1829,7 +1829,7 @@ fn semantic_versions_default_discovers_real_42_image_capture_without_embedding_s
         assert!(matches!(
             &server.product.surface_commands[..],
             [SurfaceCommand::SemanticVersions {
-                limit: 1,
+                limit: backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
                 cursor: None,
                 ..
             }]
