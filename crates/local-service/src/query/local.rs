@@ -2692,6 +2692,8 @@ mod prepared_corpus_tests {
             ("lexical-sort-candidates-step", 1000),
             ("lexical-sort-documents-step", 1000),
             ("lexical-sort-facts-step", 1000),
+            ("lexical-entity-uniqueness", 1000),
+            ("lexical-candidate-uniqueness", 1000),
             ("lexical-sorted-facts", 1),
             ("lexical-document-state", 1),
         ] {
@@ -2982,11 +2984,11 @@ fn collect_selected_documents(
         selected.sort_unstable_by_key(|entry| entry.entity);
     }
     preparation_checkpoint(cancelled, "lexical-sorted-entities")?;
-    if selected
-        .windows(2)
-        .any(|pair| pair[0].entity == pair[1].entity)
-    {
-        return Err(QueryError::IdentityCollision);
+    for pair in selected.windows(2) {
+        preparation_checkpoint(cancelled, "lexical-entity-uniqueness")?;
+        if pair[0].entity == pair[1].entity {
+            return Err(QueryError::IdentityCollision);
+        }
     }
     let mut candidate_order = (0..selected.len()).collect::<Vec<_>>();
     preparation_checkpoint(cancelled, "lexical-sort-candidates")?;
@@ -3000,11 +3002,11 @@ fn collect_selected_documents(
         candidate_order.sort_unstable_by_key(|index| selected[*index].candidate);
     }
     preparation_checkpoint(cancelled, "lexical-sorted-candidates")?;
-    if candidate_order
-        .windows(2)
-        .any(|pair| selected[pair[0]].candidate == selected[pair[1]].candidate)
-    {
-        return Err(QueryError::IdentityCollision);
+    for pair in candidate_order.windows(2) {
+        preparation_checkpoint(cancelled, "lexical-candidate-uniqueness")?;
+        if selected[pair[0]].candidate == selected[pair[1]].candidate {
+            return Err(QueryError::IdentityCollision);
+        }
     }
     let mut document_order = (0..selected.len()).collect::<Vec<_>>();
     preparation_checkpoint(cancelled, "lexical-sort-documents")?;

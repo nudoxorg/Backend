@@ -948,10 +948,18 @@ fn read_indexed_relation_controlled(
             "source relation contains a file outside every project frontier".to_owned(),
         ));
     }
-    if selected_pages != membership_pages {
+    if selected_pages.len() != membership_pages.len() {
         return Err(BuiltinModelError(
             "source relation contains an unreferenced membership page".to_owned(),
         ));
+    }
+    for (selected, present) in selected_pages.iter().zip(&membership_pages) {
+        check_search_preparation(cancelled, "source-membership-cover")?;
+        if selected != present {
+            return Err(BuiltinModelError(
+                "source relation contains an unreferenced membership page".to_owned(),
+            ));
+        }
     }
     check_search_preparation(cancelled, "source-sort")?;
     if cancelled.is_some() {

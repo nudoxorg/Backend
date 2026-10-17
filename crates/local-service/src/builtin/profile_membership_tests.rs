@@ -1695,6 +1695,7 @@ fn search_source_cancellation_preserves_the_complete_persisted_frontier() -> Res
         ("source-row", 512),
         ("source-membership-key", 512),
         ("source-file", 512),
+        ("source-membership-cover", 1),
         ("source-sort", 1),
         ("source-sort-step", 1000),
         ("source-snapshot", 1),
