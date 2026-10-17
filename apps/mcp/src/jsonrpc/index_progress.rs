@@ -2,7 +2,10 @@
 //! Full requests without conditional options remain immediate full observations.
 
 use super::*;
-use backend_client::{IndexObservationFingerprint, IndexProgressRead, IndexProgressUpdate};
+use backend_client::{
+    IndexCompilerProgressUpdate, IndexObservationFingerprint, IndexProgressRead,
+    IndexProgressUpdate,
+};
 
 #[derive(Serialize)]
 #[serde(tag = "state", content = "reference", rename_all = "kebab-case")]
@@ -31,7 +34,11 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Option<Value>, RpcError> {
-        if !arguments.contains_key("after_observation") && !arguments.contains_key("wait_millis") {
+        let operation = matches!(command, SurfaceCommand::IndexOperationStatus { .. });
+        if !operation
+            && !arguments.contains_key("after_observation")
+            && !arguments.contains_key("wait_millis")
+        {
             return Ok(None);
         }
         let after = arguments
@@ -49,9 +56,31 @@ impl<P: Product> Server<P> {
         let query = IndexProgressRead::new(command.clone(), after, wait)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         let request_context = self.request_context.clone().unwrap_or_default();
-        let update = backend_client::read_index_progress(&query, &request_context, |command| {
-            self.product.surface(command)
-        })
+        let update = if operation {
+            backend_client::read_index_operation_progress(&query, &request_context, |command| {
+                self.product.surface(command)
+            })
+        } else {
+            let update = backend_client::read_index_progress(&query, &request_context, |command| {
+                self.product.surface(command)
+            })
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?;
+            match update {
+                IndexProgressUpdate::Changed(reply) => {
+                    return self
+                        .surface_reply_result(command, &reply, detail, context, exposure)
+                        .map(Some);
+                }
+                IndexProgressUpdate::Unchanged(reference) => {
+                    Ok(IndexCompilerProgressUpdate::Unchanged(reference))
+                }
+            }
+        }
         .map_err(|error| {
             RpcError::from_fault(&Fault::from_client_error(
                 &error,
@@ -59,10 +88,16 @@ impl<P: Product> Server<P> {
             ))
         })?;
         Ok(Some(match update {
-            IndexProgressUpdate::Changed(reply) => {
-                self.surface_reply_result(command, &reply, detail, context, exposure)?
-            }
-            IndexProgressUpdate::Unchanged(reference) => {
+            IndexCompilerProgressUpdate::Changed(observed) => self
+                .surface_reply_with_profile_progress(
+                    command,
+                    &SurfaceReply::IndexOperationStatus(observed.observation),
+                    observed.profile_progress,
+                    detail,
+                    context,
+                    exposure,
+                )?,
+            IndexCompilerProgressUpdate::Unchanged(reference) => {
                 let index_poll = backend_present::IndexPollDto::for_reference_in_context(
                     &reference,
                     detail,

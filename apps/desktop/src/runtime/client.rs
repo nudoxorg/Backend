@@ -353,7 +353,19 @@ impl LocalEngineClient {
     }
 
     fn request_index(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexProject { request: request_id, project, operation, basis, owner, .. } = request else {
+        let context = backend_client::RequestContext::new();
+        context
+            .read_deadline(Duration::from_secs(30))
+            .map_err(|error| self.client_fault(error))?;
+        let EngineRequest::IndexProject {
+            request: request_id,
+            project,
+            operation,
+            basis,
+            owner,
+            ..
+        } = request
+        else {
             unreachable!("index adapter called with a non-index request")
         };
         let owner = owner.as_ref().filter(|owner| owner.is_gated()).ok_or_else(|| EngineFault::IndexNotSent {
@@ -396,7 +408,17 @@ impl LocalEngineClient {
                 error: crate::core::ErrorValue::new(FaultCode::Transport, "This index request stopped before its first send. Nothing was sent.") }); }
             // Exactly one mutation send. Every interrupted answer is reconciled
             // by this persisted key; it never starts a new request implicitly.
-            session.start_index_operation(operation.key, operation.package.clone(), operation.execution_intent)
+            let result = session
+                .set_request_context(Some(context.clone()))
+                .and_then(|()| {
+                    session.start_index_operation(
+                        operation.key,
+                        operation.package.clone(),
+                        operation.execution_intent,
+                    )
+                });
+            let detached = session.set_request_context(None);
+            result.and_then(|observation| detached.map(|()| observation))
         };
         let observation = match result {
             Ok(observation) => observation,
@@ -406,18 +428,51 @@ impl LocalEngineClient {
             }
         };
         self.session = Some(session);
-        self.index_observation(*request_id, *basis, project, operation, observation)
+        self.index_observation(
+            *request_id,
+            *basis,
+            project,
+            operation,
+            observation,
+            &context,
+        )
     }
 
     fn request_index_status(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexOperationStatus { request: request_id, project, operation, basis, .. } = request else {
+        let context = backend_client::RequestContext::new();
+        context
+            .read_deadline(Duration::from_secs(30))
+            .map_err(|error| self.client_fault(error))?;
+        let EngineRequest::IndexOperationStatus {
+            request: request_id,
+            project,
+            operation,
+            basis,
+            ..
+        } = request
+        else {
             unreachable!("index status adapter called with a non-status request")
         };
         // Status is read-only and may reconnect once. It never calls Start,
         // even when the owner reports Unknown or Unresolved.
-        let observation = self.with_session_read(|session| session.index_operation_status(operation.key))
-            .map_err(|_| EngineFault::IndexUnconfirmed { project: project.clone() })?;
-        self.index_observation(*request_id, *basis, project, operation, observation)
+        let observation = self
+            .with_session_read(|session| {
+                session.set_request_context(Some(context.clone()))?;
+                let result = session.index_operation_status(operation.key);
+                session.set_request_context(None)?;
+                result
+            })
+            .map_err(|_| EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            })?;
+        self.index_observation(
+            *request_id,
+            *basis,
+            project,
+            operation,
+            observation,
+            &context,
+        )
     }
 
     fn index_observation(
@@ -427,18 +482,39 @@ impl LocalEngineClient {
         project: &LocalProjectId,
         operation: &crate::model::IndexOperationClaim,
         observation: backend_library::IndexOperationObservation,
+        context: &backend_client::RequestContext,
     ) -> Result<EngineDto, EngineFault> {
         if !operation.belongs_to(project) || !operation.admits_observation(&observation) {
             return Err(EngineFault::IndexUnconfirmed {
                 project: project.clone(),
             });
         }
+        let observed =
+            backend_client::observe_index_operation_progress(observation, context, |command| {
+                self.with_session_read(|session| {
+                    session.set_request_context(Some(context.clone()))?;
+                    let result = session.surface(command.clone());
+                    session.set_request_context(None)?;
+                    result
+                })
+                .map_err(|error| backend_client::ClientError::Protocol(format!("{error:?}")))
+            })
+            .map_err(|_| EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            })?;
+        if !operation.admits_observation(&observed.observation) {
+            return Err(EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            });
+        }
+        let mut operation = operation.clone();
+        operation.profile_progress = observed.profile_progress;
         Ok(EngineDto::IndexOperation {
             request,
             basis,
             project: project.clone(),
-            operation: operation.clone(),
-            observation,
+            operation,
+            observation: observed.observation,
         })
     }
 
