@@ -1,5 +1,13 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-17, Native28/29 and Docs harness boundary
+
+Native28's Cargo 101 came from an invalid transitive-feature argument in the harness, before compilation or test execution; all 26 selected bodies were unrun. The zero-body replay is `actual-ilo-native28-H1/ROOT-REPLAY-EXACT25-AND-GO1.json` (SHA-256 `a2b15bbd29c2c75c5a167db4a3964f84e36e29c8e6b9531a5234121366959d53`). A corrected three-direct-feature Native29 attempt has since been dispatched once; its outcome is pending, so no result is inferred from dispatch (`ROOT-native29-GO1.json`, SHA-256 `78cd4352fef16588ee2de2680e08e4593aa42193bbbbdc138c734922979433b1`).
+
+On source `549d1998e678b290cf99d32fafec928dd0aff134` / tree `21d5d7475e2ef3014f28e50f11e608d73eb0d286`, the focused Docs `backend-cli --json --detail full add .` process exited 0 in 0.865536 seconds. The harness then stopped before MCP calls or publication because it compared a typed local `PackageReference` with a path string; the operation was still `active/scanning`, and owner drain/closure was verified. The closure/start replay is `actual-docs-current549d-02/CLOSURE-AND-START-REPLAY.json` (SHA-256 `13dd087e40add328aad5b11b9b0213ec79e21e9236c58331d4db04f05500ba0f`). The typed-package correction has source review, but a further audit found legitimate `index-progress-unchanged` replies may omit full status. Docs and Go owners are correcting that shared harness branch before another launch. This is not Docs runtime acceptance.
+
+Root is handling merges of the reviewed PR417/425/427 source checkpoints. Their source status does not replace the pending Native29 result or the blocked Docs continuation. No full runtime, GUI, release, or Clippy proof is claimed here.
+
 ## Follow-up: 2026-10-17, Ubuntu public installer replay and BUILD13 closure
 
 Root independently replayed the public Ubuntu diagnostic installer against source `df93af4890005c2bb748928c5a524d1f203fe04f`: four installs (two fresh prefixes and two same-version repeats), 12 CLI version/MCP/locald help probes, and a 291-file courier index passed. The replay receipt is `ROOT-UBUNTU-PUBLIC-INSTALLER-REPLAY01.json` (SHA-256 `2ae1f1f4f2efa9db59881531ed40cf90fa2a39b0aad2bc8a1dbbeaf17be6f470`). This does not prove indexing of a real application, an MCP session, upgrade behavior, or the current 549d build; the channel remains `production_ready: false`.
