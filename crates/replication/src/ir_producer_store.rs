@@ -13,6 +13,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+#[cfg(test)]
+use backend_semantic::ir::derive_typed_plane_content_v2_from_admitted_reader;
 use backend_semantic::ir::{
     CanonicalPlaneEncodingMetrics, CanonicalPlaneRowEncoder, CanonicalPlaneStreamError,
     CanonicalSemanticPlaneSegmentRef, CanonicalSemanticPlaneSegmentSink, CoreDeclarationRows,
@@ -27,8 +29,7 @@ use backend_semantic::ir::{
     SemanticTypedPlaneWorkLimitsV2, SourceProvenanceRows, TypedPlaneSegmentSourceV2, TypesRows,
     UntrustedSemanticContentRootV2, UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
     ValidatedCanonicalSemanticPlaneSegment, VerifiedTypedPlaneContentV2,
-    VerifiedTypedPlaneHistoryContentV3, derive_typed_plane_content_v2_from_admitted_reader,
-    derive_typed_plane_history_content_v3,
+    VerifiedTypedPlaneHistoryContentV3, derive_typed_plane_history_content_v3,
     stream_canonical_plane_family_with_jumbo_stable_key_anchors_and_limits,
     typed_plane_work_limits_v2,
 };
