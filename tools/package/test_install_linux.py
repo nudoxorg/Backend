@@ -57,7 +57,7 @@ class InstallerMetadataTests(unittest.TestCase):
 
 class InstallerFilesystemTests(unittest.TestCase):
     @staticmethod
-    def _fixture_release(root, source_sha, date):
+    def _fixture_release(root, source_sha, date, *, include_desktop=False):
         archive = Path(root) / f"{date}-{source_sha[:10]}.tar.gz"
         files = {
             "bin/backend-cli": b"fixture cli image",
@@ -65,6 +65,8 @@ class InstallerFilesystemTests(unittest.TestCase):
             "bin/backend-locald": b"fixture locald image",
             "README.txt": b"fixture package readme",
         }
+        if include_desktop:
+            files["bin/backend-desktop"] = b"fixture desktop image"
         build_bytes = json.dumps({"source_sha": source_sha}, sort_keys=True).encode()
         package_value = {
             "schema": "nudox.linux-portable-package.v1",
@@ -75,6 +77,8 @@ class InstallerFilesystemTests(unittest.TestCase):
             ],
             "libraries": {},
         }
+        if include_desktop:
+            package_value.update(schema="nudox.linux-portable-package.v2", desktop=dict(installer.DESKTOP_ROLE))
         package_bytes = json.dumps(package_value, sort_keys=True).encode()
         files["build-manifest.json"] = build_bytes
         files["packaging-manifest.json"] = package_bytes
@@ -100,6 +104,8 @@ class InstallerFilesystemTests(unittest.TestCase):
             "build_manifest_sha256": hashlib.sha256(build_bytes).hexdigest(),
             "packaging_manifest_sha256": hashlib.sha256(package_bytes).hexdigest(),
         }
+        if include_desktop:
+            manifest.update(schema=2, desktop=dict(installer.DESKTOP_ROLE))
         return entry, manifest, archive
 
     def _install_fixture_release(self, prefix, entry, manifest, archive):
@@ -562,6 +568,134 @@ class InstallerFilesystemTests(unittest.TestCase):
         link.linkname = "../../outside"
         with self.assertRaisesRegex(installer.InstallError, "link or special file"):
             installer._safe_member(link, "nudox-linux-x86_64")
+
+
+class DesktopInstallerTests(unittest.TestCase):
+    fixture = staticmethod(InstallerFilesystemTests._fixture_release)
+
+    def install_fixture(self, prefix, entry, manifest, archive):
+        with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()) as probes:
+            installer.install(prefix, entry, manifest, archive)
+        return probes
+
+    def test_schema_two_requires_exact_explicit_role_and_legacy_cannot_opt_in(self):
+        for manifest in ({"schema": 2}, {"schema": 2, "desktop": {"executable": "backend-cli", "launcher": "nudox-desktop"}},
+                         {"schema": 1, "desktop": dict(installer.DESKTOP_ROLE)}):
+            with self.subTest(manifest=manifest), self.assertRaises(installer.InstallError):
+                installer.validate_release_manifest(manifest)
+        self.assertEqual(installer.release_binaries({"schema": 2, "desktop": dict(installer.DESKTOP_ROLE)}),
+                         (*installer.REQUIRED_BINARIES, "backend-desktop"))
+        self.assertEqual(installer.release_binaries({"schema": 1}), installer.REQUIRED_BINARIES)
+
+    def test_desktop_install_hashes_fourth_executable_and_exposes_explicit_aliases_without_gui_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry, manifest, archive = self.fixture(root, "a" * 40, "20261017", include_desktop=True)
+            prefix = root / "prefix"
+            probes = self.install_fixture(prefix, entry, manifest, archive)
+            current = prefix / "lib/nudox/current"
+            self.assertTrue(os.access(current / "bin/backend-desktop", os.X_OK))
+            for name in ("backend-desktop", "nudox-desktop"):
+                self.assertEqual((prefix / "bin" / name).resolve(), (current / "bin/backend-desktop").resolve())
+            self.assertEqual((prefix / "bin/nudox").resolve(), (current / "bin/backend-cli").resolve())
+            self.assertEqual([Path(call.args[0][0]).name for call in probes.call_args_list], ["backend-cli", "backend-mcp"])
+            (current / "bin/backend-desktop").write_bytes(b"tampered desktop")
+            with self.assertRaisesRegex(installer.InstallError, "integrity/startup recheck"):
+                installer.reuse_existing_install(prefix, entry, manifest)
+
+    def test_desktop_release_missing_fourth_executable_refuses_before_extracting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _, manifest, archive = self.fixture(root, "a" * 40, "20261017")
+            manifest.update(schema=2, desktop=dict(installer.DESKTOP_ROLE))
+            stage = root / "stage"
+            stage.mkdir()
+            with self.assertRaisesRegex(installer.InstallError, "missing one or more required"):
+                installer.safe_extract(archive, stage, manifest=manifest)
+            self.assertEqual(list(stage.iterdir()), [])
+
+    def test_legacy_release_cannot_silently_extract_desktop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _, _, archive = self.fixture(root, "a" * 40, "20261017", include_desktop=True)
+            stage = root / "stage"
+            stage.mkdir()
+            with self.assertRaisesRegex(installer.InstallError, "explicit schema-2"):
+                installer.safe_extract(archive, stage)
+            self.assertEqual(list(stage.iterdir()), [])
+
+    def test_package_desktop_role_mismatch_and_duplicate_inventory_refuse_before_probes(self):
+        for mutation in ("role", "duplicate", "glibc-floor"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                entry, manifest, archive = self.fixture(root, "a" * 40, "20261017", include_desktop=True)
+                stage = root / "stage"
+                stage.mkdir()
+                installer.safe_extract(archive, stage, manifest=manifest)
+                path = stage / "packaging-manifest.json"
+                package_value = json.loads(path.read_text())
+                if mutation == "role":
+                    package_value["desktop"]["launcher"] = "nudox"
+                elif mutation == "duplicate":
+                    package_value["executables"].append(package_value["executables"][-1])
+                else:
+                    manifest["minimum_glibc"] = "2.42"
+                path.write_text(json.dumps(package_value))
+                manifest["packaging_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                with patch.object(installer.subprocess, "run") as probes, \
+                     patch.object(installer, "_glibc_version", return_value=(2, 39)):
+                    with self.assertRaises(installer.InstallError):
+                        installer.verify_package(stage, entry, manifest)
+                probes.assert_not_called()
+
+    def test_switch_to_cli_removes_only_owned_desktop_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prefix = root / "prefix"
+            self.install_fixture(prefix, *self.fixture(root, "a" * 40, "20261016", include_desktop=True))
+            self.install_fixture(prefix, *self.fixture(root, "b" * 40, "20261017"))
+            for name in ("nudox-desktop", "backend-desktop"):
+                self.assertFalse((prefix / "bin" / name).is_symlink())
+            self.assertTrue((prefix / "bin/nudox").resolve().is_file())
+
+    def test_failed_current_activation_preserves_previous_desktop_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prefix = root / "prefix"
+            self.install_fixture(prefix, *self.fixture(root, "a" * 40, "20261016", include_desktop=True))
+            current = prefix / "lib/nudox/current"
+            before = os.readlink(current)
+            aliases = {prefix / "bin" / name: os.readlink(prefix / "bin" / name)
+                       for name in ("nudox-desktop", "backend-desktop")}
+            previous_desktop = (current / "bin/backend-desktop").resolve()
+            real_replace = installer._replace_symlink
+            def fail_current(path, target):
+                if path == current:
+                    raise OSError("injected atomic current activation failure")
+                return real_replace(path, target)
+            with patch.object(installer, "_replace_symlink", side_effect=fail_current):
+                with self.assertRaisesRegex(OSError, "injected atomic current activation failure"):
+                    self.install_fixture(prefix, *self.fixture(root, "b" * 40, "20261017"))
+            self.assertEqual(os.readlink(current), before)
+            for alias, target in aliases.items():
+                self.assertTrue(alias.is_symlink())
+                self.assertEqual(os.readlink(alias), target)
+                self.assertEqual(alias.resolve(), previous_desktop)
+            self.assertEqual(previous_desktop.read_bytes(), b"fixture desktop image")
+
+    def test_desktop_alias_conflict_preserves_current_cli_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prefix = root / "prefix"
+            self.install_fixture(prefix, *self.fixture(root, "a" * 40, "20261016"))
+            current = prefix / "lib/nudox/current"
+            before = os.readlink(current)
+            (prefix / "bin/nudox-desktop").write_bytes(b"user-owned launcher")
+            with self.assertRaisesRegex(installer.InstallError, "non-symlink command"):
+                self.install_fixture(prefix, *self.fixture(root, "b" * 40, "20261017", include_desktop=True))
+            self.assertEqual(os.readlink(current), before)
+            self.assertEqual((prefix / "bin/nudox-desktop").read_bytes(), b"user-owned launcher")
 
 
 if __name__ == "__main__":
