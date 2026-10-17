@@ -861,6 +861,88 @@ pub(crate) fn gated_owner_for_shutdown() -> Result<
 }
 
 #[cfg(unix)]
+#[test]
+fn local_semantic_joined_shutdown_is_quiescent_and_cannot_restart() -> TestResult {
+    let (fixture, mut provider, cancelled) = gated_owner_for_shutdown()?;
+    // If a pre-join assertion fails, release the fixture before provider Drop
+    // performs its final join. The normal path never releases the gate.
+    struct ReleaseGateOnFailure(Option<std::path::PathBuf>);
+    impl Drop for ReleaseGateOnFailure {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.take() {
+                let _ = std::fs::write(path, b"failure-safe shutdown fixture release");
+            }
+        }
+    }
+    let mut release_on_failure = ReleaseGateOnFailure(Some(fixture.release.clone()));
+    let runtime = fixture
+        .provision
+        .runtime()
+        .ok_or("activated protocol fixture")?;
+    let held = runtime.memory_budget().used();
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Preparing)
+    );
+    provider.request_close_local();
+    assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Retiring),
+        "signalling cancellation still owes the actual worker join"
+    );
+    // The supervisor must retire the real gated child on cancellation; do not
+    // manufacture readiness by releasing its inference gate or polling it away.
+    provider.close_local();
+    release_on_failure.0 = None;
+    assert!(provider.local_preparation().is_none());
+    assert!(!fixture.release.exists());
+    assert!(runtime.memory_budget().used() < held);
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("shutdown must preserve the closed local owner identity".into());
+    };
+    assert!(!owner.has_retained_projection());
+    assert!(!owner.owes_completion());
+    assert_eq!(owner.cached_completions(), 0);
+    let retired_credits = runtime.memory_budget().used();
+    let calls = std::fs::read_to_string(&fixture.log)?;
+    let (coordinator, _, _) = selected_many(3, false)?;
+    let fresh_cancellation = Arc::new(AtomicBool::new(false));
+    let query = LocalQuery::prefix("fixture", 3)?;
+    let answer = provider.search_local_with_cancellation(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        coordinator.search_local(query)?,
+        "fresh intent after joined shutdown",
+        Some(Arc::clone(&fresh_cancellation)),
+    );
+    assert_eq!(
+        answer.status,
+        SemanticSearchStatus::Unavailable {
+            reason: backend_library::SemanticSearchReason::NoActiveProjection
+        },
+        "closed admission cannot start a replacement inference worker"
+    );
+    drop(answer);
+    assert!(!fresh_cancellation.load(std::sync::atomic::Ordering::Acquire));
+    assert!(provider.local_preparation().is_none());
+    assert_eq!(runtime.memory_budget().used(), retired_credits);
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, calls);
+    provider.close_local();
+    assert!(
+        provider.local_preparation().is_none(),
+        "joined close is idempotent"
+    );
+    // Closing an owner that has never started inference is equally quiescent.
+    let mut idle = fixture_owner(&fixture);
+    assert!(idle.local_preparation().is_none());
+    idle.close_local();
+    idle.close_local();
+    assert!(idle.local_preparation().is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
 pub(crate) fn protocol_fixture_python() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     // Match the existing native-tooling/engine test authority convention. An
