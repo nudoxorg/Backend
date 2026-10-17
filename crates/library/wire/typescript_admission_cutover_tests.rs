@@ -19,7 +19,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         super::DTO_VERSION,
-        32,
+        33,
         "coverage and populated TypeScript causes require the current matched cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
@@ -112,7 +112,7 @@ fn typescript_cause_requires_a_matched_cohort_before_strict_dto30_shape_admissio
     use crate::interface::{TypeScriptAuthorityFailureKind, TypeScriptFailureCause};
     assert_eq!(
         super::DTO_VERSION,
-        32,
+        33,
         "strict DTO30 readers reject the populated cause field"
     );
     #[derive(serde::Deserialize)]
