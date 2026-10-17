@@ -2497,7 +2497,8 @@ mod python_native_call_tests {
             })
             .collect::<Vec<_>>();
         let views = images.iter().collect::<Vec<_>>();
-        let index = ProjectCallableIndex::build_from_views(&views).expect("actual declaration index");
+        let index = ProjectCallableIndex::build_from_views(&views)
+            .map_err(|error| error.to_string())?;
         let paths = modules.iter().map(|(path, _)| path.to_string()).collect();
         let model_paths = BTreeSet::from(["src/requests/models.py".to_owned()]);
         let class = index
@@ -2516,7 +2517,7 @@ mod python_native_call_tests {
                 break;
             }
         }
-        let caller = caller.expect("actual caller image");
+        let caller = caller.test_value()?;
         let expected_start = modules[2].1.rfind("Request()").test_value()? as u32;
         let mut observed_calls = 0;
         for (_, link) in caller.canonical_links() {

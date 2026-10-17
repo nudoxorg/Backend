@@ -374,7 +374,9 @@ mod tests {
         let foreign = dir.path().join("foreign/bin");
         bundle(&foreign)?;
         fs::remove_file(bin.join("backend-mcp"))?;
-        let error = launchers(&current, None, &[foreign.clone()]).expect_err("missing matched MCP");
+        let error = launchers(&current, None, &[foreign.clone()])
+            .err()
+            .ok_or("missing matched MCP was accepted")?;
         assert!(error.contains(bin.join("backend-mcp").to_str().ok_or("UTF8")?));
         symlink(foreign.join("backend-mcp"), bin.join("backend-mcp"))?;
         assert!(
@@ -398,11 +400,10 @@ mod tests {
     fn unknown_internal_payload_is_never_registered_as_a_public_launcher() -> Result {
         let dir = tempfile::tempdir()?;
         let current = bundle(&dir.path().join("bin/.libexec"))?;
-        assert!(
-            launchers(&current, None, &[])
-                .expect_err("unknown internal layout")
-                .contains("public MCP launcher")
-        );
+        let error = launchers(&current, None, &[])
+            .err()
+            .ok_or("unknown internal layout was accepted")?;
+        assert!(error.contains("public MCP launcher"));
         Ok(())
     }
 }
