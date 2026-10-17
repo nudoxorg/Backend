@@ -1013,10 +1013,12 @@ def main(argv: list[str] | None = None) -> int:
         raise InstallError("this installer supports Linux x86_64 only")
     _reject_known_unsupported_loader()
     raw_home = os.environ.get("HOME")
-    if not raw_home:
-        raise InstallError("HOME is unset; pass --prefix with a user-writable directory")
-    home = Path(raw_home).expanduser()
-    prefix = (args.prefix or Path(os.environ.get("NUDOX_INSTALL_PREFIX", home / ".local"))).expanduser().resolve()
+    raw_prefix = args.prefix or os.environ.get("NUDOX_INSTALL_PREFIX") or None
+    if raw_prefix is None:
+        if not raw_home:
+            raise InstallError("HOME is unset; pass --prefix with a user-writable directory")
+        raw_prefix = Path(raw_home) / ".local"
+    prefix = Path(raw_prefix).expanduser().resolve()
     with tempfile.TemporaryDirectory(prefix="nudox-download-") as temp_dir:
         if args.candidate_directory:
             entry, manifest, archive = load_local_candidate(args.candidate_directory, Path(temp_dir))
@@ -1036,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     if str(prefix / "bin") not in path_parts:
         print(f"Add this line to your shell profile to use the commands by name:\n  export PATH={shlex_quote(str(prefix / 'bin'))}:\"$PATH\"")
-    print(f"Check the install with: {prefix / 'bin' / 'nudox'} --version")
+    print(f"Check the install with: {shlex_quote(str(prefix / 'bin' / 'nudox'))} --version")
     return 0
 
 
