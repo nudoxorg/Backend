@@ -946,6 +946,25 @@ fn add_type_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{error::Error, io};
+
+    fn glob_match(
+        pattern: &str,
+        path: &str,
+        is_directory: bool,
+        allow_directory_match: bool,
+        checkpoint: &dyn ExecutionCheckpoint,
+    ) -> Result<bool, io::Error> {
+        glob_path_matches(
+            pattern,
+            path,
+            is_directory,
+            allow_directory_match,
+            checkpoint,
+        )
+        .map_err(|stop| io::Error::other(format!("glob matching stopped: {stop:?}")))
+    }
+
     struct Unlimited;
     impl ExecutionCheckpoint for Unlimited {
         fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
@@ -953,7 +972,8 @@ mod tests {
         }
     }
     #[test]
-    fn include_selectors_follow_last_component_implicit_glob_contract() {
+    fn include_selectors_follow_last_component_implicit_glob_contract() -> Result<(), Box<dyn Error>>
+    {
         let root = Path::new("/repo");
         assert_eq!(selector_pattern(root, "src.v1"), "/repo/src.v1");
         assert_eq!(selector_pattern(root, ".src"), "/repo/.src");
@@ -961,51 +981,50 @@ mod tests {
             selector_pattern(root, "packages/*/src"),
             "/repo/packages/*/src/**/*"
         );
-        assert!(
-            glob_path_matches(
-                "/repo/src.v1/**/*",
-                "/repo/src.v1/main.ts",
-                true,
-                false,
-                &Unlimited
-            )
-            .unwrap()
-        );
-        assert!(
-            !glob_path_matches(
-                "/repo/src.v1",
-                "/repo/src.v1/main.ts",
-                true,
-                false,
-                &Unlimited
-            )
-            .unwrap()
-        );
+        assert!(glob_match(
+            "/repo/src.v1/**/*",
+            "/repo/src.v1/main.ts",
+            true,
+            false,
+            &Unlimited
+        )?);
+        assert!(!glob_match(
+            "/repo/src.v1",
+            "/repo/src.v1/main.ts",
+            true,
+            false,
+            &Unlimited
+        )?);
+        Ok(())
     }
     #[test]
-    fn native_include_globs_keep_hidden_dependency_and_minified_file_boundaries() {
-        let matches =
-            |pattern, path| glob_path_matches(pattern, path, true, false, &Unlimited).unwrap();
-        assert!(!matches("/repo/**/*", "/repo/.hidden/main.ts"));
-        assert!(!matches("/repo/**/*", "/repo/node_modules/pkg/index.d.ts"));
-        assert!(matches("/repo/.hidden/**/*", "/repo/.hidden/main.ts"));
+    fn native_include_globs_keep_hidden_dependency_and_minified_file_boundaries()
+    -> Result<(), Box<dyn Error>> {
+        let matches = |pattern, path| glob_match(pattern, path, true, false, &Unlimited);
+        assert!(!matches("/repo/**/*", "/repo/.hidden/main.ts")?);
+        assert!(!matches("/repo/**/*", "/repo/node_modules/pkg/index.d.ts")?);
+        assert!(matches("/repo/.hidden/**/*", "/repo/.hidden/main.ts")?);
         assert!(matches(
             "/repo/node_modules/pkg/**/*",
             "/repo/node_modules/pkg/index.d.ts"
-        ));
-        assert!(!matches("/repo/**/*", "/repo/src/vendor.min.js"));
-        assert!(matches("/repo/**/*.min.js", "/repo/src/vendor.min.js"));
+        )?);
+        assert!(!matches("/repo/**/*", "/repo/src/vendor.min.js")?);
+        assert!(matches("/repo/**/*.min.js", "/repo/src/vendor.min.js")?);
         assert!(matches(
             "/repo/*/src/**/*",
             "/repo/vendor.min.js/src/main.ts"
-        ));
-        assert!(matches("/repo/src/?.ts", "/repo/src/é.ts"));
-        assert!(!matches("/repo/src/?.ts", "/repo/src/😀.ts"));
-        assert!(matches("/repo/src/??.ts", "/repo/src/😀.ts"));
-        assert!(
-            !glob_path_matches("/repo/src/**/*.ts", "/repo/vendor", true, true, &Unlimited)
-                .unwrap()
-        );
+        )?);
+        assert!(matches("/repo/src/?.ts", "/repo/src/é.ts")?);
+        assert!(!matches("/repo/src/?.ts", "/repo/src/😀.ts")?);
+        assert!(matches("/repo/src/??.ts", "/repo/src/😀.ts")?);
+        assert!(!glob_match(
+            "/repo/src/**/*.ts",
+            "/repo/vendor",
+            true,
+            true,
+            &Unlimited
+        )?);
+        Ok(())
     }
     #[test]
     fn native_root_matcher_propagates_work_stops_inside_a_single_pattern() {
@@ -1020,15 +1039,37 @@ mod tests {
         );
     }
     #[test]
-    fn reference_directives_are_leading_trivia_with_exact_attribute_names_and_modes() {
+    fn reference_directives_are_leading_trivia_with_exact_attribute_names_and_modes()
+    -> Result<(), Box<dyn Error>> {
         let references = tsz::checker::triple_slash_validator::reference_directives(
             "\u{feff}/* /// <reference types=\"wrong\" /> */\n/// <reference types = 'node' resolution-mode = 'require' />\n/// <reference path = './ambient.d.ts' />\nexport const text = '/// <reference types=\"wrong\" />';\n/// <reference types=\"late\" />",
             &Unlimited,
-        ).collect::<Result<Vec<_>, _>>().unwrap();
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| io::Error::other(format!("reference directive parsing failed: {error:?}")))?;
         assert_eq!(references.len(), 2);
-        assert_eq!(references[0].types.unwrap().text, "node");
-        assert_eq!(references[0].resolution_mode.unwrap().text, "require");
-        assert_eq!(references[1].path.unwrap().text, "./ambient.d.ts");
+        assert_eq!(
+            references[0]
+                .types
+                .ok_or_else(|| io::Error::other("first reference is missing its types attribute"))?
+                .text,
+            "node"
+        );
+        assert_eq!(
+            references[0]
+                .resolution_mode
+                .ok_or_else(|| io::Error::other("first reference is missing its resolution mode"))?
+                .text,
+            "require"
+        );
+        assert_eq!(
+            references[1]
+                .path
+                .ok_or_else(|| io::Error::other("second reference is missing its path attribute"))?
+                .text,
+            "./ambient.d.ts"
+        );
+        Ok(())
     }
     #[test]
     fn automatic_jsx_runtime_honors_source_pragma_and_classic_override() {
