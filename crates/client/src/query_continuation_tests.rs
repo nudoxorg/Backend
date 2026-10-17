@@ -565,9 +565,167 @@ fn selected_graph_pages_authenticate_an_omitted_center_and_keep_the_assertion_on
     assert!(
         documents
             .iter()
-            .all(|query| query.symbol() == selected.address() && query.source_basis().is_some())
+            .all(|query| query.symbol() == selected.address() && query.source_basis().is_none())
     );
-    assert_eq!(documents[0].source_basis(), documents[1].source_basis());
+    assert_eq!(documents[0].basis(), documents[1].basis());
+}
+
+// Emulate the real local service's bounded revision proof, and cross the
+// strict command codec for the center document as well as the graph request.
+struct BoundedSelectedGraphTransport(Transport);
+impl CommandTransport for BoundedSelectedGraphTransport {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        if matches!(&request.command, Command::Document(_)) {
+            let proof = request.certificate().expect("revision proof");
+            assert!(proof.claims.iter().any(|claim| matches!(
+                claim,
+                WireClaim::RootCommitment {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            )));
+            assert!(
+                !proof.claims.iter().any(|claim| matches!(
+                    claim,
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        ..
+                    }
+                )),
+                "selected preflight must not ship the whole owner relation"
+            );
+            let bytes =
+                backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
+            let admitted =
+                backend_library::decode_command_body(&bytes).map_err(ClientError::Protocol)?;
+            assert_eq!(admitted, request, "actual center request wire admission");
+        }
+        let revision = matches!(&request.command, Command::Revision);
+        let mut reply = self.0.request(request)?;
+        if revision {
+            let root = self.0.owner.lock().expect("owner").revision_root();
+            let certificate = reply.certificate().expect("owner revision proof");
+            let claims = certificate
+                .claims
+                .iter()
+                .filter(|claim| {
+                    !matches!(
+                        claim,
+                        WireClaim::Root {
+                            schema: WireSchema::ViewRelation,
+                            ..
+                        } | WireClaim::RootCommitment {
+                            schema: WireSchema::ViewRelation,
+                            ..
+                        }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut proof = WireCertificate::new();
+            for claim in claims {
+                proof = proof.with_claim(claim);
+            }
+            reply = reply.with_certificate(proof.with_claim(WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id: encode_id(root.as_bytes()),
+            }));
+            let bytes = serde_json::to_vec(&reply).expect("bounded owner revision wire");
+            let library = self.0.owner.lock().expect("owner");
+            reply = ReplyDto::decode_with_certificate(&bytes, library.view().capability())
+                .map_err(ClientError::Protocol)?;
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn selected_graph_preflight_roundtrips_with_only_the_bounded_owner_commitment() {
+    let (owner, requests, symbol, ids) = selected_page_fixture();
+    let mut client = Session::from_transport(
+        "/private/test-owner.sock",
+        BoundedSelectedGraphTransport(Transport {
+            owner,
+            requests: requests.clone(),
+            graph_ids: Some((symbol, ids.clone())),
+        }),
+    );
+    let selected = selected_at(symbol, "actual label");
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(1).expect("one row"));
+    let mut next = None;
+    let mut seen = Vec::new();
+    loop {
+        let reply = client
+            .graph_page_declaration(&selected, window, next)
+            .expect("bounded selected graph request and authenticated reply");
+        let CommandReply::ProjectionPage(page) = reply.reply else {
+            panic!("graph page")
+        };
+        seen.extend(page.snapshot.root.row_refs().map(|row| row.id));
+        match page.terminal {
+            PageTerminal::More(cursor) => next = Some(cursor),
+            PageTerminal::Complete => break,
+            PageTerminal::Cancelled => panic!("not cancelled"),
+        }
+    }
+    assert_eq!(seen, ids);
+    assert_eq!(
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|command| matches!(command, Command::Document(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn selected_graph_center_still_requires_every_exact_source_basis_component() {
+    let (owner, _, symbol, _) = selected_page_fixture();
+    let library = owner.lock().expect("owner");
+    let source = Basis {
+        root: library.revision_root(),
+        ..library.view().basis()
+    };
+    let row = library
+        .view()
+        .row_ref(RowId::Symbol(symbol))
+        .expect("center");
+    let assertion = SelectedCoordinateAssertion {
+        symbol: SymbolAddress::selected(symbol),
+        coordinate: "actual label".to_owned(),
+    };
+    let reply = |basis: Basis| {
+        let selection = backend_library::DocumentSelection::from_row(row, basis)
+            .expect("independently consistent selection");
+        ReplyDto::new(
+            1,
+            CommandReply::Document(
+                backend_library::Document::new(symbol, basis.root, vec![])
+                    .with_source_basis(basis)
+                    .with_selection(selection)
+                    .expect("consistent document"),
+            ),
+        )
+    };
+    assert!(assertion.admit_document(&reply(source), source).is_ok());
+    let mut mutations = [source; 5];
+    mutations[0].root = view_state_root(&[]);
+    mutations[1].object = object_version(b"different captured source");
+    mutations[2].branch = backend_library::branch_key("different branch");
+    mutations[3].log = backend_library::log_key("different log");
+    mutations[4].schema = source.schema + 1;
+    for changed in mutations {
+        assert_ne!(changed, source);
+        assert!(
+            matches!(
+                assertion.admit_document(&reply(changed), source),
+                Err(ClientError::StaleCursor)
+            ),
+            "changed source must not authenticate: {changed:?}"
+        );
+    }
 }
 
 #[test]
