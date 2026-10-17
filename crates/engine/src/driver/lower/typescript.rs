@@ -502,7 +502,9 @@ struct Projector<'x, 'report, 'source, 'tsz> {
     member_parents: Vec<u32>,
     /// Exact native owner override for roles whose source span nests inside
     /// another declaration (notably a constructor parameter-property field).
-    native_member_parents: Vec<Option<TypeScriptLexicalOwner>>,
+    /// Sparse, strictly emission-ordered ordinals; ordinary facts allocate no
+    /// entries and both parentage sweeps consume this list linearly.
+    native_member_parents: Vec<(u32, TypeScriptLexicalOwner)>,
     /// Native class symbol/site proofs and lexical identities, computed once
     /// before declaration lowering and sorted by exact source range.
     native_class_owners: Vec<(u32, u32, TypeScriptLexicalOwner)>,
@@ -616,12 +618,6 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             required,
             MAX_EMISSION_FACTS,
             UNSET,
-        )?;
-        grow_side_lane(
-            &mut self.native_member_parents,
-            required,
-            MAX_EMISSION_FACTS,
-            None,
         )?;
         grow_side_lane(
             &mut self.synthetic_starts,
@@ -1516,7 +1512,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             self.register(ordinal, parameter.span, identifier.span, EntityKind::Field)?;
             let index = usize::try_from(ordinal).map_err(|_| lane_rejection())?;
             if let Some(owner) = anonymous_owner {
-                self.native_member_parents[index] = Some(owner);
+                self.native_member_parents.push((ordinal, owner));
             } else if let Some(class) = class {
                 self.member_parents[index] = class;
             }
@@ -5294,19 +5290,35 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// objects that span containment cannot tell apart.
     fn pass_parentage(&mut self) -> Result<(), TypeScriptCollectError> {
         let length = self.facts.len;
+        if self
+            .native_member_parents
+            .windows(2)
+            .any(|pair| pair[0].0 >= pair[1].0)
+            || self
+                .native_member_parents
+                .last()
+                .is_some_and(|(ordinal, _)| *ordinal as usize >= length)
+        {
+            return Err(lane_rejection());
+        }
         // One sweep over source-ordered events: an owner opens its lexical
         // range, and every other fact asks the innermost still-open owner for
         // its parent. Declaration spans nest or stay disjoint, so a stack is
         // exact, and the pass stays O(facts log facts) instead of rescanning
         // every candidate for every fact.
         let mut events = Vec::with_capacity(length * 2);
+        let mut native_parent_cursor = 0;
         for index in 0..length {
             let ordinal = coordinate(index)?;
-            let is_member = self.member_parents.get(index).copied().unwrap_or(UNSET) != UNSET
-                || self
-                    .native_member_parents
-                    .get(index)
-                    .is_some_and(Option::is_some);
+            let native_member = self
+                .native_member_parents
+                .get(native_parent_cursor)
+                .is_some_and(|(fact, _)| *fact == ordinal);
+            if native_member {
+                native_parent_cursor += 1;
+            }
+            let is_member =
+                self.member_parents.get(index).copied().unwrap_or(UNSET) != UNSET || native_member;
             let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
             let decl_end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
             let synthetic = decl_start == UNSET || decl_end == UNSET;
@@ -5391,20 +5403,33 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
             owners[usize::try_from(ordinal).unwrap_or(0)] = found;
         }
+        let mut native_parent_cursor = 0;
         for index in 0..length {
             let ordinal = coordinate(index)?;
+            let native_parent = self
+                .native_member_parents
+                .get(native_parent_cursor)
+                .copied()
+                .filter(|(fact, _)| *fact == ordinal)
+                .map(|(_, owner)| owner);
+            if native_parent.is_some() {
+                native_parent_cursor += 1;
+            }
             if let Some(embodiment) = self
                 .member_parents
                 .get(index)
                 .copied()
                 .filter(|parent| *parent != UNSET)
             {
+                if native_parent.is_some() {
+                    return Err(lane_rejection());
+                }
                 self.facts
                     .attach_parent(ordinal, embodiment)
                     .map_err(fault)?;
                 continue;
             }
-            match self.native_member_parents[index].or(owners[index]) {
+            match native_parent.or(owners[index]) {
                 Some(TypeScriptLexicalOwner::Declaration(parent)) => {
                     self.facts.attach_parent(ordinal, parent).map_err(fault)?
                 }
