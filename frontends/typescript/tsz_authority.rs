@@ -1561,6 +1561,39 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 }
 
 #[cfg(test)]
+mod test_support {
+    #[derive(Debug)]
+    pub(super) struct TestFailure(String);
+
+    impl std::fmt::Display for TestFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for TestFailure {}
+
+    pub(super) trait TestValue<T> {
+        fn test_value(self) -> Result<T, TestFailure>;
+    }
+
+    impl<T, E: std::fmt::Debug> TestValue<T> for Result<T, E> {
+        fn test_value(self) -> Result<T, TestFailure> {
+            self.map_err(|error| TestFailure(format!("test operation failed: {error:?}")))
+        }
+    }
+
+    impl<T> TestValue<T> for Option<T> {
+        fn test_value(self) -> Result<T, TestFailure> {
+            self.ok_or_else(|| TestFailure("expected test fixture value was absent".to_owned()))
+        }
+    }
+}
+
+#[cfg(test)]
+use test_support::{TestFailure, TestValue};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::TszResolutionModeOverride;
@@ -1584,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_api_options_preserve_explicit_checker_overrides() {
+    fn compiler_api_options_preserve_explicit_checker_overrides() -> Result<(), TestFailure> {
         let source = r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noImplicitAny":false,"strictNullChecks":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"lib":["ES2022"]}}"#;
         let checker = checker_options_from_compiler_api_json(source)
             .expect("compiler-API options should resolve through the typed TSZ config model");
@@ -1599,12 +1632,13 @@ mod tests {
         );
         let full =
             checker_options_from_compiler_api_json(r#"{"compilerOptions":{"skipLibCheck":false}}"#)
-                .unwrap();
+                .test_value()?;
         assert_eq!(
             full.declaration_diagnostics,
             tsz_common::options::checker::DeclarationDiagnosticPolicy::Check
         );
         assert!(checker.module_explicitly_set);
+        Ok(())
     }
 
     #[test]
@@ -1627,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn admitted_erasable_syntax_option_changes_actual_checker_diagnostics() {
+    fn admitted_erasable_syntax_option_changes_actual_checker_diagnostics() -> Result<(), TestFailure> {
         let run = |erasable| {
             let mut authority = TszProjectAuthority::new();
             let mut policy = options();
@@ -1650,18 +1684,19 @@ mod tests {
                     &[],
                 )
                 .expect("actual checker");
-            authority
+            Ok::<_, TestFailure>(authority
                 .project()
-                .unwrap()
+                .test_value()?
                 .check_result()
                 .file_results
                 .iter()
                 .flat_map(|file| &file.diagnostics)
                 .map(|d| d.code)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>())
         };
-        assert!(run(true).contains(&1294));
-        assert!(!run(false).contains(&1294));
+        assert!(run(true).test_value()?.contains(&1294));
+        assert!(!run(false).test_value()?.contains(&1294));
+        Ok(())
     }
 
     fn input(path: &str, source: &str) -> TszFileInput {
@@ -1683,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn stopped_owned_query_image_is_hidden_and_exact_update_rebuilds_retained_binds() {
+    fn stopped_owned_query_image_is_hidden_and_exact_update_rebuilds_retained_binds() -> Result<(), TestFailure> {
         use std::sync::atomic::Ordering;
         struct OneShotStop(AtomicBool);
         impl ExecutionCheckpoint for OneShotStop {
@@ -1693,10 +1728,10 @@ mod tests {
         }
         let sources = vec![input("src/value.ts", "export const value: number = 1;")];
         let mut authority = TszProjectAuthority::new();
-        authority.update(sources.clone(), options(), &[]).unwrap();
+        authority.update(sources.clone(), options(), &[]).test_value()?;
         let one_shot = OneShotStop(AtomicBool::new(false));
         {
-            let session = authority.project().unwrap().checked_query_session(&one_shot).unwrap();
+            let session = authority.project().test_value()?.checked_query_session(&one_shot).test_value()?;
             let rejected = session.with_file_checker_and_types(0, |_, _, _, database| {
                 one_shot.0.store(true, Ordering::Release);
                 assert_eq!(database.union(vec![TszTypeId::NUMBER, TszTypeId::STRING]), TszTypeId::UNKNOWN);
@@ -1707,49 +1742,51 @@ mod tests {
         assert!(authority.project().is_none(), "stopped image is no longer a ready project");
         let cancelled = AtomicBool::new(false);
         let fresh_budget = execution_budget(&cancelled, 1_000_000);
-        let rebuilt = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &fresh_budget).unwrap();
+        let rebuilt = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &fresh_budget).test_value()?;
         assert_eq!(rebuilt.parsed_and_bound, 0);
         assert_eq!(rebuilt.reused_binds, 1);
         assert!(!rebuilt.reused_project_result);
-        let project = authority.project().unwrap();
-        let session = project.checked_query_session(&fresh_budget).unwrap();
+        let project = authority.project().test_value()?;
+        let session = project.checked_query_session(&fresh_budget).test_value()?;
         let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
-            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
-            checker.format_type(ty)
-        }).unwrap();
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").test_value()?);
+            Ok::<_, TestFailure>(checker.format_type(ty))
+        }).test_value()?.test_value()?;
         assert_eq!(value, "number");
         drop(session);
-        let repeated = authority.update_with_execution_checkpoint(sources, options(), &[], &fresh_budget).unwrap();
+        let repeated = authority.update_with_execution_checkpoint(sources, options(), &[], &fresh_budget).test_value()?;
         assert!(repeated.reused_project_result);
+        Ok(())
     }
 
     #[test]
-    fn new_admitted_budget_reuses_exact_checked_image_without_rebuilding_views() {
+    fn new_admitted_budget_reuses_exact_checked_image_without_rebuilding_views() -> Result<(), TestFailure> {
         let cancelled = AtomicBool::new(false);
         let first = execution_budget(&cancelled, 1_000_000);
         let other = execution_budget(&cancelled, 1_000_000);
         let sources = vec![input("src/value.ts", "export const value: number = 1;")];
         let mut authority = TszProjectAuthority::new();
-        authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &first).unwrap();
-        assert!(matches!(authority.project().unwrap().checked_query_session(&other), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)));
+        authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &first).test_value()?;
+        assert!(matches!(authority.project().test_value()?.checked_query_session(&other), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)));
         assert!(authority.project().is_some(), "wrong caller cannot poison the admitted image");
-        let checked_store = Arc::clone(&authority.project().unwrap().program.definition_store);
-        let admitted = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &other).unwrap();
+        let checked_store = Arc::clone(&authority.project().test_value()?.program.definition_store);
+        let admitted = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &other).test_value()?;
         assert_eq!(admitted.parsed_and_bound, 0);
         assert_eq!(admitted.reused_binds, 1);
         assert!(admitted.reused_project_result);
-        assert!(Arc::ptr_eq(&checked_store, &authority.project().unwrap().program.definition_store),
+        assert!(Arc::ptr_eq(&checked_store, &authority.project().test_value()?.program.definition_store),
             "a later admitted scope must not rebuild the checked program");
-        assert!(matches!(authority.project().unwrap().checked_query_session(&first), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)),
+        assert!(matches!(authority.project().test_value()?.checked_query_session(&first), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)),
             "the current request still rejects a scope from its previous admission");
-        let session = authority.project().unwrap().checked_query_session(&other).unwrap();
+        let session = authority.project().test_value()?.checked_query_session(&other).test_value()?;
         let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
-            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
-            checker.format_type(ty)
-        }).unwrap();
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").test_value()?);
+            Ok::<_, TestFailure>(checker.format_type(ty))
+        }).test_value()?.test_value()?;
         assert_eq!(value, "number");
         drop(session);
-        assert!(authority.update_with_execution_checkpoint(sources, options(), &[], &other).unwrap().reused_project_result);
+        assert!(authority.update_with_execution_checkpoint(sources, options(), &[], &other).test_value()?.reused_project_result);
+        Ok(())
     }
 
     #[test]
@@ -1915,15 +1952,15 @@ mod tests {
     }
 
     #[test]
-    fn dependency_environment_edit_retains_exact_binds_and_replaces_checked_types() {
-        fn observed(authority: &TszProjectAuthority) -> String {
-            let project = authority.project().unwrap();
-            let session = project.checked_query_session_unmetered_for_test().unwrap();
-            let index = session.file_index("src/main.ts").unwrap();
+    fn dependency_environment_edit_retains_exact_binds_and_replaces_checked_types() -> Result<(), TestFailure> {
+        fn observed(authority: &TszProjectAuthority) -> Result<String, TestFailure> {
+            let project = authority.project().test_value()?;
+            let session = project.checked_query_session_unmetered_for_test().test_value()?;
+            let index = session.file_index("src/main.ts").test_value()?;
             session.with_file_checker_and_types(index, |checker, binder, _, _| {
-                let ty = checker.get_type_of_symbol(binder.file_locals.get("actual").unwrap());
-                checker.format_type(ty)
-            }).unwrap()
+                let ty = checker.get_type_of_symbol(binder.file_locals.get("actual").test_value()?);
+                Ok::<_, TestFailure>(checker.format_type(ty))
+            }).test_value()?
         }
         let main = input("src/main.ts", "import { value } from './dep'; export const actual = value;");
         let mut recipe = options();
@@ -1935,38 +1972,39 @@ mod tests {
             target: TszProjectModuleResolutionTarget::File { path: "src/dep.ts".into() },
         });
         let mut authority = TszProjectAuthority::new();
-        authority.update(vec![main.clone(), input("src/dep.ts", "export const value: number = 1;")], recipe.clone(), &[]).unwrap();
-        assert_eq!(observed(&authority), "number");
-        let previous_main = Arc::clone(authority.project().unwrap().bound_sources.get("src/main.ts").unwrap());
+        authority.update(vec![main.clone(), input("src/dep.ts", "export const value: number = 1;")], recipe.clone(), &[]).test_value()?;
+        assert_eq!(observed(&authority).test_value()?, "number");
+        let previous_main = Arc::clone(authority.project().test_value()?.bound_sources.get("src/main.ts").test_value()?);
 
         // The real engine includes dependency source content in its full
         // environment. That changes checked authority without changing the
         // parser/binder inputs of this unchanged importer.
         recipe.environment = TszEnvironmentFingerprint::from_sha256([0x71; 32]);
         let changed = vec![main.clone(), input("src/dep.ts", "export const value: string = 'changed';")];
-        let report = authority.update(changed.clone(), recipe.clone(), &[]).unwrap();
+        let report = authority.update(changed.clone(), recipe.clone(), &[]).test_value()?;
         assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
         assert!(!report.reused_project_result);
-        assert!(Arc::ptr_eq(&previous_main, authority.project().unwrap().bound_sources.get("src/main.ts").unwrap()));
-        assert_eq!(observed(&authority), "string");
+        assert!(Arc::ptr_eq(&previous_main, authority.project().test_value()?.bound_sources.get("src/main.ts").test_value()?));
+        assert_eq!(observed(&authority).test_value()?, "string");
         let mut fresh = TszProjectAuthority::new();
-        fresh.update(changed.clone(), recipe.clone(), &[]).unwrap();
-        assert_eq!(observed(&authority), observed(&fresh));
-        let diagnostics = |authority: &TszProjectAuthority| authority.project().unwrap().check_result().file_results.iter()
-            .map(|file| (file.file_name.clone(), file.diagnostics.clone())).collect::<Vec<_>>();
-        assert_eq!(diagnostics(&authority), diagnostics(&fresh));
+        fresh.update(changed.clone(), recipe.clone(), &[]).test_value()?;
+        assert_eq!(observed(&authority).test_value()?, observed(&fresh).test_value()?);
+        let diagnostics = |authority: &TszProjectAuthority| Ok::<_, TestFailure>(authority.project().test_value()?.check_result().file_results.iter()
+            .map(|file| (file.file_name.clone(), file.diagnostics.clone())).collect::<Vec<_>>());
+        assert_eq!(diagnostics(&authority).test_value()?, diagnostics(&fresh).test_value()?);
 
         recipe.checker.strict_null_checks = !recipe.checker.strict_null_checks;
         recipe.environment = TszEnvironmentFingerprint::from_sha256([0x72; 32]);
-        let options_changed = authority.update(changed.clone(), recipe.clone(), &[]).unwrap();
+        let options_changed = authority.update(changed.clone(), recipe.clone(), &[]).test_value()?;
         assert_eq!((options_changed.parsed_and_bound, options_changed.reused_binds), (0, 2));
         assert!(!options_changed.reused_project_result);
-        assert_eq!(observed(&authority), "string");
+        assert_eq!(observed(&authority).test_value()?, "string");
 
         recipe.checker.module_detection = TszModuleDetectionKind::Force;
-        let binding_changed = authority.update(changed, recipe, &[]).unwrap();
+        let binding_changed = authority.update(changed, recipe, &[]).test_value()?;
         assert_eq!((binding_changed.parsed_and_bound, binding_changed.reused_binds), (2, 0));
         assert!(!binding_changed.reused_project_result);
+        Ok(())
     }
 
     #[test]
@@ -2083,13 +2121,13 @@ mod tests {
     }
 
     #[test]
-    fn captured_reference_outcomes_own_diagnostics_partitions_queries_and_identity() {
+    fn captured_reference_outcomes_own_diagnostics_partitions_queries_and_identity() -> Result<(), TestFailure> {
         let disk = std::env::temp_dir().join(format!(
             "tsz-reference-{}-{}.d.ts",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .test_value()?
                 .as_nanos()
         ));
         struct Cleanup(std::path::PathBuf);
@@ -2099,13 +2137,13 @@ mod tests {
             }
         }
         let cleanup = Cleanup(disk);
-        std::fs::write(&cleanup.0, "interface AmbientDiskCannotOverrideCapture {}").unwrap();
-        let path = cleanup.0.to_str().unwrap();
+        std::fs::write(&cleanup.0, "interface AmbientDiskCannotOverrideCapture {}").test_value()?;
+        let path = cleanup.0.to_str().test_value()?;
         let source = format!(
             "#!/usr/bin/env node\n/// <reference path='{path}' />\n/// <reference types='missing-ambient' resolution-mode='require' />\nexport const value = 1;"
         );
-        let path_offset = source.find(path).unwrap() as u32;
-        let types_offset = source.find("missing-ambient").unwrap() as u32;
+        let path_offset = source.find(path).test_value()? as u32;
+        let types_offset = source.find("missing-ambient").test_value()? as u32;
         let sources = vec![
             input("src/main.ts", &source),
             input("types/admitted.d.ts", "interface CapturedType {}"),
@@ -2144,8 +2182,8 @@ mod tests {
         let mut authority = TszProjectAuthority::new();
         authority
             .update(sources.clone(), recipe.clone(), &[])
-            .unwrap();
-        let expected = codes(authority.project().unwrap());
+            .test_value()?;
+        let expected = codes(authority.project().test_value()?);
         assert!(expected.contains(&(6053, path_offset)));
         assert!(expected.contains(&(2688, types_offset)));
         for workers in [1, 2] {
@@ -2159,19 +2197,19 @@ mod tests {
                     &[],
                     TszProjectCheckerExecution {
                         checkpoint: &budget,
-                        workers: std::num::NonZeroUsize::new(workers).unwrap(),
+                        workers: std::num::NonZeroUsize::new(workers).test_value()?,
                     },
                 )
-                .unwrap();
-            let project = partitioned.project().unwrap();
+                .test_value()?;
+            let project = partitioned.project().test_value()?;
             assert_eq!(codes(project), expected);
-            let session = project.checked_query_session(&budget).unwrap();
+            let session = project.checked_query_session(&budget).test_value()?;
             let index = project
                 .program()
                 .files
                 .iter()
                 .position(|file| file.file_name == "src/main.ts")
-                .unwrap();
+                .test_value()?;
             session
                 .with_file_checker_and_types(index, |checker, _, _, _| {
                     let key = (
@@ -2187,7 +2225,7 @@ mod tests {
                             .ctx
                             .project_module_resolution_outcomes
                             .as_ref()
-                            .unwrap()
+                            .test_value()?
                             .get(&key),
                         Some(&tsz::checker::context::ResolvedModuleRequestOutcome::Unresolved)
                     );
@@ -2195,33 +2233,35 @@ mod tests {
                         checker.ctx.resolve_import_target_from_file(index, path),
                         None
                     );
+                    Ok::<_, TestFailure>(())
                 })
-                .unwrap();
+                .test_value()?.test_value()?;
         }
-        std::fs::remove_file(&cleanup.0).unwrap();
+        std::fs::remove_file(&cleanup.0).test_value()?;
         for request in &mut recipe.module_resolutions {
             request.target = TszProjectModuleResolutionTarget::File {
                 path: "types/admitted.d.ts".into(),
             };
         }
-        let report = authority.update(sources, recipe, &[]).unwrap();
+        let report = authority.update(sources, recipe, &[]).test_value()?;
         assert_eq!(report.parsed_and_bound, 0);
         assert!(!report.reused_project_result);
         assert!(
-            codes(authority.project().unwrap()).is_empty(),
+            codes(authority.project().test_value()?).is_empty(),
             "published captured files need no ambient disk counterpart"
         );
+        Ok(())
     }
 
     #[test]
-    fn captured_reference_inputs_validate_exact_source_kind_offset_mode_and_target() {
+    fn captured_reference_inputs_validate_exact_source_kind_offset_mode_and_target() -> Result<(), TestFailure> {
         let source = "/// <reference types='environment' resolution-mode='require' />\nexport const sample = 'environment';";
         let mut recipe = options();
         let valid = TszProjectModuleResolution {
             importer_path: "src/main.ts".into(),
             specifier: "environment".into(),
             request_kind: TszProjectModuleRequestKind::ReferenceTypes {
-                offset: source.find("environment").unwrap() as u32,
+                offset: source.find("environment").test_value()? as u32,
             },
             resolution_mode: Some(TszResolutionModeOverride::Require),
             target: TszProjectModuleResolutionTarget::Unresolved,
@@ -2229,13 +2269,13 @@ mod tests {
         for invalid in [
             TszProjectModuleResolution {
                 request_kind: TszProjectModuleRequestKind::ReferenceTypes {
-                    offset: source.rfind("environment").unwrap() as u32,
+                    offset: source.rfind("environment").test_value()? as u32,
                 },
                 ..valid.clone()
             },
             TszProjectModuleResolution {
                 request_kind: TszProjectModuleRequestKind::ReferencePath {
-                    offset: source.find("environment").unwrap() as u32,
+                    offset: source.find("environment").test_value()? as u32,
                 },
                 ..valid.clone()
             },
@@ -2259,16 +2299,17 @@ mod tests {
                 ))
             ));
         }
+        Ok(())
     }
 
     #[test]
-    fn captured_reference_maps_require_complete_exact_coverage_except_no_resolve() {
+    fn captured_reference_maps_require_complete_exact_coverage_except_no_resolve() -> Result<(), TestFailure> {
         let source = "/// <reference path='./provided.d.ts' />\n/// <reference types='environment' />\nexport {};";
         let path = TszProjectModuleResolution {
             importer_path: "src/main.ts".into(),
             specifier: "./provided.d.ts".into(),
             request_kind: TszProjectModuleRequestKind::ReferencePath {
-                offset: source.find("./provided.d.ts").unwrap() as u32,
+                offset: source.find("./provided.d.ts").test_value()? as u32,
             },
             resolution_mode: None,
             target: TszProjectModuleResolutionTarget::File {
@@ -2279,7 +2320,7 @@ mod tests {
             importer_path: "src/main.ts".into(),
             specifier: "environment".into(),
             request_kind: TszProjectModuleRequestKind::ReferenceTypes {
-                offset: source.find("environment").unwrap() as u32,
+                offset: source.find("environment").test_value()? as u32,
             },
             resolution_mode: None,
             target: TszProjectModuleResolutionTarget::Unresolved,
@@ -2313,10 +2354,10 @@ mod tests {
         let mut recipe = options();
         recipe.module_resolutions = vec![path, types];
         let mut authority = TszProjectAuthority::new();
-        authority.update(sources.clone(), recipe, &[]).unwrap();
+        authority.update(sources.clone(), recipe, &[]).test_value()?;
         let codes = authority
             .project()
-            .unwrap()
+            .test_value()?
             .check_result()
             .file_results
             .iter()
@@ -2327,21 +2368,22 @@ mod tests {
         assert!(codes.contains(&2688));
         let mut no_resolve = options();
         no_resolve.checker.no_resolve = true;
-        authority.update(sources, no_resolve, &[]).unwrap();
+        authority.update(sources, no_resolve, &[]).test_value()?;
         assert!(
             !authority
                 .project()
-                .unwrap()
+                .test_value()?
                 .check_result()
                 .file_results
                 .iter()
                 .flat_map(|file| &file.diagnostics)
                 .any(|diagnostic| matches!(diagnostic.code, 6053 | 2688))
         );
+        Ok(())
     }
 
     #[test]
-    fn native_program_diagnostics_have_independent_identity_without_source_members() {
+    fn native_program_diagnostics_have_independent_identity_without_source_members() -> Result<(), TestFailure> {
         let diagnostic = TszDiagnostic::from_code(2688, "", 0, 0, &["missing-types"]);
         let mut recipe = options();
         recipe.program_diagnostics = vec![diagnostic.clone()];
@@ -2349,8 +2391,8 @@ mod tests {
         let mut authority = TszProjectAuthority::new();
         authority
             .update(sources.clone(), recipe.clone(), &[])
-            .unwrap();
-        let project = authority.project().unwrap();
+            .test_value()?;
+        let project = authority.project().test_value()?;
         assert_eq!(project.program_diagnostics(), &[diagnostic.clone()]);
         assert_eq!(project.source_paths().collect::<Vec<_>>(), ["src/main.ts"]);
         assert_eq!(
@@ -2363,13 +2405,13 @@ mod tests {
         recipe.program_diagnostics[0] = TszDiagnostic::from_code(2688, "", 0, 0, &["other-types"]);
         let changed = authority
             .update(sources.clone(), recipe.clone(), &[])
-            .unwrap();
+            .test_value()?;
         assert_eq!(changed.parsed_and_bound, 0);
         assert!(!changed.reused_project_result);
         assert!(
             authority
                 .update(sources, recipe.clone(), &[])
-                .unwrap()
+                .test_value()?
                 .reused_project_result
         );
         for workers in [1, 2] {
@@ -2383,26 +2425,27 @@ mod tests {
                     &[],
                     TszProjectCheckerExecution {
                         checkpoint: &budget,
-                        workers: std::num::NonZeroUsize::new(workers).unwrap(),
+                        workers: std::num::NonZeroUsize::new(workers).test_value()?,
                     },
                 )
-                .unwrap();
-            let project = empty.project().unwrap();
+                .test_value()?;
+            let project = empty.project().test_value()?;
             assert_eq!(project.source_paths().count(), 0);
             assert!(project.check_result().file_results.is_empty());
             assert_eq!(project.diagnostics().count(), 1);
             assert!(matches!(
                 project
                     .checked_query_session(&budget)
-                    .unwrap()
+                    .test_value()?
                     .file_index("__native_tsz_type_reference__.ts"),
                 Err(TszAuthorityError::MissingSource(path))
                     if path == "__native_tsz_type_reference__.ts"
             ));
         }
+        Ok(())
     }
     #[test]
-    fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
+    fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() -> Result<(), TestFailure> {
         use tsz::checker::context::{ResolutionModeOverride, ResolutionRequestKind};
         let syntax_target = |checker: &TszCheckerState<'_>,
                              main: usize,
@@ -2411,7 +2454,7 @@ mod tests {
             let import = arena
                 .source_files
                 .first()
-                .unwrap()
+                .test_value()?
                 .statements
                 .nodes
                 .iter()
@@ -2421,7 +2464,7 @@ mod tests {
                         .and_then(|node| arena.get_import_decl(node))
                 })
                 .expect("actual import declaration");
-            let specifier = arena.get_literal_text(import.module_specifier).unwrap();
+            let specifier = arena.get_literal_text(import.module_specifier).test_value()?;
             assert_eq!(specifier, "./value");
             assert!(import.attributes.is_none());
             let kind = ResolutionRequestKind::EsmImport;
@@ -2439,7 +2482,7 @@ mod tests {
             let target = checker
                 .ctx
                 .resolve_import_target_from_file_for_request(main, specifier, mode, kind)
-                .unwrap();
+                .test_value()?;
             let opposite = match expected_mode {
                 ResolutionModeOverride::Import => ResolutionModeOverride::Require,
                 ResolutionModeOverride::Require => ResolutionModeOverride::Import,
@@ -2447,12 +2490,12 @@ mod tests {
             let opposite_target = checker
                 .ctx
                 .resolve_import_target_from_file_for_request(main, specifier, Some(opposite), kind)
-                .unwrap();
+                .test_value()?;
             assert_ne!(
                 opposite_target, target,
                 "the other admitted mode cannot borrow this syntax target"
             );
-            target
+            Ok::<_, TestFailure>(target)
         };
         let sources = vec![
             input(
@@ -2493,19 +2536,19 @@ mod tests {
             }];
             let report = authority
                 .update(sources.clone(), recipe.clone(), &[])
-                .unwrap();
+                .test_value()?;
             if format == TszProjectFileFormat::CommonJs {
                 assert_eq!(report.parsed_and_bound, 0);
                 assert_eq!(report.reused_binds, 3);
                 assert!(!report.reused_project_result);
             }
-            let project = authority.project().unwrap();
+            let project = authority.project().test_value()?;
             let main = project
                 .program()
                 .files
                 .iter()
                 .position(|file| file.file_name == "src/main.ts")
-                .unwrap();
+                .test_value()?;
             project
                 .with_file_checker_and_types(main, |checker, _, _, _| {
                     assert_eq!(
@@ -2513,16 +2556,17 @@ mod tests {
                         Some(format == TszProjectFileFormat::EsModule)
                     );
                     assert!(Arc::ptr_eq(
-                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        checker.ctx.file_is_esm_map.as_ref().test_value()?,
                         &project.program().file_is_esm_map
                     ));
-                    let target = syntax_target(checker, main, expected_mode);
+                    let target = syntax_target(checker, main, expected_mode).test_value()?;
                     assert_eq!(project.program().files[target].file_name, expected);
+                    Ok::<_, TestFailure>(())
                 })
-                .unwrap();
+                .test_value()?.test_value()?;
             let cancelled = AtomicBool::new(false);
             let budget = execution_budget(&cancelled, 1_000_000);
-            let session = project.checked_query_session(&budget).unwrap();
+            let session = project.checked_query_session(&budget).test_value()?;
             session
                 .with_file_checker_and_types(main, |checker, _, _, _| {
                     assert_eq!(
@@ -2530,13 +2574,14 @@ mod tests {
                         Some(format == TszProjectFileFormat::EsModule)
                     );
                     assert!(Arc::ptr_eq(
-                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        checker.ctx.file_is_esm_map.as_ref().test_value()?,
                         &project.program().file_is_esm_map
                     ));
-                    let target = syntax_target(checker, main, expected_mode);
+                    let target = syntax_target(checker, main, expected_mode).test_value()?;
                     assert_eq!(project.program().files[target].file_name, expected);
+                    Ok::<_, TestFailure>(())
                 })
-                .unwrap();
+                .test_value()?.test_value()?;
             let actual_error = project
                 .check_result()
                 .file_results
@@ -2549,24 +2594,24 @@ mod tests {
         assert!(
             authority
                 .update(sources.clone(), recipe.clone(), &[])
-                .unwrap()
+                .test_value()?
                 .reused_project_result
         );
         recipe.file_formats[0].format = TszProjectFileFormat::Unknown;
-        let report = authority.update(sources, recipe, &[]).unwrap();
+        let report = authority.update(sources, recipe, &[]).test_value()?;
         assert_eq!(report.reused_binds, 3);
         assert!(!report.reused_project_result);
-        let project = authority.project().unwrap();
+        let project = authority.project().test_value()?;
         let main = project
             .program()
             .files
             .iter()
             .position(|file| file.file_name == "src/main.ts")
-            .unwrap();
+            .test_value()?;
         project
             .with_file_checker_and_types(main, |checker, _, _, _| {
                 assert_eq!(checker.ctx.file_is_esm, None);
-                assert!(checker.ctx.file_is_esm_map.as_ref().unwrap().is_empty());
+                assert!(checker.ctx.file_is_esm_map.as_ref().test_value()?.is_empty());
                 assert_eq!(
                     checker.ctx.resolve_import_target_from_file_for_request(
                         main,
@@ -2587,19 +2632,20 @@ mod tests {
                         )
                         .is_some()
                 );
+                Ok::<_, TestFailure>(())
             })
-            .unwrap();
+            .test_value()?.test_value()?;
         assert!(
             matches!(project.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()), Err(TszAuthorityError::MissingFile(index)) if index == usize::MAX)
         );
         let cancelled = AtomicBool::new(false);
         let budget = execution_budget(&cancelled, 1_000_000);
-        let session = project.checked_query_session(&budget).unwrap();
+        let session = project.checked_query_session(&budget).test_value()?;
         session
             .with_file_checker_and_types(main, |checker, _, _, _| {
                 assert_eq!(checker.ctx.file_is_esm, None);
                 assert!(Arc::ptr_eq(
-                    checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                    checker.ctx.file_is_esm_map.as_ref().test_value()?,
                     &project.program().file_is_esm_map
                 ));
                 assert_eq!(
@@ -2622,8 +2668,9 @@ mod tests {
                         )
                         .is_some()
                 );
+                Ok::<_, TestFailure>(())
             })
-            .unwrap();
+            .test_value()?.test_value()?;
         assert!(matches!(
             session.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()),
             Err(TszProjectQuerySessionError::FileIndexOutOfRange {
@@ -2631,10 +2678,11 @@ mod tests {
                 ..
             })
         ));
+        Ok(())
     }
 
     #[test]
-    fn compiler_file_format_admission_rejects_wrong_duplicate_and_noncanonical_paths() {
+    fn compiler_file_format_admission_rejects_wrong_duplicate_and_noncanonical_paths() -> Result<(), TestFailure> {
         let sources = vec![
             input("src/main.ts", "export {};"),
             input("other/main.ts", "export {};"),
@@ -2676,10 +2724,11 @@ mod tests {
             path: "other/main.ts".into(),
             format: TszProjectFileFormat::EsModule,
         }];
-        authority.update(sources, recipe, &[]).unwrap();
-        let map = &authority.project().unwrap().program().file_is_esm_map;
+        authority.update(sources, recipe, &[]).test_value()?;
+        let map = &authority.project().test_value()?.program().file_is_esm_map;
         assert_eq!(map.get("other/main.ts"), Some(&true));
         assert_eq!(map.get("src/main.ts"), None);
+        Ok(())
     }
 
     #[test]
@@ -2800,14 +2849,14 @@ mod tests {
     }
 
     #[test]
-    fn property_owner_batch_preserves_ambiguity_and_stops_before_publishing_an_index() {
+    fn property_owner_batch_preserves_ambiguity_and_stops_before_publishing_an_index() -> Result<(), TestFailure> {
         let mut authority = TszProjectAuthority::new();
         authority.update(vec![input("input.ts", concat!(
             r"export class Owner { same!: string; s\u0061me!: number; café!: string; ",
             "identical(value: string): void; identical(value: number): void; identical(value: unknown): void {} }\n",
             "export class Foreign { same!: boolean; foreignOnly!: string; }",
         ))], options(), &[]).expect("actual conflicting member declarations");
-        let project = authority.project().unwrap();
+        let project = authority.project().test_value()?;
         let file = &project.program().files[0];
         let owner_symbol = |expected: &str| {
             file.arena
@@ -2855,7 +2904,7 @@ mod tests {
                 },
                 |name, raw| tokens.push((name, raw)),
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(
             tokens.len(),
             6,
@@ -2909,16 +2958,17 @@ mod tests {
                     |_| Ok(()),
                     |name, raw| recovered.push((name, raw)),
                 )
-                .unwrap();
+                .test_value()?;
             assert_eq!(
                 recovered, tokens,
                 "a stopped visitor has no persistent partial cache"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn property_owner_spelling_borrows_only_exact_direct_bound_members() {
+    fn property_owner_spelling_borrows_only_exact_direct_bound_members() -> Result<(), TestFailure> {
         let mut authority = TszProjectAuthority::new();
         let mut project_options = options();
         project_options
@@ -2942,7 +2992,7 @@ mod tests {
             input("src/main.ts", "import type { Owner } from '../types'; export declare const value: Owner;"),
         ], project_options, &[]).expect("real cross-file owner project");
         let (symbol, foreign_symbol, stable, declaration) = {
-            let project = authority.project().unwrap();
+            let project = authority.project().test_value()?;
             let owner_symbol =
                 |path: &str, expected: &str| {
                     let file = project
@@ -2950,8 +3000,8 @@ mod tests {
                         .files
                         .iter()
                         .find(|file| file.file_name == path)
-                        .unwrap();
-                    file.arena
+                        .test_value()?;
+                    Ok::<_, TestFailure>(file.arena
                         .nodes
                         .iter()
                         .enumerate()
@@ -2968,11 +3018,11 @@ mod tests {
                                 .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
                                 .flatten()
                         })
-                        .expect("owner declaration itself has a real binder symbol")
+                        .expect("owner declaration itself has a real binder symbol"))
                 };
-            let symbol = owner_symbol("types.ts", "Owner");
-            let foreign_symbol = owner_symbol("foreign.d.ts", "Owner");
-            let interface = owner_symbol("types.ts", "Unbound");
+            let symbol = owner_symbol("types.ts", "Owner").test_value()?;
+            let foreign_symbol = owner_symbol("foreign.d.ts", "Owner").test_value()?;
+            let interface = owner_symbol("types.ts", "Unbound").test_value()?;
             assert_ne!(symbol, foreign_symbol);
             assert_eq!(
                 project.symbol_name_source(symbol, "label"),
@@ -2988,7 +3038,7 @@ mod tests {
                     .property_name_source_from_owner(symbol, name)
                     .expect("exact owner member");
                 assert_eq!(token, raw);
-                let source = project.source_text("types.ts").unwrap();
+                let source = project.source_text("types.ts").test_value()?;
                 assert!(token.as_ptr() >= source.as_ptr());
                 assert!(
                     token.as_bytes().as_ptr_range().end <= source.as_bytes().as_ptr_range().end,
@@ -3034,7 +3084,7 @@ mod tests {
                 .files
                 .iter()
                 .find(|file| file.file_name == "types.ts")
-                .unwrap();
+                .test_value()?;
             let member_symbol = file
                 .node_symbols
                 .iter()
@@ -3061,7 +3111,7 @@ mod tests {
                     .is_some_and(|name| name.escaped_text == "unbound")),
                 "interface member names have no member SymbolId to invent"
             );
-            let data = project.program().symbols.get(symbol).unwrap();
+            let data = project.program().symbols.get(symbol).test_value()?;
             assert_eq!(data.declarations.len(), 1);
             assert_eq!(data.stable_declarations.len(), 1);
             (
@@ -3075,13 +3125,13 @@ mod tests {
         // symbol or positive authority is synthesized by the fixture.
         // Rebuild an owned unsealed model from the same real binds. The checked
         // image remains immutable; corrupt only this detached negative control.
-        let project = authority.project().unwrap();
+        let project = authority.project().test_value()?;
         let binds: Vec<_> = project.bound_sources.values().map(Arc::as_ref).collect();
         let mut program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
             &binds, project.options.semantic_options,
         );
-        program.set_project_file_formats(&project.options.file_formats).unwrap();
-        program.set_project_module_resolutions(&project.options.module_resolutions).unwrap();
+        program.set_project_file_formats(&project.options.file_formats).test_value()?;
+        program.set_project_module_resolutions(&project.options.module_resolutions).test_value()?;
         assert_eq!(
             TszProject::property_name_source_in_program(&program, symbol, "label"),
             Some("label"),
@@ -3090,7 +3140,7 @@ mod tests {
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations
             .clear();
         assert_eq!(
@@ -3101,18 +3151,18 @@ mod tests {
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations
             .push(stable);
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations[0]
             .file_idx = program
             .symbols
             .get(foreign_symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations[0]
             .file_idx;
         assert_eq!(
@@ -3123,12 +3173,12 @@ mod tests {
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations[0] = stable;
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations[0]
             .end -= 1;
         assert_eq!(
@@ -3139,7 +3189,7 @@ mod tests {
         program
             .symbols
             .get_mut(symbol)
-            .unwrap()
+            .test_value()?
             .stable_declarations[0] = stable;
         let file = &mut program.files[stable.file_idx as usize];
         Arc::make_mut(&mut file.node_symbols).insert(declaration.0, foreign_symbol);
@@ -3148,10 +3198,11 @@ mod tests {
             None,
             "even matching file/span needs the exact declaration-node symbol binding"
         );
+        Ok(())
     }
 
     #[test]
-    fn symbol_name_source_uses_the_exact_cross_file_declaration_binding() {
+    fn symbol_name_source_uses_the_exact_cross_file_declaration_binding() -> Result<(), TestFailure> {
         let mut authority = TszProjectAuthority::new();
         let mut project_options = options();
         project_options
@@ -3214,7 +3265,7 @@ mod tests {
             .files
             .iter()
             .find(|file| file.file_name == "types.d.ts")
-            .unwrap();
+            .test_value()?;
         let interface_range = file
             .arena
             .nodes
@@ -3245,6 +3296,7 @@ mod tests {
             }),
             "an interface property has no binder symbol and cannot lend one to the class property"
         );
+        Ok(())
     }
 
     #[test]
@@ -3317,44 +3369,45 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() {
-        let library = || TszLibraryInput::from_utf8(
+    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() -> Result<(), TestFailure> {
+        let library = || Ok::<_, TestFailure>(TszLibraryInput::from_utf8(
             "lib.fixture.d.ts", b"declare type LibraryLabel = string;".to_vec(),
-        ).unwrap().into_lib_file();
-        let original = library();
+        ).test_value()?.into_lib_file());
+        let original = library().test_value()?;
         let first = vec![
             input("src/a.ts", "export const a: LibraryLabel = 'a';"),
             input("src/b.ts", "export const b: LibraryLabel = 'b';"),
         ];
         let mut authority = TszProjectAuthority::new();
-        authority.update(first.clone(), options(), &[Arc::clone(&original)]).unwrap();
-        let unchanged = Arc::clone(authority.project().unwrap().bound_sources.get("src/b.ts").unwrap());
+        authority.update(first.clone(), options(), &[Arc::clone(&original)]).test_value()?;
+        let unchanged = Arc::clone(authority.project().test_value()?.bound_sources.get("src/b.ts").test_value()?);
         // The production bridge constructs these objects again after each
         // fresh admission. Equal bytes do not make their arena objects equal.
-        let readmitted = library();
+        let readmitted = library().test_value()?;
         assert!(!Arc::ptr_eq(&original, &readmitted));
         let changed = vec![input("src/a.ts", "export const a: LibraryLabel = 'edited';"), first[1].clone()];
         let mut recipe = options();
         recipe.environment = TszEnvironmentFingerprint::from_sha256([0x73; 32]);
-        let report = authority.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)]).unwrap();
+        let report = authority.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)]).test_value()?;
         assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
-        let project = authority.project().unwrap();
+        let project = authority.project().test_value()?;
         assert!(Arc::ptr_eq(&project.lib_files[0], &original));
-        assert!(Arc::ptr_eq(project.bound_sources.get("src/b.ts").unwrap(), &unchanged));
+        assert!(Arc::ptr_eq(project.bound_sources.get("src/b.ts").test_value()?, &unchanged));
         let observed = |authority: &TszProjectAuthority| {
-            let project = authority.project().unwrap();
-            let session = project.checked_query_session_unmetered_for_test().unwrap();
-            let index = session.file_index("src/b.ts").unwrap();
+            let project = authority.project().test_value()?;
+            let session = project.checked_query_session_unmetered_for_test().test_value()?;
+            let index = session.file_index("src/b.ts").test_value()?;
             session.with_file_checker_and_types(index, |checker, binder, _, _| {
-                let ty = checker.get_type_of_symbol(binder.file_locals.get("b").unwrap());
+                let ty = checker.get_type_of_symbol(binder.file_locals.get("b").test_value()?);
                 let ty = checker.resolve_lazy_type(ty);
-                checker.format_type(ty)
-            }).unwrap()
+                Ok::<_, TestFailure>(checker.format_type(ty))
+            }).test_value()?
         };
         let mut cold = TszProjectAuthority::new();
-        cold.update(changed, recipe, &[readmitted]).unwrap();
-        assert_eq!(observed(&authority), observed(&cold));
-        assert_eq!(observed(&authority), "string");
+        cold.update(changed, recipe, &[readmitted]).test_value()?;
+        assert_eq!(observed(&authority).test_value()?, observed(&cold).test_value()?);
+        assert_eq!(observed(&authority).test_value()?, "string");
+        Ok(())
     }
 
     #[test]
@@ -3470,24 +3523,25 @@ mod tests {
     }
 
     #[test]
-    fn json_program_members_use_native_strict_json_and_preserve_exact_bytes() {
+    fn json_program_members_use_native_strict_json_and_preserve_exact_bytes() -> Result<(), TestFailure> {
         let mut authority = TszProjectAuthority::new();
         let mut recipe = options();
         recipe.checker.resolve_json_module = true;
         let source = r#"{"enabled":true,"title":"Docs","import":"require('not-a-module')"}"#;
-        authority.update(vec![input("src/settings.json", source)], recipe.clone(), &[]).unwrap();
-        let project = authority.project().unwrap();
-        let bound = project.bind_result("src/settings.json").unwrap();
+        authority.update(vec![input("src/settings.json", source)], recipe.clone(), &[]).test_value()?;
+        let project = authority.project().test_value()?;
+        let bound = project.bind_result("src/settings.json").test_value()?;
         assert!(bound.parse_diagnostics.is_empty(), "JSON is not parsed as TS statements");
-        let file = bound.arena.get_source_file_at(bound.source_file).unwrap();
+        let file = bound.arena.get_source_file_at(bound.source_file).test_value()?;
         assert_eq!(file.text.as_ref(), source);
         assert_eq!(file.script_kind, 6);
         assert_eq!(file.language_variant, 0);
         assert!(!file.is_declaration_file);
         assert!(file.statements.nodes.is_empty());
-        authority.update(vec![input("src/settings.json", r#"{"enabled": }"#)], recipe, &[]).unwrap();
-        assert!(!authority.project().unwrap().bind_result("src/settings.json").unwrap().parse_diagnostics.is_empty(),
+        authority.update(vec![input("src/settings.json", r#"{"enabled": }"#)], recipe, &[]).test_value()?;
+        assert!(!authority.project().test_value()?.bind_result("src/settings.json").test_value()?.parse_diagnostics.is_empty(),
             "invalid JSON retains native JSON diagnostics");
+        Ok(())
     }
 
     #[test]
@@ -3509,7 +3563,7 @@ mod tests {
     }
 
     #[test]
-    fn checker_execution_policy_preserves_exact_sources_resolutions_and_diagnostics() {
+    fn checker_execution_policy_preserves_exact_sources_resolutions_and_diagnostics() -> Result<(), TestFailure> {
         use std::num::NonZeroUsize;
         fn fixture() -> (Vec<TszFileInput>, TszProjectOptions) {
             let mut options = options();
@@ -3535,8 +3589,8 @@ mod tests {
         }
         let (sources, opts) = fixture();
         let mut fresh = TszProjectAuthority::new();
-        fresh.update(sources, opts, &[]).unwrap();
-        let expected = fresh.project().unwrap();
+        fresh.update(sources, opts, &[]).test_value()?;
+        let expected = fresh.project().test_value()?;
         assert!(
             expected
                 .check_result()
@@ -3557,11 +3611,11 @@ mod tests {
                     &[],
                     TszProjectCheckerExecution {
                         checkpoint: &budget,
-                        workers: NonZeroUsize::new(workers).unwrap(),
+                        workers: NonZeroUsize::new(workers).test_value()?,
                     },
                 )
-                .unwrap();
-            let actual = bounded.project().unwrap();
+                .test_value()?;
+            let actual = bounded.project().test_value()?;
             assert!(!Arc::ptr_eq(
                 &expected.program().definition_store,
                 &actual.program().definition_store
@@ -3591,24 +3645,25 @@ mod tests {
                     expected.source_content_digest(path)
                 );
             }
-            let session = actual.checked_query_session(&budget).unwrap();
-            let index = session.file_index("src/value.ts").unwrap();
+            let session = actual.checked_query_session(&budget).test_value()?;
+            let index = session.file_index("src/value.ts").test_value()?;
             let field = session
                 .with_file_checker_and_types(index, |checker, binder, _file, _types| {
-                    checker.get_type_of_symbol(binder.file_locals.get("Value").unwrap())
+                    Ok::<_, TestFailure>(checker.get_type_of_symbol(binder.file_locals.get("Value").test_value()?))
                 })
-                .unwrap();
+                .test_value()?.test_value()?;
             assert_ne!(
                 field,
                 TszTypeId::UNKNOWN,
                 "bounded project retains native query authority"
             );
         }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn checker_execution_one_shot_stop_after_merge_never_publishes_project() {
+    fn checker_execution_one_shot_stop_after_merge_never_publishes_project() -> Result<(), TestFailure> {
         use std::sync::atomic::Ordering;
         struct StopOnPrivateWorker {
             emitted: AtomicBool,
@@ -3639,14 +3694,14 @@ mod tests {
                 options(),
                 &[],
             )
-            .unwrap();
+            .test_value()?;
         let stopped = authority.update_with_checker_execution(
             vec![input("src/value.ts", "export const value = 2;")],
             options(),
             &[],
             TszProjectCheckerExecution {
                 checkpoint: &source,
-                workers: std::num::NonZeroUsize::new(2).unwrap(),
+                workers: std::num::NonZeroUsize::new(2).test_value()?,
             },
         );
         assert!(
@@ -3670,11 +3725,12 @@ mod tests {
             authority.project().is_none(),
             "stopped changed project cannot publish or retain prior Ready"
         );
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn file_pass_cancellation_never_admits_a_checked_project() {
+    fn file_pass_cancellation_never_admits_a_checked_project() -> Result<(), TestFailure> {
         use std::sync::Mutex;
         use std::sync::atomic::Ordering;
         use tsz_common::{ProjectExecutionEvent, ProjectExecutionPhase as Phase, ProjectExecutionTransition as Transition};
@@ -3693,7 +3749,10 @@ mod tests {
                 Ok(())
             }
             fn observe(&self, event: ProjectExecutionEvent<'_>) {
-                self.events.lock().unwrap().push((event.phase, event.transition));
+                match self.events.lock() {
+                    Ok(mut events) => events.push((event.phase, event.transition)),
+                    Err(error) => panic!("test event mutex poisoned: {error}"),
+                }
                 if event.phase == self.phase && event.transition == Transition::Entered {
                     self.armed.store(true, Ordering::Release);
                 }
@@ -3708,10 +3767,10 @@ mod tests {
                 events: Mutex::new(Vec::new()),
             };
             let mut authority = TszProjectAuthority::new();
-            authority.update(vec![input("src/value.ts", "export const prior = 1;")], options(), &[]).unwrap();
+            authority.update(vec![input("src/value.ts", "export const prior = 1;")], options(), &[]).test_value()?;
             let result = authority.update_with_checker_execution(
                 vec![input("src/value.ts", source)], options(), &[],
-                TszProjectCheckerExecution { checkpoint: &stop, workers: std::num::NonZeroUsize::new(1).unwrap() },
+                TszProjectCheckerExecution { checkpoint: &stop, workers: std::num::NonZeroUsize::new(1).test_value()? },
             );
             assert!(matches!(result, Err(TszAuthorityError::ProjectCheck(
                 tsz::parallel::ProjectProgramCheckError::ExecutionStopped(tsz_common::ProjectExecutionStop::Cancelled)
@@ -3719,7 +3778,7 @@ mod tests {
             assert!(stop.emitted.load(Ordering::Acquire));
             assert_eq!(stop.checkpoint(0), Ok(()), "the source stops only once");
             assert!(authority.project().is_none(), "neither changed partial output nor the prior checked project is admissible");
-            let events = stop.events.lock().unwrap();
+            let events = stop.events.lock().test_value()?;
             assert!(events.contains(&(phase, Transition::Unwound)), "stop is observed inside {phase:?}: {events:?}");
             assert!(!events.contains(&(phase, Transition::Returned)), "stopped source phase must not finish");
             if phase == Phase::SourcePreparation {
@@ -3737,16 +3796,17 @@ mod tests {
         let mut authority = TszProjectAuthority::new();
         authority.update_with_checker_execution(
             vec![input("src/value.ts", source)], options(), &[],
-            TszProjectCheckerExecution { checkpoint: &budget, workers: std::num::NonZeroUsize::new(1).unwrap() },
-        ).unwrap();
-        let project = authority.project().unwrap();
+            TszProjectCheckerExecution { checkpoint: &budget, workers: std::num::NonZeroUsize::new(1).test_value()? },
+        ).test_value()?;
+        let project = authority.project().test_value()?;
         assert!(project.check_result().file_results.iter().flat_map(|file| &file.diagnostics).any(|diagnostic| diagnostic.code == 2322));
-        let session = project.checked_query_session(&budget).unwrap();
-        let file = session.file_index("src/value.ts").unwrap();
+        let session = project.checked_query_session(&budget).test_value()?;
+        let file = session.file_index("src/value.ts").test_value()?;
         let child = session.with_file_checker_and_types(file, |checker, binder, _file, _types| {
-            checker.get_type_of_symbol(binder.file_locals.get("Child").unwrap())
-        }).unwrap();
+            Ok::<_, TestFailure>(checker.get_type_of_symbol(binder.file_locals.get("Child").test_value()?))
+        }).test_value()?.test_value()?;
         assert_ne!(child, TszTypeId::UNKNOWN);
+        Ok(())
     }
 
     fn hot_file_fixture() -> (Vec<TszFileInput>, TszProjectOptions) {
@@ -3766,14 +3826,14 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn file_work_policy_rebuilds_without_the_hot_file_and_keeps_every_other_result() {
+    fn file_work_policy_rebuilds_without_the_hot_file_and_keeps_every_other_result() -> Result<(), TestFailure> {
         use std::num::NonZeroUsize;
         let (sources, opts) = hot_file_fixture();
         let cancelled = AtomicBool::new(false);
         let budget = execution_budget(&cancelled, 50_000_000);
         let execution = TszProjectCheckerExecution {
             checkpoint: &budget,
-            workers: NonZeroUsize::new(2).unwrap(),
+            workers: NonZeroUsize::new(2).test_value()?,
         };
         let mut isolated = TszProjectAuthority::new();
         let report = isolated
@@ -3789,9 +3849,9 @@ mod tests {
                     check_declaration_files: true,
                 },
             )
-            .unwrap();
+            .test_value()?;
         assert_eq!(report.file_work_retries, 1, "one rebuilt round without the hot file");
-        let project = isolated.project().unwrap();
+        let project = isolated.project().test_value()?;
         assert_eq!(
             project.file_work_skipped().iter().map(String::as_str).collect::<Vec<_>>(),
             ["src/hot.ts"]
@@ -3803,27 +3863,28 @@ mod tests {
         let (mut sources, opts) = hot_file_fixture();
         sources.retain(|source| source.path != "src/hot.ts");
         let mut baseline = TszProjectAuthority::new();
-        baseline.update(sources, opts, &[]).unwrap();
+        baseline.update(sources, opts, &[]).test_value()?;
         for name in ["src/a.ts", "src/b.ts"] {
             let diagnostics = |project: &TszProject| {
-                project
+                Ok::<_, TestFailure>(project
                     .check_result()
                     .file_results
                     .iter()
                     .find(|file| file.file_name == name)
-                    .unwrap()
+                    .test_value()?
                     .diagnostics
-                    .clone()
+                    .clone())
             };
-            let actual = diagnostics(isolated.project().unwrap());
+            let actual = diagnostics(isolated.project().test_value()?).test_value()?;
             assert!(!actual.is_empty(), "{name} keeps its real diagnostics");
-            assert_eq!(actual, diagnostics(baseline.project().unwrap()), "{name}");
+            assert_eq!(actual, diagnostics(baseline.project().test_value()?).test_value()?, "{name}");
         }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn file_work_policy_can_skip_declaration_diagnostics_without_changing_application_facts() {
+    fn file_work_policy_can_skip_declaration_diagnostics_without_changing_application_facts() -> Result<(), TestFailure> {
         use std::num::NonZeroUsize;
         let diagnostics = |check_declaration_files| {
             let cancelled = AtomicBool::new(false);
@@ -3854,7 +3915,7 @@ mod tests {
                     &[],
                     TszProjectCheckerExecution {
                         checkpoint: &budget,
-                        workers: NonZeroUsize::new(2).unwrap(),
+                        workers: NonZeroUsize::new(2).test_value()?,
                     },
                     &TszFileWorkPolicy {
                         allowance: 10_000_000,
@@ -3863,34 +3924,35 @@ mod tests {
                         check_declaration_files,
                     },
                 )
-                .unwrap();
-            let project = authority.project().unwrap();
+                .test_value()?;
+            let project = authority.project().test_value()?;
             assert!(project.file_work_skipped().is_empty());
             let codes = |name: &str| {
-                project
+                Ok::<_, TestFailure>(project
                     .check_result()
                     .file_results
                     .iter()
                     .find(|file| file.file_name == name)
-                    .unwrap()
+                    .test_value()?
                     .diagnostics
                     .iter()
                     .map(|diagnostic| diagnostic.code)
-                    .collect::<BTreeSet<_>>()
+                    .collect::<BTreeSet<_>>())
             };
-            (codes("src/types.d.ts"), codes("src/main.ts"))
+            Ok::<_, TestFailure>((codes("src/types.d.ts").test_value()?, codes("src/main.ts").test_value()?))
         };
-        let (declaration_checked, application_checked) = diagnostics(true);
-        let (declaration_skipped, application_skipped) = diagnostics(false);
+        let (declaration_checked, application_checked) = diagnostics(true).test_value()?;
+        let (declaration_skipped, application_skipped) = diagnostics(false).test_value()?;
         assert!(declaration_checked.contains(&2304), "declaration diagnostics are produced when asked for");
         assert!(declaration_skipped.is_empty(), "and omitted when the caller reads only facts");
         assert!(application_checked.contains(&2322));
         assert_eq!(application_checked, application_skipped, "application diagnostics are unchanged");
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn file_work_policy_without_retries_names_the_hot_file_and_publishes_nothing() {
+    fn file_work_policy_without_retries_names_the_hot_file_and_publishes_nothing() -> Result<(), TestFailure> {
         use std::num::NonZeroUsize;
         let (sources, opts) = hot_file_fixture();
         let cancelled = AtomicBool::new(false);
@@ -3902,7 +3964,7 @@ mod tests {
             &[],
             TszProjectCheckerExecution {
                 checkpoint: &budget,
-                workers: NonZeroUsize::new(2).unwrap(),
+                workers: NonZeroUsize::new(2).test_value()?,
             },
             &TszFileWorkPolicy {
                 allowance: 5_000,
@@ -3919,10 +3981,11 @@ mod tests {
         assert_eq!(files[0].allowance, 5_000);
         assert!(authority.project().is_none());
         assert_eq!(budget.stop_reason(), None, "the program budget survives a hot file");
+        Ok(())
     }
 
     #[test]
-    fn checker_execution_precancelled_admission_keeps_typed_stop() {
+    fn checker_execution_precancelled_admission_keeps_typed_stop() -> Result<(), TestFailure> {
         let cancelled = AtomicBool::new(true);
         let budget = execution_budget(&cancelled, 1_000_000);
         let mut authority = TszProjectAuthority::new();
@@ -3932,7 +3995,7 @@ mod tests {
             &[],
             TszProjectCheckerExecution {
                 checkpoint: &budget,
-                workers: std::num::NonZeroUsize::new(2).unwrap(),
+                workers: std::num::NonZeroUsize::new(2).test_value()?,
             },
         );
         assert!(matches!(
@@ -3942,6 +4005,7 @@ mod tests {
             ))
         ));
         assert!(authority.project().is_none());
+        Ok(())
     }
 }
 
@@ -3950,7 +4014,7 @@ mod declaration_policy_tests {
     use super::*;
 
     #[test]
-    fn resolved_declaration_policy_rechecks_diagnostics_without_removing_sources_or_syntax() {
+    fn resolved_declaration_policy_rechecks_diagnostics_without_removing_sources_or_syntax() -> Result<(), TestFailure> {
         let declaration = "export interface Broken { missing: DoesNotExist; }";
         // noLib makes required globals a program obligation independent of
         // the declaration member under test. Supply this unit program's own
@@ -3973,7 +4037,7 @@ mod declaration_policy_tests {
             checker: checker_options_from_compiler_api_json(
                 r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
             )
-            .unwrap(),
+            .test_value()?,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             program_diagnostics: Vec::new(),
             module_resolutions: Vec::new(),
@@ -3983,32 +4047,32 @@ mod declaration_policy_tests {
         let mut authority = TszProjectAuthority::new();
         authority
             .update(sources.clone(), options.clone(), &[])
-            .unwrap();
+            .test_value()?;
         assert!(
-            authority.project().unwrap().check_result().file_results[0]
+            authority.project().test_value()?.check_result().file_results[0]
                 .diagnostics
                 .is_empty()
         );
         assert_eq!(
-            authority.project().unwrap().source_text("types/dep.d.ts"),
+            authority.project().test_value()?.source_text("types/dep.d.ts"),
             Some(declaration)
         );
         assert_eq!(
-            authority.project().unwrap().source_text("types/globals.d.ts"),
+            authority.project().test_value()?.source_text("types/globals.d.ts"),
             Some(globals)
         );
-        assert_eq!(authority.project().unwrap().program.files.len(), 2);
+        assert_eq!(authority.project().test_value()?.program.files.len(), 2);
         options.checker = checker_options_from_compiler_api_json(
             r#"{"compilerOptions":{"skipLibCheck":false,"noLib":true}}"#,
         )
-        .unwrap();
-        let report = authority.update(sources, options.clone(), &[]).unwrap();
+        .test_value()?;
+        let report = authority.update(sources, options.clone(), &[]).test_value()?;
         assert!(
             !report.reused_project_result,
             "typed policy participates in checker cache identity"
         );
         assert_eq!(
-            authority.project().unwrap().check_result().file_results[0]
+            authority.project().test_value()?.check_result().file_results[0]
                 .diagnostics
                 .iter()
                 .map(|d| d.code)
@@ -4018,7 +4082,7 @@ mod declaration_policy_tests {
         options.checker = checker_options_from_compiler_api_json(
             r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
         )
-        .unwrap();
+        .test_value()?;
         let invalid = vec![
             TszFileInput {
                 path: "types/dep.d.ts".into(),
@@ -4029,16 +4093,17 @@ mod declaration_policy_tests {
                 source: globals.into(),
             },
         ];
-        authority.update(invalid, options, &[]).unwrap();
+        authority.update(invalid, options, &[]).test_value()?;
         assert!(
             !authority
                 .project()
-                .unwrap()
+                .test_value()?
                 .bind_result("types/dep.d.ts")
-                .unwrap()
+                .test_value()?
                 .parse_diagnostics
                 .is_empty(),
             "skipLibCheck cannot suppress parser diagnostics or remove syntax authority"
         );
+        Ok(())
     }
 }
