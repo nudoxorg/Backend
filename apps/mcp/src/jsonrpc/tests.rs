@@ -671,6 +671,8 @@ struct Fake {
     document_matches_request: bool,
     /// Typed useful name stage returned while richer search prepares.
     published_name_readiness: Option<backend_library::PublishedSearchReadiness>,
+    /// Explicit declared compiler scope, independent of name-stage readiness.
+    published_name_coverage: Option<Vec<Coverage>>,
 }
 
 impl Fake {
@@ -1069,12 +1071,18 @@ impl Engine for Fake {
                 CommandReply::Graph(snapshot(vec![declaration_row()]))
             }
             Probe::Search { .. } => match self.published_name_readiness {
-                Some(readiness) => CommandReply::PublishedNameSearch(
-                    backend_library::PublishedNameSearchPage {
-                        snapshot: snapshot(vec![declaration_row()]),
-                        readiness,
-                    },
-                ),
+                Some(readiness) => {
+                    let mut snapshot = snapshot(vec![declaration_row()]);
+                    if let Some(coverage) = &self.published_name_coverage {
+                        snapshot.root = ViewRoot::new_incomplete(
+                            snapshot.root.recipe(), snapshot.root.basis(), snapshot.root.frontier(),
+                            snapshot.root.rows().to_vec(), coverage.clone(),
+                        ).expect("explicit name-stage declared scope");
+                    }
+                    CommandReply::PublishedNameSearch(backend_library::PublishedNameSearchPage {
+                        snapshot, readiness,
+                    })
+                },
                 None => CommandReply::Search(snapshot(vec![declaration_row()])),
             },
             Probe::Names { .. } => CommandReply::Names(snapshot(vec![declaration_row()])),
@@ -9231,40 +9239,75 @@ fn cli_attachment_metadata_probe() {
 
 #[test]
 fn search_published_names_preserves_useful_records_and_explicit_pending_scope() {
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let mut server = ready(Fake {
+            published_name_coverage: Some(vec![Coverage::Partial {
+                lane: Lane::Semantic, completed: 0, total: 1,
+            }]),
+            published_name_readiness: Some(backend_library::PublishedSearchReadiness {
+                full_search: backend_library::FullSearchReadiness::Preparing,
+                semantic: backend_library::PublishedSemanticReadiness::Pending,
+            }),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": "backend.search", "arguments": {"query": "Session", "limit": 10, "detail": detail.name()}
+            }),
+        );
+        assert_context_bounded(&response);
+        assert!(response.get("error").is_none(), "{response}");
+        let result = &response["result"];
+        assert_eq!(result["isError"], false, "{response}");
+        let page = &result["structuredContent"];
+        assert_eq!(page["readiness"], "partial");
+        assert_eq!(page["search_scope"], "published_names_only");
+        assert_eq!(page["full_search"], "preparing");
+        assert_eq!(page["semantic_preparation"]["state"], "pending");
+        assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
+        assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
+        assert_eq!(
+            page["records"][0]["identity"]["semantic_data"]["value"],
+            json!(*symbol_key(DECLARATION).as_bytes())
+        );
+        assert!(
+            result["content"]
+                .as_array()
+                .expect("readable content")
+                .iter()
+                .any(|content| content["text"].as_str().is_some_and(|text| text
+                    .contains("published-names-only")
+                    && text.contains("pending")))
+        );
+    }
+}
+
+#[test]
+fn search_published_names_never_masks_a_declared_compiler_refusal_as_partial() {
     let mut server = ready(Fake {
         published_name_readiness: Some(backend_library::PublishedSearchReadiness {
             full_search: backend_library::FullSearchReadiness::Preparing,
-            semantic: backend_library::PublishedSemanticReadiness::Pending,
+            semantic: backend_library::PublishedSemanticReadiness::Unavailable {
+                reason: backend_library::SemanticSearchReason::Unconfigured,
+            },
         }),
+        // The existing default snapshot declares an unconfigured semantic lane.
         ..Fake::default()
     });
-    let response = request(
-        &mut server,
-        "tools/call",
-        &json!({
-            "name": "backend.search", "arguments": {"query": "Session", "limit": 10}
-        }),
-    );
+    let response = request(&mut server, "tools/call", &json!({
+        "name": "backend.search", "arguments": {"query": "Session", "limit": 10}
+    }));
+    assert_context_bounded(&response);
+    assert!(response.get("error").is_none(), "{response}");
     let result = &response["result"];
     assert_eq!(result["isError"], false, "{response}");
     let page = &result["structuredContent"];
-    assert_eq!(page["readiness"], "partial");
+    assert_eq!(page["readiness"], "unavailable");
     assert_eq!(page["search_scope"], "published_names_only");
     assert_eq!(page["full_search"], "preparing");
-    assert_eq!(page["semantic_preparation"]["state"], "pending");
-    assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
-    assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
-    assert_eq!(
-        page["records"][0]["identity"]["semantic_data"]["value"],
-        json!(*symbol_key(DECLARATION).as_bytes())
-    );
-    assert!(
-        result["content"]
-            .as_array()
-            .expect("readable content")
-            .iter()
-            .any(|content| content["text"].as_str().is_some_and(|text| text
-                .contains("published-names-only")
-                && text.contains("pending")))
-    );
+    assert_eq!(page["semantic_preparation"]["state"], "unavailable");
+    assert_eq!(page["semantic_preparation"]["reason"], "unconfigured");
+    assert_eq!(page["records"].as_array().expect("useful retained names").len(), 1);
 }

@@ -251,6 +251,9 @@ pub fn encode_answer_with_call(
                     more: list.has_more(),
                     empty_reason: list.empty_reason(),
                     semantic_search: list.coverage().semantic_search_status(),
+                    search_scope: list.coverage().published_names().map(|_| "published_names_only"),
+                    full_search: list.coverage().published_names().map(|readiness| readiness.full_search),
+                    semantic_preparation: list.coverage().published_names().map(|readiness| readiness.semantic),
                 },
                 budget,
                 continuation_call,
@@ -739,6 +742,12 @@ struct SummaryRecordsDto<'a> {
     empty_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_search: Option<backend_library::SemanticSearchStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_search: Option<backend_library::FullSearchReadiness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
 }
 
 #[derive(Serialize)]

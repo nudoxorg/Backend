@@ -1843,18 +1843,22 @@ fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_ex
         reply,
     )
     .expect("shared admitted route");
-    let value: serde_json::Value =
-        serde_json::from_str(&render::json(&answer)).expect("ordinary CLI JSON");
-    assert_eq!(value["readiness"], "partial");
-    assert_eq!(value["search_scope"], "published_names_only");
-    assert_eq!(value["full_search"], "preparing");
-    assert_eq!(value["semantic_preparation"]["state"], "pending");
-    assert_eq!(value["records"].as_array().expect("useful names").len(), 1);
-    assert_eq!(value["records"][0]["identity"]["coordinate"], coordinate);
-    assert_eq!(
-        value["records"][0]["identity"]["semantic_data"]["value"],
-        serde_json::json!(*symbol.as_bytes())
-    );
+    // Summary is the ordinary CLI default; every detail must retain stage
+    // scope as well as exact useful identities and independent readiness.
+    for detail in [backend_present::Detail::Summary, backend_present::Detail::Standard, backend_present::Detail::Full] {
+        let value: serde_json::Value =
+            serde_json::from_str(&render::json_with_detail(&answer, detail)).expect("ordinary CLI JSON");
+        assert_eq!(value["readiness"], "partial");
+        assert_eq!(value["search_scope"], "published_names_only");
+        assert_eq!(value["full_search"], "preparing");
+        assert_eq!(value["semantic_preparation"]["state"], "pending");
+        assert_eq!(value["records"].as_array().expect("useful names").len(), 1);
+        assert_eq!(value["records"][0]["identity"]["coordinate"], coordinate);
+        assert_eq!(
+            value["records"][0]["identity"]["semantic_data"]["value"],
+            serde_json::json!(*symbol.as_bytes())
+        );
+    }
     assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
     let text = render::markdown_text(&answer);
     assert!(text.contains("Document"));
