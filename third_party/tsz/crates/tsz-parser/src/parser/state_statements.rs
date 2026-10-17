@@ -1995,6 +1995,7 @@ impl<'work> ParserStateCore<'work> {
         // tsc only treats a postfix `!` as a definite assignment assertion when
         // the binding name is a plain identifier and no line break precedes it.
         // Outside `for` initializers `allowExclamation` is true.
+        let exclamation_end = self.token_end();
         let exclamation_token = self.parse_definite_assignment_assertion(name, true);
         let type_annotation = if self.parse_optional(SyntaxKind::ColonToken) {
             self.parse_type()
@@ -2011,8 +2012,13 @@ impl<'work> ParserStateCore<'work> {
             declarator_clean,
         );
 
-        let end_pos =
-            self.parse_variable_declaration_end_pos(start_pos, type_annotation, name, initializer);
+        let end_pos = self.parse_variable_declaration_end_pos(
+            start_pos,
+            type_annotation,
+            name,
+            initializer,
+            exclamation_token.then_some(exclamation_end),
+        );
 
         self.arena.add_variable_declaration(
             syntax_kind_ext::VARIABLE_DECLARATION,
