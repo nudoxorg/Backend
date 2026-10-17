@@ -13105,7 +13105,8 @@ mod tests {
     }
 
     #[test]
-    fn preparation_cold_search_owner_abandonment_and_failure_allow_retry_and_restart() {
+    fn preparation_cold_search_owner_abandonment_and_failure_allow_retry_and_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = AdapterFixture::new();
         let durable = fixture.root.0.join("workspace/search-index-v2");
         {
@@ -13141,8 +13142,9 @@ mod tests {
             adapter.search_snapshots =
                 crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable)
                     .with_durable_cache_budget(
-                        backend_extension_tantivy::DurableCacheBudget::new(1)
-                            .expect("refusal budget"),
+                        backend_extension_tantivy::DurableCacheBudget::new(1).ok_or_else(|| {
+                            std::io::Error::other("refusal budget must be nonzero")
+                        })?,
                     );
             assert_preparing(
                 &immediate_search(adapter, daemon, 404, "project source"),
@@ -13183,6 +13185,7 @@ mod tests {
         assert_eq!(adapter.search_snapshots.projection_opens(), 1);
         adapter.close();
         assert!(!adapter.search_lane.active());
+        Ok(())
     }
 
     #[test]
@@ -13347,7 +13350,8 @@ mod tests {
     }
 
     #[test]
-    fn preparation_structured_query_shares_worker_and_cancel_is_immediate() {
+    fn preparation_structured_query_shares_worker_and_cancel_is_immediate()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let query = backend_engine::GraphQueryRequest::new(
@@ -13386,12 +13390,11 @@ mod tests {
             .library()
             .view()
             .capability()
-            .expect("actual selected producer coverage");
+            .ok_or_else(|| std::io::Error::other("selected view has no producer capability"))?;
         let workspace = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             capability,
-            crate::builtin::builtin_view_capability_for_workspace(&workspace)
-                .expect("actual workspace producer admission"),
+            crate::builtin::builtin_view_capability_for_workspace(&workspace)?,
             "the selected view must retain this workspace's admitted observation"
         );
         let cancelled = query.cancelled();
@@ -13442,6 +13445,7 @@ mod tests {
         release.send(()).expect("retire worker");
         finish_search_lane(adapter, daemon);
         assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+        Ok(())
     }
 
     include!("owner_short_controls_tests.rs");
