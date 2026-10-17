@@ -2052,8 +2052,8 @@ fn compiler_outcome_rows(
         },
         Outcomes::Coverage {page,..} => page.rows.iter().map(|row| {
             let title=match row {
-                backend_semantic::ir::SourceCoverageRow::Configuration{path,..}=>format!("selected TypeScript config: {}",single_line(path)),
-                backend_semantic::ir::SourceCoverageRow::Gap{path,cause,..}=>format!("{}: {cause}",single_line(path)),
+                backend_library::PackageCompilerCoverageRow::Configuration{path,..}=>format!("selected TypeScript config: {}",single_line(path)),
+                backend_library::PackageCompilerCoverageRow::Gap{path,cause,..}=>format!("{}: {cause}",single_line(path)),
             };
             ProductRecord::new(title,page.next.and_then(|read|serde_json::to_string(&read).ok()),vec![format!("{} of {} captured sources have semantic artifacts",page.completed,page.source_count)])
         }).collect(),

@@ -6,6 +6,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Public compiler coverage row contract, shared unchanged with authenticated IR storage.
+pub use backend_semantic::ir::SourceCoverageRow as PackageCompilerCoverageRow;
+
 /// Immutable selected roots required to resume a compiler outcome read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,7 +97,7 @@ pub struct PackageCompilerCoveragePage {
     /// Total configuration and gap rows.
     pub row_count: u32,
     /// Config and gap observations from the compiler producer, at most one per page.
-    pub rows: Box<[backend_semantic::ir::SourceCoverageRow]>,
+    pub rows: Box<[PackageCompilerCoverageRow]>,
     /// Exact next page, absent only after the last row.
     pub next: Option<PackageCompilerOutcomeRead>,
 }
