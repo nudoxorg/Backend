@@ -4770,6 +4770,27 @@ fn native_tsz_import_declaration_coordinate(
     symbol: TszSymbolId,
     program_files: &[TszBoundFile],
 ) -> Option<NativeTszDeclarationCoordinate> {
+    let declaration_symbol = binder.symbols.get(symbol)?;
+    if declaration_symbol.declarations.len() != declaration_symbol.stable_declarations.len() {
+        return None;
+    }
+    // A bare import has not selected a callable/type/namespace role. Only
+    // homogeneous callable overloads may use the implementation selector;
+    // a function merged with a namespace must not swallow that second role.
+    if declaration_symbol.declarations.len() > 1
+        && !declaration_symbol.declarations.iter().zip(&declaration_symbol.stable_declarations)
+            .all(|(declaration, stable)| {
+                let Some(file) = program_files.get(stable.file_idx as usize) else { return false; };
+                let arena = &file.arena;
+                if stable.pos >= stable.end || arena.pos_end_at(*declaration) != Some((stable.pos, stable.end)) {
+                    return false;
+                }
+                arena.get(*declaration).is_some_and(|node|
+                    arena.get_function(node).is_some() || arena.get_method_decl(node).is_some())
+            })
+    {
+        return None;
+    }
     if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, program_files, false) {
         return Some(target);
     }
@@ -12555,8 +12576,8 @@ describe('suite', () => {\n\
 
     #[test]
     fn native_tsz_type_only_imports_do_not_guess_merged_or_overloaded_targets() -> Result<(), LaneError> {
-        let dependency = "export interface Workout { name: string; }\nexport interface Merged { first: number; }\nexport interface Merged { second: number; }\nexport declare function pick(value: string): string;\nexport declare function pick(value: number): number;\n";
-        let caller = "import type { Workout, Merged } from '@/models';\nimport { pick } from '@/models';\nexport function take(value: Workout, merged: Merged) { return pick; }\n";
+        let dependency = "export interface Workout { name: string; }\nexport interface Merged { first: number; }\nexport interface Merged { second: number; }\nexport declare function pick(value: string): string;\nexport declare function pick(value: number): number;\nexport function Mixed() {}\nexport namespace Mixed { export const version = 1; }\n";
+        let caller = "import type { Workout, Merged } from '@/models';\nimport { pick, Mixed } from '@/models';\nexport function take(value: Workout, merged: Merged) { const bothRoles = Mixed; return pick; }\n";
         let resolutions = [module_resolution("caller.ts", "@/models", TszProjectModuleRequestKind::EsmImport,
             TszProjectModuleResolutionTarget::File { path: "models.ts".to_owned() })];
         let authority = native_tsz_project_with_resolutions(
@@ -12564,7 +12585,7 @@ describe('suite', () => {\n\
         )?;
         let project = authority.project().ok_or(LaneError::Missing("type-only import project"))?;
         let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
-        for (name, exact) in [("Workout", true), ("Merged", false), ("pick", false)] {
+        for (name, exact) in [("Workout", true), ("Merged", false), ("pick", false), ("Mixed", false)] {
             let fact = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
                 && facts.kinds[index] == EntityKind::Reexport).expect("real import binding");
             let edge = (0..facts.occurrence_len).find(|&index| facts.occurrence_owners[index] == fact as u32
