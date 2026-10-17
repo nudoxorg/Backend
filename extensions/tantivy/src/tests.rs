@@ -4033,3 +4033,246 @@ fn controlled_hit_and_direct_candidate_scoring_stop_inside_token_work() {
         )))
     ));
 }
+
+#[test]
+fn cold_admission_tokenizes_source_fields_once_and_preserves_exact_hits() {
+    let state = state_for(
+        vec![
+            (
+                document(81),
+                vec![
+                    ("name".into(), "Alpha alpha É".into()),
+                    ("signature".into(), "ALPHA beta".into()),
+                ],
+            ),
+            (
+                document(82),
+                vec![
+                    ("name".into(), "Beta gamma".into()),
+                    ("documentation".into(), "alpha path::HTTPServer42".into()),
+                ],
+            ),
+        ],
+        [0xa7; 32],
+    );
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-single-source-pass-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("directory");
+    let built = TantivySource::build_in_dir(&state, Limits::default(), &directory).expect("build");
+    let queries = ["alpha", "beta", "É", "HTTP", "42", "unmatched"];
+    let expected = queries
+        .iter()
+        .map(|query| term_hits(&built, query))
+        .collect::<Vec<_>>();
+    drop(built);
+    let measure = engine::test_support::TokenizationMeasurement::start();
+    let reopened =
+        TantivySource::open_in_dir(&state, Limits::default(), &directory).expect("cold admitted");
+    let expected_passes = state.iter().map(|(_, fields)| fields.len()).sum::<usize>();
+    assert_eq!(
+        measure.passes(),
+        expected_passes,
+        "the real cold opener must not retokenize ordinal counts or canonical tails"
+    );
+    drop(measure);
+    for (query, expected) in queries.iter().zip(expected) {
+        assert_eq!(term_hits(&reopened, query), expected, "query {query}");
+    }
+    assert_eq!(engine::test_support::binding_work(&reopened).0, 2);
+    assert!(
+        engine::test_support::posting_cover_edges_scanned(&reopened) > 0,
+        "full surplus posting coverage is still required"
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(directory).expect("cleanup");
+}
+
+#[test]
+fn cold_admission_rejects_forged_ordinal_counts_even_with_fresh_witness_and_manifest() {
+    let state = state_for(
+        vec![(document(83), vec![("name".into(), "Alpha alpha".into())])],
+        [0xa8; 32],
+    );
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-source-count-forgery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("directory");
+    drop(TantivySource::build_in_dir(&state, Limits::default(), &directory).expect("build"));
+    for count in [0, 1, 3, u32::MAX] {
+        engine::test_support::forge_ordinal_posting_count(&state, &directory, count)
+            .expect("forge exact map and integrity leaves");
+        assert!(
+            matches!(
+                TantivySource::open_in_dir(&state, Limits::default(), &directory),
+                Err(TantivySourceError::Corrupt(
+                    "durable projection ordinal does not match its bound document"
+                ))
+            ),
+            "forged count {count} must remain corruption, not an admitted source or scratch-budget refusal"
+        );
+    }
+    engine::test_support::forge_ordinal_posting_count(&state, &directory, 2)
+        .expect("restore actual count");
+    let reopened = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("actual source count admits");
+    assert_eq!(term_hits(&reopened, "alpha"), vec![document(83)]);
+    drop(reopened);
+    std::fs::remove_dir_all(directory).expect("cleanup");
+}
+
+#[test]
+fn cancelled_cold_admission_retires_at_real_source_membership_and_cover_boundaries() {
+    let state = state_for(
+        vec![(
+            document(84),
+            vec![
+                ("name".into(), "Alpha alpha beta".into()),
+                ("signature".into(), "gamma delta".into()),
+            ],
+        )],
+        [0xa9; 32],
+    );
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-cold-retirement-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).expect("cache root");
+    drop(
+        TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+            .expect("prime complete durable generation"),
+    );
+    for (point, step) in [
+        ("ordinal", 1),
+        ("row", 1),
+        ("source", 2),
+        ("membership", 2),
+        ("cover", 2),
+    ] {
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        engine::test_support::cancel_on_admission_step(
+            point,
+            step,
+            std::sync::Arc::clone(&cancelled),
+        );
+        let error = TantivySource::open_or_build_cancelable(
+            &state,
+            Limits::default(),
+            &root,
+            DurableCacheBudget::default(),
+            &cancelled,
+        )
+        .err()
+        .expect("cancelled cold open must not return a selected source");
+        assert!(
+            cancelled.load(std::sync::atomic::Ordering::Acquire),
+            "real {point} admission boundary was reached"
+        );
+        assert!(
+            matches!(error, TantivySourceError::Io(ref error) if error.kind() == std::io::ErrorKind::Interrupted),
+            "{point}: {error}"
+        );
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        let (reopened, action) = TantivySource::open_or_build_cancelable(
+            &state,
+            Limits::default(),
+            &root,
+            DurableCacheBudget::default(),
+            &cancelled,
+        )
+        .expect("original immutable root remains valid after retirement");
+        assert_eq!(
+            action,
+            DurableProjectionAction::Opened,
+            "cancellation must not classify the valid cache as corrupt or rebuild it"
+        );
+        assert_eq!(term_hits(&reopened, "alpha"), vec![document(84)]);
+        assert_eq!(term_hits(&reopened, "gamma"), vec![document(84)]);
+        drop(reopened);
+    }
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn cancelled_oversized_ordinal_count_scan_is_interrupted_before_corruption_rebuild() {
+    let state = state_for(
+        vec![(
+            document(85),
+            vec![
+                ("name".into(), "Alpha alpha beta".into()),
+                ("signature".into(), "gamma delta".into()),
+            ],
+        )],
+        [0xaa; 32],
+    );
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-oversized-count-retirement-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).expect("cache root");
+    drop(
+        TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+            .expect("prime complete durable generation"),
+    );
+    let directory = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(state.binding())));
+    engine::test_support::forge_ordinal_posting_count(&state, &directory, u32::MAX)
+        .expect("forge oversized count with valid witness and integrity manifest");
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    engine::test_support::cancel_on_admission_step("source", 2, std::sync::Arc::clone(&cancelled));
+    let error = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .err()
+    .expect("oversized source-count scan must retire before a rebuild");
+    assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert!(
+        matches!(error, TantivySourceError::Io(ref error) if error.kind() == std::io::ErrorKind::Interrupted)
+    );
+    // Cancellation leaves the suspect root unchanged. A subsequent uncancelled
+    // direct open must still identify its original exact corruption.
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(
+            "durable projection ordinal does not match its bound document"
+        ))
+    ));
+    engine::test_support::forge_ordinal_posting_count(&state, &directory, 5)
+        .expect("restore the exact admitted source count");
+    cancelled.store(false, std::sync::atomic::Ordering::Release);
+    let (reopened, action) = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .expect("original root remains reusable");
+    assert_eq!(action, DurableProjectionAction::Opened);
+    assert_eq!(term_hits(&reopened, "alpha"), vec![document(85)]);
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
