@@ -443,8 +443,9 @@ mod multiline_anchor_tests {
             RetainedLocations::build(
                 LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 &sites,
-                Some(&[])
-            )
+                Some(&[]),
+                None,
+            )?
             .windows
             .is_empty()
         );
