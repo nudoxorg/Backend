@@ -477,9 +477,17 @@ impl StructuralProjectionPlan {
         }
         for symbols in plan.by_coordinate.values_mut() {
             check_search_preparation(cancelled, "structural-sort")?;
-            symbols.sort_unstable_by_key(|symbol| {
-                (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
-            });
+            if cancelled.is_some() {
+                super::super::query::controlled_sort::sort_unstable_in_place_checked(
+                    symbols,
+                    |symbol| (structural_parent_rank(symbol.kind), symbol.kind, symbol.id),
+                    &mut || check_search_preparation(cancelled, "structural-sort-step"),
+                )?;
+            } else {
+                symbols.sort_unstable_by_key(|symbol| {
+                    (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
+                });
+            }
         }
         check_search_preparation(cancelled, "structural-plan-complete")?;
         Ok(plan)

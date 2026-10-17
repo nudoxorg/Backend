@@ -1696,6 +1696,7 @@ fn search_source_cancellation_preserves_the_complete_persisted_frontier() -> Res
         ("source-membership-key", 512),
         ("source-file", 512),
         ("source-sort", 1),
+        ("source-sort-step", 1000),
         ("source-snapshot", 1),
     ] {
         token.store(false, Ordering::Release);

@@ -66,7 +66,7 @@ pub(super) fn sort_checked<T, K: Ord, E: From<QueryError> + From<TryReserveError
 
 /// Initial lexical match IDs are unique. Their canonical ID ordering needs
 /// no stable tie buffer, so sort descriptors in place with bounded checkpoints.
-pub(super) fn sort_unstable_in_place_checked<T, K: Ord, E>(
+pub(in crate::builtin) fn sort_unstable_in_place_checked<T, K: Ord, E>(
     items: &mut [T],
     key: impl Fn(&T) -> K,
     checkpoint: &mut impl FnMut() -> Result<(), E>,
@@ -75,7 +75,7 @@ pub(super) fn sort_unstable_in_place_checked<T, K: Ord, E>(
 }
 
 /// Comparator form retains the selected lexical rank policy without a second allocation.
-pub(super) fn sort_unstable_by_in_place_checked<T, E>(
+pub(in crate::builtin) fn sort_unstable_by_in_place_checked<T, E>(
     items: &mut [T],
     compare: impl Fn(&T, &T) -> std::cmp::Ordering,
     checkpoint: &mut impl FnMut() -> Result<(), E>,

@@ -2688,6 +2688,10 @@ mod prepared_corpus_tests {
             ("lexical-fact-index", 2048),
             ("lexical-fact", 2048),
             ("lexical-sort-entities", 1),
+            ("lexical-sort-entities-step", 1000),
+            ("lexical-sort-candidates-step", 1000),
+            ("lexical-sort-documents-step", 1000),
+            ("lexical-sort-facts-step", 1000),
             ("lexical-sorted-facts", 1),
             ("lexical-document-state", 1),
         ] {
@@ -2968,7 +2972,15 @@ fn collect_selected_documents(
     }
     left_out.rows_without_evidence = selected_rows.len();
     preparation_checkpoint(cancelled, "lexical-sort-entities")?;
-    selected.sort_unstable_by_key(|entry| entry.entity);
+    if cancelled.is_some() {
+        super::controlled_sort::sort_unstable_in_place_checked(
+            &mut selected,
+            |entry: &SelectedEntity| entry.entity,
+            &mut || preparation_checkpoint(cancelled, "lexical-sort-entities-step"),
+        )?;
+    } else {
+        selected.sort_unstable_by_key(|entry| entry.entity);
+    }
     preparation_checkpoint(cancelled, "lexical-sorted-entities")?;
     if selected
         .windows(2)
@@ -2978,7 +2990,15 @@ fn collect_selected_documents(
     }
     let mut candidate_order = (0..selected.len()).collect::<Vec<_>>();
     preparation_checkpoint(cancelled, "lexical-sort-candidates")?;
-    candidate_order.sort_unstable_by_key(|index| selected[*index].candidate);
+    if cancelled.is_some() {
+        super::controlled_sort::sort_unstable_in_place_checked(
+            &mut candidate_order,
+            |index: &usize| selected[*index].candidate,
+            &mut || preparation_checkpoint(cancelled, "lexical-sort-candidates-step"),
+        )?;
+    } else {
+        candidate_order.sort_unstable_by_key(|index| selected[*index].candidate);
+    }
     preparation_checkpoint(cancelled, "lexical-sorted-candidates")?;
     if candidate_order
         .windows(2)
@@ -2988,16 +3008,33 @@ fn collect_selected_documents(
     }
     let mut document_order = (0..selected.len()).collect::<Vec<_>>();
     preparation_checkpoint(cancelled, "lexical-sort-documents")?;
-    document_order.sort_unstable_by_key(|index| selected[*index].row);
+    if cancelled.is_some() {
+        super::controlled_sort::sort_unstable_in_place_checked(
+            &mut document_order,
+            |index: &usize| selected[*index].row,
+            &mut || preparation_checkpoint(cancelled, "lexical-sort-documents-step"),
+        )?;
+    } else {
+        document_order.sort_unstable_by_key(|index| selected[*index].row);
+    }
     preparation_checkpoint(cancelled, "lexical-sorted-documents")?;
     let mut fact_order = (0..semantic_evidence.facts().len()).collect::<Vec<_>>();
     preparation_checkpoint(cancelled, "lexical-sort-facts")?;
-    fact_order.sort_unstable_by(|left, right| {
+    let compare_facts = |left: &usize, right: &usize| {
         semantic_evidence.facts()[*left]
             .presentation()
             .id
             .cmp(&semantic_evidence.facts()[*right].presentation().id)
-    });
+    };
+    if cancelled.is_some() {
+        super::controlled_sort::sort_unstable_by_in_place_checked(
+            &mut fact_order,
+            compare_facts,
+            &mut || preparation_checkpoint(cancelled, "lexical-sort-facts-step"),
+        )?;
+    } else {
+        fact_order.sort_unstable_by(compare_facts);
+    }
     preparation_checkpoint(cancelled, "lexical-sorted-facts")?;
     Ok((
         documents,

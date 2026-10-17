@@ -450,7 +450,15 @@ fn append_compiler_query_facts(
                         .or_insert((*identity, *external));
                 }
                 check_search_preparation(cancelled, "semantic-sort")?;
-                related.sort_unstable();
+                if cancelled.is_some() {
+                    super::super::query::controlled_sort::sort_unstable_by_in_place_checked(
+                        &mut related,
+                        Ord::cmp,
+                        &mut || check_search_preparation(cancelled, "semantic-sort-step"),
+                    )?;
+                } else {
+                    related.sort_unstable();
+                }
                 check_search_preparation(cancelled, "semantic-sorted")?;
                 related.dedup();
                 facts.push(backend_extension_trustfall::SemanticQueryFact::new(

@@ -954,7 +954,15 @@ fn read_indexed_relation_controlled(
         ));
     }
     check_search_preparation(cancelled, "source-sort")?;
-    resolved_files.sort_unstable_by_key(|(key, _)| *key);
+    if cancelled.is_some() {
+        query::controlled_sort::sort_unstable_in_place_checked(
+            &mut resolved_files,
+            |(key, _)| *key,
+            &mut || check_search_preparation(cancelled, "source-sort-step"),
+        )?;
+    } else {
+        resolved_files.sort_unstable_by_key(|(key, _)| *key);
+    }
     check_search_preparation(cancelled, "source-sorted")?;
     Ok(IndexedSources {
         projects,
