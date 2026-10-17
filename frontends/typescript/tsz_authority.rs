@@ -3459,7 +3459,25 @@ mod tests {
         let no_lib_project = no_lib.project().test_value()?;
         assert_eq!(no_lib_project.lib_files.len(), 1);
         assert!(Arc::ptr_eq(&no_lib_project.lib_files[0], &readmitted));
-        assert_eq!(observed(&no_lib).test_value()?, "unknown");
+        // An unavailable annotation is the checker's distinct error sentinel,
+        // not a library-derived string or an unowned-symbol UNKNOWN. Its
+        // public printer intentionally spells the error type as `any`.
+        let no_lib_session = no_lib_project
+            .checked_query_session_unmetered_for_test()
+            .test_value()?;
+        let index = no_lib_session.file_index("src/b.ts").test_value()?;
+        no_lib_session
+            .with_file_checker_and_types(index, |checker, binder, _, _| {
+                let alias = binder.file_locals.get("LibraryLabel").test_value()?;
+                assert!(checker.ctx.symbol_is_from_lib(alias));
+                assert!(!checker.ctx.has_lib_loaded());
+                let value = binder.file_locals.get("b").test_value()?;
+                assert_eq!(checker.get_type_of_symbol(value), TszTypeId::ERROR);
+                Ok::<_, TestFailure>(())
+            })
+            .test_value()?
+            .test_value()?;
+        assert_eq!(observed(&no_lib).test_value()?, "any");
         Ok(())
     }
 
@@ -3526,6 +3544,11 @@ mod tests {
                         &binder.lib_symbol_reverse_remap,
                         &project.program.lib_symbol_reverse_remap,
                     ));
+                    if path == "src/shadow.ts" {
+                        let shadow = binder.file_locals.get("LibraryLabel").test_value()?;
+                        assert!(!checker.ctx.symbol_is_from_lib(shadow));
+                        assert!(!checker.ctx.symbol_is_from_actual_lib(shadow));
+                    }
                     let ty = checker.get_type_of_symbol(binder.file_locals.get(name).test_value()?);
                     let ty = checker.resolve_lazy_type(ty);
                     Ok::<_, TestFailure>(checker.format_type(ty))
@@ -3555,12 +3578,16 @@ mod tests {
         session
             .with_file_checker_and_types(index, |checker, _, _, _| {
                 assert_eq!(checker.get_type_of_symbol(unowned), TszTypeId::UNKNOWN);
+                assert!(checker.ctx.symbol_is_from_lib(alias));
+                assert!(checker.ctx.symbol_is_from_actual_lib(alias));
                 checker.ctx.lib_contexts = Arc::new(vec![tsz::checker::context::LibContext {
                     arena: Arc::clone(&foreign.arena),
                     binder: Arc::clone(&foreign.binder),
                 }]);
                 // This is deliberately checked even if the shared definition
                 // store already contains the admitted alias's string body.
+                assert!(!checker.ctx.symbol_is_from_lib(alias));
+                assert!(!checker.ctx.symbol_is_from_actual_lib(alias));
                 assert_eq!(checker.get_type_of_symbol(alias), TszTypeId::UNKNOWN);
             })
             .test_value()?;

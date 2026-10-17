@@ -472,6 +472,12 @@ impl<'a> CheckerContext<'a> {
 
     /// Check if a symbol originates from a lib context.
     pub fn symbol_is_from_lib(&self, sym_id: SymbolId) -> bool {
+        // A program-global library entry can outlive its compacted per-file
+        // arena entry. Its retained binder/local-id origin is authoritative;
+        // a mere global id or matching name cannot attest the current context.
+        if self.project_library_symbol_and_arena(sym_id).is_some() {
+            return true;
+        }
         let Some(symbol_arena) = self.binder.symbol_arenas.get(&sym_id) else {
             return false;
         };
@@ -487,14 +493,18 @@ impl<'a> CheckerContext<'a> {
     /// callers that need standard-library behavior must only inspect the leading
     /// `actual_lib_file_count` contexts.
     pub fn symbol_is_from_actual_lib(&self, sym_id: SymbolId) -> bool {
-        let Some(symbol_arena) = self.binder.symbol_arenas.get(&sym_id) else {
+        let symbol_arena = self
+            .project_library_symbol_and_arena(sym_id)
+            .map(|(_, arena)| arena)
+            .or_else(|| self.binder.symbol_arenas.get(&sym_id).map(Arc::as_ref));
+        let Some(symbol_arena) = symbol_arena else {
             return false;
         };
 
         self.lib_contexts
             .iter()
             .take(self.actual_lib_file_count)
-            .any(|lib_ctx| Arc::ptr_eq(&lib_ctx.arena, symbol_arena))
+            .any(|lib_ctx| std::ptr::eq(lib_ctx.arena.as_ref(), symbol_arena))
     }
 
     /// `SymbolId` of the standard-library `Promise` declaration, if loaded.
