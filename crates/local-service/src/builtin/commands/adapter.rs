@@ -398,6 +398,11 @@ pub(in crate::builtin) struct CommandAdapter {
     browse_lane: BrowseLane,
     /// The index job whose compile runs off the owner loop, if one does.
     indexing: Option<IndexJob>,
+    // Field drop order is part of custody: drop result receivers in indexing
+    // before the fallback worker-list Drop cancels and joins retained tails.
+    index_input_workers: super::index_input_workers::IndexInputWorkers,
+    #[cfg(test)]
+    index_scan_return_hook: Option<Box<dyn FnOnce() + Send>>,
     /// Recently completed owner-issued index tickets, for late await/cancel requests.
     index_terminals: std::collections::VecDeque<backend_library::IndexJobTerminal>,
     /// Bounded typed progress stream retained across the active and recent index tickets.
@@ -883,6 +888,9 @@ impl CommandAdapter {
             browse: super::super::browse::BrowseCache::default(),
             browse_lane,
             indexing: None,
+            index_input_workers: Default::default(),
+            #[cfg(test)]
+            index_scan_return_hook: None,
             index_terminals: std::collections::VecDeque::new(),
             index_progress: std::collections::VecDeque::new(),
             index_progress_latest: std::collections::VecDeque::new(),
@@ -2003,10 +2011,24 @@ impl CommandAdapter {
         if let Some(indexing) = self.indexing.as_ref() {
             indexing.cancelled.store(true, Ordering::Release);
         }
+        self.index_input_workers.request_close();
         self.search_lane.request_close();
         self.remote_semantic.request_close_local();
         self.browse_lane.request_close();
         self.journal_readiness.request_close();
+        if let Some(indexing) = self.indexing.as_mut()
+            && matches!(
+                indexing.work,
+                IndexJobWork::Acquiring(_) | IndexJobWork::Scanning(_)
+            )
+        {
+            // Disconnect a full Staging slot before any joins, allowing the
+            // acquisition's blocked Complete send to return and retire.
+            drop(std::mem::replace(
+                &mut indexing.work,
+                IndexJobWork::Transition,
+            ));
+        }
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
@@ -2083,6 +2105,7 @@ impl CommandAdapter {
                 }
             }
         }
+        self.index_input_workers.close();
     }
 
     fn start_owner_index_job(
@@ -3131,6 +3154,9 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        // A completed result can precede thread exit. Reap only finished
+        // input workers; active owner turns never wait for a live tail.
+        self.index_input_workers.reap_finished();
         // Derived history is sidecar work: apply any completed status and
         // reschedule selected markers before advancing the active index job.
         // A history-store refusal must not stall product reads or an admitted
@@ -4157,13 +4183,24 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
+        self.index_input_workers
+            .reserve()
+            .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let (sender, scanned) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        #[cfg(test)]
+        let returned = self.index_scan_return_hook.take();
+        let handle = std::thread::Builder::new()
             .name("locald-index-scan".to_owned())
             .spawn(move || {
                 let _ = sender.send(run_index_scan(work));
+                #[cfg(test)]
+                if let Some(returned) = returned {
+                    returned();
+                }
             })
             .map_err(|error| BuiltinModelError(format!("start the index scan: {error}")))?;
+        self.index_input_workers
+            .retain(handle, Arc::clone(&indexing.cancelled));
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Scanning);
         indexing.work = IndexJobWork::Scanning(scanned);
         Ok(())
@@ -4174,6 +4211,9 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         coordinate: backend_engine::registry::PackageCoordinate,
     ) -> Result<(), BuiltinModelError> {
+        self.index_input_workers
+            .reserve()
+            .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let gateway = self.registry.take().ok_or_else(|| {
             BuiltinModelError(
                 "no configured registry authority can acquire this package".to_owned(),
@@ -4198,7 +4238,11 @@ impl CommandAdapter {
                     if cancelled.load(Ordering::Acquire) {
                         return Err(RegistryAddError::Cancelled);
                     }
-                    let _ = sender.send(RegistryAcquisitionMessage::Staging);
+                    if sender.send(RegistryAcquisitionMessage::Staging).is_err()
+                        || cancelled.load(Ordering::Acquire)
+                    {
+                        return Err(RegistryAddError::Cancelled);
+                    }
                     gateway.stage_archive(&coordinate, &archive)
                 }));
                 let message = match result {
@@ -4213,15 +4257,20 @@ impl CommandAdapter {
                 };
                 let _ = sender.send(message);
             });
-        if let Err(error) = spawned {
-            self.registry = gateway_slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            return Err(BuiltinModelError(format!(
-                "start the registry acquisition: {error}"
-            )));
-        }
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.registry = gateway_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                return Err(BuiltinModelError(format!(
+                    "start the registry acquisition: {error}"
+                )));
+            }
+        };
+        self.index_input_workers
+            .retain(handle, Arc::clone(&indexing.cancelled));
         indexing.work = IndexJobWork::Acquiring(acquired);
         Ok(())
     }
@@ -12091,6 +12140,155 @@ mod tests {
         assert!(!adapter.search_preparation_eager);
         assert!(!adapter.search_lane.active());
         assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+    }
+
+    #[test]
+    fn shutdown_disconnects_full_acquisition_reply_before_joining_input_worker() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, _) = fixture.parts();
+        let cancelled = install_transition_job(adapter);
+        let control = Arc::clone(&cancelled);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        sender
+            .send(RegistryAcquisitionMessage::Staging)
+            .expect("fill real staging slot");
+        adapter.indexing.as_mut().expect("job").work = IndexJobWork::Acquiring(receiver);
+        let (entered, receipt) = std::sync::mpsc::sync_channel(1);
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let retired = Arc::clone(&disconnected);
+        let handle = std::thread::spawn(move || {
+            let mut message = RegistryAcquisitionMessage::Complete {
+                gateway: None,
+                result: Err(RegistryAddError::Cancelled),
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut notified = false;
+            loop {
+                match sender.try_send(message) {
+                    Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                        message = returned;
+                        if !notified {
+                            let _ = entered.send(());
+                            notified = true;
+                        }
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        retired.store(control.load(Ordering::Acquire), Ordering::Release);
+                        break;
+                    }
+                    Ok(()) => panic!("staging must remain full until shutdown disconnects"),
+                }
+                // Failure-safe fixture watchdog; no latency or blocking-send
+                // performance claim. Production still uses its bounded send.
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        adapter.index_input_workers.reserve().expect("input slot");
+        adapter
+            .index_input_workers
+            .retain(handle, Arc::clone(&cancelled));
+        receipt
+            .recv_timeout(Duration::from_secs(2))
+            .expect("complete observes full staging slot");
+        adapter.close();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            disconnected.load(Ordering::Acquire),
+            "receiver disconnect follows cancellation and precedes joined retirement"
+        );
+        assert_eq!(adapter.index_input_workers.len(), 0);
+        assert!(matches!(
+            adapter.indexing.as_ref().expect("retained job").work,
+            IndexJobWork::Transition
+        ));
+        adapter.close();
+    }
+
+    #[test]
+    fn index_scan_thread_is_retained_through_source_transition_and_joined_on_close() {
+        use index_publication_worker::{TestHook, TestStage};
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let (scan_returned, receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_scan, scan_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.index_scan_return_hook = Some(Box::new(move || {
+            let _ = scan_returned.send(());
+            let _ = scan_gate.recv();
+        }));
+        let (source_entered, source_receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_source, source_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.source_test_hook = Some(TestHook {
+            stage: TestStage::BeforeSourcePreparation,
+            run: Box::new(move || {
+                let _ = source_entered.send(());
+                let _ = source_gate.recv();
+            }),
+        });
+        adapter
+            .start_index_operation(
+                daemon,
+                backend_library::IndexOperationKey::from_bytes([150; 32]).expect("key"),
+                backend_library::PackageReference::parse(label).expect("local"),
+                CompileExecutionIntent::Interactive,
+                150,
+            )
+            .expect("actual index scan");
+        receipt
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actual scan sent result but has not exited");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match source_receipt.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("source phase: {error}"),
+            }
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owner advances while scan tail remains held"
+            );
+            std::thread::yield_now();
+        }
+        let indexing = adapter.indexing.as_ref().expect("owned job");
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PreparingSource { .. }
+        ));
+        let cancelled = Arc::clone(&indexing.cancelled);
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            1,
+            "phase transition retains actual scan handle"
+        );
+        adapter.index_input_workers.reap_finished();
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            1,
+            "active poll does not join live scan tail"
+        );
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let observed = cancelled.load(Ordering::Acquire);
+            let _ = release_scan.send(());
+            let _ = release_source.send(());
+            observed
+        });
+        adapter.close();
+        assert!(observer.join().expect("retirement observer"));
+        assert_eq!(
+            adapter.index_input_workers.len(),
+            0,
+            "real scan tail joined after cancellation"
+        );
+        adapter.close();
     }
 
     #[cfg(unix)]
