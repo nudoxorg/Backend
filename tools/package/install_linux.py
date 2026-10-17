@@ -415,11 +415,7 @@ def _system_elf_loader_target() -> str | None:
 
 
 def _is_known_nixos_stub_target(target: str | None) -> bool:
-    # Keep the bare value useful for unit fixtures, but on real hosts require
-    # the exact Nix store path shape seen in the failing NixOS loader.
-    return target == KNOWN_NIXOS_STUB_INTERPRETER or bool(
-        isinstance(target, str) and KNOWN_NIXOS_STUB_TARGET.fullmatch(target)
-    )
+    return bool(isinstance(target, str) and KNOWN_NIXOS_STUB_TARGET.fullmatch(target))
 
 
 def _reject_known_unsupported_loader() -> None:

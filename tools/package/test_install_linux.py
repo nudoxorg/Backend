@@ -184,7 +184,7 @@ class InstallerFilesystemTests(unittest.TestCase):
                 self.assertEqual(installer._system_elf_loader_target(), target.resolve().as_posix())
 
     def test_known_stub_match_requires_nix_store_hash_for_resolved_paths(self):
-        self.assertTrue(installer._is_known_nixos_stub_target(installer.KNOWN_NIXOS_STUB_INTERPRETER))
+        self.assertFalse(installer._is_known_nixos_stub_target(installer.KNOWN_NIXOS_STUB_INTERPRETER))
         self.assertTrue(installer._is_known_nixos_stub_target(
             "/nix/store/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"))
         self.assertFalse(installer._is_known_nixos_stub_target(
