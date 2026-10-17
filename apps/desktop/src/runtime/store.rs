@@ -22,7 +22,8 @@
 //! ```
 //!
 //! Results arrive through a coalescing wake signal awaited by one
-//! `cx.spawn` task: nothing polls, and an idle window requests no frame.
+//! `cx.spawn` task. Only active names-only searches own bounded revalidation
+//! timers; completed reads and idle windows do not poll.
 
 #[cfg(test)]
 pub(crate) mod cargo_context_tests;
@@ -32,6 +33,7 @@ mod dependencies;
 mod keeper;
 mod owner_link;
 mod publication;
+mod search_revalidation;
 #[cfg(test)]
 mod owner_read_tests;
 
@@ -269,6 +271,7 @@ pub struct DataStore {
     /// Keys whose in-flight job is a prefetch.
     prefetching: BTreeSet<PageKey>,
     wake_task: Option<Task<()>>,
+    search_revalidations: BTreeMap<PageKey, search_revalidation::SearchRevalidation>,
     stats: StoreStats,
     graph_focus: Option<super::graph_focus::GraphFocus>,
     /// The one visit-scoped notice (§15 ruling 1), for any route: an
@@ -454,6 +457,7 @@ impl DataStore {
             focused: BTreeSet::new(),
             prefetching: BTreeSet::new(),
             wake_task: None,
+            search_revalidations: BTreeMap::new(),
             stats: StoreStats::default(),
             graph_focus: None,
             tour: None,
@@ -610,12 +614,14 @@ impl DataStore {
 
     pub(crate) fn set_close_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
         self.close_paused = paused;
+        self.pause_search_revalidations(paused, cx);
         if !paused { self.drain(cx); }
     }
 
     pub(crate) fn commit_close(&mut self) -> super::worker_finish::WorkerFinish {
         self.close_committed = true;
         self.close_paused = true;
+        self.search_revalidations.clear();
         self.pool
             .as_mut()
             .map(ReadPool::take_finish)
@@ -721,6 +727,9 @@ impl DataStore {
         let old = std::mem::replace(&mut self.snapshot, snapshot);
         let snapshot = Arc::clone(&self.snapshot);
         let mut changed = Vec::new();
+        if !old.key().same_authority(snapshot.key()) || old.route() != snapshot.route() {
+            self.search_revalidations.clear();
+        }
         if !old.key().same_authority(snapshot.key()) {
             changed.push(Branch::Root);
         }
@@ -810,6 +819,15 @@ impl DataStore {
                 self.fail(&key, &fault, cx);
                 return self.pages.stamp(&key);
             }
+        }
+        // Returning to an already-painted names stage starts a fresh initial
+        // read if its prior active-query timer was cancelled on dismissal.
+        if self.names_search_is_current(&key)
+            && self.pages.inflight(&key).is_none()
+            && !self.search_revalidations.contains_key(&key)
+        {
+            self.retry(key.clone(), cx);
+            return self.pages.stamp(&key);
         }
         let before = self.pages.stamp(&key);
         if let Some(generation) = self.begin_read(&key, false, Priority::Normal, cx) {
@@ -964,6 +982,7 @@ impl DataStore {
     }
 
     fn cancel_key(&mut self, key: &PageKey, cx: &mut Context<Self>) {
+        self.search_revalidations.remove(key);
         if self.pages.inflight(key).is_none() {
             return;
         }
@@ -979,6 +998,10 @@ impl DataStore {
 
     /// Fetches a page again even when it is current (retry after a fault).
     pub fn retry(&mut self, key: PageKey, cx: &mut Context<Self>) {
+        if self.close_paused || self.close_committed { return; }
+        if let Some(refresh) = self.search_revalidations.get_mut(&key) {
+            refresh.task.take();
+        }
         match self.owner.phase() {
             OwnerPhase::Serving => {}
             // "Try again" on a page the owner could not serve asks the owner
@@ -1257,6 +1280,7 @@ impl DataStore {
     }
 
     fn revoke_inflight(&mut self, cx: &mut Context<Self>) {
+        self.search_revalidations.clear();
         let running = self
             .pages
             .keys()
@@ -1359,6 +1383,7 @@ impl DataStore {
         let outcomes = pool.drain_for(&self.focused);
         let mut applied = 0;
         let mut save = false;
+        let mut search_revalidations = Vec::new();
         for outcome in outcomes {
             // Ownership travels through admission into the slot, and drops
             // only after this closure lands or discards the value.
@@ -1375,6 +1400,8 @@ impl DataStore {
                     Landing::Unchanged => {}
                 },
                 Delivery::Terminal(result) => {
+                    let names_only = result.as_ref().is_ok_and(search_revalidation::names_only_value);
+                    let prefetch = self.prefetching.contains(&key);
                     if self.pages.inflight(&key) == Some(generation) {
                         self.prefetching.remove(&key);
                     }
@@ -1383,12 +1410,14 @@ impl DataStore {
                             applied += 1;
                             self.stats.landed = self.stats.landed.saturating_add(1);
                             save |= kept_keys(self.snapshot.route()).contains(&key);
-                            self.emit(StoreEvent::Resource(key), cx);
+                            self.emit(StoreEvent::Resource(key.clone()), cx);
+                            search_revalidations.push((key, generation, names_only, prefetch));
                         }
                         Landing::Unchanged => {
                             super::trace::mark("read.same", format_args!("{key:?}"));
                             self.stats.landed = self.stats.landed.saturating_add(1);
                             save |= kept_keys(self.snapshot.route()).contains(&key);
+                            search_revalidations.push((key, generation, names_only, prefetch));
                         }
                         Landing::Superseded => {
                             self.stats.superseded = self.stats.superseded.saturating_add(1)
@@ -1396,6 +1425,9 @@ impl DataStore {
                     }
                 }
             });
+        }
+        for (key, generation, names_only, prefetch) in search_revalidations {
+            self.schedule_search_revalidation(key, generation, names_only && !prefetch, cx);
         }
         if save {
             self.keeper.save_at_rest(cx);

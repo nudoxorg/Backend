@@ -266,7 +266,9 @@ impl CoverageLine {
             lanes,
             rows,
             semantic_search,
-            published_names: self.published_names.or(next.published_names),
+            // The stage remains partial across every name page, while its
+            // readiness observation belongs to the latest admitted page.
+            published_names: next.published_names.or(self.published_names),
         }
     }
 
@@ -589,6 +591,49 @@ mod page_tests {
         assert!(
             !complete.across_pages(partial).is_complete(),
             "page order cannot fabricate completeness"
+        );
+    }
+
+    #[test]
+    fn appended_names_keep_partial_scope_but_use_latest_readiness_observation() {
+        use backend_library::{
+            FullSearchReadiness, PublishedSearchReadiness, PublishedSemanticReadiness,
+        };
+        let preparing = PublishedSearchReadiness {
+            full_search: FullSearchReadiness::Preparing,
+            semantic: PublishedSemanticReadiness::Pending,
+        };
+        let ready = PublishedSearchReadiness {
+            full_search: FullSearchReadiness::Ready,
+            semantic: PublishedSemanticReadiness::NotQueried,
+        };
+        let first =
+            CoverageLine::new(&[Coverage::Complete], Some(1)).with_published_names(preparing);
+        let next = CoverageLine::new(&[Coverage::Complete], Some(2)).with_published_names(ready);
+        let combined = first.across_pages(next);
+        assert_eq!(combined.published_names(), Some(ready));
+        assert_eq!(combined.rows().map(RowCount::get), Some(3));
+        assert_eq!(combined.readiness(), "partial");
+        assert!(
+            !combined.is_complete(),
+            "Ready names do not prove full search"
+        );
+        assert!(
+            combined
+                .render()
+                .contains("full-search ready semantic-ranking not-queried")
+        );
+        assert_eq!(
+            next.across_pages(first).published_names(),
+            Some(preparing),
+            "latest observation wins; state order is not a fabricated monotonic guarantee"
+        );
+        assert_eq!(
+            combined
+                .across_pages(CoverageLine::new(&[Coverage::Complete], Some(1)))
+                .published_names(),
+            Some(ready),
+            "an absent stage does not silently erase partial scope"
         );
     }
 
