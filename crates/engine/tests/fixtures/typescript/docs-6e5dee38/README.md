@@ -58,4 +58,15 @@ nested property/method classes, same-route siblings and unrelated-edit lineage.
 The Record-based compatibility `this.member` lookup refuses to borrow an outer
 class for an anonymous class; this does not claim complete anonymous-member
 lookup. Only an independently proven native TSZ occurrence can upgrade a site.
-These added native bodies and package acceptance remain unrun.
+Revalidation of these roles on the repaired producer and package acceptance
+remain pending.
+
+Actual Native32 H2 executed all nine selected bodies: the three existing guards
+passed and all six new class/parameter-property bodies refused collection with
+`Lowering(NoSupportedDeclaration)`. This was not a test-assertion failure. The
+class route walker treated TSZ's `Some(NodeIndex::NONE)` root-parent sentinel as
+another node and refused every anonymous class route. The additive repair now
+requires reaching the exact admitted source-file node with that native sentinel;
+missing parent cells, premature sentinels and nonterminating ancestry still
+refuse. The existing exact symbol, declaration, stable-file and span checks are
+unchanged. Revalidation of the repaired producer remains pending.

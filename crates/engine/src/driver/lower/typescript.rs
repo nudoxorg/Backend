@@ -4534,11 +4534,9 @@ fn native_tsz_anonymous_class_route(
 ) -> Option<[u8; 16]> {
     let arena = &file.arena;
     let mut steps = Vec::new();
-    let mut cursor = Some(declaration);
+    let mut current = declaration;
+    let mut reached_source_file = false;
     for _ in 0..arena.nodes.len() {
-        let Some(current) = cursor else {
-            break;
-        };
         let node = arena.get(current)?;
         let name = arena
             .get_class(node)
@@ -4563,9 +4561,22 @@ fn native_tsz_anonymous_class_route(
         if let Some(step) = native_tsz_expression_parent_step(source, arena, current) {
             steps.push(NativeClassRouteStep::Expression(step));
         }
-        cursor = arena.parent_of(current);
+        let parent = arena.parent_of(current)?;
+        if current == file.source_file {
+            // The native root has a present parent cell containing NONE;
+            // a missing cell is not proof of a source-file root.
+            if node.kind != TszSyntaxKind::SOURCE_FILE || !parent.is_none() {
+                return None;
+            }
+            reached_source_file = true;
+            break;
+        }
+        if parent.is_none() {
+            return None;
+        }
+        current = parent;
     }
-    if cursor.is_some() {
+    if !reached_source_file {
         return None;
     }
     let mut hash = Sha256::new();
