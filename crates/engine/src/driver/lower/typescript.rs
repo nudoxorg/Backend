@@ -1269,7 +1269,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     ) -> Result<[u32; MAX_FACT_CHILDREN + 1], TypeScriptCollectError> {
         let mut ordinals = [0_u32; MAX_FACT_CHILDREN + 1];
         for (index, row) in params.iter().enumerate() {
-            let bindings = self.destructured_parameter_bindings(row.name);
+            let bindings = self.destructured_bindings(row.name);
             let name = self
                 .slice_span(row.name)
                 .ok_or(TypeScriptCollectError::Span {
@@ -1325,7 +1325,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// are declarations. Property labels, computed keys and default-expression
     /// references are deliberately not bindings; OXC's pattern walker follows
     /// only binding values, nested patterns and rest arguments.
-    fn destructured_parameter_bindings(&self, span: Span) -> Option<Vec<Span>> {
+    fn destructured_bindings(&self, span: Span) -> Option<Vec<Span>> {
         let first = self.node_index.partition_point(|(known, _)|
             (known.start, known.end) < (span.start, span.end));
         for (known, node) in self.node_index.get(first..).unwrap_or(&[]) {
@@ -5908,6 +5908,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     .map(|returned| returned.type_annotation.span());
                 self.push_signature(id.span, declaration_span, &rows, &params, result, false)?;
             } else if let Some(declarator) = kind.as_variable_declarator() {
+                let bindings = self.destructured_bindings(declarator.id.span());
                 if self
                     .fact_at_name_start(declarator.id.span().start)
                     .is_some()
@@ -5945,7 +5946,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 // sibling blocks) is byte-identical at the row level and
                 // carries the same initializer. The first row owns the
                 // binding; occurrences of either spelling resolve to it.
-                if child_count == 0 {
+                if child_count == 0 && bindings.is_none() {
                     if let Some(ordinal) = self.merged_simple_declaration(
                         entity_kind,
                         name_bytes,
@@ -5973,6 +5974,36 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     self.binding_init_spans.insert(ordinal, init_span);
                 }
                 self.claim_staged_members(member_base, ordinal);
+                if let Some(bindings) = bindings {
+                    // The pattern owns its aggregate annotation and initializer
+                    // references, but is not an authored declaration name.
+                    self.facts.publication_roles[ordinal as usize] =
+                        backend_semantic::ir::DeclarationPublicationRole::ReferenceOnly;
+                    for binding in bindings {
+                        if self.fact_at_name_start(binding.start).is_some() { continue; }
+                        let name = self.slice_span(binding).ok_or(TypeScriptCollectError::Span {
+                            start: binding.start, end: binding.end,
+                        })?;
+                        let kind = self.declarator_kind(binding.start);
+                        let extension = self.extension_without_type_parameters()?;
+                        // An aggregate annotation/initializer is not the type
+                        // or callable initializer of each destructured leaf.
+                        let mut fact = SemanticFact::new(kind, name, LEAF_PRODUCT)
+                            .typed(unknown_record(TypeReason::Unannotated))
+                            .with_extension(extension);
+                        let twins = self.indistinguishable_signature_twins(binding, &fact);
+                        if twins > 0 {
+                            let mut hash = Sha256::new();
+                            hash.update(b"compiler.typescript.binding-twin.v1\0");
+                            hash.update(twins.to_le_bytes());
+                            let mut discriminator = [0_u8; 16];
+                            discriminator.copy_from_slice(&hash.finalize()[..16]);
+                            fact = fact.with_identity_discriminator(discriminator);
+                        }
+                        let leaf = self.push(fact)?;
+                        self.register(leaf, binding, binding, kind)?;
+                    }
+                }
                 if let Some(init) = declarator.init.as_ref() {
                     let init_span = init.span();
                     self.declare_expression_bindings(init_span.start, init_span.end, 0)?;
@@ -12111,6 +12142,72 @@ mod lane_tests {
         )
         .map_err(LaneError::from)?;
         Ok(facts)
+    }
+
+    #[test]
+    fn native_tsz_destructured_variables_publish_only_exact_leaf_bindings() -> Result<(), LaneError> {
+        use backend_semantic::ir::DeclarationPublicationRole as Role;
+        let source = "declare function fallback(): number;\ndeclare const input: { source?: number; nested: { count: number }; extra: boolean };\nexport const { source: renamed = fallback(), nested: { count }, ...remaining } = input;\nexport let [head, , ...tail]: number[] = [1, 2, 3];\nexport function read() { return renamed + count + head; }\n";
+        let authority = native_tsz_project_with_resolutions(&[("bindings.ts", source)], &[])?;
+        let project = authority.project().ok_or(LaneError::Missing("destructured variable project"))?;
+        let facts = collect_native_tsz_file(project, "bindings.ts", source)?;
+        let mut leaves = std::collections::BTreeMap::new();
+        for (name, kind) in [
+            ("renamed", EntityKind::Constant), ("count", EntityKind::Constant),
+            ("remaining", EntityKind::Constant), ("head", EntityKind::Static),
+            ("tail", EntityKind::Static),
+        ] {
+            let matches = (0..facts.len()).filter(|&index|
+                facts.names[index] == name.as_bytes() && facts.kinds[index] == kind
+                    && facts.publication_roles[index] == Role::PrimaryOwned).collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1, "one authored binding with its lexical const/let kind: {name}");
+            let leaf = matches[0];
+            let span = facts.provenance.source_spans()[leaf].expect("exact authored leaf span");
+            assert_eq!(&source.as_bytes()[span.start as usize..span.end as usize], name.as_bytes());
+            leaves.insert(name, leaf as u32);
+        }
+        assert!(!(0..facts.len()).any(|index|
+            facts.publication_roles[index] == Role::PrimaryOwned
+                && (facts.names[index].starts_with(b"{") || facts.names[index].starts_with(b"["))),
+            "object/array patterns never become named product rows");
+        for name in ["source", "nested", "fallback"] {
+            assert!(!(0..facts.len()).any(|index|
+                facts.names[index] == name.as_bytes()
+                    && matches!(facts.kinds[index], EntityKind::Constant | EntityKind::Static)
+                    && facts.publication_roles[index] == Role::PrimaryOwned),
+                "property labels and default-expression references are not leaf bindings: {name}");
+        }
+        let body = source.find("return renamed + count + head").expect("body");
+        for name in ["renamed", "count", "head"] {
+            let start = (body + source[body..].find(name).expect("exact body use")) as u32;
+            assert!((0..facts.occurrence_len).any(|index|
+                facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                    .is_some_and(|owner| owner.start + facts.occurrences[index].span.start == start)
+                    && facts.occurrences[index].target == OccurrenceTarget::Local(EntityId::new(leaves[name]))),
+                "body references retain exact local leaf identity: {name}");
+        }
+        let initializer = source.find("renamed = fallback()").expect("default initializer") as u32
+            + "renamed = ".len() as u32;
+        let fallback = (0..facts.len()).find(|&index|
+            facts.names[index] == b"fallback" && facts.kinds[index] == EntityKind::Function)
+            .expect("real fallback function") as u32;
+        assert!((0..facts.occurrence_len).any(|index| {
+            let owner = facts.occurrence_owners[index] as usize;
+            facts.publication_roles[owner] == Role::ReferenceOnly
+                && facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == initializer)
+                && facts.occurrences[index].target == OccurrenceTarget::Local(EntityId::new(fallback))
+        }), "the aggregate keeps its canonical initializer reference without a fabricated leaf owner");
+        let ir = owned_tsz_ir_at_path(source, "bindings.ts")?;
+        for name in leaves.keys() {
+            let owned = ir.canonical_entities().find(|entity|
+                entity.authority.publication == Role::PrimaryOwned
+                    && entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(name.as_bytes()))
+                .expect("retained primary leaf");
+            assert!(ir.typescript_extension(owned.id).and_then(|extension| extension.observed).is_some(),
+                "native checker observes the actual leaf, not the aggregate annotation: {name}");
+        }
+        Ok(())
     }
 
     #[test]
