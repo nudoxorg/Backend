@@ -449,6 +449,22 @@ fn published_capture_requires_exact_selected_claim_and_coverage() -> Result<(), 
             )
             .is_err()
     );
+    assert!(
+        observed
+            .observe_current(
+                &key,
+                Some(&ProductSemanticPublicationRecord::Unavailable(
+                    SemanticUnavailableReason::ProjectAuthority,
+                )),
+                Some(ProductSemanticCaptureOutcome::Published {
+                    coverage: SemanticPublicationCoverage::Complete,
+                    claim: claim(b"selected"),
+                }),
+                &activated(&[&key]),
+            )
+            .is_err(),
+        "a publication-only revocation cannot retain a Published capture",
+    );
     assert_eq!(
         observed,
         SemanticTally::default(),
