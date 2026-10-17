@@ -1,8 +1,7 @@
 //! Real captured42 bytes support transport controls only, not native publication/latency claims.
 use super::*;
 use backend_library::{
-    PackageReference, SemanticSourceReference, SemanticVersionDescriptor, SemanticVersionRecord,
-    SemanticVersionsPage,
+    SemanticSourceReference, SemanticVersionDescriptor, SemanticVersionRecord, SemanticVersionsPage,
 };
 use serde_json::{Value, json};
 fn captured() -> Result<SemanticVersionRecord, String> {
