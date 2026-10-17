@@ -4,7 +4,9 @@
 use super::source_budget::SourceAdmissionLimits;
 use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
+#[path = "ingest/go_project.rs"]
 mod go_project;
+use self::go_project::GoProjectCapture;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
 };
