@@ -254,7 +254,7 @@ impl BrowseLane {
         owner_cursor: backend_engine::Cursor,
         command: SurfaceCommand,
         registry: Option<&RegistryGateway>,
-        metadata: Option<PreparedPackageMetadata>,
+        mut metadata: Option<PreparedPackageMetadata>,
     ) -> Result<(), &'static str> {
         if self.closed || self.outstanding.len() >= MAX_OUTSTANDING {
             return Err("Cargo browse read capacity is exhausted");
@@ -307,6 +307,9 @@ impl BrowseLane {
         } else {
             AdvisorySelection::NotTree
         };
+        if let Some(metadata) = metadata.as_mut() {
+            metadata.mark_queued();
+        }
         queue.pending.push_back(Job {
             ticket,
             request_id,
@@ -606,9 +609,10 @@ fn run_worker(
                     catch_unwind(AssertUnwindSafe(|| {
                         with_observation_control(Arc::clone(&job.control), || {
                             if let Some(metadata) = job.metadata {
-                                WorkReply::Metadata(metadata.fetch(|| {
-                                    job.control.is_cancelled() || job.control.is_expired()
-                                }))
+                                WorkReply::Metadata(metadata.fetch_with_budget(
+                                    || job.control.is_cancelled() || job.control.is_expired(),
+                                    || job.control.remaining_budget(),
+                                ))
                             } else {
                                 WorkReply::Browse(executor(
                                     &mut cache,

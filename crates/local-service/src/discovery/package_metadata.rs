@@ -73,6 +73,8 @@ pub(crate) struct PreparedPackageMetadata {
     maximum: usize,
     cached: Option<Arc<CachedObject>>,
     cancelled: Arc<AtomicBool>,
+    request_started_at: Instant,
+    queued_at: Option<Instant>,
 }
 
 pub(crate) struct FetchedPackageMetadata {
@@ -81,8 +83,9 @@ pub(crate) struct FetchedPackageMetadata {
 }
 
 /// Opt-in phase timing contains no endpoint URL, token, package, or body.
-/// The correlation ID permits queued owner work to be compared with network
-/// and parser time without putting diagnostics into MCP protocol output.
+/// `queue` covers accepted submission through worker start; `total` covers
+/// preparation through the parsed fetch result, including queue, fetch, and
+/// parse time. Neither is the full command-serialization duration.
 fn trace_metadata(request_id: u64, phase: &str, elapsed: Duration, outcome: &str) {
     if std::env::var_os("BACKEND_PACKAGE_METADATA_TRACE").is_some_and(|value| value == "1") {
         eprintln!(
@@ -93,7 +96,25 @@ fn trace_metadata(request_id: u64, phase: &str, elapsed: Duration, outcome: &str
 }
 
 impl PreparedPackageMetadata {
+    pub(crate) fn mark_queued(&mut self) {
+        self.queued_at = Some(Instant::now());
+    }
+
+    #[cfg(test)]
     pub(crate) fn fetch(self, cancelled: impl Fn() -> bool) -> FetchedPackageMetadata {
+        self.fetch_with_budget(cancelled, || REQUEST_TIMEOUT)
+    }
+
+    pub(crate) fn fetch_with_budget(
+        self,
+        cancelled: impl Fn() -> bool,
+        remaining_budget: impl Fn() -> Duration,
+    ) -> FetchedPackageMetadata {
+        let request_id = self.request_id;
+        let request_started_at = self.request_started_at;
+        if let Some(queued_at) = self.queued_at {
+            trace_metadata(request_id, "queue", queued_at.elapsed(), "started");
+        }
         let result = (|| {
             if cancelled() || self.cancelled.load(Ordering::Acquire) {
                 return Err(DiscoveryStoreError::Cancelled);
@@ -107,6 +128,7 @@ impl PreparedPackageMetadata {
                 &self.key.endpoint,
                 self.maximum,
                 || cancelled() || self.cancelled.load(Ordering::Acquire),
+                &remaining_budget,
                 etag,
             );
             trace_metadata(
@@ -166,6 +188,12 @@ impl PreparedPackageMetadata {
                 admitted_sequence: 0,
             })
         })();
+        trace_metadata(
+            request_id,
+            "total",
+            request_started_at.elapsed(),
+            if result.is_ok() { "complete" } else { "failed" },
+        );
         FetchedPackageMetadata {
             request: self,
             result,
@@ -283,6 +311,8 @@ impl DiscoveryGateway {
             cached: self.package_metadata.objects.get(&key).cloned(),
             key,
             cancelled: Arc::clone(&self.cancelled),
+            request_started_at: Instant::now(),
+            queued_at: None,
         })
     }
 
@@ -723,10 +753,16 @@ fn exact_version_document(
     Ok((bytes, presence))
 }
 
+fn request_timeout(remaining_budget: Duration) -> Option<Duration> {
+    let timeout = REQUEST_TIMEOUT.min(remaining_budget);
+    (!timeout.is_zero()).then_some(timeout)
+}
+
 fn fetch_object(
     url: &str,
     maximum: usize,
     cancelled: impl Fn() -> bool,
+    remaining_budget: impl Fn() -> Duration,
     etag: Option<&str>,
 ) -> Result<ObjectResponse, DiscoveryStoreError> {
     if cancelled() {
@@ -746,7 +782,13 @@ fn fetch_object(
     if let Some(etag) = etag {
         request = request.header("if-none-match", etag);
     }
+    // Apply the remaining absolute observation budget at request scope as
+    // late as possible, so queue wait cannot leave a stale full 20s timeout.
+    let timeout = request_timeout(remaining_budget()).ok_or(DiscoveryStoreError::Cancelled)?;
     let mut response = request
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
         .call()
         .map_err(|_| DiscoveryStoreError::Io(io::Error::other("metadata request failed")))?;
     let status = response.status().as_u16();
@@ -810,6 +852,35 @@ mod tests {
 
     const REQUESTS: &str = r#"{"info":{"name":"requests","version":"2.34.2"},"releases":{"2.34.2":[{"yanked":false,"upload_time_iso_8601":"2026-10-01T12:00:00Z"}]}}"#;
     const SAMPLEPROJECT: &str = include_str!("fixtures/pypi-sampleproject-project-20261006.json");
+
+    #[test]
+    fn metadata_get_timeout_is_capped_by_remaining_observation_budget() {
+        assert_eq!(
+            request_timeout(Duration::from_secs(90)),
+            Some(REQUEST_TIMEOUT)
+        );
+        assert_eq!(
+            request_timeout(Duration::from_secs(3)),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(request_timeout(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn expired_metadata_budget_does_not_issue_a_get() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        listener.set_nonblocking(true).expect("nonblocking listener");
+        let url = format!(
+            "http://{}/metadata",
+            listener.local_addr().expect("loopback address")
+        );
+        let result = fetch_object(&url, 1024, || false, || Duration::ZERO, None);
+        assert!(matches!(result, Err(DiscoveryStoreError::Cancelled)));
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+    }
 
     fn server(
         responses: Vec<(&'static str, &'static str)>,
