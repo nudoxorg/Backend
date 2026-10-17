@@ -254,7 +254,8 @@ mod tests {
                     }
                     1 => {
                         status.package =
-                            backend_library::PackageReference::parse("/fixture/other".to_owned())?
+                            backend_library::PackageReference::parse("/fixture/other".to_owned())
+                                .map_err(|error| std::io::Error::other(error.to_string()))?
                     }
                     2 => status.request_digest = [19; 32],
                     _ => {
