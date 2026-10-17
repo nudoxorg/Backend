@@ -5,15 +5,19 @@ use backend_library::{
     SemanticVersionsPage,
 };
 use serde_json::{Value, json};
-fn captured() -> SemanticVersionRecord {
-    let packet: Value = serde_json::from_str(include_str!(
+fn captured() -> Result<SemanticVersionRecord, String> {
+    let packet: Value = fixture(serde_json::from_str(include_str!(
         "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
-    ))
-    .expect("unchanged real42 capture");
-    serde_json::from_value(packet["surface"]["data"][0].clone()).expect("complete typed record")
+    )))?;
+    fixture(serde_json::from_value(packet["surface"]["data"][0].clone()))
 }
-pub(super) fn page(limit: u16, offset: u64, total: u64, root: u8) -> SemanticVersionsPage {
-    let original = captured();
+pub(super) fn page(
+    limit: u16,
+    offset: u64,
+    total: u64,
+    root: u8,
+) -> Result<SemanticVersionsPage, String> {
+    let original = captured()?;
     let mut entries = Vec::new();
     for ordinal in offset..total.min(offset + u64::from(limit)) {
         let mut record = original.clone();
@@ -36,31 +40,32 @@ pub(super) fn page(limit: u16, offset: u64, total: u64, root: u8) -> SemanticVer
             frontier.source_relation_root = [root; 32];
         }
         entries.push(SemanticVersionDescriptor::Available {
-            reference: SemanticSourceReference::capture(&record, [root; 32], [34; 32], &[7; 32])
-                .expect("sealed synthetic page observation"),
+            reference: fixture(SemanticSourceReference::capture(
+                &record, [root; 32], [34; 32], &[7; 32],
+            ))?,
         });
     }
     let end = offset + entries.len() as u64;
     let more = end < total;
     let next_cursor = if more {
-        let metadata = entries.last().expect("nonempty page").metadata();
-        Some(
-            backend_library::SemanticVersionsCursor::issue(
-                backend_library::SemanticVersionsCursorClaims {
-                    package: original.package.clone(),
-                    source_relation_root: [root; 32],
-                    semantic_relation_root: [34; 32],
-                    coordinate: metadata.coordinate.clone(),
-                    profile: metadata.profile,
-                    generation: metadata.generation,
-                    limit,
-                    total,
-                    offset: end,
-                },
-                &[7; 32],
-            )
-            .expect("synthetic native transport continuation"),
-        )
+        let metadata = entries
+            .last()
+            .ok_or_else(|| "continuation requires a nonempty page".to_owned())?
+            .metadata();
+        Some(fixture(backend_library::SemanticVersionsCursor::issue(
+            backend_library::SemanticVersionsCursorClaims {
+                package: original.package.clone(),
+                source_relation_root: [root; 32],
+                semantic_relation_root: [34; 32],
+                coordinate: metadata.coordinate.clone(),
+                profile: metadata.profile,
+                generation: metadata.generation,
+                limit,
+                total,
+                offset: end,
+            },
+            &[7; 32],
+        ))?)
     } else {
         None
     };
@@ -75,8 +80,8 @@ pub(super) fn page(limit: u16, offset: u64, total: u64, root: u8) -> SemanticVer
         more,
         complete: !more,
     };
-    page.admit().expect("self-consistent native transport page");
-    page
+    fixture(page.admit())?;
+    Ok(page)
 }
 
 struct Versions {
@@ -111,7 +116,9 @@ impl Engine for Versions {
         } else {
             8
         };
-        let reply = SurfaceReply::SemanticVersionsPage(page(*limit, offset, 10, root));
+        let reply = SurfaceReply::SemanticVersionsPage(
+            page(*limit, offset, 10, root).map_err(ClientError::Protocol)?,
+        );
         self.calls.push(command);
         Ok(reply)
     }
@@ -138,10 +145,10 @@ fn selected_page(answer: &Answer) -> &SemanticVersionsPage {
 #[test]
 fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_effective_credit()
 -> Result<(), String> {
-    let package = captured().package;
+    let package = captured()?.package;
     let credit = backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT;
     let words = vec!["semantic-versions".to_owned(), package.as_str().to_owned()];
-    let invocation = crate::invoke::parse(&words, None).expect("CLI shared default");
+    let invocation = fixture(crate::invoke::parse(&words, None))?;
     let command = fixture(backend_present::lower(&invocation, "/fixture"))?;
     assert!(
         matches!(command,Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions{limit,cursor:None,..} if limit==credit))
@@ -155,7 +162,7 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
     // A stricter caller budget is derived from the complete real serialization,
     // not a fabricated oversized fault or a claimed production performance.
     let full = Answer::Product(Box::new(backend_present::product_view(
-        &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)),
+        &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)?),
     )));
     let bytes = fixture(backend_present::encode_answer(
         &full,
@@ -170,22 +177,21 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
             calls: vec![],
             moved: false,
         };
-        let answer = versions_with_output_admission(
+        let answer = fixture(versions_with_output_admission(
             &mut engine,
             &package,
             credit,
             None,
             || Ok(()),
             |answer| encoded(answer, budget),
-        )
-        .expect("complete admitted page");
+        ))?;
         let actual = selected_page(&answer);
         let next = actual
             .next_cursor
             .as_ref()
             .ok_or("admitted first page must have a continuation")?;
         let claims = fixture(next.claims())?;
-        assert_eq!(actual, &page(claims.limit, 0, 10, 8));
+        assert_eq!(actual, &page(claims.limit, 0, 10, 8)?);
         assert_eq!(claims.offset, actual.entries.len() as u64);
         if budget == bytes / 2 {
             assert!(engine.calls.len() > 1);
@@ -217,15 +223,14 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
         ] {
             assert!(text.contains(&shell));
         }
-        let continued = versions_with_output_admission(
+        let continued = fixture(versions_with_output_admission(
             &mut engine,
             &package,
             claims.limit,
             Some(next),
             || Ok(()),
             |answer| encoded(answer, backend_present::DEFAULT_RESPONSE_BUDGET_BYTES),
-        )
-        .expect("same native credit");
+        ))?;
         assert_eq!(selected_page(&continued).offset, claims.offset);
         assert!(
             matches!(engine.calls.last(),Some(SurfaceCommand::SemanticVersions{limit,cursor:Some(cursor),..}) if *limit==claims.limit && cursor==next)
@@ -237,10 +242,10 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
 #[test]
 fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original_caller()
 -> Result<(), String> {
-    let package = captured().package;
+    let package = captured()?.package;
     let credit = backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT;
     let full = Answer::Product(Box::new(backend_present::product_view(
-        &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)),
+        &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)?),
     )));
     let bytes = fixture(backend_present::encode_answer(
         &full,
@@ -270,7 +275,7 @@ fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original
         2,
         "changed roots never lend their rows to an earlier page"
     );
-    let cursor = page(credit, 0, 10, 8)
+    let cursor = page(credit, 0, 10, 8)?
         .next_cursor
         .ok_or("partial fixture page must have a cursor")?;
     let mut fixed = Versions {
