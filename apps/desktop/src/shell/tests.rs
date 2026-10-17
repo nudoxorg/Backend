@@ -3257,6 +3257,15 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
+    let page = rig.route();
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&std::collections::BTreeSet::from([package()]), cx));
+    rig.settle();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(), "publication retires the hidden scene");
+    for action in [facet::graph::peek::Action::Focus, facet::graph::peek::Action::Open] {
+        rig.cx.update(|window, cx| graph.update(cx, |graph, cx| graph.act_on_peek(1, action, window, cx)));
+        rig.settle();
+        assert_eq!(rig.route(), page, "the retired graph's pinned callback cannot operate the replacement scene");
+    }
 }
 
 #[gpui::test]
