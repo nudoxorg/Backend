@@ -1994,10 +1994,16 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
-        // The journal reader can still be returning from native I/O. Signal
-        // preparation before joining it, so cold search work does not continue
-        // for the entire unrelated join before seeing shutdown.
+        // Broadcast shutdown before joining any lane. A blocked journal,
+        // projection, inference or browse worker must not defer cancellation
+        // of an independent compiler or reader until its own join returns.
+        if let Some(indexing) = self.indexing.as_ref() {
+            indexing.cancelled.store(true, Ordering::Release);
+        }
         self.search_lane.request_close();
+        self.remote_semantic.request_close_local();
+        self.browse_lane.request_close();
+        self.journal_readiness.request_close();
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
@@ -2005,7 +2011,6 @@ impl CommandAdapter {
         self.search_preparation_failure = None;
         self.browse_lane.close();
         if let Some(indexing) = self.indexing.as_mut() {
-            indexing.cancelled.store(true, Ordering::Release);
             if matches!(indexing.work, IndexJobWork::Compiling { .. }) {
                 let IndexJobWork::Compiling { worker } =
                     std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
@@ -11950,6 +11955,138 @@ mod tests {
         assert!(!adapter.search_preparation_eager);
         assert!(!adapter.search_lane.active());
         assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_broadcasts_to_index_search_semantic_browse_and_journal_before_joining() {
+        use index_publication_worker::{TestHook, TestStage};
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        let original = owner_cursor(daemon);
+        let (source_entered, source_receipt) = std::sync::mpsc::sync_channel(1);
+        let (release_source, source_gate) = std::sync::mpsc::sync_channel(1);
+        adapter.source_test_hook = Some(TestHook {
+            stage: TestStage::BeforeSourcePreparation,
+            run: Box::new(move || {
+                let _ = source_entered.send(());
+                let _ = source_gate.recv();
+            }),
+        });
+        adapter
+            .start_index_operation(
+                daemon,
+                backend_library::IndexOperationKey::from_bytes([148; 32]).expect("key"),
+                backend_library::PackageReference::parse(label).expect("local package"),
+                CompileExecutionIntent::Interactive,
+                148,
+            )
+            .expect("accepted source work");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match source_receipt.try_recv() {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("owned source worker: {error}"),
+            }
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "source worker entered"
+            );
+            std::thread::yield_now();
+        }
+        let indexing = adapter.indexing.as_ref().expect("owned source phase");
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PreparingSource { .. }
+        ));
+        let index_cancelled = Arc::clone(&indexing.cancelled);
+        let (search_entered, release_search) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        search_entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cold search held");
+        let search_cancelled = adapter.search_lane.active_cancellation();
+
+        let (browse, browse_entered, release_browse) = BrowseLane::held_for_test();
+        adapter.browse_lane = browse;
+        adapter
+            .browse_lane
+            .submit(
+                149,
+                149,
+                backend_engine::Cursor::new(),
+                backend_library::SurfaceCommand::ProjectTree {
+                    root: backend_library::ProductText::from_static("/owned/shutdown-control"),
+                },
+                None,
+            )
+            .expect("owned browse request");
+        browse_entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("browse worker held");
+        let browse_cancelled = adapter.browse_lane.cancellation_for_test(149);
+        // A separate selected lifetime proves that local inference receives its
+        // own stop request, rather than borrowing the search lane's signal.
+        // This runs the existing supervised BEM2 protocol fixture, not a model.
+        let (producer, semantic, semantic_cancelled) =
+            crate::builtin::query::local_semantic::tests::gated_owner_for_shutdown()
+                .expect("actual supervised local inference held");
+        adapter.remote_semantic = semantic;
+        let release_journal = adapter.journal_readiness.hold_reader();
+        let journal_cancelled = adapter.journal_readiness.cancellation_for_test();
+        assert!(!index_cancelled.load(Ordering::Acquire));
+        assert!(!search_cancelled.load(Ordering::Acquire));
+        assert!(!semantic_cancelled.load(Ordering::Acquire));
+        assert!(!browse_cancelled.is_cancelled());
+        assert!(!journal_cancelled.load(Ordering::Acquire));
+        let release_inference = producer.release.clone();
+        let observer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let signals = || {
+                [
+                    index_cancelled.load(Ordering::Acquire),
+                    search_cancelled.load(Ordering::Acquire),
+                    semantic_cancelled.load(Ordering::Acquire),
+                    browse_cancelled.is_cancelled(),
+                    journal_cancelled.load(Ordering::Acquire),
+                ]
+            };
+            while !signals().into_iter().all(|stopped| stopped)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let before_releasing_any_worker = signals();
+            // Release every fixture gate before asserting, including when an
+            // old serialized shutdown reaches this watchdog instead.
+            let _ = release_journal.send(());
+            let _ = release_search.send(());
+            let _ = release_source.send(());
+            let _ = release_browse.send(());
+            let _ = fs::write(release_inference, b"failure-safe fixture release");
+            before_releasing_any_worker
+        });
+        adapter.close();
+        let observed = observer.join().expect("shutdown observer");
+        assert_eq!(
+            observed, [true; 5],
+            "all lanes stop before any join is unblocked"
+        );
+        assert!(!adapter.search_lane.active());
+        assert!(adapter.remote_semantic.local_preparation().is_none());
+        assert!(matches!(
+            adapter.indexing.as_ref().expect("retained job").work,
+            IndexJobWork::Transition
+        ));
+        assert_eq!(
+            owner_cursor(daemon),
+            original,
+            "shutdown invents no publication"
+        );
+        adapter.close(); // Every final join remains idempotent.
     }
 
     #[test]

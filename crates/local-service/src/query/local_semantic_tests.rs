@@ -836,6 +836,31 @@ pub(crate) fn fixture_with_mode(
 }
 
 #[cfg(unix)]
+pub(crate) fn gated_owner_for_shutdown() -> Result<
+    (
+        ProtocolFixture,
+        crate::builtin::query::RemoteSemantic,
+        Arc<AtomicBool>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let fixture = fixture_with_mode(4096, "gate-query")?;
+    let (coordinator, _, _) = selected_many(3, false)?;
+    let mut owner = fixture_owner(&fixture);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let query = LocalQuery::prefix("fixture", 3)?;
+    let _ = owner.search_local_with_cancellation(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        coordinator.search_local(query)?,
+        "shutdown intent",
+        Some(Arc::clone(&cancelled)),
+    );
+    wait_for_fixture_marker(&fixture.entered)?;
+    Ok((fixture, owner, cancelled))
+}
+
+#[cfg(unix)]
 pub(crate) fn protocol_fixture_python() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     // Match the existing native-tooling/engine test authority convention. An

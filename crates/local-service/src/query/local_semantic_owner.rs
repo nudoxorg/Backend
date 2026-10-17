@@ -725,11 +725,24 @@ impl LocalSemanticOwner {
         self.admitted.runtime()
     }
 
+    /// Retain the core and worker for joined retirement, signalling only the
+    /// selected lifetime here so other owner lanes can be stopped first.
+    pub(super) fn request_close(&mut self) {
+        let selection = match &self.execution {
+            Execution::Working(worker) => Some(&worker.selection),
+            Execution::Ready { selection, .. } => selection.as_ref(),
+            Execution::Closed => None,
+        };
+        if let Some(selection) = selection {
+            selection.cancelled.store(true, Ordering::Release);
+        }
+    }
+
     pub(super) fn close(&mut self) {
+        self.request_close();
         if let Execution::Working(worker) =
             std::mem::replace(&mut self.execution, Execution::Closed)
         {
-            worker.selection.cancelled.store(true, Ordering::Release);
             drop(worker.completed);
             let _ = worker.worker.join(); // Owned shutdown retirement; no active serving turn.
         }
