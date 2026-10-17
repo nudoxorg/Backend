@@ -20,7 +20,7 @@ use backend_library::{
     SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
     view_key, view_state_root,
 };
-use backend_present::{domain_name, grammar_for, grammar_for_tool};
+use backend_present::{domain_name, encode_answer, grammar_for, grammar_for_tool};
 
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
