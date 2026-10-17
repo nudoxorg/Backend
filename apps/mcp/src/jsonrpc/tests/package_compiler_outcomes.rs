@@ -77,6 +77,7 @@ fn discovery_with_profiles(mut profiles: Vec<SemanticLanguageProfile>) -> Packag
         .collect::<Vec<_>>()
         .into_boxed_slice();
     PackageCompilerOutcomes::Summary {
+        coverage: None,
         basis,
         source_capture,
         refusals,
@@ -132,6 +133,7 @@ fn all_nine_product_profiles_and_sixteen_canonical_dialects_fit_complete_cli_mcp
             basis,
             source_capture,
             refusals,
+            ..
         } = &discovery
         else {
             panic!("summary")
@@ -302,4 +304,102 @@ fn compiler_selector_invalid_call_then_valid_and_typed_stale_keep_exact_request(
     assert!(
         matches!(*command,SurfaceCommand::PackageProfile { compiler_outcome:Some(observed),.. } if observed==*read)
     );
+}
+
+#[test]
+fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_and_mcp_budgets() {
+    use backend_library::{PackageCompilerCoveragePage, PackageCompilerCoverageSelector};
+    use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
+    let current = discovery();
+    let PackageCompilerOutcomes::Summary { basis, .. } = current else {
+        panic!("basis")
+    };
+    let selector = PackageCompilerCoverageSelector {
+        outcome: PackageCompilerOutcomeSelector {
+            basis: basis.identity(),
+            profile: SemanticLanguageProfile::from_name("typescript").unwrap(),
+        },
+        catalog: [6; 32],
+        generation: [7; 32],
+        input_digest: [9; 32],
+        offset: 1,
+    };
+    let path = format!("src/{}.spec.ts", "q\"".repeat(600));
+    let row = SourceCoverageRow::Gap {
+        path: path.clone(),
+        source:
+            *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                b"spec",
+            )
+            .as_ref(),
+        byte_len: 4,
+        cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+    };
+    let page = PackageCompilerCoveragePage {
+        generation: selector.generation,
+        input_digest: selector.input_digest,
+        source_count: 50,
+        completed: 41,
+        row_count: 10,
+        rows: vec![row.clone()].into_boxed_slice(),
+        next: Some(PackageCompilerOutcomeRead::Coverage(PackageCompilerCoverageSelector {
+            offset: 2,
+            ..selector
+        })),
+    };
+    assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
+    let outcomes = PackageCompilerOutcomes::Coverage {
+        package: PackageReference::parse(PROJECT).unwrap(),
+        basis,
+        selector,
+        page,
+    };
+    let read = PackageCompilerOutcomeRead::Coverage(selector);
+    let native = SurfaceReply::PackageCompilerOutcomes(outcomes.clone());
+    backend_library::admit_surface_reply(
+        &SurfaceCommand::PackageProfile {
+            package: PackageReference::parse(PROJECT).unwrap(),
+            compiler_outcome: Some(read),
+        },
+        &native,
+    )
+    .unwrap();
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let answer = Answer::Product(Box::new(backend_present::product_view(&native)));
+        let cli =
+            backend_present::encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("complete bounded CLI coverage page");
+        assert!(cli.bytes.len() <= 49152);
+        assert!(
+            backend_present::cl100k_tokens(std::str::from_utf8(&cli.bytes).unwrap()).unwrap()
+                <= MCP_CL100K_TOKEN_LIMIT
+        );
+        for registered in [false, true] {
+            let mut server = ready(Fake {
+                surface_reply: Some(native.clone()),
+                ..Fake::default()
+            });
+            let args = json!({"package":PROJECT,"compiler_outcome":read,"detail":detail.name()});
+            let params = if registered {
+                json!({"name":"backend.call","arguments":{"name":"backend.package_profile","arguments":args}})
+            } else {
+                json!({"name":"backend.package_profile","arguments":args})
+            };
+            let response = request(&mut server, "tools/call", &params);
+            assert_context_bounded(&response);
+            assert!(wire_tokens(&response).unwrap() <= MCP_CL100K_TOKEN_LIMIT);
+            assert_eq!(response["isError"], false, "{response}");
+            let observed: PackageCompilerOutcomes =
+                serde_json::from_value(response["structuredContent"]["compiler_outcomes"].clone())
+                    .unwrap();
+            assert_eq!(
+                observed, outcomes,
+                "full path/cause/source and continuation survive final transport envelope"
+            );
+            let PackageCompilerOutcomes::Coverage { page, .. } = observed else {
+                panic!("coverage")
+            };
+            assert_eq!(page.rows.as_ref(), [row.clone()].as_slice());
+        }
+    }
 }

@@ -1530,6 +1530,7 @@ pub(crate) struct SemanticAuthority {
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
     selected_image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
     selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
+    source_coverage: Arc<super::source_coverage::CoverageResidence>,
     history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
     retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
     /// Observations named by committed compiler selections. They describe the
@@ -1625,6 +1626,7 @@ impl SemanticAuthority {
             selected_image_plans: Arc::new(
                 super::selected_full_image::SelectedFullImagePlanCache::default(),
             ),
+            source_coverage: Arc::new(super::source_coverage::CoverageResidence::default()),
             history: Arc::new(BTreeMap::new()),
             retained_generations: Arc::new(BTreeMap::new()),
             committed_observations: Arc::new(BTreeMap::new()),
@@ -1696,6 +1698,7 @@ impl SemanticAuthority {
             verified_segments: Arc::clone(&self.verified_segments),
             selected_image_readers: Arc::clone(&self.selected_image_readers),
             selected_image_plans: Arc::clone(&self.selected_image_plans),
+            source_coverage: Arc::clone(&self.source_coverage),
             history: Arc::clone(&self.history),
             retained_generations: Arc::clone(&self.retained_generations),
             committed_observations: Arc::clone(&self.committed_observations),
@@ -1773,6 +1776,50 @@ impl SemanticAuthority {
             Arc::clone(&self.verified_segments),
             self.s3_publisher.as_deref(),
         )
+    }
+
+    /// Reads only the coverage member of the exact committed compiler selection.
+    /// The source-capture claim is checked independently of the mutable Turso projection.
+    pub(super) fn selected_source_coverage(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        expected: SemanticPublicationClaim,
+    ) -> Result<Option<Arc<backend_semantic::ir::SourceCoverageManifest>>, BuiltinModelError> {
+        let (claim, selected) = self.read_selected_pair(key)?;
+        if claim != expected {
+            return Err(BuiltinModelError(
+                "compiler coverage publication changed".to_owned(),
+            ));
+        }
+        let cache_key = super::source_coverage::CoverageSelection::new(
+            &selected,
+            *expected.binding().identity.as_ref(),
+        );
+        self.source_coverage.get_or_load(cache_key, || {
+            let reopened = reopen_selected_compiler_metadata(&self.store, &selected)
+                .map_err(|e| BuiltinModelError(format!("reopen compiler coverage metadata: {e}")))?;
+            if reopened.metadata().binding_identity() != expected.binding().identity.as_ref() {
+                return Err(BuiltinModelError(
+                    "compiler coverage generation mismatch".to_owned(),
+                ));
+            }
+            let closure = self
+                .store
+                .open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+                .map_err(|e| BuiltinModelError(format!("open compiler coverage closure: {e:?}")))?;
+            let coverage =
+                backend_extension_turso::reopen_source_coverage(&closure, reopened.metadata())
+                    .map_err(|e| BuiltinModelError(format!("reopen compiler coverage: {e}")))?;
+            if coverage.as_ref().is_some_and(|coverage| {
+                coverage.input_root() != selected.input_digest()
+                    || coverage.profile() != <[u8; 2]>::from(key.profile())
+            }) {
+                return Err(BuiltinModelError(
+                    "compiler coverage differs from selected attempt input/profile".to_owned(),
+                ));
+            }
+            Ok(coverage)
+        })
     }
 
     /// Resolves one product key from the selection admitted by the committed
@@ -3164,6 +3211,32 @@ impl SemanticAuthority {
         } else {
             None
         };
+        let coverage_member = if let Some(coverage) = staged.source_coverage() {
+            if coverage.input_root() != attempt.input_digest()
+                || coverage.profile() != <[u8; 2]>::from(key.profile())
+            {
+                return Err(BuiltinModelError(
+                    "compiler coverage differs from staged input/profile".to_owned(),
+                ));
+            }
+            let bytes = coverage.encode();
+            let object_id =
+                stream_payload::<backend_semantic::ir::SourceCoverageSchema>(&mut builder, &bytes)?;
+            payload_ids.insert(object_id);
+            let verified = self
+                .store
+                .verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|e| BuiltinModelError(format!("verify compiler coverage: {e:?}")))?;
+            Some(
+                backend_extension_turso::CompilerSourceCoverageMember::from_verified_object(
+                    verified, coverage,
+                )
+                .map_err(|e| BuiltinModelError(format!("admit compiler coverage: {e}")))?,
+            )
+        } else {
+            None
+        };
+
         let payload_pin = builder.seal_pinned().map_err(|error| {
             BuiltinModelError(format!("seal staged semantic output closure: {error:?}"))
         })?;
@@ -3197,6 +3270,9 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("bind native program source metadata: {error}"))
                 })?;
+        }
+        if let Some(member) = coverage_member {
+            metadata = metadata.with_source_coverage(member).map_err(|e|BuiltinModelError(format!("bind compiler coverage: {e}")))?;
         }
         let claim =
             SemanticPublicationClaim::admit(staged.manifest_facts(), staged.binding_facts())

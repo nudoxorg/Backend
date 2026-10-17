@@ -105,6 +105,7 @@ pub struct SourceCoverageManifest {
     identity: [u8; 32],
     input_root: [u8; 32],
     profile: [u8; 2],
+    program: [u8; 32],
     source_count: u32,
     completed: u32,
     rows: Vec<SourceCoverageRow>,
@@ -114,12 +115,17 @@ impl SourceCoverageManifest {
     pub fn new(
         input_root: [u8; 32],
         profile: [u8; 2],
+        program: [u8; 32],
         source_count: u32,
         completed: u32,
         rows: Vec<SourceCoverageRow>,
     ) -> Result<Self, &'static str> {
-        if input_root == [0; 32]
-            || profile != [1, 0]
+        if program == [0; 32]
+            || input_root == [0; 32]
+            || !matches!(
+                crate::vocabulary::LanguageProfile::try_from(profile),
+                Ok(crate::vocabulary::LanguageProfile::TypeScript(_))
+            )
             || source_count == 0
             || source_count > 16_384
             || completed > source_count
@@ -144,6 +150,7 @@ impl SourceCoverageManifest {
             identity: [0; 32],
             input_root,
             profile,
+            program,
             source_count,
             completed,
             rows,
@@ -151,7 +158,7 @@ impl SourceCoverageManifest {
         let length = value
             .rows
             .iter()
-            .try_fold(54usize, |length, row| {
+            .try_fold(86usize, |length, row| {
                 length
                     .checked_add(row.path().len())?
                     .checked_add(match row {
@@ -176,6 +183,10 @@ impl SourceCoverageManifest {
     /// Exact language profile.
     pub const fn profile(&self) -> [u8; 2] {
         self.profile
+    }
+    /// Exact native program/forest identity authenticated with these observations.
+    pub const fn program(&self) -> &[u8; 32] {
+        &self.program
     }
     /// Captured source count.
     pub const fn source_count(&self) -> u32 {
@@ -212,6 +223,7 @@ impl SourceCoverageManifest {
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.input_root);
         out.extend_from_slice(&self.profile);
+        out.extend_from_slice(&self.program);
         out.extend_from_slice(&self.source_count.to_le_bytes());
         out.extend_from_slice(&self.completed.to_le_bytes());
         out.extend_from_slice(&(self.rows.len() as u32).to_le_bytes());
@@ -253,6 +265,7 @@ impl SourceCoverageManifest {
         }
         let root = d.array()?;
         let profile = d.array()?;
+        let program = d.array()?;
         let count = d.u32()?;
         let completed = d.u32()?;
         let rows = d.u32()? as usize;
@@ -288,7 +301,7 @@ impl SourceCoverageManifest {
         if !d.0.is_empty() {
             return Err("trailing coverage bytes");
         }
-        Self::new(root, profile, count, completed, facts)
+        Self::new(root, profile, program, count, completed, facts)
     }
 }
 struct Decoder<'a>(&'a [u8]);
@@ -421,14 +434,17 @@ mod tests {
     }
     #[test]
     fn coverage_codec_retains_config_source_identity_and_distinct_observed_causes() {
-        let value = SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, rows()).unwrap();
+        let value = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows()).unwrap();
+        let tsx = SourceCoverageManifest::new([3; 32], [1, 1], [7; 32], 50, 48, rows()).unwrap();
+        assert_eq!(tsx.profile(), [1, 1]);
+        assert_ne!(tsx.identity(), value.identity());
         let bytes = value.encode();
         let cold = SourceCoverageManifest::decode(&bytes).unwrap();
         assert_eq!(cold, value);
         assert_eq!(cold.identity(), value.identity());
         for root in [[4; 32], [5; 32]] {
             assert_ne!(
-                SourceCoverageManifest::new(root, [1, 0], 50, 48, rows())
+                SourceCoverageManifest::new(root, [1, 0], [7; 32], 50, 48, rows())
                     .unwrap()
                     .identity(),
                 value.identity()
@@ -439,7 +455,7 @@ mod tests {
             *cause = SourceCoverageGapCause::CompileDeadlineExceeded;
         }
         assert_ne!(
-            SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, changed)
+            SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, changed)
                 .unwrap()
                 .identity(),
             value.identity()
@@ -447,7 +463,7 @@ mod tests {
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(SourceCoverageManifest::decode(&trailing).is_err());
-        for offset in [0, 40, 42, 50, bytes.len() - 1] {
+        for offset in [0, 40, 74, 82, bytes.len() - 1] {
             let mut bad = bytes.clone();
             bad[offset] = 255;
             assert!(
@@ -460,19 +476,19 @@ mod tests {
     fn coverage_codec_refuses_duplicate_reordered_missing_and_unbounded_observations() {
         let mut duplicate = rows();
         duplicate.push(duplicate[2].clone());
-        assert!(SourceCoverageManifest::new([3; 32], [1, 0], 50, 47, duplicate).is_err());
+        assert!(SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 47, duplicate).is_err());
         let mut unordered = rows();
         unordered.swap(1, 2);
-        assert!(SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, unordered).is_err());
-        assert!(SourceCoverageManifest::new([3; 32], [1, 0], 50, 49, rows()).is_err());
+        assert!(SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, unordered).is_err());
+        assert!(SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 49, rows()).is_err());
         let mut invalid = rows();
         if let SourceCoverageRow::Gap { path, .. } = &mut invalid[1] {
             *path = "../foreign.ts".into();
         }
-        assert!(SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, invalid).is_err());
+        assert!(SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, invalid).is_err());
         assert!(SourceCoverageManifest::decode(&vec![0; MAX_SOURCE_COVERAGE_BYTES + 1]).is_err());
         // Aggregate count cannot authenticate a foreign language's catalog.
-        assert!(SourceCoverageManifest::new([3; 32], [2, 4], 50, 48, rows()).is_err());
+        assert!(SourceCoverageManifest::new([3; 32], [2, 4], [7; 32], 50, 48, rows()).is_err());
     }
     #[test]
     fn typescript_catalog_rejects_foreign_language_causes_at_construction_and_decode() {
@@ -486,8 +502,10 @@ mod tests {
             if let SourceCoverageRow::Gap { cause: seen, .. } = &mut foreign[2] {
                 *seen = cause;
             }
-            assert!(SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, foreign).is_err());
-            let mut bytes = SourceCoverageManifest::new([3; 32], [1, 0], 50, 48, rows())
+            assert!(
+                SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, foreign).is_err()
+            );
+            let mut bytes = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows())
                 .unwrap()
                 .encode();
             *bytes.last_mut().unwrap() = cause.tag();

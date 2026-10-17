@@ -401,53 +401,7 @@ pub struct PackageSource<'source> {
 }
 
 /// Why one exact package source contributed provenance but no semantic artifact.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PackageSourceCoverageGapCause {
-    /// Rust-analyzer found the source in the package VFS but outside every active Cargo target.
-    RustSourceOutsideActiveCargoTarget,
-    /// Exact captured source is outside the selected TypeScript Compiler API program.
-    TypeScriptSourceExcludedFromConfiguredProgram,
-    /// Checking or lowering this source spent its work allowance (or the program's
-    /// remaining allowance), so it has no semantic artifact. Every other source of
-    /// the package keeps the facts it would have had.
-    TypeScriptSourceWorkBudgetExhausted,
-    /// Exact Python source was captured but its grammar rejected semantic lowering.
-    PythonSourceSyntaxUnavailable,
-    /// Exact Python source was captured but its declared codec was unavailable.
-    PythonSourceEncodingUnavailable,
-    /// Native solved dependencies reach unavailable captured Python resources.
-    PythonSourceDependencyUnavailable,
-    /// The language authority (loader, checker or analyzer) refused this exact source; every
-    /// other source of the package keeps the facts it would have had.
-    SourceAuthorityRefused,
-    /// The native compiler rejected this exact source's syntax or flooded its diagnostics.
-    SourceRejectedByNativeCompiler,
-    /// Lowering or compact-IR construction cannot represent this exact source.
-    SourceNotRepresentable,
-    /// The package's compile deadline passed before this source finished or could start.
-    CompileDeadlineExceeded,
-}
-
-impl std::fmt::Display for PackageSourceCoverageGapCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::RustSourceOutsideActiveCargoTarget => "outside every active Cargo target",
-            Self::TypeScriptSourceExcludedFromConfiguredProgram => {
-                "excluded from the configured TypeScript program"
-            }
-            Self::TypeScriptSourceWorkBudgetExhausted => "its TypeScript file work allowance was exhausted",
-            Self::PythonSourceSyntaxUnavailable => "its Python syntax was rejected",
-            Self::PythonSourceEncodingUnavailable => "its Python source encoding is unavailable",
-            Self::PythonSourceDependencyUnavailable => {
-                "it depends on Python resources that were not captured"
-            }
-            Self::SourceAuthorityRefused => "its language authority refused it",
-            Self::SourceRejectedByNativeCompiler => "the native compiler rejected it",
-            Self::SourceNotRepresentable => "lowering cannot represent it",
-            Self::CompileDeadlineExceeded => "the compile deadline passed before it finished",
-        })
-    }
-}
+pub use backend_semantic::ir::SourceCoverageGapCause as PackageSourceCoverageGapCause;
 
 /// Exact source retained in the input frontier but omitted from semantic lowering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1566,6 +1520,12 @@ impl StagedSemanticPackage {
             && self.stage == manifest.invocation_recipe().stage()
     }
 
+    /// Exact compiler-observed coverage causes, authenticated with this publication.
+    #[must_use]
+    pub fn source_coverage(&self) -> Option<&backend_semantic::ir::SourceCoverageManifest> {
+        self.staged.source_coverage.as_ref()
+    }
+
     /// Exact full native program membership, including libraries and dependencies.
     /// This is not a complete-fact or complete-read certificate.
     #[must_use]
@@ -2594,6 +2554,7 @@ pub(crate) struct StagedPackageCompilation {
     typescript_closure_witness:
         Option<std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>>,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
+    source_coverage: Option<backend_semantic::ir::SourceCoverageManifest>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
@@ -2965,10 +2926,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_package_membership = BTreeMap::new();
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
+        let mut coverage_configurations = Vec::new();
         let mut tsz_node_metadata = Vec::new();
         let mut tsz_file_work_units = Vec::new();
         let mut forest_root = 0;
-        let mut configured_forest = false;
+        let mut persist_configured_programs = false;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
@@ -3001,7 +2963,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 }
             })?;
             forest_root = forest.root;
-            configured_forest = forest.configured_forest;
+            // Even one configured program retains its exact config/environment
+            // node. The leaf's native program identity and semantic image bytes
+            // are unchanged; only its durable ownership envelope gains context.
+            persist_configured_programs = forest.configured_forest || forest.nodes.iter().any(|node| node.config.is_some());
             tsz_package_membership = forest.package_membership;
             tsz_budget = Some(super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
                 control.deadline,
@@ -3018,6 +2983,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 let program_key = node.config.as_ref().map(|(path, _)| path.clone());
                 let native = node.native;
                 let retain_authority = native.requires_retained_authority();
+                if let Some((path, source)) = &node.config {
+                    coverage_configurations.push(backend_semantic::ir::SourceCoverageRow::Configuration {
+                        path: path.clone(), source: *source.as_ref(),
+                        environment: *native.options.environment.as_bytes(),
+                    });
+                }
                 tsz_node_metadata.push((
                     node.config,
                     node.references,
@@ -3152,7 +3123,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     )
                 }).transpose()?);
             }
-            native_program_sources = Some(if configured_forest {
+            native_program_sources = Some(if persist_configured_programs {
                 let nodes = tsz_node_metadata
                     .into_iter()
                     .zip(leaves)
@@ -4458,6 +4429,85 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 });
             }
         }
+        let source_coverage = if typescript_project.is_some() {
+            use backend_semantic::ir::{SourceCoverageManifest, SourceCoverageRow, SourceIdentity};
+            let mut remaining = package
+                .compilation_sources()
+                .map(|source| {
+                    SourceIdentity::from_bytes(source.source.as_bytes())
+                        .map(|identity| (source.relative_path.to_owned(), identity))
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "coverage source extent",
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            let source_count = remaining.len();
+            coverage_configurations.sort_by(|a, b| a.path().cmp(b.path()));
+            let mut gaps = coverage_gaps.iter().collect::<Vec<_>>();
+            gaps.sort_by(|a, b| a.relative_path().cmp(b.relative_path()));
+            for gap in gaps {
+                let identity =
+                    remaining
+                        .remove(gap.relative_path())
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "coverage gap source partition",
+                        })?;
+                if identity.identity != gap.source().identity
+                    || identity.byte_len != gap.source().byte_len
+                {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "coverage gap source identity",
+                    });
+                }
+                coverage_configurations.push(SourceCoverageRow::Gap {
+                    path: gap.relative_path().to_owned(),
+                    source: *identity.identity.as_ref(),
+                    byte_len: identity.byte_len,
+                    cause: gap.cause(),
+                });
+            }
+            // Source text may legitimately be identical at two different paths.
+            // Compare the complete identity/extent multiset after removing each exact gap path.
+            let source_key = |source: SourceIdentity| (*source.identity.as_ref(), source.byte_len);
+            let mut expected = remaining.into_values().map(source_key).collect::<Vec<_>>();
+            let mut observed = artifacts
+                .iter()
+                .map(|artifact| source_key(artifact.source))
+                .collect::<Vec<_>>();
+            expected.sort();
+            observed.sort();
+            if expected != observed {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "coverage artifact source partition",
+                });
+            }
+            let program = native_program_sources
+                .as_ref()
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "coverage native program identity",
+                })?
+                .membership_identity();
+            Some(
+                SourceCoverageManifest::new(
+                    *input.input_root(),
+                    <[u8; 2]>::from(target.profile),
+                    program,
+                    u32::try_from(source_count).map_err(|_| PackageSemanticError::Capacity {
+                        lane: "coverage source count",
+                    })?,
+                    u32::try_from(artifacts.len()).map_err(|_| PackageSemanticError::Capacity {
+                        lane: "coverage artifact count",
+                    })?,
+                    coverage_configurations,
+                )
+                .map_err(|_| PackageSemanticError::Capacity {
+                    lane: "coverage catalog admission",
+                })?,
+            )
+        } else {
+            None
+        };
+
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,
@@ -4485,6 +4535,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 .map(|project| std::sync::Arc::clone(project.witness())),
             typescript_closure_witness: typescript_closure_witness.map(std::sync::Arc::new),
             native_program_sources,
+            source_coverage,
             python_witness: python_project
                 .as_ref()
                 .map(|project| StagedPythonProjectWitness {
