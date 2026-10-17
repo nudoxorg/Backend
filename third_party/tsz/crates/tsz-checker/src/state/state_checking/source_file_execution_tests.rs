@@ -86,13 +86,13 @@ fn with_program_checker(
 #[test]
 fn heritage_prepass_stops_inside_nested_namespace_walk() {
     let source = format!(
-        "interface Base {{ value: number; }} namespace Outer {{ {} }}",
+        "namespace Outer {{ {} }}",
         (0..64)
-            .map(|n| format!(
-                "namespace N{n} {{ export interface Child extends Base {{ extra: string; }} }}"
-            ))
+            .map(|n| format!("namespace N{n} {{ export interface Child {{ extra: string; }} }}"))
             .collect::<String>()
     );
+    // Plain interfaces perform no type-query work: stopping this real recursive
+    // pass therefore requires its traversal polls, not an incidental solver call.
     let stopped = StopAfter::new(5);
     with_program_checker(&source, &stopped, |checker, root| {
         let statements = checker
