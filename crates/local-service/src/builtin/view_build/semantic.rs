@@ -12,8 +12,8 @@ use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
-    profile_source_paths, projected_source_capacity,
+    StructuralProjectionPlan, profile_source_identities, profile_source_paths,
+    projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -1088,12 +1088,22 @@ pub(super) struct SemanticRowSink<'a> {
 pub(crate) struct StructuralSites<'a> {
     sources: &'a IndexedSources,
     files: BTreeMap<([u8; 32], String), &'a super::super::ProductSourceRecord>,
+    cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> StructuralSites<'a> {
     pub(super) fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
+        Self::of_controlled(sources, None)
+    }
+
+    pub(super) fn of_controlled(
+        sources: &'a IndexedSources,
+        cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        super::super::check_search_preparation(cancelled, "structural-sites")?;
         let mut files = BTreeMap::new();
         for (_, record) in &sources.files {
+            super::super::check_search_preparation(cancelled, "structural-sites-file")?;
             let file = record
                 .file_fields()
                 .ok_or_else(|| BuiltinModelError("expected a source file record".to_owned()))?;
@@ -1106,7 +1116,11 @@ impl<'a> StructuralSites<'a> {
                 ));
             }
         }
-        Ok(Self { sources, files })
+        Ok(Self {
+            sources,
+            files,
+            cancelled,
+        })
     }
 
     fn declarations(
@@ -1117,7 +1131,11 @@ impl<'a> StructuralSites<'a> {
         let Some(record) = self.files.get(&(*project, path.to_owned())) else {
             return Ok(Vec::new());
         };
-        complete_declarations_for_file(self.sources, record)
+        super::structural::complete_declarations_for_file_controlled(
+            self.sources,
+            record,
+            self.cancelled,
+        )
     }
 
     /// Returns the declarations of a file that provably hold the same bytes a

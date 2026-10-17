@@ -699,6 +699,41 @@ mod cancellation_tests {
             .analyze(std::path::Path::new("retained.ts"), source.as_bytes())
             .map_err(|error| error.to_string())?;
         let sites = analysis.declarations().iter().collect::<Vec<_>>();
+        let (sources, _) = super::super::tests::cross_file_sources(&[(
+            "retained.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )])?;
+        let record = &sources.files.first().ok_or("captured source file")?.1;
+        let expected = super::super::structural::complete_declarations_for_file(&sources, record)
+            .map_err(|error| error.to_string())?;
+        let declaration_token = Arc::new(AtomicBool::new(false));
+        {
+            let _cancel = crate::builtin::cancel_search_preparation_after(
+                "materialize-declaration",
+                64,
+                Arc::clone(&declaration_token),
+            );
+            let error = super::super::structural::complete_declarations_for_file_controlled(
+                &sources,
+                record,
+                Some(&declaration_token),
+            )
+            .err()
+            .ok_or("cancelled declaration collection returned a partial file")?;
+            assert!(error.to_string().contains("search preparation cancelled"));
+            assert!(declaration_token.load(Ordering::Acquire));
+        }
+        declaration_token.store(false, Ordering::Release);
+        assert_eq!(
+            super::super::structural::complete_declarations_for_file_controlled(
+                &sources,
+                record,
+                Some(&declaration_token)
+            )
+            .map_err(|error| error.to_string())?,
+            expected
+        );
         let baseline = RetainedLocations::build(profile, &sites, None, None)?;
         assert!(!baseline.windows.is_empty());
         let token = Arc::new(AtomicBool::new(true));

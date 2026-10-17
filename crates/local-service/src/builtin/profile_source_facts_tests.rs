@@ -2329,7 +2329,9 @@ fn search_corpus_cancellation_never_admits_partial_facts_and_resumes_identically
         "pre-cancelled preparation is refused"
     );
     for (point, visits) in [
+        ("source-availability-file", 1),
         ("semantic-page", 1),
+        ("structural-sites-file", 1),
         ("corpus-structural-plan", 1),
         ("structural-type", 1024),
         ("structural-containment-declaration", 1024),

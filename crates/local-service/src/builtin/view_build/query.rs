@@ -134,7 +134,7 @@ fn append_compiler_query_facts(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
-    let available = super::SourceAvailability::of(sources)?;
+    let available = super::SourceAvailability::of_controlled(sources, cancelled)?;
     let mut complete = BTreeSet::new();
     let mut pending = Vec::new();
     let mut package_profile_scopes = BTreeMap::<_, BTreeMap<_, _>>::new();
@@ -203,7 +203,7 @@ fn append_compiler_query_facts(
             complete.remove(&(publication.package.to_bytes(), publication.profile));
         }
     }
-    let sites = super::semantic::StructuralSites::of(sources)?;
+    let sites = super::semantic::StructuralSites::of_controlled(sources, cancelled)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
     let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();

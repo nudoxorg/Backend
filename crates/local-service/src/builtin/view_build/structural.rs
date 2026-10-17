@@ -107,6 +107,23 @@ pub(super) fn complete_declarations_for_file(
     sources: &IndexedSources,
     record: &super::super::ProductSourceRecord,
 ) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+    complete_declarations_for_file_controlled(sources, record, None)
+}
+
+pub(super) fn complete_declarations_for_file_controlled(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+    check_search_preparation(cancelled, "materialize-source-declarations")?;
+    let copy = |input: &[backend_compile::SourceDeclaration]| {
+        let mut declarations = Vec::with_capacity(input.len());
+        for declaration in input {
+            check_search_preparation(cancelled, "materialize-declaration")?;
+            declarations.push(declaration.clone());
+        }
+        Ok(declarations)
+    };
     let file = record.file_fields().ok_or_else(|| {
         BuiltinModelError("complete source facts requested for a non-file row".to_owned())
     })?;
@@ -119,7 +136,7 @@ pub(super) fn complete_declarations_for_file(
                 return Ok(Vec::new());
             }
             Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
-                return Ok(inline.declarations().to_vec());
+                return copy(inline.declarations());
             }
             Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(mut paged)) => {
                 let expected_count = usize::try_from(paged.declaration_count()).map_err(|_| {
@@ -128,7 +145,11 @@ pub(super) fn complete_declarations_for_file(
                 let mut declarations = Vec::with_capacity(expected_count);
                 paged
                     .visit_pages(|page| {
+                        check_search_preparation(cancelled, "materialize-page")
+                            .map_err(|error| error.to_string())?;
                         for index in 0..page.len() {
+                            check_search_preparation(cancelled, "materialize-declaration")
+                                .map_err(|error| error.to_string())?;
                             let declaration = page
                                 .declaration(index)
                                 .ok_or_else(|| {
@@ -149,7 +170,7 @@ pub(super) fn complete_declarations_for_file(
                 }
                 return Ok(declarations);
             }
-            None => return Ok(file.declarations.to_vec()),
+            None => return copy(&file.declarations),
         }
     }
     if file
@@ -165,7 +186,7 @@ pub(super) fn complete_declarations_for_file(
                 .to_owned(),
         ));
     }
-    Ok(file.declarations.to_vec())
+    copy(&file.declarations)
 }
 
 pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
