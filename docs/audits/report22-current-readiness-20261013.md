@@ -1,5 +1,13 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-17, Native35 closed results
+
+Native35 closed on source `16dbe7a8b36e3aa8943a7a1fc3ccc9ac3a19fe09` / tree `e613aa89dffbab76630e1192b5bf918a0b1a160e`. Of 125 planned bodies, 37 executed: 25 passed, 12 failed, none were ignored, and 88 remain unrun. The separate Clippy phase reported 406 errors and 24,195 warnings; lint acceptance failed. Root independently replayed the result in `actual-ilo-native35-H2/ROOT-REPLAY-125-CLIPPY-ORDINARY.json` (SHA-256 `256b666902ecb37d574c9b988b064e778800755b55c146a5a1698646f35086fd`).
+
+The ordinary four-binary build phase passed, and Root adopted those four ELFs for runtime experiments only (`actual-ilo-native35-H2/ROOT-ADOPTED-ORDINARY-NATIVE35.json`, SHA-256 `324a4575e22f1954bf87c2c0a30e38fb86471e724c40c965024746f6d7f518b5`). This is not current application acceptance: fresh current-35 MCP/GUI execution remains unrun/in preparation, and installer/current Mac bundle acceptance remains unproven. The verified continued-epoch accounting leaves 5,266,100,224 bytes; no new allocation is claimed.
+
+PRs 468–475 remain source candidates, not merged/current-native-verified checkpoints. PR473's three review blockers are being repaired. PR474 addresses the three TSZ failures; the GUI work includes a five-case fixture-entry repair (`d994`) and a separate three-production-case/frame change in PR475. PocketBase still has a test fixture using a legacy version. These are source-review status statements, not test results.
+
 ## Follow-up: 2026-10-17, Native34 closure and Native35 H2
 
 Native34 closed on source `d8981fefb3aa913db427de75722dfb475398d975` / tree `426e7c49d01bbf5b8497bd355ce25d9d9d94419d`: three selected bodies passed, 93 remained unrun because Cargo compilation was blocked, and none failed. The blockers included seven engine test-import errors and a package `SemanticCoreReader` missing-trait error, which also blocked its desktop-dependent build. Clippy separately reported 142 denied `unwrap_used` findings alongside 6,057 warnings. Root's independent replay is `actual-ilo-native34-H1/ROOT-INDEPENDENT-REPLAY.json` (SHA-256 `f8d1b244f1da051518b61fa9bfc34d2294c968e752ddffc14d8069837dc52d0d`).
