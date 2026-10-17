@@ -97,9 +97,15 @@ impl Engine for Versions {
         let SurfaceCommand::SemanticVersions { limit, cursor, .. } = &command else {
             panic!("semantic versions only")
         };
-        let offset = cursor
-            .as_ref()
-            .map_or(0, |cursor| cursor.claims().unwrap().offset);
+        let offset = match cursor {
+            Some(cursor) => {
+                cursor
+                    .claims()
+                    .map_err(|error| ClientError::Protocol(format!("{error:?}")))?
+                    .offset
+            }
+            None => 0,
+        };
         let root = if self.moved && !self.calls.is_empty() {
             9
         } else {
@@ -115,6 +121,9 @@ fn encoded(answer: &Answer, budget: usize) -> Result<(), Fault> {
         .map(|_| ())
         .map_err(backend_present::oversized_fault)
 }
+fn fixture<T, E: std::fmt::Debug>(result: Result<T, E>) -> Result<T, String> {
+    result.map_err(|error| format!("{error:?}"))
+}
 fn selected_page(answer: &Answer) -> &SemanticVersionsPage {
     let Answer::Product(view) = answer else {
         panic!("product")
@@ -127,17 +136,19 @@ fn selected_page(answer: &Answer) -> &SemanticVersionsPage {
 }
 
 #[test]
-fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_effective_credit() {
+fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_effective_credit()
+-> Result<(), String> {
     let package = captured().package;
     let credit = backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT;
     let words = vec!["semantic-versions".to_owned(), package.as_str().to_owned()];
     let invocation = crate::invoke::parse(&words, None).expect("CLI shared default");
-    let command = backend_present::lower(&invocation, "/fixture").unwrap();
+    let command = fixture(backend_present::lower(&invocation, "/fixture"))?;
     assert!(
         matches!(command,Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions{limit,cursor:None,..} if limit==credit))
     );
-    let surface: SurfaceCommand =
-        serde_json::from_value(json!({"operation":"semantic-versions","package":package})).unwrap();
+    let surface: SurfaceCommand = fixture(serde_json::from_value(
+        json!({"operation":"semantic-versions","package":package}),
+    ))?;
     assert!(
         matches!(surface,SurfaceCommand::SemanticVersions{limit,cursor:None,..} if limit==credit)
     );
@@ -146,13 +157,12 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
     let full = Answer::Product(Box::new(backend_present::product_view(
         &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)),
     )));
-    let bytes = backend_present::encode_answer(
+    let bytes = fixture(backend_present::encode_answer(
         &full,
         backend_present::Detail::Full,
         None,
         backend_present::MAX_RESPONSE_BUDGET_BYTES,
-    )
-    .unwrap()
+    ))?
     .bytes
     .len();
     for budget in [bytes / 2, backend_present::DEFAULT_RESPONSE_BUDGET_BYTES] {
@@ -170,21 +180,24 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
         )
         .expect("complete admitted page");
         let actual = selected_page(&answer);
-        let next = actual.next_cursor.as_ref().unwrap();
-        let claims = next.claims().unwrap();
+        let next = actual
+            .next_cursor
+            .as_ref()
+            .ok_or("admitted first page must have a continuation")?;
+        let claims = fixture(next.claims())?;
         assert_eq!(actual, &page(claims.limit, 0, 10, 8));
         assert_eq!(claims.offset, actual.entries.len() as u64);
         if budget == bytes / 2 {
             assert!(engine.calls.len() > 1);
             assert!(claims.limit < credit);
         }
-        encoded(&answer, budget).unwrap();
+        fixture(encoded(&answer, budget))?;
         let Answer::Product(view) = &answer else {
             unreachable!()
         };
         let shell = view
             .semantic_versions_cli_continuation(backend_present::Detail::Full)
-            .unwrap();
+            .ok_or("admitted cursor must produce a copyable CLI continuation")?;
         assert!(shell.contains(&format!("--limit {}", claims.limit)));
         assert!(shell.contains(next.as_str()));
         for text in [
@@ -218,22 +231,23 @@ fn cli_versions_default_and_actual_serialized_budget_keep_complete_pages_and_eff
             matches!(engine.calls.last(),Some(SurfaceCommand::SemanticVersions{limit,cursor:Some(cursor),..}) if *limit==claims.limit && cursor==next)
         );
     }
+    Ok(())
 }
 
 #[test]
-fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original_caller() {
+fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original_caller()
+-> Result<(), String> {
     let package = captured().package;
     let credit = backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT;
     let full = Answer::Product(Box::new(backend_present::product_view(
         &SurfaceReply::SemanticVersionsPage(page(credit, 0, 10, 8)),
     )));
-    let bytes = backend_present::encode_answer(
+    let bytes = fixture(backend_present::encode_answer(
         &full,
         backend_present::Detail::Full,
         None,
         backend_present::MAX_RESPONSE_BUDGET_BYTES,
-    )
-    .unwrap()
+    ))?
     .bytes
     .len();
     let mut moved = Versions {
@@ -256,7 +270,9 @@ fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original
         2,
         "changed roots never lend their rows to an earlier page"
     );
-    let cursor = page(credit, 0, 10, 8).next_cursor.unwrap();
+    let cursor = page(credit, 0, 10, 8)
+        .next_cursor
+        .ok_or("partial fixture page must have a cursor")?;
     let mut fixed = Versions {
         calls: vec![],
         moved: false,
@@ -278,9 +294,7 @@ fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original
         "a cursor's fixed credit cannot resize"
     );
     let lifetime = backend_client::RequestContext::new();
-    lifetime
-        .read_deadline(std::time::Duration::ZERO)
-        .unwrap_err();
+    assert!(lifetime.read_deadline(std::time::Duration::ZERO).is_err());
     let mut stopped = Versions {
         calls: vec![],
         moved: false,
@@ -302,4 +316,5 @@ fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original
         stopped.calls.is_empty(),
         "stopped caller cannot receive a fresh owner lifetime"
     );
+    Ok(())
 }
