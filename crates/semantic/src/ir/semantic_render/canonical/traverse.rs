@@ -35,7 +35,7 @@ pub(super) fn emit_type<'image, Reader: SemanticReader + ?Sized>(
     limits: CanonicalTypeRenderLimits,
     output: &mut impl fmt::Write,
 ) -> Result<(), CanonicalTypeRenderError> {
-    let mut pending = vec![Frame {
+    let mut pending: Vec<Frame<'image, Reader>> = vec![Frame {
         owner: current,
         depth,
         work: Work::Step(Step::Type),
