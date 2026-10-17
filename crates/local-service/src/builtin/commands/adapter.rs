@@ -4014,23 +4014,7 @@ impl CommandAdapter {
                         request_id,
                     )
                     .map(|(reply, _)| reply);
-                let reply = match (reply, observation) {
-                    (Ok(CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
-                        observation: backend_library::RegistryPackageDiscoveryObservation::Unavailable { .. }, ..
-                    })), Some(observation @ backend_library::RegistryPackageDiscoveryObservation::Missing { .. })) => {
-                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery { package, observation })
-                    }
-                    (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
-                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
-                            package,
-                            observation,
-                        })
-                    }
-                    (Ok(reply), _) => reply,
-                    (Err(error), _) => CommandReply::Failed(
-                        backend_library::CommandFailure::InvalidQuery(error.to_string()),
-                    ),
-                };
+                let reply = package_metadata_completion_reply(package, reply, observation);
                 ready.push((
                     ticket,
                     Self::encode(daemon, request_id, (reply, None), None),
@@ -6941,6 +6925,50 @@ fn map_semantic_authority_error(
         _ => crate::protocol::ProtocolError::InvalidControl(unavailable),
     }
 }
+
+/// Preserve an admitted point-request outcome when the shared package surface
+/// can only report generic unavailability. A successful catalog response keeps
+/// its existing authority; this does not admit a failed or cancelled fetch.
+fn package_metadata_completion_reply(
+    package: backend_engine::registry::PackageCoordinate,
+    reply: Result<CommandReply, BuiltinModelError>,
+    observation: Option<backend_library::RegistryPackageDiscoveryObservation>,
+) -> CommandReply {
+    match (reply, observation) {
+        (
+            Ok(CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                observation:
+                    backend_library::RegistryPackageDiscoveryObservation::Unavailable { .. },
+                ..
+            })),
+            Some(
+                observation @ (backend_library::RegistryPackageDiscoveryObservation::Missing {
+                    ..
+                }
+                | backend_library::RegistryPackageDiscoveryObservation::Unavailable {
+                    ..
+                }),
+            ),
+        ) => CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+            package,
+            observation,
+        }),
+        (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
+            CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                package,
+                observation,
+            })
+        }
+        (Ok(reply), _) => reply,
+        (Err(error), _) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            error.to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+#[path = "package_metadata_completion_tests.rs"]
+mod package_metadata_completion_tests;
 
 #[cfg(test)]
 mod tests {
