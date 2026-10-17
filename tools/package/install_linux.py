@@ -398,38 +398,27 @@ def _nixos_stub_loader_diagnosis(stderr) -> str | None:
     return None
 
 
-def _linux_distribution_id() -> str | None:
-    """Read only the simple ID field from a bounded os-release file."""
+SYSTEM_ELF_INTERPRETER = Path("/lib64/ld-linux-x86-64.so.2")
+KNOWN_NIXOS_STUB_INTERPRETER = "stub-ld-x86_64-unknown-linux-musl"
+
+
+def _system_elf_loader_target() -> str | None:
+    """Return the resolved system ELF interpreter basename when available."""
     try:
-        with open("/etc/os-release", "rb") as stream:
-            contents = stream.read(65537)
-    except OSError:
+        return SYSTEM_ELF_INTERPRETER.resolve(strict=True).name
+    except (OSError, RuntimeError):
         return None
-    if len(contents) > 65536:
-        return None
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError:
-        return None
-    for line in lines:
-        if not line.startswith("ID="):
-            continue
-        value = line[3:]
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        return value.lower() if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
-    return None
 
 
 def _reject_known_unsupported_loader() -> None:
-    # This preview has only been validated on Ubuntu 24.04+; NixOS's generic
-    # /lib64 loader is a stub and cannot start these packaged ELF binaries.
-    # Refuse before fetching the ~186 MB archive, without evaluating os-release.
-    if _linux_distribution_id() == "nixos":
+    # Refuse only the exact generic stub observed on ILO. A real glibc loader
+    # or nix-ld target remains eligible regardless of the distribution ID.
+    if _system_elf_loader_target() == KNOWN_NIXOS_STUB_INTERPRETER:
         raise InstallError(
-            "NixOS is not supported by this Linux preview: its generic Linux loader "
-            "cannot start the packaged executables. Use the validated Ubuntu 24.04+ "
-            "environment (glibc 2.39 or newer); no release archive was downloaded."
+            "the system ELF interpreter resolves to the NixOS generic stub loader, "
+            "which cannot start these packaged executables. Use a working glibc loader "
+            "(the preview was validated on Ubuntu 24.04+ with glibc 2.39 or newer); "
+            "no release archive was downloaded."
         )
 
 
