@@ -5,6 +5,7 @@ mod browse_lane;
 mod diff;
 mod graph;
 mod index;
+mod index_input_workers;
 mod index_operation;
 mod journal_readiness;
 mod package_profile;
