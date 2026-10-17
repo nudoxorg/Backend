@@ -35,6 +35,8 @@ mod package_compiler_outcomes;
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
 mod record_budget_pages;
+#[path = "tests/document_section_pages.rs"]
+mod document_section_pages;
 #[path = "tests/semantic_selection.rs"]
 mod semantic_selection;
 #[path = "tests/semantic_source_pages.rs"]
@@ -950,10 +952,25 @@ impl Engine for Fake {
             return Err(unreachable());
         }
         let reply = match probe {
-            Probe::Declaration { .. } => {
-                return Err(ClientError::Protocol(
-                    "selected read needs the immutable-row fixture".to_owned(),
-                ));
+            Probe::Declaration { selector, read } => {
+                let Some(catalog) = &self.page_catalog else {
+                    return Err(ClientError::Protocol("selected read needs the immutable-row fixture".to_owned()));
+                };
+                let symbol = selector.address().resolve(catalog.view()).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                let row = catalog.view().row(RowId::Symbol(symbol)).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                if selector.coordinate().is_some_and(|coordinate| coordinate != row.label) {
+                    return Err(ClientError::Protocol("selected coordinate assertion mismatch".to_owned()));
+                }
+                match read {
+                    backend_library::DeclarationRead::Document | backend_library::DeclarationRead::Source => {
+                        let document = catalog.document(backend_library::DocumentQuery::selected(symbol, catalog.revision_root())).map_err(|error| ClientError::Protocol(error.to_string()))?;
+                        let selection = backend_library::DocumentSelection::from_row(&row, document.source_basis().expect("source")).expect("selected label");
+                        return Ok(ReplyDto::new(1, CommandReply::Document(document.with_selection(selection).expect("exact selected row"))));
+                    }
+                    backend_library::DeclarationRead::Graph | backend_library::DeclarationRead::Related => {
+                        return Ok(ReplyDto::new(1, CommandReply::Graph(snapshot(vec![declaration_row()]))));
+                    }
+                }
             }
             Probe::Packages => CommandReply::Packages(snapshot(vec![
                 package_row(),

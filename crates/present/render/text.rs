@@ -276,6 +276,10 @@ pub fn page_projection(page: &PageProjection<'_>, theme: Theme) -> String {
         lines.push(fault(reason, theme));
     }
     push_notes(&mut lines, page.notes(), theme);
+    if let Some(window) = page.section_page() {
+        lines.blank();
+        lines.push(window.description(page.identity().coordinate().as_str()));
+    }
     lines.finish()
 }
 
