@@ -1911,10 +1911,6 @@ impl<'source> FactSet<'source> {
     }
 
     /// One pooled type-record child of a fact row by absolute position.
-    #[expect(
-        clippy::type_complexity,
-        reason = "the borrowed child triple is the pooled lane's own representation"
-    )]
     pub(super) fn type_child_flat(&self, pooled: usize) -> (u32, Option<&'source [u8]>, u8) {
         (
             self.type_child_targets[pooled],
