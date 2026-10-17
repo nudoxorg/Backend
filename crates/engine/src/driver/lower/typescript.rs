@@ -4310,6 +4310,39 @@ fn native_tsz_member_symbol(
     member
 }
 
+/// An object method is a source-owned callable even though it has no
+/// function-expression node. Reuse the existing object-member anchor so its
+/// inline parameter types and nested declarations have that exact method as
+/// owner. Class methods already have named signature facts and are excluded.
+fn native_tsz_object_method_step<'source>(
+    source: &'source str,
+    arena: &TszNodeArena,
+    method: TszNodeIndex,
+) -> Option<CallableAnchorStep<'source>> {
+    let declaration = arena.get_method_decl_at(method)?;
+    let parent = arena.parent_of(method)?;
+    let object = arena.get(parent)?;
+    if object.kind != TszSyntaxKind::OBJECT_LITERAL_EXPRESSION
+        || declaration.body.is_none()
+        || arena.get_identifier_at(declaration.name).is_none()
+        || !arena
+            .get_literal_expr_at(parent)?
+            .elements
+            .nodes
+            .contains(&method)
+    {
+        return None;
+    }
+    Some(CallableAnchorStep {
+        child_role: CallableChildRole::ObjectMemberValue,
+        parent: CallableParentShape::ObjectMember(source_node_bytes(
+            source,
+            arena,
+            declaration.name,
+        )?),
+    })
+}
+
 fn native_tsz_callable_parent_step<'source>(
     source: &'source str,
     arena: &TszNodeArena,
@@ -6011,14 +6044,17 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 || node.kind == TszSyntaxKind::CONSTRUCTOR_TYPE;
             let call_signature = node.kind == TszSyntaxKind::CALL_SIGNATURE
                 || node.kind == TszSyntaxKind::CONSTRUCT_SIGNATURE;
-            if !expression_callable && !function_type && !call_signature {
+            let object_method = node.kind == TszSyntaxKind::METHOD_DECLARATION;
+            if !expression_callable && !function_type && !call_signature && !object_method {
                 continue;
             }
             let Ok(raw_node) = u32::try_from(raw_node) else {
                 continue;
             };
             let callable = TszNodeIndex(raw_node);
-            let step = if expression_callable {
+            let step = if object_method {
+                native_tsz_object_method_step(self.source, arena, callable)
+            } else if expression_callable {
                 let Some(function) = arena.get_function_at(callable) else {
                     continue;
                 };
@@ -10331,13 +10367,17 @@ fn native_tsz_parameter_child<'source>(
     let name = parameter
         .name
         .and_then(|atom| native_tsz_source_name(registry, database, atom, owner));
-    let mut flags = 0;
-    if parameter.optional {
-        flags |= SemanticTypeChild::FLAG_OPTIONAL;
-    }
-    if parameter.rest {
-        flags |= SemanticTypeChild::FLAG_REST;
-    }
+    // TSZ marks unannotated JavaScript parameters optional for call arity,
+    // including a rest parameter. The canonical grammar represents the
+    // latter by the function's typed variadic tail, not OPTIONAL | REST.
+    // Fixed optional parameters retain their independent optional marker.
+    let flags = if parameter.rest {
+        SemanticTypeChild::FLAG_REST
+    } else if parameter.optional {
+        SemanticTypeChild::FLAG_OPTIONAL
+    } else {
+        0
+    };
     Ok((child, name, flags))
 }
 
@@ -11348,6 +11388,11 @@ mod lane_tests {
         source: &str,
         path: &str,
     ) -> Result<backend_semantic::ir::Ir, LaneError> {
+        let profile = if path.ends_with(".tsx") || path.ends_with(".jsx") {
+            TypeScriptSource::Tsx
+        } else {
+            TypeScriptSource::TypeScript
+        };
         let mut checker = TszCheckerOptions::default();
         checker.no_lib = true;
         let options = TszProjectOptions {
@@ -11374,7 +11419,7 @@ mod lane_tests {
             .ok_or(LaneError::Missing("native TSZ project result"))?;
         let mut facts = FactSet::new();
         super::collect_with_tsz_unmetered_for_test(
-            TypeScriptSource::TypeScript,
+            profile,
             source.as_bytes(),
             project,
             path,
@@ -11386,7 +11431,7 @@ mod lane_tests {
             byte_len: u32::try_from(source.len())?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            LanguageProfile::TypeScript(profile),
             Stage::LowerIr,
             NativeTool::TypeScriptCompiler,
             ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
@@ -11394,7 +11439,7 @@ mod lane_tests {
         );
         facts
             .build_ir(
-                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                LanguageProfile::TypeScript(profile),
                 identity,
                 recipe,
                 crate::driver::types::DeclarationScope::fixture(),
@@ -12341,6 +12386,210 @@ describe('suite', () => {\n\
             }),
             "named aliased call must point to the exact dependency declaration: {targets:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_javascript_rest_optionality_uses_one_variadic_marker() -> Result<(), LaneError> {
+        use backend_semantic::ir::{ConcreteType, FunctionVariadicForm, TupleElementKind};
+        for (path, source, first) in [
+            (
+                "api.js",
+                "export const expect = (response, name = 'status', ...statuses) => statuses;",
+                TupleElementKind::Optional,
+            ),
+            (
+                "api.ts",
+                "export const expect = (response: number, name?: string, ...statuses: number[]) => statuses;",
+                TupleElementKind::Required,
+            ),
+        ] {
+            let ir = owned_tsz_ir_at_path(source, path)?;
+            let (
+                _,
+                TypeExpr::Concrete(ConcreteType::Function {
+                    parameters,
+                    variadic,
+                    ..
+                }),
+            ) = native_observation(&ir, b"expect")
+                .ok_or(LaneError::Missing("native callable observation"))?
+            else {
+                return Err(LaneError::Missing("concrete native callable"));
+            };
+            assert_eq!(variadic, FunctionVariadicForm::TypedLast, "{path}");
+            let parameters = ir
+                .tuple_elements(parameters)
+                .ok_or(LaneError::Missing("native parameter tuple"))?;
+            assert_eq!(
+                parameters
+                    .iter()
+                    .map(|parameter| parameter.kind)
+                    .collect::<Vec<_>>(),
+                vec![first, TupleElementKind::Optional, TupleElementKind::Rest],
+                "fixed optionality and the exact rest slot must both survive: {path}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_lowers_whole_docs_javascript_api_with_rest_parameter() -> Result<(), LaneError> {
+        use sha2::{Digest, Sha256};
+        let source = include_str!("../../../tests/fixtures/typescript/docs-6e5dee38/api.js");
+        assert_eq!(source.len(), 3_455);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(source.as_bytes())),
+            "483ea3f2947274476301bc627633c3f26b20c4bb2b708837af4661980cd62488"
+        );
+        let ir = owned_tsz_ir_at_path(source, "src/loadtest/k6/lib/api.js")?;
+        for name in [
+            b"expect".as_slice(),
+            b"postMultipart",
+            b"params",
+            b"headers",
+        ] {
+            assert!(
+                ir.items().any(|item| item.name() == name),
+                "whole source keeps {name:?}"
+            );
+        }
+        let (
+            _,
+            TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Function {
+                parameters,
+                variadic,
+                ..
+            }),
+        ) = native_observation(&ir, b"expect")
+            .ok_or(LaneError::Missing("whole-source expect observation"))?
+        else {
+            return Err(LaneError::Missing("whole-source expect function"));
+        };
+        assert_eq!(
+            variadic,
+            backend_semantic::ir::FunctionVariadicForm::TypedLast
+        );
+        let parameters = ir
+            .tuple_elements(parameters)
+            .ok_or(LaneError::Missing("whole-source expect parameters"))?;
+        assert_eq!(parameters.len(), 3);
+        assert_eq!(
+            parameters[2].kind,
+            backend_semantic::ir::TupleElementKind::Rest
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_object_methods_own_repeated_inline_parameter_fields() -> Result<(), LaneError> {
+        let source = "const handlers = [
+  { drop({ active }: { active: { id: number } }) { return active.id; } },
+  { drop({ active }: { active: { id: number } }) { return active.id + 1; } },
+];
+class Named { run({ active }: { active: { id: number } }) { return active.id; } }
+";
+        let ir = owned_tsz_ir(source)?;
+        let methods = anonymous_callable_rows(&ir);
+        assert_eq!(
+            methods.len(),
+            2,
+            "only real object methods gain these anchors"
+        );
+        assert_eq!(
+            methods[0].1, methods[1].1,
+            "same member role keeps its durable family"
+        );
+        assert_ne!(
+            methods[0].0, methods[1].0,
+            "separate source methods are separate instances"
+        );
+        assert_ne!(methods[0].2, methods[1].2);
+        for method in &methods {
+            assert_eq!(
+                method.5,
+                AnonymousCallableFamilyMultiplicity::Ambiguous { instance_count: 2 }
+            );
+            let active = ir
+                .items()
+                .filter(|item| {
+                    item.kind() == EntityKind::Field
+                        && item.name() == b"active"
+                        && item.parent() == Some(method.0)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                active.len(),
+                1,
+                "each method owns its own inline parameter type"
+            );
+            let id = ir
+                .items()
+                .filter(|item| item.name() == b"id" && item.parent() == Some(active[0].id()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                id.len(),
+                1,
+                "nested field stays under its exact parameter type"
+            );
+        }
+        assert_eq!(
+            ir.items()
+                .filter(|item| item.name() == b"run" && item.kind() == EntityKind::Function)
+                .count(),
+            1,
+            "named class method remains on the existing signature path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_lowers_whole_docs_tsx_with_exact_object_method_owners() -> Result<(), LaneError> {
+        use sha2::{Digest, Sha256};
+        let source =
+            include_str!("../../../tests/fixtures/typescript/docs-6e5dee38/DocGridContentList.tsx");
+        assert_eq!(source.len(), 9_106);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(source.as_bytes())),
+            "d602cb5ac73b02a2da9ac8513b0271252c2de0efad0062e1b3eccf94d53e27b3"
+        );
+        let ir = owned_tsz_ir_at_path(
+            source,
+            "src/frontend/apps/impress/src/features/docs/docs-grid/components/DocGridContentList.tsx",
+        )?;
+        for name in [
+            b"DraggableDocGridContentList".as_slice(),
+            b"DraggableDocGridItem",
+            b"DocGridContentList",
+        ] {
+            assert!(
+                ir.items().any(|item| item.name() == name),
+                "whole TSX source keeps {name:?}"
+            );
+        }
+        let methods = anonymous_callable_rows(&ir);
+        for name in ["onDragStart", "onDragOver", "onDragEnd", "onDragCancel"] {
+            let needle = format!("{name}(");
+            let method = smallest_callable_containing(&methods, source, &needle)?;
+            assert!(
+                source[method.3 as usize..method.4 as usize]
+                    .trim_start()
+                    .starts_with(&needle)
+            );
+            let active = ir
+                .items()
+                .filter(|item| {
+                    item.kind() == EntityKind::Field
+                        && item.name() == b"active"
+                        && item.parent() == Some(method.0)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                active.len(),
+                1,
+                "{name} retains its exact active field, not a shared same-name row"
+            );
+        }
         Ok(())
     }
 
