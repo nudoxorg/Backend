@@ -41,6 +41,25 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// The captured source relation predates the current typed ContentId encoding.
+// Preserve its recorded v2 source-fact witness as capture metadata; the admitted
+// PackageSource below computes the current SourceFactDomain ContentId from bytes.
+fn captured_source_fact_version(bytes: &[u8]) -> [u8; 32] {
+    let payload_bytes = u64::try_from(bytes.len()).expect("captured source length fits u64");
+    let encoded_payload_bytes = 8_u64
+        .checked_add(payload_bytes)
+        .expect("captured source length plus prefix fits u64");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.version.v2\0");
+    hasher.update(&[0x56, 0x44]);
+    hasher.update(&1_u16.to_be_bytes());
+    hasher.update(&[1]);
+    hasher.update(&encoded_payload_bytes.to_be_bytes());
+    hasher.update(&payload_bytes.to_be_bytes());
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
+}
+
 fn verified_source(root: &Path, pin: &FilePin) -> String {
     PackageSource::validate_path(&pin.path).expect("normalized captured path");
     let bytes = fs::read(root.join(&pin.path)).expect("exact retained source must exist");
@@ -52,9 +71,9 @@ fn verified_source(root: &Path, pin: &FilePin) -> String {
         pin.path
     );
     assert_eq!(
-        hex(ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes).as_ref()),
+        hex(&captured_source_fact_version(&bytes)),
         pin.content_version,
-        "captured typed version {}",
+        "captured legacy source-fact version {}",
         pin.path
     );
     String::from_utf8(bytes).expect("captured UTF-8")
