@@ -3502,13 +3502,15 @@ mod tests {
             project.program.lib_symbol_reverse_remap.get(&alias),
             Some(&(Arc::as_ptr(&library.binder) as usize, local_alias)),
         );
+        let value_file = project
+            .program
+            .files
+            .iter()
+            .find(|file| file.file_name == "src/value.ts")
+            .test_value()?;
         assert!(
-            project
-                .program
-                .files
-                .iter()
-                .any(|file| { !file.lib_symbol_reverse_remap.contains_key(&alias) }),
-            "a compacted file need not retain a global library origin locally",
+            !value_file.lib_symbol_reverse_remap.contains_key(&alias),
+            "the exact library-consuming file lost this origin during compaction",
         );
         let session = project
             .checked_query_session_unmetered_for_test()
