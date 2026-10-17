@@ -458,7 +458,7 @@ mod tests {
                 maximum: 256,
             },
         )
-        .map_err(|error| format!("construct compiler refusal detail: {error}"))?;
+        .ok_or_else(|| "compiler refusal detail is not representable".to_owned())?;
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {
@@ -475,7 +475,6 @@ mod tests {
                     29,
                     false,
                 )
-                .ok_or_else(|| "nonempty native diagnostic was not retained".to_owned())
                 .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
             },
         )

@@ -587,6 +587,7 @@ mod tests {
             .lock()
             .map_err(|_| "trace output mutex poisoned during failure test".to_owned())?;
         output.writer = BufWriter::new(repaired_writer);
+        drop(output);
         assert!(!write_frame_collection(
             &sink,
             "app-ui",
