@@ -859,7 +859,7 @@ fn index_publication_worker_grant_then_prepublication_unwind_is_failed_even_afte
 }
 
 // These controls use the existing compiled Python producer. Only the
-// TypeScript SDK is explicitly absent; no semantic claim is constructed by
+// Clang SDK is explicitly absent; no semantic claim is constructed by
 // the test, and actual dispatch must reach the nonempty selected branch.
 fn native_fixture() -> AdapterFixture {
     let mut fixture = AdapterFixture::new();
@@ -948,8 +948,8 @@ fn native_dispatch(
     .expect("real native source");
     if partial {
         fs::write(
-            Path::new(&label).join("panel.ts"),
-            "export function unavailable_sdk(value: number): number { return value + 2; }\n",
+            Path::new(&label).join("panel.c"),
+            "int unavailable_sdk(int value) { return value + 2; }\n",
         )
         .expect("genuine missing-SDK profile source");
     }
@@ -1204,12 +1204,12 @@ fn native_dispatch_receipt_control(partial: bool) {
             refused_profiles,
         } = &terminal.state
         else {
-            panic!("actual Python+missing TypeScript is partial: {terminal:?}");
+            panic!("actual Python+missing Clang is partial: {terminal:?}");
         };
         assert_eq!(refused_profiles.len(), 1);
         assert_eq!(
             refused_profiles[0].profile.name().expect("profile"),
-            "typescript"
+            "c"
         );
         assert!(
             refused_profiles[0]
@@ -1388,7 +1388,7 @@ fn failed_capture_cold_retry_control(refuse_receipt_refresh: bool) {
 
     let mut fixture = native_fixture();
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
-    // Actual Python selection and a genuine absent TypeScript SDK create two
+    // Actual Python selection and a genuine absent Clang SDK create two
     // Pending profiles before the selected candidate is granted.
     let (_, label, operation, ticket) = native_dispatch(&mut fixture, true, 0xc1);
     await_after_grant(&mut fixture, &entered, operation, &ticket)
