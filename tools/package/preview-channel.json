@@ -19,9 +19,9 @@
         "GUI acceptance and upgrades from older releases have not been proven."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/install-linux-x64.py",
-        "sha256": "423adce9c0d78a106f71c41cbce980e00bd78bdf90a80c9e5c73c26e528c2cdb",
-        "bytes": 58492
+        "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-linux-x64-7cc6a01b0e69f2a7.py",
+        "sha256": "7cc6a01b0e69f2a79c47ea536d3aa02de4dfdf76989fc978ebb1cd8a4e0e965d",
+        "bytes": 59905
       },
       "archive": {
         "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/nudox-linux-x86_64-df93af4890.tar.gz",
