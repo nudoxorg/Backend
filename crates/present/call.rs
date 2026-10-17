@@ -281,6 +281,13 @@ pub enum Request {
     Remove(String),
     /// One declaration page: document, members, relations, source.
     Page(String),
+    /// Resume exact declaration sections after revalidating its source and complete content.
+    ResumePage {
+        /// Original exact declaration operand.
+        coordinate: String,
+        /// Content-bound section continuation.
+        cursor: String,
+    },
     /// One declaration's captured source only.
     Source(String),
     /// One declaration's bounded neighbourhood.
@@ -375,7 +382,15 @@ pub fn lower_with_opener(
         }
         CommandId::Remove => Ok(Request::Remove(invocation.require(0)?.to_owned())),
         CommandId::Show | CommandId::Document => {
-            Ok(Request::Page(invocation.require(0)?.to_owned()))
+            let coordinate = invocation.require(0)?.to_owned();
+            match invocation.option("cursor") {
+                Some("") => Err(Fault::usage("cursor", "continuation must not be empty")),
+                Some(cursor) => Ok(Request::ResumePage {
+                    coordinate,
+                    cursor: cursor.to_owned(),
+                }),
+                None => Ok(Request::Page(coordinate)),
+            }
         }
         CommandId::Source => Ok(Request::Source(invocation.require(0)?.to_owned())),
         CommandId::Related => Ok(Request::Neighbourhood {

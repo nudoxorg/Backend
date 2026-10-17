@@ -199,6 +199,8 @@ impl PageLimitDomain {
 pub enum ContinuationDomain {
     /// A selected projection page authenticated by the surface wrapper.
     PresentationPage,
+    /// A deterministic declaration-section window revalidated against its full source/content.
+    DocumentSections,
     /// An opaque owner token authenticated by the existing surface wrapper.
     PresentationOwnerToken,
     /// An opaque token whose native owner authenticates its selected roots.
@@ -755,8 +757,8 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate from a search or outline result.",
         )],
-        options: &[],
-        when: "Reach for this immediately after search: it is the cheapest complete answer about one declaration.",
+        options: &[CURSOR.with_continuation_domain(ContinuationDomain::DocumentSections)],
+        when: "Read one exact declaration and a bounded page of its sections; follow section_page.next_cursor with the same coordinate to retrieve all members and relations.",
     },
     CommandGrammar {
         name: "source",

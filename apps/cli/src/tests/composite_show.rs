@@ -296,3 +296,43 @@ fn show_optional_scope_notices_do_not_mask_first_required_failure() {
     assert!(output.contains("LATER_IO_FAILURE"));
     assert!(output.contains("OPTIONAL_SCOPE"));
 }
+
+#[test]
+fn large_show_defaults_keep_exact_identity_and_page_all_members_with_zero_exit() {
+    let mut reader = Reader::new(false, false, true);
+    let view = reader.catalog.view();
+    let basis = view.basis();
+    let package = package_key("/abs/app");
+    let mut rows = view.rows().to_vec();
+    for index in 0..80 {
+        let label = format!("{COORDINATE}::member_{index:03}");
+        rows.push(Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, &label)
+            .with_parent(symbol_key(COORDINATE))
+            .with_kind(backend_library::DeclarationKind::Method)
+            .with_signature(format!("def member_{index:03}(self, document: Document) -> Document:")));
+    }
+    let view = backend_library::ViewRoot::new_incomplete(
+        view.recipe(), basis, view.frontier(), rows, Vec::new()).expect("expanded fixture view");
+    reader.catalog = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view)).expect("catalog");
+    let mut request = Request::Page(COORDINATE.to_owned());
+    let (options, _) = options::split(&words(&format!("--json show {COORDINATE}"))).expect("useful default");
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let answer = backend_present::answer(&mut reader, &request).expect("shared driver");
+        assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+        let output = render::try_answer_with_cursor(&answer, &options, None).expect("ordinary default response fits");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+        assert_eq!(value["identity"]["coordinate"], COORDINATE);
+        assert_eq!(value["identity"]["semantic_data"]["value"], serde_json::json!(symbol_key(COORDINATE).as_bytes()));
+        assert!(value["signature"].as_str().expect("useful signature").contains("generateSchedule"));
+        for group in value["members"].as_array().expect("member groups") {
+            for row in group["members"].as_array().expect("rows") {
+                assert!(seen.insert(row["identity"]["coordinate"].as_str().expect("exact address").to_owned()));
+            }
+        }
+        let Some(next) = value["section_page"]["next_cursor"].as_str() else { break; };
+        let invocation = invoke::parse(&words(&format!("show {COORDINATE} --cursor {next}")), None).expect("actual CLI continuation grammar");
+        request = backend_present::lower(&invocation, "/abs/app").expect("shared lowering");
+    }
+    assert_eq!(seen.len(), 80, "no member dropped or repeated");
+}

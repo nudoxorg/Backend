@@ -335,7 +335,10 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             execution_intent,
         } => index(engine, path, *execution_intent),
         Request::Remove(path) => remove(engine, path),
-        Request::Page(at) => page(engine, at).map(Box::new).map(Answer::Page),
+        Request::Page(at) => page(engine, at, None).map(Box::new).map(Answer::Page),
+        Request::ResumePage { coordinate, cursor } => page(engine, coordinate, Some(cursor))
+            .map(Box::new)
+            .map(Answer::Page),
         Request::Source(at) => source(engine, at),
         Request::Neighbourhood {
             coordinate,
@@ -697,7 +700,7 @@ pub fn resolve_declaration(
     }
 }
 
-fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
+fn page(engine: &mut dyn Engine, text: &str, cursor: Option<&str>) -> Result<Page, Fault> {
     let coordinate = resolve_declaration(engine, text, "show")?;
     let coordinate = coordinate.as_str();
     let reply = read(engine, Probe::Document(coordinate))?;
@@ -707,14 +710,15 @@ fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
     let mut notes = Vec::with_capacity(2);
     let relation_rows = probe_rows(engine, coordinate, &mut notes);
     let members = probe_members(engine, coordinate, &document, &mut notes);
-    Ok(page_from_document_with_graph_relations(
+    let page = page_from_document_with_graph_relations(
         coordinate,
         &document,
         &members,
         &relation_rows.rows,
         relation_rows.graph_relations.as_deref().unwrap_or(&[]),
         notes,
-    ))
+    );
+    crate::document_sections::window(page, &document, cursor)
 }
 
 fn source(engine: &mut dyn Engine, text: &str) -> Result<Answer, Fault> {
