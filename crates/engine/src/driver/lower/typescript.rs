@@ -13382,7 +13382,7 @@ describe('suite', () => {\n\
                             .and_then(|atom| target_image.atom(atom))
                             == Some(target_name.as_bytes())
                         && entity.source.is_some_and(
-                            |span| (span.start(), span.end()) == (extent.start, extent.end())
+                            |span| (span.start(), span.end()) == (extent.start, extent.end)
                         ))
                     .count(),
                 1
