@@ -10,7 +10,7 @@ use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use backend_frontend_typescript::{
