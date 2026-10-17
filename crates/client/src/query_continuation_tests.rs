@@ -3578,6 +3578,26 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
     );
 }
 
+// This adversarial witness deliberately discloses the actual owner relation.
+// Revision is commitment-only; its bounded certificate must never supply it.
+fn canonical_member_owner_claim(library: &Library) -> WireClaim {
+    let root = library.view();
+    let id = encode_id(root.root().as_bytes());
+    let canonical = root
+        .canonical_relation_bytes()
+        .expect("actual canonical owner relation");
+    assert_eq!(
+        backend_library::admit_root_bytes::<backend_library::ViewRelation>(&id, &canonical)
+            .expect("independently rehashed owner relation"),
+        library.revision_root()
+    );
+    WireClaim::Root {
+        schema: WireSchema::ViewRelation,
+        id,
+        canonical: canonical.into_boxed_slice(),
+    }
+}
+
 // Emulate the real service's bounded owner revision, while retaining the
 // canonical predecessor PAGE required by the strict continuation decoder.
 struct BoundedMembersTransport {
@@ -3663,28 +3683,10 @@ impl CommandTransport for BoundedMembersTransport {
         ) {
             // A real canonical owner witness must still be rejected. This
             // fault injection would catch a leak even on continued pages.
-            let owner_proof = self
-                .inner
-                .owner
-                .lock()
-                .expect("owner")
-                .execute_dto(CommandDto::new(1, Command::Revision));
-            let owner_claim = owner_proof
-                .certificate()
-                .expect("owner certificate")
-                .claims
-                .iter()
-                .find(|claim| {
-                    matches!(
-                        claim,
-                        WireClaim::Root {
-                            schema: WireSchema::ViewRelation,
-                            ..
-                        }
-                    )
-                })
-                .expect("canonical owner witness")
-                .clone();
+            let owner_claim = {
+                let library = self.inner.owner.lock().expect("owner");
+                canonical_member_owner_claim(&library)
+            };
             let leaked = request.clone().with_certificate(
                 request
                     .certificate()
@@ -3806,6 +3808,44 @@ fn direct_member_fixture() -> (Arc<Mutex<Library>>, Arc<Mutex<Vec<Command>>>, Sy
 #[test]
 fn direct_member_session_pages_pin_selected_owner_and_source_without_outline_requests() {
     let (owner, requests, center) = direct_member_fixture();
+    {
+        let library = owner.lock().expect("owner");
+        let revision = library.execute_dto(CommandDto::new(1, Command::Revision));
+        let claims = &revision.certificate().expect("revision certificate").claims;
+        let owner_id = encode_id(library.revision_root().as_bytes());
+        assert!(claims.iter().any(|claim| matches!(claim,
+            WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id }
+                if id == &owner_id)));
+        assert!(
+            !claims.iter().any(|claim| matches!(
+                claim,
+                WireClaim::Root {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            )),
+            "revision must not disclose canonical owner relations"
+        );
+        let WireClaim::Root { id, canonical, .. } = canonical_member_owner_claim(&library) else {
+            panic!("canonical owner relation witness")
+        };
+        let wrong_id = encode_id(view_state_root(&[]).as_bytes());
+        assert_ne!(id, wrong_id, "the fixture has a nonempty owner relation");
+        assert!(
+            backend_library::admit_root_bytes::<backend_library::ViewRelation>(
+                &wrong_id, &canonical
+            )
+            .is_err(),
+            "canonical bytes cannot certify another owner root"
+        );
+        let mut changed = canonical.into_vec();
+        *changed.first_mut().expect("canonical relation bytes") ^= 1;
+        assert!(
+            backend_library::admit_root_bytes::<backend_library::ViewRelation>(&id, &changed)
+                .is_err(),
+            "changed bytes cannot certify the selected owner root"
+        );
+    }
     let mut client = Session::from_transport(
         "/private/test-owner.sock",
         BoundedMembersTransport::new(Transport {
