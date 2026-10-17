@@ -5281,6 +5281,11 @@ impl CommandAdapter {
             view: daemon.engine().daemon().library().view().clone(),
             compiler: self.compiler.clone(),
             generations: self.generations.for_preparation(),
+            diagnostic_workspace: self
+                .product_state
+                .workspace_path()
+                .ok()
+                .map(Path::to_path_buf),
         };
         let projection = self.search_snapshots.take_projection();
         self.search_lane

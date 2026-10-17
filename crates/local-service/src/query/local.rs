@@ -2116,7 +2116,6 @@ impl QueryCoordinator {
     }
 
     /// Exact existing lexical binding for an opt-in worker observation.
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(crate) fn preparation_diagnostic_binding(&self) -> lexical::Binding {
         self.corpus.lexical_binding
     }

@@ -1,7 +1,11 @@
 //! Opt-in bounded worker observations, never query or coverage authority.
 
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+const FILE_NAME: &str = "search-preparation-worker-v1.json";
+const MAX_BYTES: usize = 4096;
 
 fn requested(value: Option<&std::ffi::OsStr>) -> bool {
     value.and_then(std::ffi::OsStr::to_str) == Some("1")
@@ -49,7 +53,6 @@ pub(super) struct Counts {
 }
 
 impl Counts {
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn capture(owner: &super::SearchSnapshotOwner) -> Self {
         Self {
             corpus_builds: owner.corpus_builds(),
@@ -63,16 +66,21 @@ impl Counts {
 pub(super) struct Generations {
     owner_calls: u64,
     hits: u64,
+    // A residence snapshot, never an inferred I/O or decode-byte counter.
+    resident_encoded_image_bytes: usize,
+    resident_images: usize,
 }
 
 impl Generations {
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn capture(
         owner: &super::super::super::generation_residence::SemanticGenerationResidence,
     ) -> Self {
+        let (resident_encoded_image_bytes, resident_images) = owner.resident_image_weight();
         Self {
             owner_calls: owner.owner_calls(),
             hits: owner.hits(),
+            resident_encoded_image_bytes,
+            resident_images,
         }
     }
 }
@@ -87,6 +95,7 @@ pub(super) struct Phases {
 #[derive(Serialize)]
 pub(super) struct Diagnostic {
     schema: &'static str,
+    process_id: u32,
     // Only captured identities and counts are emitted: no paths, source text,
     // arbitrary error strings or environment values can grow the receipt.
     workspace: String,
@@ -95,6 +104,8 @@ pub(super) struct Diagnostic {
     source: Source,
     #[serde(skip)]
     started: Instant,
+    #[serde(skip)]
+    destination: Option<PathBuf>,
     before: Counts,
     pub(super) phases: Phases,
     pub(super) corpus: Option<Corpus>,
@@ -132,7 +143,6 @@ pub(super) struct Corpus {
 }
 
 impl Corpus {
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn capture(corpus: &backend_extension_trustfall::SemanticQueryCorpus) -> Self {
         Self {
             workspace: backend_engine::encode_id(corpus.workspace().as_bytes()),
@@ -153,7 +163,6 @@ pub(super) struct LexicalBinding {
 }
 
 impl LexicalBinding {
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn capture(binding: backend_extension_tantivy::Binding) -> Self {
         Self {
             workspace: backend_engine::encode_id(binding.workspace.as_bytes()),
@@ -205,18 +214,22 @@ struct Receipt<'a> {
 }
 
 impl Diagnostic {
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn capture(
         capture: &super::Capture,
         projection: &super::SearchSnapshotOwner,
     ) -> Self {
         Self {
             schema: "nudox.search-preparation-worker.v1",
+            process_id: std::process::id(),
             workspace: backend_engine::encode_id(capture.snapshot.root().as_bytes()),
             view: backend_engine::encode_id(capture.view.root().as_bytes()),
             view_version: backend_engine::encode_id(capture.view.version().as_bytes()),
             source: Source::from_basis(capture.view.basis()),
             started: Instant::now(),
+            destination: capture
+                .diagnostic_workspace
+                .as_ref()
+                .map(|path| path.join(FILE_NAME)),
             before: Counts::capture(projection),
             phases: Phases {
                 indexed_sources: Phase::NotRun,
@@ -230,7 +243,6 @@ impl Diagnostic {
         }
     }
 
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn from_environment(
         capture: &super::Capture,
         projection: &super::SearchSnapshotOwner,
@@ -254,7 +266,6 @@ impl Diagnostic {
         })
     }
 
-    #[cfg(feature = "cluster-process-journey-hooks")]
     pub(super) fn emit(
         &self,
         projection: &super::SearchSnapshotOwner,
@@ -268,7 +279,8 @@ impl Diagnostic {
             // Diagnostics never replace the genuine result, including a
             // closed stderr. All fields are fixed identities and scalars.
             use std::io::Write as _;
-            if bytes.len() <= 4096 {
+            if bytes.len() <= MAX_BYTES {
+                publish(self.destination.as_deref(), &bytes);
                 let _ = writeln!(
                     std::io::stderr().lock(),
                     "journey search preparation: {}",
@@ -276,6 +288,16 @@ impl Diagnostic {
                 );
             }
         }
+    }
+}
+
+fn publish(destination: Option<&Path>, bytes: &[u8]) {
+    // Automatic CLI startup intentionally closes locald's stderr. Reuse the
+    // existing startup-timing writer for one bounded latest observation in
+    // the admitted workspace. No append log, durability barrier, directory
+    // creation or query-authority input is introduced; failures are ignored.
+    if let Some(destination) = destination.filter(|_| bytes.len() <= MAX_BYTES) {
+        let _ = backend_platform::durable::write_private_atomic_unflushed(destination, bytes);
     }
 }
 
@@ -366,6 +388,7 @@ mod tests {
         };
         let mut observation = Diagnostic {
             schema: "nudox.search-preparation-worker.v1",
+            process_id: u32::MAX,
             workspace: hex.clone(),
             view: hex.clone(),
             view_version: hex.clone(),
@@ -377,6 +400,7 @@ mod tests {
                 schema: u16::MAX,
             },
             started: Instant::now(),
+            destination: Some(PathBuf::from("path must never be serialized")),
             before,
             phases: Phases {
                 indexed_sources: Phase::Observed {
@@ -397,8 +421,15 @@ mod tests {
             generation_before: Generations {
                 owner_calls: u64::MAX,
                 hits: u64::MAX,
+                resident_encoded_image_bytes: usize::MAX,
+                resident_images: usize::MAX,
             },
-            generation_after: None,
+            generation_after: Some(Generations {
+                owner_calls: u64::MAX,
+                hits: u64::MAX,
+                resident_encoded_image_bytes: usize::MAX,
+                resident_images: usize::MAX,
+            }),
             lexical_binding: Some(LexicalBinding {
                 workspace: hex.clone(),
                 root: hex.clone(),
@@ -432,10 +463,22 @@ mod tests {
         assert_eq!(json["lexical_binding"]["read_manifest"], hex);
         assert_eq!(json["before"]["projection_opens"], u64::MAX);
         assert_eq!(json["after"]["projection_opens"], u64::MAX);
+        assert_eq!(json["process_id"], u32::MAX);
+        assert_eq!(
+            json["generation_before"]["resident_encoded_image_bytes"],
+            usize::MAX
+        );
+        assert_eq!(json["generation_before"]["resident_images"], usize::MAX);
+        assert_eq!(
+            json["generation_after"]["resident_encoded_image_bytes"],
+            usize::MAX
+        );
         assert!(json.get("started").is_none());
+        assert!(json.get("destination").is_none());
         observation.phases.semantic_corpus = Phase::NotRun;
         observation.phases.lexical_projection = Phase::NotRun;
         observation.corpus = None;
+        observation.generation_after = None;
         observation.lexical_binding = None;
         let refused: serde_json::Value = serde_json::from_slice(
             &observation
@@ -448,6 +491,7 @@ mod tests {
         assert_eq!(refused["phases"]["lexical_projection"]["state"], "not-run");
         assert!(refused["lexical_binding"].is_null());
         assert!(refused["corpus"].is_null());
+        assert!(refused["generation_after"].is_null());
     }
 
     #[test]
@@ -479,6 +523,51 @@ mod tests {
         assert_eq!(
             Outcome::from(&Err(super::super::Failure::Panicked)),
             Outcome::Panicked
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn latest_observation_is_private_bounded_and_never_follows_a_destination_link() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let directory = tempfile::tempdir().expect("private observation directory");
+        let destination = directory.path().join(FILE_NAME);
+        publish(None, b"not opted in");
+        assert!(!destination.exists());
+        publish(Some(&destination), b"first complete observation");
+        assert_eq!(
+            std::fs::read(&destination).expect("first bytes"),
+            b"first complete observation"
+        );
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .expect("private metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        publish(Some(&destination), b"second complete observation");
+        publish(Some(&destination), &vec![0; MAX_BYTES + 1]);
+        assert_eq!(
+            std::fs::read(&destination).expect("latest bytes"),
+            b"second complete observation"
+        );
+
+        let outside = directory.path().join("unrelated");
+        std::fs::write(&outside, b"preserve unrelated bytes").expect("unrelated fixture");
+        std::fs::remove_file(&destination).expect("replace only owned fixture");
+        symlink(&outside, &destination).expect("unsafe destination fixture");
+        publish(Some(&destination), b"must not follow");
+        assert_eq!(
+            std::fs::read(&outside).expect("unrelated remains"),
+            b"preserve unrelated bytes"
+        );
+        assert!(
+            std::fs::symlink_metadata(&destination)
+                .expect("link remains")
+                .file_type()
+                .is_symlink()
         );
     }
 }
