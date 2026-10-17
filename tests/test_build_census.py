@@ -180,6 +180,9 @@ class CargoCensusTests(unittest.TestCase):
             ),
             2,
         )
+        large_environment = b"FILLER=" + b"x" * 69_369 + b"\0CARGO_BUILD_JOBS=2\0"
+        self.assertEqual(len(large_environment), 69_396)
+        self.assertEqual(census._cargo_build_jobs_from_environ(large_environment), 2)
         for value in (b"", b"0", b"-1", b"+2", b"2x", b"\xff"):
             with self.subTest(value=value):
                 self.assertIsNone(
