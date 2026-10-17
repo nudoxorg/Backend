@@ -205,6 +205,37 @@ impl BrowseLane {
         Ok(lane)
     }
 
+    #[cfg(test)]
+    pub(super) fn held_for_test() -> (
+        Self,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, receipt) = std::sync::mpsc::sync_channel(1);
+        let (release, gate) = std::sync::mpsc::sync_channel(1);
+        let gate = Mutex::new(gate);
+        let lane = Self::start_with(Arc::new(move |_, _, _, _| {
+            let _ = entered.send(());
+            let _ = gate.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            CommandReply::Failed(CommandFailure::InvalidQuery(
+                "held browse returned".to_owned(),
+            ))
+        }))
+        .expect("held browse lane");
+        (lane, receipt, release)
+    }
+
+    #[cfg(test)]
+    pub(super) fn cancellation_for_test(&self, ticket: u64) -> Arc<ObservationControl> {
+        Arc::clone(
+            &self
+                .outstanding
+                .get(&ticket)
+                .expect("owned browse request")
+                .control,
+        )
+    }
+
     pub(super) const fn accepts(command: &SurfaceCommand) -> bool {
         matches!(
             command,
@@ -471,7 +502,8 @@ impl BrowseLane {
         terminals
     }
 
-    pub(super) fn close(&mut self) {
+    /// Stop admission and signal every owned request without joining workers.
+    pub(super) fn request_close(&mut self) {
         if self.closed {
             return;
         }
@@ -491,15 +523,32 @@ impl BrowseLane {
         for shard in &self.shards {
             let mut queue = shard.queue.lock().unwrap_or_else(PoisonError::into_inner);
             queue.closed = true;
-            queue.pending.clear();
+            for job in &queue.pending {
+                job.control.cancel();
+            }
+            if let Some(running) = &queue.running {
+                running.control.cancel();
+            }
             drop(queue);
             shard.ready.notify_all();
         }
+    }
+
+    pub(super) fn close(&mut self) {
+        self.request_close();
         // Cancellation stops Cargo through the platform capture boundary.
         // A source-file OS read may be uninterruptible; joining honestly waits
         // for that read rather than detaching an unbounded worker.
         for worker in self.workers.drain(..) {
             let _ = worker.join();
+        }
+        for shard in &self.shards {
+            shard
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pending
+                .clear();
         }
         self.outstanding.clear();
         let pending = {
