@@ -116,6 +116,24 @@ pub(crate) struct GraphViewRequest {
     pub sequence: u64,
 }
 
+impl GraphViewRequest {
+    /// The same request admission at delivery and at deferred navigation.
+    /// An attachment replacement or a later publication cannot lend its
+    /// authority to an already resolved node from the former graph.
+    pub(crate) fn admits(&self, generation: u64, store: &DataStore) -> bool {
+        let snapshot = store.snapshot();
+        self.sequence == generation
+            && snapshot.route() == &self.route
+            && self.root.authority() == self.authority
+            && snapshot.key().authority() == self.authority
+            && snapshot.overlay().is_none()
+            && self.attachment.as_ref().is_some_and(|attachment| {
+                store.admits_owner_attachment(attachment)
+            })
+            && store.graph_view_eligibility() == self.selection
+    }
+}
+
 /// A local Add dialog visit, captured from the existing route/overlay sequence.
 /// It deliberately does not require a serving index owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,10 +147,11 @@ enum QueuedIntent {
     Index { intent: Intent, attachment: super::actor::IndexMutationLease },
     IndexStatus { intent: Intent, attachment: OwnerAttachment },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
+    GraphNavigation { intent: Intent, request: GraphViewRequest },
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } | Self::GraphNavigation { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -425,6 +444,11 @@ impl UiRootEntity {
                     self.dispatch(intent, cx)
                 }
                 QueuedIntent::Read { .. } => {}
+                QueuedIntent::GraphNavigation { intent, request }
+                    if self.store.as_ref().is_some_and(|store| {
+                        request.admits(self.graph_view_generation, store.read(cx))
+                    }) => self.dispatch(intent, cx),
+                QueuedIntent::GraphNavigation { .. } => {}
             }
         }
         if refresh_unsent {
@@ -812,6 +836,41 @@ impl UiRootEntity {
         self.schedule_flush(cx);
     }
 
+    /// Keep a resolved graph node's existing request admission until the
+    /// queued Navigate is reduced, after departure presentation is saved.
+    pub(crate) fn queue_graph_navigation(&mut self, route: Route, cx: &mut Context<Self>) {
+        if self.quitting { return; }
+        let target = match &route {
+            Route::Symbol(crate::navigation::SymbolRoute { view: View::Page, .. }) => GraphDestination::Page,
+            Route::Symbol(crate::navigation::SymbolRoute { view: View::Code, .. }) => GraphDestination::Code,
+            _ => return,
+        };
+        let Some(store) = &self.store else { return; };
+        let store = store.read(cx);
+        let snapshot = self.snapshot();
+        if snapshot.route() != store.snapshot().route() || snapshot.overlay() != store.snapshot().overlay()
+            || !snapshot.key().same_authority(store.snapshot().key()) { return; }
+        let request = GraphViewRequest {
+            target,
+            route: snapshot.route().clone(),
+            selection: store.graph_view_eligibility(),
+            root: snapshot.key(),
+            authority: snapshot.key().authority(),
+            attachment: store.current_owner_attachment(),
+            sequence: self.graph_view_generation,
+        };
+        // The caller already resolved the exact node. A retained peek can
+        // legitimately open it outside Graph or without a focused node.
+        if !request.admits(self.graph_view_generation, store) { return; }
+        self.pending.push(QueuedIntent::GraphNavigation { intent: Intent::Navigate(route), request });
+        self.schedule_flush(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_graph_navigations(&self) -> usize {
+        self.pending.iter().filter(|intent| matches!(intent, QueuedIntent::GraphNavigation { .. })).count()
+    }
+
     /// Local dialog actions keep their exact visit across the queued handoff.
     pub(crate) fn add_project_visit(&self, owner: gpui::EntityId, cx: &App) -> Option<AddProjectVisit> {
         let snapshot = self.snapshot();
@@ -1054,6 +1113,15 @@ impl UiRootEntity {
         self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
     }
 
+    fn retire_graph_publication(&mut self) {
+        let snapshot = self.snapshot();
+        // The graph request clock is also used by local dialog visits. A
+        // publication behind a dialog must not cancel that unrelated input.
+        if snapshot.overlay().is_none() {
+            self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
+        }
+    }
+
     /// A publication changes package observations independently of the root
     /// read's catalog. Refresh open resources in place; retain route/history.
     pub(crate) fn packages_published(
@@ -1062,6 +1130,9 @@ impl UiRootEntity {
         cx: &mut Context<Self>,
     ) {
         if packages.is_empty() { return; }
+        // Content may change without a different snapshot authority. Retire
+        // resolved graph requests before any observer handles the publication.
+        self.retire_graph_publication();
         if let Some(store) = &self.store {
             store.update(cx, |store, cx| store.packages_published(packages, cx));
         }
@@ -1327,6 +1398,7 @@ impl UiRootEntity {
             newly_published_local_projects(before, &self.snapshot())
         });
         if !published.is_empty() {
+            self.retire_graph_publication();
             if let Some(store) = &self.store {
                 // A durable local receipt withdraws old page/graph reads just
                 // like an acquired release. It must not wait for hydration or

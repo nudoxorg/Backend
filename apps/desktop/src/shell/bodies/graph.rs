@@ -325,16 +325,7 @@ impl Map {
                 &root,
                 window,
                 |map, owner, request: &GraphViewRequest, window, cx| {
-                    let snapshot = map.links.snapshot(cx);
-                    if owner.read(cx).graph_view_generation() == request.sequence
-                        && snapshot.route() == &request.route
-                        && request.root.authority() == request.authority
-                        && snapshot.key().authority() == request.authority
-                        && snapshot.overlay().is_none()
-                        && request.attachment.as_ref().is_some_and(|attachment| {
-                            map.links.store.read(cx).admits_owner_attachment(attachment)
-                        })
-                        && map.links.store.read(cx).graph_view_eligibility() == request.selection
+                    if request.admits(owner.read(cx).graph_view_generation(), map.links.store.read(cx))
                         && map.visible
                     {
                         // Focus events publish through the GPUI effect queue.
@@ -1364,12 +1355,12 @@ impl Map {
         let snapshot = self.links.snapshot(cx);
         if route_symbol(snapshot.route()).as_ref() == Some(&symbol) {
             if let Some(route) = snapshot.route().with_view(target.view()) {
-                self.links.dispatch(Intent::Navigate(route), cx);
+                self.links.dispatch_graph_navigation(route, cx);
             }
         } else if let Some(route) =
             crate::shell::kit::symbol_view_route(package.as_str(), &symbol, target.view(), line)
         {
-            self.links.dispatch(Intent::Navigate(route), cx);
+            self.links.dispatch_graph_navigation(route, cx);
         }
     }
 }
