@@ -11698,6 +11698,7 @@ mod projection_tests {
 
 #[cfg(test)]
 mod lane_tests {
+    use backend_semantic::ir::{ForeignOrigin, OccurrenceConfidence};
     use super::{TypeScriptCollectError, collect_with_checker, collect_with_tsz};
     use crate::driver::lower::{AdmissionFault, FactSet, admit};
     use backend_frontend_typescript::legacy::{
