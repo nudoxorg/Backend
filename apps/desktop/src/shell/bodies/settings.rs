@@ -443,6 +443,7 @@ fn profile_words(profile: impl Into<[u8; 2]>) -> &'static str {
         [3, 1] => "Go 1.23",
         [3, 2] => "Go 1.24",
         [3, 3] => "Go 1.25",
+        [3, 4] => "Go 1.26",
         [4, 0] => "Java 8",
         [4, 1] => "Java 11",
         [4, 2] => "Java 17",
@@ -1345,6 +1346,12 @@ fn _palette(_: &Palette, _: &Measure) {}
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    #[test]
+    fn go_profile_words_keep_current_and_historical_versions_distinct() {
+        assert_eq!(super::profile_words([3, 4]), "Go 1.26");
+        assert_eq!(super::profile_words([3, 3]), "Go 1.25");
+    }
+
     use super::{
         capability_state_words, capability_words, connection_explanation, connection_words,
         find_mcp_binary, health_notice, locald_companion, mcp_config,

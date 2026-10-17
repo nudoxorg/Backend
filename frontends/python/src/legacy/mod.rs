@@ -755,11 +755,88 @@ fn assignment_declaration(target: Option<&ast::Expr>) -> Option<RuffDeclaration>
     })
 }
 
+/// Expressions evaluated while a class is being defined can introduce bindings
+/// that the declaration walk does not emit. Nested bodies own separate scopes;
+/// defaults, decorators and nested-class bases still run in this class scope.
+#[derive(Default)]
+struct UnrepresentedClassBinding {
+    found: bool,
+}
+
+impl<'a> Visitor<'a> for UnrepresentedClassBinding {
+    fn visit_body(&mut self, _body: &'a [ast::Stmt]) {}
+
+    fn visit_expr(&mut self, expression: &'a ast::Expr) {
+        if self.found {
+            return;
+        }
+        match expression {
+            ast::Expr::Named(_) => self.found = true,
+            ast::Expr::Call(call) if explicit_class_namespace_mutation(call) => self.found = true,
+            ast::Expr::Lambda(lambda) => {
+                if let Some(parameters) = lambda.parameters.as_deref() {
+                    self.visit_parameters(parameters);
+                }
+            }
+            _ => visitor::walk_expr(self, expression),
+        }
+    }
+}
+
+fn explicit_class_namespace_mutation(call: &ast::ExprCall) -> bool {
+    match call.func.as_ref() {
+        ast::Expr::Name(name) => matches!(name.id.as_str(), "exec" | "eval"),
+        ast::Expr::Subscript(subscript) => {
+            matches!(subscript.value.as_ref(), ast::Expr::Name(name) if name.id.as_str() == "__builtins__")
+                && matches!(subscript.slice.as_ref(), ast::Expr::StringLiteral(literal) if matches!(literal.value.to_str(), "exec" | "eval"))
+        }
+        ast::Expr::Attribute(attribute) => {
+            if matches!(attribute.attr.as_str(), "exec" | "eval")
+                && matches!(attribute.value.as_ref(), ast::Expr::Name(name) if name.id.as_str() == "builtins")
+            {
+                return true;
+            }
+            let mutator = matches!(
+                attribute.attr.as_str(),
+                "update"
+                    | "setdefault"
+                    | "pop"
+                    | "popitem"
+                    | "clear"
+                    | "__setitem__"
+                    | "__delitem__"
+                    | "__ior__"
+                    | "setitem"
+                    | "delitem"
+            );
+            mutator
+                && (current_class_namespace(&attribute.value)
+                    || call
+                        .arguments
+                        .args
+                        .first()
+                        .is_some_and(current_class_namespace))
+        }
+        _ => false,
+    }
+}
+
+fn current_class_namespace(expression: &ast::Expr) -> bool {
+    matches!(expression, ast::Expr::Call(call)
+        if matches!(call.func.as_ref(), ast::Expr::Name(name) if matches!(name.id.as_str(), "locals" | "vars"))
+            && call.arguments.args.is_empty() && call.arguments.keywords.is_empty())
+}
+
 /// The extraction walk does not emit every Python binding form. Claim a
 /// complete inventory only for class bodies whose direct statements are all
 /// represented, or are known not to declare a member. Conditional bindings,
 /// imports, multiple assignment targets, aliases and runtime expressions
-/// require their own proof and keep the inventory unavailable.
+/// require their own proof and keep the inventory unavailable. This is a
+/// written-declaration inventory, excluding inherited/runtime attributes; it
+/// does not model arbitrary factory or metaclass execution. Known explicit
+/// namespace mutations and unrepresented class-scope bindings are refused.
+/// Detection is bounded to these explicit forms, not indirect alias calls or
+/// reflective execution closure.
 fn declared_class_members(class: &ast::StmtClassDef) -> Option<DeclaredMemberInventory> {
     let mut members = Vec::new();
     for statement in &class.body {
@@ -773,6 +850,11 @@ fn declared_class_members(class: &ast::StmtClassDef) -> Option<DeclaredMemberInv
             ast::Stmt::FunctionDef(_) | ast::Stmt::ClassDef(_) | ast::Stmt::AnnAssign(_) => {}
             ast::Stmt::Assign(assign) if assign.targets.len() == 1 => {}
             _ => return None,
+        }
+        let mut unrepresented = UnrepresentedClassBinding::default();
+        unrepresented.visit_stmt(statement);
+        if unrepresented.found {
+            return None;
         }
         members.push(ruff_declaration(statement)?.name);
     }

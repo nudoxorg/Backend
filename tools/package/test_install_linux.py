@@ -144,6 +144,54 @@ class InstallerFilesystemTests(unittest.TestCase):
             result = installer.main(["--prefix", str(prefix)])
         return result, download
 
+    def test_known_nixos_stub_loader_is_refused_before_channel_or_archive_download(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory).resolve() / "prefix"
+            with patch.object(installer.sys, "platform", "linux"), \
+                 patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
+                 patch.object(installer, "_system_elf_loader_target", return_value="/nix/store/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"), \
+                 patch.object(installer, "load_release") as load_release, \
+                 patch.object(installer, "download_archive") as download_archive, \
+                 patch.dict(os.environ, {"HOME": directory}):
+                with self.assertRaisesRegex(installer.InstallError, "resolves to the NixOS generic stub loader.*no release archive was downloaded"):
+                    installer.main(["--prefix", str(prefix)])
+            load_release.assert_not_called()
+            download_archive.assert_not_called()
+            self.assertFalse(prefix.exists())
+
+    def test_real_glibc_and_nix_ld_interpreters_are_not_refused(self):
+        from types import SimpleNamespace
+        for target in ("/lib64/ld-linux-x86-64.so.2", "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-nix-ld", None):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
+                with patch.object(installer.sys, "platform", "linux"), \
+                     patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
+                     patch.object(installer, "_system_elf_loader_target", return_value=target), \
+                     patch.object(installer, "load_release", side_effect=RuntimeError("reached release lookup")) as load_release, \
+                     patch.dict(os.environ, {"HOME": directory}):
+                    with self.assertRaisesRegex(RuntimeError, "reached release lookup"):
+                        installer.main(["--prefix", str(Path(directory) / "prefix")])
+                load_release.assert_called_once()
+
+    def test_system_elf_loader_target_resolves_symlink_without_running_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / installer.KNOWN_NIXOS_STUB_INTERPRETER
+            target.write_bytes(b"not executed")
+            link = root / "ld-linux-x86-64.so.2"
+            link.symlink_to(target)
+            with patch.object(installer, "SYSTEM_ELF_INTERPRETER", link):
+                self.assertEqual(installer._system_elf_loader_target(), target.resolve().as_posix())
+
+    def test_known_stub_match_requires_nix_store_hash_for_resolved_paths(self):
+        self.assertFalse(installer._is_known_nixos_stub_target(installer.KNOWN_NIXOS_STUB_INTERPRETER))
+        self.assertTrue(installer._is_known_nixos_stub_target(
+            "/nix/store/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"))
+        self.assertFalse(installer._is_known_nixos_stub_target(
+            "/tmp/xphm1v1snir05ajsk4v1zslzxmmsfy6g-stub-ld-x86_64-unknown-linux-musl"))
+        self.assertFalse(installer._is_known_nixos_stub_target(
+            "/nix/store/invalidhash-stub-ld-x86_64-unknown-linux-musl"))
+
     def test_channel_rerun_skips_archive_only_after_receipt_and_file_recheck(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

@@ -37,7 +37,7 @@ pub use authority::{
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CandidateAttemptRetirementReason, CandidateGeneration, ClosureClaim, ClosureReceipt,
-    CompilerEnvelopeError, CompilerImageMember, CompilerProgramSourceMember,
+    CompilerEnvelopeError, CompilerImageMember, CompilerProgramSourceMember, CompilerSourceCoverageMember, reopen_source_coverage,
     CompilerPublicationEnvelope, CompilerPublicationMetadata, ExistingGenerationSelection,
     IncompleteAuthoritySnapshot, NoResultRetirementBarrier, ProjectionKind, ProjectionWatermark,
     ReopenedCompilerImage,

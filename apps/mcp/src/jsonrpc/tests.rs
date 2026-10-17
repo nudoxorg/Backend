@@ -37,6 +37,8 @@ mod package_graph_budget;
 mod record_budget_pages;
 #[path = "tests/document_section_pages.rs"]
 mod document_section_pages;
+#[path = "tests/semantic_selection.rs"]
+mod semantic_selection;
 #[path = "tests/semantic_source_pages.rs"]
 mod semantic_source_pages;
 #[path = "tests/source_membership_pages.rs"]

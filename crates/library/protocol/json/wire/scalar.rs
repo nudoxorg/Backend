@@ -114,6 +114,7 @@ pub(super) enum GoVersionWire {
     Go123,
     Go124,
     Go125,
+    Go126,
 }
 
 #[derive(Serialize)]

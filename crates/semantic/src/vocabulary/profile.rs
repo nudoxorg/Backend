@@ -57,6 +57,8 @@ pub enum GoVersion {
     Go124 = 2,
     /// Go 1.25 language semantics.
     Go125 = 3,
+    /// Go 1.26 language semantics.
+    Go126 = 4,
 }
 
 /// Java source release used by javac and the semantic tree authority.
@@ -178,7 +180,7 @@ impl LanguageProfile {
         Self::Python(PythonVersion::Python314),
         Self::TypeScript(TypeScriptSource::TypeScript),
         Self::TypeScript(TypeScriptSource::Tsx),
-        Self::Go(GoVersion::Go125),
+        Self::Go(GoVersion::Go126),
         Self::Java(JavaRelease::Java25),
         Self::CSharp(CSharpVersion::CSharp14),
         Self::C(CStandard::C23),
@@ -276,6 +278,7 @@ impl<'profile> TryFrom<&'profile str> for LanguageProfile {
             "go-1.23" => Ok(Self::Go(GoVersion::Go123)),
             "go-1.24" => Ok(Self::Go(GoVersion::Go124)),
             "go-1.25" => Ok(Self::Go(GoVersion::Go125)),
+            "go-1.26" => Ok(Self::Go(GoVersion::Go126)),
             "java-8" => Ok(Self::Java(JavaRelease::Java8)),
             "java-11" => Ok(Self::Java(JavaRelease::Java11)),
             "java-17" => Ok(Self::Java(JavaRelease::Java17)),
@@ -335,6 +338,7 @@ const fn decode_go(value: u8) -> Option<GoVersion> {
         1 => Some(GoVersion::Go123),
         2 => Some(GoVersion::Go124),
         3 => Some(GoVersion::Go125),
+        4 => Some(GoVersion::Go126),
         _ => None,
     }
 }
@@ -386,7 +390,7 @@ mod tests {
     use crate::vocabulary::{CompileRecipeFact, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    const PROFILES: [LanguageProfile; 32] = [
+    const PROFILES: [LanguageProfile; 33] = [
         LanguageProfile::Rust(RustEdition::Rust2015),
         LanguageProfile::Rust(RustEdition::Rust2018),
         LanguageProfile::Rust(RustEdition::Rust2021),
@@ -402,6 +406,7 @@ mod tests {
         LanguageProfile::Go(GoVersion::Go123),
         LanguageProfile::Go(GoVersion::Go124),
         LanguageProfile::Go(GoVersion::Go125),
+        LanguageProfile::Go(GoVersion::Go126),
         LanguageProfile::Java(JavaRelease::Java8),
         LanguageProfile::Java(JavaRelease::Java11),
         LanguageProfile::Java(JavaRelease::Java17),
@@ -439,12 +444,13 @@ mod tests {
             (GoVersion::Go123, 1),
             (GoVersion::Go124, 2),
             (GoVersion::Go125, 3),
+            (GoVersion::Go126, 4),
         ] {
             let profile = LanguageProfile::Go(version);
             assert_eq!(<[u8; 2]>::from(profile), [language, code]);
             assert_eq!(LanguageProfile::try_from([language, code]), Ok(profile));
         }
-        for code in 4..=u8::MAX {
+        for code in 5..=u8::MAX {
             assert_eq!(
                 LanguageProfile::try_from([language, code]),
                 Err(UnknownLanguageProfile {
@@ -452,7 +458,11 @@ mod tests {
                 })
             );
         }
-        for spelling in ["go-1.26", "go-1.27", "go-2.0"] {
+        assert_eq!(
+            LanguageProfile::try_from("go-1.26"),
+            Ok(LanguageProfile::Go(GoVersion::Go126))
+        );
+        for spelling in ["go-1.27", "go-2.0"] {
             assert_eq!(LanguageProfile::try_from(spelling), Err(spelling));
         }
     }
@@ -487,5 +497,22 @@ mod tests {
         );
 
         assert_ne!(rust_2021.identity, rust_2024.identity);
+        let go_125 = CompileRecipeFact::derive(
+            LanguageProfile::Go(GoVersion::Go125),
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            source,
+            toolchain,
+        );
+        let go_126 = CompileRecipeFact::derive(
+            LanguageProfile::Go(GoVersion::Go126),
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            source,
+            toolchain,
+        );
+        assert_ne!(go_125.identity, go_126.identity);
     }
+
+
 }

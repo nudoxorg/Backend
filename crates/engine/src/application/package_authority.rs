@@ -424,6 +424,7 @@ impl<'run> GoPackageAuthority<'run> {
             self.profile,
             PackageAuthorityStage::GoOracle,
         )?;
+        require_go_module_language(self.profile, &image)?;
         checkpoint(self.control, self.profile, PackageAuthorityStage::GoOracle)?;
         Ok(PackageAuthorityOwner::Go {
             profile: self.profile,
@@ -438,6 +439,67 @@ impl<'run> GoPackageAuthority<'run> {
             .finish()
             .map_err(PackageAuthorityError::GoOracle)
     }
+}
+
+fn require_go_module_language(
+    profile: LanguageProfile,
+    bytes: &[u8],
+) -> Result<(), PackageAuthorityError> {
+    let image = backend_frontend_go::legacy::GoImage::open(bytes).map_err(|_| {
+        PackageAuthorityError::GoModuleLanguage {
+            profile,
+            observed: "invalid native image".to_owned(),
+        }
+    })?;
+    let module = image
+        .module()
+        .map_err(|_| PackageAuthorityError::GoModuleLanguage {
+            profile,
+            observed: "invalid native module metadata".to_owned(),
+        })?;
+    if let Some(module) = module {
+        admit_go_module_version(profile, module.go_version)?;
+    }
+    Ok(())
+}
+
+fn admit_go_module_version(
+    profile: LanguageProfile,
+    version: &[u8],
+) -> Result<(), PackageAuthorityError> {
+    use backend_semantic::vocabulary::GoVersion;
+    if version.is_empty() {
+        return Ok(());
+    }
+    let maximum = match profile {
+        LanguageProfile::Go(GoVersion::Go122) => 22,
+        LanguageProfile::Go(GoVersion::Go123) => 23,
+        LanguageProfile::Go(GoVersion::Go124) => 24,
+        LanguageProfile::Go(GoVersion::Go125) => 25,
+        LanguageProfile::Go(GoVersion::Go126) => 26,
+        _ => 0,
+    };
+    // This is the actual Go producer's already validated module version, not
+    // a second parser for untrusted go.mod syntax. Patch/prerelease spelling
+    // does not change the language minor.
+    let observed = std::str::from_utf8(version).ok();
+    let supported = observed
+        .and_then(|text| text.strip_prefix("1."))
+        .and_then(|rest| {
+            let end = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest.get(..end)?.parse::<u32>().ok()
+        })
+        .is_some_and(|minor| minor <= maximum);
+    if supported {
+        return Ok(());
+    }
+    Err(PackageAuthorityError::GoModuleLanguage {
+        profile,
+        observed: observed
+            .filter(|value| value.len() <= 128)
+            .unwrap_or("invalid or oversized native module version")
+            .to_owned(),
+    })
 }
 
 /// Admits one native Python project session through the same closed package
@@ -867,6 +929,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     request.profile,
                     PackageAuthorityStage::GoOracle,
                 )?;
+                require_go_module_language(request.profile, &image)?;
                 checkpoint(
                     request.control,
                     request.profile,
@@ -1212,6 +1275,14 @@ pub enum PackageAuthorityError {
         /// Requested profile.
         profile: LanguageProfile,
     },
+    /// A selected native module requires language semantics beyond the requested profile.
+    #[error("Go module requires {observed}, beyond the selected {} language profile", ProfileName(.profile))]
+    GoModuleLanguage {
+        /// Exact requested compiler profile.
+        profile: LanguageProfile,
+        /// Actual module requirement retained by the native authority.
+        observed: String,
+    },
     /// The exact unit key is not implemented for this language authority.
     #[error("the compilation unit is incompatible with {} package authority", ProfileName(.profile))]
     CompilationUnitMismatch {
@@ -1336,6 +1407,22 @@ pub enum PackageAuthorityError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn go_native_module_requirement_cannot_fall_back_to_an_older_profile() {
+        use backend_semantic::vocabulary::{GoVersion, LanguageProfile};
+        let go125 = LanguageProfile::Go(GoVersion::Go125);
+        let go126 = LanguageProfile::Go(GoVersion::Go126);
+        assert!(super::admit_go_module_version(go126, b"1.26.2").is_ok());
+        assert!(super::admit_go_module_version(go125, b"1.25.9").is_ok());
+        assert!(super::admit_go_module_version(go126, b"1.24.3").is_ok());
+        for (profile, version) in [(go125, b"1.26.2".as_slice()), (go126, b"1.27.0".as_slice())] {
+            assert!(matches!(
+                super::admit_go_module_version(profile, version),
+                Err(super::PackageAuthorityError::GoModuleLanguage { profile: actual, .. }) if actual == profile
+            ));
+        }
+    }
+
     use crate::test_support::host_path;
     use std::{
         path::Path,

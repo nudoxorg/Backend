@@ -33,7 +33,7 @@ use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CompilerEnvelopeError, CompilerImageMember,
-    CompilerProgramSourceMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
+    CompilerProgramSourceMember, CompilerSourceCoverageMember, reopen_source_coverage, CompilerPublicationEnvelope, CompilerPublicationMetadata,
     ReopenedCompilerImage, ReopenedCompilerMetadata, ReopenedCompilerPublication,
     reopen_native_program_sources, reopen_selected_compiler_metadata,
     reopen_selected_compiler_publication,
