@@ -239,7 +239,10 @@ impl GracefulClose {
                 if close.phase != Phase::Saving(attempt) { return; }
                 close.task = None;
                 match result {
-                    Ok(()) => close.begin_finish(attempt, cx),
+                    Ok(()) => {
+                        crate::runtime::trace::mark("close.saved", format_args!("attempt {}", attempt.0));
+                        close.begin_finish(attempt, cx);
+                    },
                     Err(error) => {
                         crate::runtime::trace::mark("close.save_failed", &error);
                         close.phase = Phase::NeedsDecision(attempt, error); cx.notify();
@@ -313,7 +316,7 @@ impl GracefulClose {
     /// The save decision is now irreversible. Transfer only Send join handles;
     /// window/root Drop cannot synchronously wait for these workers any more.
     fn begin_finish(&mut self, attempt: Attempt, cx: &mut Context<Self>) {
-        crate::runtime::trace::mark("close.saved", format_args!("attempt {}", attempt.0));
+        crate::runtime::trace::mark("close.stop_admitted", format_args!("attempt {}", attempt.0));
         let finish = self
             .root
             .update(cx, |root, cx| root.commit_close(cx))
