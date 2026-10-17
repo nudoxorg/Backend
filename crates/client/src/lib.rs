@@ -2532,10 +2532,11 @@ impl Session {
                 center
             } else {
                 let document = self.send_success_with_budget(
-                    Command::Document(
-                        DocumentQuery::addressed(assertion.symbol, source.root)
-                            .with_source_basis(source),
-                    ),
+                    // The owner revision is a bounded commitment, not the
+                    // complete relation preimage required to encode a Basis.
+                    // Pin the ordinary document request to that revision and
+                    // compare its admitted reply to the full source below.
+                    Command::Document(DocumentQuery::addressed(assertion.symbol, source.root)),
                     certificate.clone(),
                     remaining.map(|budget| budget.saturating_sub(started.elapsed())),
                 )?;
