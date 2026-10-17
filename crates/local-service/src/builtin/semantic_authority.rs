@@ -1319,6 +1319,25 @@ impl AdmittedCompilation {
         } else {
             None
         };
+        if let Some(member) = metadata.source_coverage() {
+            // Coverage is a typed payload member, not unrelated output. Admit
+            // its exact object and compiler basis before the unchanged complete
+            // payload-inventory comparison below.
+            let closure = store.open_closure(payload_pin.receipt().closure()).map_err(|error| {
+                BuiltinModelError(format!("open compiler coverage output closure: {error:?}"))
+            })?;
+            let coverage = backend_extension_turso::reopen_source_coverage(&closure, &metadata)
+                .map_err(BuiltinModelError)?
+                .ok_or_else(|| BuiltinModelError("compiler coverage member was not admitted".to_owned()))?;
+            if coverage.input_root() != attempt.input_digest()
+                || coverage.profile() != <[u8; 2]>::from(key.profile()) {
+                return Err(BuiltinModelError("compiler coverage differs from its admitted attempt input/profile".to_owned()));
+            }
+            let id = closure.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("admit compiler coverage membership: {error:?}")))?
+                .ok_or_else(|| BuiltinModelError("compiler coverage is absent from its output closure".to_owned()))?;
+            expected_members.insert(id);
+        }
         let program_mappings = native_program.as_ref().map(|program| {
             program
                 .sources()

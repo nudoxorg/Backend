@@ -8637,9 +8637,14 @@ mod tests {
             };
             assert!(
                 refusals.is_empty(),
-                "configured source exclusions are not terminal profile refusals"
+                "configured source exclusions are not terminal profile refusals: {refusals:?}; capture={source_capture:?}"
             );
             assert_eq!(source_capture.profiles.len(), 1);
+            assert_eq!(source_capture.profiles[0].source_count, 3);
+            assert!(matches!(source_capture.profiles[0].state,
+                backend_library::IndexOperationSemanticProfileState::Published {
+                    coverage: backend_library::IndexOperationSemanticCoverage::Partial {completed:1,total:3},..
+                }), "publication must retain the genuine TSZ partial outcome: {source_capture:?}");
             let [Availability::Retained { read: first }] =
                 coverage.as_deref().expect("new producer coverage list")
             else {
