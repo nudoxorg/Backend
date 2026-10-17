@@ -1,5 +1,13 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-17, Native36 P0 closure and current gates
+
+Native36 P0 closed on source `fd86d2b7b2976dd7c81411242406890738af9d31` / tree `662fdb3b846a35be89f2324acb806bad874dd99f`. Root's replay verified 282 courier files / 133,292,872 bytes (`actual-ilo-native36-P0/ROOT-REPLAY-P0-CLIPPY-AND-174-UNRUN.json`, SHA-256 `9b4e33cb91dcbc5e58f7a00bd1c396ba059d01b7d658b2f3dcf2ee13cd611463`; index SHA-256 `8999082b4ca9a6302058b4a0132970a9205d2d8bb669642f63b79197c4481bb6`). Clippy exited 101 with 524 errors and 31,044 warnings. The engine test command also exited 101 because `tsz-parser` is not a workspace member; zero test processes started, so all 174 planned selectors remain unrun. The scope closed with ECHILD, released permit, absent cgroup, and clear registry. The continued-epoch budget has 8,460,156,928 bytes remaining after the separate prospective 3,323,834,368-byte increment; the original 32-GiB history remains unchanged.
+
+The planned full 174-selector run on fd86 is still being prepared and has not started pending Root's proof; no result is inferred from that plan. The four ordinary Native35 binaries came from older source `16dbe7a8b36e3aa8943a7a1fc3ccc9ac3a19fe09`, not fd86, and are only adopted for a runtime experiment. Current fd86 CLI/MCP/GUI acceptance remains unrun. The original ASP/GBA evidence gate remains open; the public `df93` Ubuntu installer and older Mac install are separate historical checks, not current installer or Mac-bundle acceptance.
+
+Source-only follow-ups remain separate from runtime proof: PR479 has eight selectors and PR480 seven selectors, both reviewed and unrun; PR481 addresses a TSZ error outside the 174-selector set; PR482 removes only the unfulfilled `type_complexity` expectation and has no native validation; PR483 and PR484 have source-only 202/31 and 321/37 selector plans, respectively, both unrun. None of these changes establishes current application acceptance.
+
 ## Follow-up: 2026-10-17, Native35 closed results
 
 Native35 closed on source `16dbe7a8b36e3aa8943a7a1fc3ccc9ac3a19fe09` / tree `e613aa89dffbab76630e1192b5bf918a0b1a160e`. Of 125 planned bodies, 37 executed: 25 passed, 12 failed, none were ignored, and 88 remain unrun. The separate Clippy phase reported 406 errors and 24,195 warnings; lint acceptance failed. Root independently replayed the result in `actual-ilo-native35-H2/ROOT-REPLAY-125-CLIPPY-ORDINARY.json` (SHA-256 `256b666902ecb37d574c9b988b064e778800755b55c146a5a1698646f35086fd`).
