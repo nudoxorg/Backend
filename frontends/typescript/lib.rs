@@ -441,9 +441,9 @@ impl TypeScriptFrontend {
 impl Authority for TypeScriptFrontend {
     fn identity(&self) -> AuthorityIdentity {
         AuthorityIdentity {
-            producer: typed_of(b"backend-frontend-typescript-v5"),
+            producer: typed_of(b"backend-frontend-typescript-v6"),
             toolchain: backend_compile::native_executable_id(Path::new(&self.node)),
-            contract: typed_of(b"native-semantic-adapter-v3/typescript"),
+            contract: typed_of(b"native-semantic-adapter-v4/typescript"),
         }
     }
 

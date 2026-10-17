@@ -77,8 +77,8 @@ fn main() -> io::Result<()> {
         .collect::<io::Result<Vec<_>>>()?;
     inputs.sort_by(|left, right| left.0.cmp(&right.0));
     let mut hash = Sha256::new();
-    // v2 retains native anonymous-class ownership in declaration lowering.
-    hash.update(b"backend.tsz.native-source-authority.v2\0");
+    // v3 retains both anonymous-class parameter-property declaration roles.
+    hash.update(b"backend.tsz.native-source-authority.v3\0");
     let mut buffer = [0u8; 64 * 1024];
     for (normalized, relative) in inputs {
         let absolute = root.join(&relative);
