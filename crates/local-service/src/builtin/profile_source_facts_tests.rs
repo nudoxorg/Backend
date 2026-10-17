@@ -2254,3 +2254,115 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() {
     );
     assert_eq!(coverage::package_state_visits(), 2);
 }
+
+#[test]
+fn search_corpus_cancellation_never_admits_partial_facts_and_resumes_identically()
+-> Result<(), String> {
+    use backend_engine::application::{
+        LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
+        LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
+        LocalRuntimeToolchain,
+    };
+    use backend_semantic::vocabulary::NativeTool;
+    use std::num::NonZeroUsize;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let label = "pkg:npm/cancelled-corpus@1";
+    let package = PackageKey::from_value(label);
+    let path = "complete.ts";
+    let source = (0..2048)
+        .map(|index| format!("export function captured{index}() {{ return {index}; }}\n"))
+        .collect::<String>();
+    let analysis = backend_frontend_typescript::syntax_frontend()
+        .map_err(|error| error.to_string())?
+        .analyze(Path::new(path), source.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let (record, facts) = parsed_analysis_file(package, path, &source, &analysis);
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    commit_files(&mut daemon, package, label, 1, &[(record, Some(facts))]);
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources =
+        crate::builtin::read_indexed_sources(&snapshot).map_err(|error| error.to_string())?;
+    let compiler_root = workspace.0.path().join("query-compiler");
+    let compiler = LocalCompilerClient::start(
+        LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                compiler_root.join("artifacts"),
+                compiler_root.join("journal"),
+                compiler_root.join("native-work"),
+            )
+            .map_err(|error| error.to_string())?,
+            vec![LocalRuntimeToolchain::unavailable(NativeTool::Python)].into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(std::time::Duration::from_secs(2))
+                .map_err(|error| error.to_string())?,
+            backend_store::journal::PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .map_err(|error| error.to_string())?,
+            LocalCompilerScratch::with_fragment_capacity(
+                NonZeroUsize::new(1024 * 1024).ok_or("nonzero scratch capacity")?,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let build = |cancelled| {
+        view_build::semantic_query_corpus_controlled(
+            &snapshot,
+            &compiler,
+            &sources,
+            &mut crate::builtin::generation_residence::SemanticGenerationResidence::default(),
+            &mut view_build::ImageRowResidence::default(),
+            cancelled,
+        )
+    };
+    let baseline = build(None).map_err(|error| error.to_string())?;
+    assert!(baseline.facts().len() >= 2048);
+    let token = Arc::new(AtomicBool::new(true));
+    assert!(
+        build(Some(token.as_ref())).is_err(),
+        "pre-cancelled preparation is refused"
+    );
+    for (point, visits) in [
+        ("semantic-page", 1),
+        ("corpus-structural-plan", 1),
+        ("structural-type", 1024),
+        ("structural-containment-declaration", 1024),
+        ("structural-duplicate", 1024),
+        ("structural-plan-declaration", 1024),
+        ("structural-unify-declaration", 1024),
+        ("structural-declaration", 1024),
+        ("corpus-admit", 1),
+        ("corpus-complete", 1),
+    ] {
+        token.store(false, Ordering::Release);
+        let _cancel =
+            crate::builtin::cancel_search_preparation_after(point, visits, Arc::clone(&token));
+        let error = build(Some(token.as_ref()))
+            .err()
+            .ok_or("cancelled preparation returned a partial corpus")?;
+        assert!(
+            error.to_string().contains("search preparation cancelled"),
+            "{point}: {error}"
+        );
+        assert!(
+            token.load(Ordering::Acquire),
+            "production path reached {point}"
+        );
+        assert_eq!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            snapshot.root()
+        );
+    }
+    token.store(false, Ordering::Release);
+    let resumed = build(Some(token.as_ref())).map_err(|error| error.to_string())?;
+    assert_eq!(resumed.workspace(), baseline.workspace());
+    assert_eq!(resumed.evidence_digest(), baseline.evidence_digest());
+    assert_eq!(resumed.facts(), baseline.facts());
+    Ok(())
+}

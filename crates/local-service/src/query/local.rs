@@ -1186,6 +1186,7 @@ impl SearchSnapshotOwner {
         semantic_evidence: SemanticQueryCorpus,
         cancelled: Option<&AtomicBool>,
     ) -> Result<&QueryCoordinator, QueryError> {
+        preparation_checkpoint(cancelled, "lexical-select")?;
         validate_view_binding(&view, &expected_view_capability)?;
         if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
@@ -1197,12 +1198,13 @@ impl SearchSnapshotOwner {
         // replacement build. A retained old answer can prohibit mutation, and
         // lexical maintenance can request a rebuild, without repeating this
         // complete row/evidence join and document-state construction.
-        let prepared = prepare_corpus(
+        let prepared = prepare_corpus_controlled(
             workspace,
             view,
             &expected_view_capability,
             coverage,
             semantic_evidence,
+            cancelled,
         )?;
         let revised = match self.selected.as_mut() {
             Some(selected) => selected.try_revise(
@@ -1420,12 +1422,13 @@ impl QueryCoordinator {
         durable_budget: lexical::DurableCacheBudget,
         cancelled: Option<&AtomicBool>,
     ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
-        let prepared = prepare_corpus(
+        let prepared = prepare_corpus_controlled(
             workspace,
             view,
             expected_view_capability,
             coverage,
             semantic_evidence,
+            cancelled,
         )?;
         Self::from_prepared_corpus(prepared, durable_root, durable_budget, cancelled)
     }
@@ -1506,12 +1509,13 @@ impl QueryCoordinator {
                 .capability()
                 .ok_or(QueryError::StaleViewBinding)?;
             Some(
-                prepare_corpus(
+                prepare_corpus_controlled(
                     corpus.workspace,
                     corpus.view.clone(),
                     &previous_view_capability,
                     corpus.coverage,
                     corpus.semantic_evidence.clone(),
+                    cancelled,
                 )?
                 .state,
             )
@@ -2335,6 +2339,7 @@ std::thread_local! {
     static PREPARED_CORPORA: std::cell::RefCell<Option<Vec<backend_library::ViewStateRoot>>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
 fn prepare_corpus(
     workspace: WorkspaceRoot,
     view: ViewRoot,
@@ -2342,6 +2347,33 @@ fn prepare_corpus(
     coverage: CoverageWitness,
     semantic_evidence: SemanticQueryCorpus,
 ) -> Result<PreparedCorpus, QueryError> {
+    prepare_corpus_controlled(
+        workspace,
+        view,
+        expected_view_capability,
+        coverage,
+        semantic_evidence,
+        None,
+    )
+}
+
+fn preparation_checkpoint(
+    cancelled: Option<&AtomicBool>,
+    point: &'static str,
+) -> Result<(), QueryError> {
+    crate::builtin::check_search_preparation(cancelled, point)
+        .map_err(|_| QueryError::SelectedViewRetired)
+}
+
+fn prepare_corpus_controlled(
+    workspace: WorkspaceRoot,
+    view: ViewRoot,
+    expected_view_capability: &CoverageCapability,
+    coverage: CoverageWitness,
+    semantic_evidence: SemanticQueryCorpus,
+    cancelled: Option<&AtomicBool>,
+) -> Result<PreparedCorpus, QueryError> {
+    preparation_checkpoint(cancelled, "lexical-prepare")?;
     validate_view_binding(&view, expected_view_capability)?;
     if !matches!(
         coverage,
@@ -2361,7 +2393,8 @@ fn prepare_corpus(
     if semantic_evidence.workspace() != workspace {
         return Err(QueryError::InvalidSemanticEvidence);
     }
-    let (documents, selected) = collect_selected_documents(workspace, &view, &semantic_evidence)?;
+    let (documents, selected) =
+        collect_selected_documents(workspace, &view, &semantic_evidence, cancelled)?;
     let left_out = selected.left_out;
     if !left_out.is_empty() {
         eprintln!(
@@ -2369,8 +2402,10 @@ fn prepare_corpus(
             left_out.rows_without_evidence, left_out.evidence_without_row
         );
     }
+    preparation_checkpoint(cancelled, "lexical-relation")?;
     let state = RelationState::<lexical::IndexRelation>::from_entries(documents, coverage)
         .map_err(|_| QueryError::InvalidView)?;
+    preparation_checkpoint(cancelled, "lexical-binding")?;
     let binding = lexical::Binding::new(
         workspace,
         state.root(),
@@ -2384,8 +2419,10 @@ fn prepare_corpus(
     .with_frontier(lexical::Frontier::from_value(
         view.frontier().root.as_bytes(),
     ));
+    preparation_checkpoint(cancelled, "lexical-document-state")?;
     let state = lexical::DocumentState::from_relation(binding, state, lexical::Limits::default())
         .map_err(QueryError::Lexical)?;
+    preparation_checkpoint(cancelled, "lexical-complete")?;
     #[cfg(test)]
     PREPARED_CORPORA.with_borrow_mut(|prepared| {
         if let Some(prepared) = prepared {
@@ -2591,6 +2628,147 @@ mod prepared_corpus_tests {
         Ok(())
     }
 
+    fn large_preparation_fixture() -> TestResult<(WorkspaceRoot, ViewRoot)> {
+        let (workspace, base) = super::super::tests::selected_view();
+        let package = backend_engine::package_key("pkg");
+        let rows = std::iter::once(Row::new(RowId::Package(package), base.basis(), "pkg"))
+            .chain((0..4095).map(|index| {
+                let name = format!("corpus-item-{index:05}");
+                Row::in_package(
+                    RowId::Symbol(backend_engine::symbol_key(&name)),
+                    base.basis(),
+                    package,
+                    name,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(
+                    "captured source text".to_owned(),
+                )])
+            }))
+            .collect();
+        let view = ViewRoot::new_checked(
+            base.recipe(),
+            base.basis(),
+            base.frontier(),
+            rows,
+            vec![backend_engine::ViewCoverage::Complete],
+            view_capability(&base)?,
+        )
+        .map_err(|error| Box::new(ViewFixtureError(error)) as Box<dyn std::error::Error>)?;
+        Ok((workspace, view))
+    }
+
+    #[test]
+    fn cancelled_corpus_preparation_stops_inside_rows_facts_and_sort_boundaries() -> TestResult {
+        use std::sync::atomic::Ordering;
+        let (workspace, view) = large_preparation_fixture()?;
+        let evidence = super::super::tests::semantic_evidence(workspace, &view);
+        let capability = view_capability(&view)?;
+        let coverage = crate::builtin::admitted_coverage()?;
+        let baseline = prepare_corpus(
+            workspace,
+            view.clone(),
+            &capability,
+            coverage,
+            evidence.clone(),
+        )?;
+        let token = Arc::new(AtomicBool::new(true));
+        assert!(matches!(
+            prepare_corpus_controlled(
+                workspace,
+                view.clone(),
+                &capability,
+                coverage,
+                evidence.clone(),
+                Some(&token)
+            ),
+            Err(QueryError::SelectedViewRetired)
+        ));
+        for (point, visits) in [
+            ("lexical-row", 2048),
+            ("lexical-fact-index", 2048),
+            ("lexical-fact", 2048),
+            ("lexical-sort-entities", 1),
+            ("lexical-sorted-facts", 1),
+            ("lexical-document-state", 1),
+        ] {
+            token.store(false, Ordering::Release);
+            let _cancel =
+                crate::builtin::cancel_search_preparation_after(point, visits, Arc::clone(&token));
+            assert!(
+                matches!(
+                    prepare_corpus_controlled(
+                        workspace,
+                        view.clone(),
+                        &capability,
+                        coverage,
+                        evidence.clone(),
+                        Some(&token)
+                    ),
+                    Err(QueryError::SelectedViewRetired)
+                ),
+                "{point}"
+            );
+            assert!(
+                token.load(Ordering::Acquire),
+                "real preparation reached {point}"
+            );
+        }
+        token.store(false, Ordering::Release);
+        let resumed = prepare_corpus_controlled(
+            workspace,
+            view.clone(),
+            &capability,
+            coverage,
+            evidence,
+            Some(&token),
+        )?;
+        assert_eq!(resumed.binding, baseline.binding);
+        assert_eq!(resumed.state, baseline.state);
+        assert_eq!(resumed.selected.entities.len(), 4096);
+        assert_eq!(
+            resumed
+                .selected
+                .entities
+                .iter()
+                .map(|entry| (entry.row, entry.candidate))
+                .collect::<Vec<_>>(),
+            baseline
+                .selected
+                .entities
+                .iter()
+                .map(|entry| (entry.row, entry.candidate))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_exact_selection_does_not_report_a_reused_coordinator() -> TestResult {
+        let directory = Directory::new()?;
+        let (workspace, view) = super::super::tests::selected_view();
+        let mut owner = directory.owner(false, "cancelled-reuse");
+        select(&mut owner, workspace, &view)?;
+        let before = search(&owner, "alpha")?;
+        let token = AtomicBool::new(true);
+        assert!(matches!(
+            owner.select_controlled(
+                workspace,
+                view.clone(),
+                view_capability(&view)?,
+                crate::builtin::admitted_coverage()?,
+                super::super::tests::semantic_evidence(workspace, &view),
+                Some(&token)
+            ),
+            Err(QueryError::SelectedViewRetired)
+        ));
+        assert_eq!(owner.projection_builds(), 1);
+        assert_eq!(
+            search(&owner, "alpha")?.ranked_row_ids(),
+            before.ranked_row_ids()
+        );
+        Ok(())
+    }
+
     #[test]
     fn retained_answers_prepare_each_new_corpus_once_instead_of_legacy_fallback_duplicates()
     -> TestResult {
@@ -2692,12 +2870,15 @@ fn collect_selected_documents(
     workspace: WorkspaceRoot,
     view: &ViewRoot,
     semantic_evidence: &SemanticQueryCorpus,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<(Vec<(EntityId, Vec<(String, String)>)>, SelectedCorpus), QueryError> {
+    preparation_checkpoint(cancelled, "lexical-collect")?;
     let mut documents = Vec::new();
     let mut selected = Vec::new();
     let mut candidate_ids = BTreeSet::new();
     let mut selected_rows = BTreeMap::new();
     for row in view.row_refs() {
+        preparation_checkpoint(cancelled, "lexical-row")?;
         if selected_rows
             .insert(
                 row.id.stable_key(),
@@ -2727,16 +2908,15 @@ fn collect_selected_documents(
     // never presents as `variable`, so requiring `variable` kind and a
     // callable parent, on top of the name match, narrows this to exactly
     // the synthetic result slot without a new IR/wire bit.
-    let facts_by_id: BTreeMap<&str, &SemanticQueryPresentation> = semantic_evidence
-        .facts()
-        .iter()
-        .map(|fact| {
-            let presentation = fact.presentation();
-            (presentation.id.as_str(), presentation)
-        })
-        .collect();
+    let mut facts_by_id: BTreeMap<&str, &SemanticQueryPresentation> = BTreeMap::new();
+    for fact in semantic_evidence.facts() {
+        preparation_checkpoint(cancelled, "lexical-fact-index")?;
+        let presentation = fact.presentation();
+        facts_by_id.insert(presentation.id.as_str(), presentation);
+    }
     let mut left_out = LeftOut::default();
     for (fact_index, fact) in semantic_evidence.facts().iter().enumerate() {
+        preparation_checkpoint(cancelled, "lexical-fact")?;
         let presentation = fact.presentation();
         let Some((row, source)) = selected_rows.remove(&presentation.id) else {
             left_out.evidence_without_row += 1;
@@ -2787,7 +2967,9 @@ fn collect_selected_documents(
         }
     }
     left_out.rows_without_evidence = selected_rows.len();
+    preparation_checkpoint(cancelled, "lexical-sort-entities")?;
     selected.sort_unstable_by_key(|entry| entry.entity);
+    preparation_checkpoint(cancelled, "lexical-sorted-entities")?;
     if selected
         .windows(2)
         .any(|pair| pair[0].entity == pair[1].entity)
@@ -2795,7 +2977,9 @@ fn collect_selected_documents(
         return Err(QueryError::IdentityCollision);
     }
     let mut candidate_order = (0..selected.len()).collect::<Vec<_>>();
+    preparation_checkpoint(cancelled, "lexical-sort-candidates")?;
     candidate_order.sort_unstable_by_key(|index| selected[*index].candidate);
+    preparation_checkpoint(cancelled, "lexical-sorted-candidates")?;
     if candidate_order
         .windows(2)
         .any(|pair| selected[pair[0]].candidate == selected[pair[1]].candidate)
@@ -2803,14 +2987,18 @@ fn collect_selected_documents(
         return Err(QueryError::IdentityCollision);
     }
     let mut document_order = (0..selected.len()).collect::<Vec<_>>();
+    preparation_checkpoint(cancelled, "lexical-sort-documents")?;
     document_order.sort_unstable_by_key(|index| selected[*index].row);
+    preparation_checkpoint(cancelled, "lexical-sorted-documents")?;
     let mut fact_order = (0..semantic_evidence.facts().len()).collect::<Vec<_>>();
+    preparation_checkpoint(cancelled, "lexical-sort-facts")?;
     fact_order.sort_unstable_by(|left, right| {
         semantic_evidence.facts()[*left]
             .presentation()
             .id
             .cmp(&semantic_evidence.facts()[*right].presentation().id)
     });
+    preparation_checkpoint(cancelled, "lexical-sorted-facts")?;
     Ok((
         documents,
         SelectedCorpus {

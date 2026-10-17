@@ -1,18 +1,23 @@
-use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
+use super::super::{
+    BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES, check_search_preparation,
+};
 use super::identity::{declaration_coordinate, declaration_symbol};
 use super::semantic_profile_is_complete;
 use backend_compile::{Container, SourceBinding, SourceBindingIdentity};
 use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
-pub(super) fn duplicate_declaration_coordinates(
+fn duplicate_declaration_coordinates(
     sources: &IndexedSources,
     record: &super::super::ProductSourceRecord,
     containment: &FileContainment<'_>,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<BTreeSet<String>, BuiltinModelError> {
     let mut counts = BTreeMap::<String, u32>::new();
     visit_complete_declarations(sources, record, |declaration| {
+        check_search_preparation(cancelled, "structural-duplicate")?;
         let coordinate = containment.coordinate(declaration);
         let count = counts.entry(coordinate).or_default();
         *count = count.saturating_add(1);
@@ -194,13 +199,19 @@ pub(super) struct ProjectTypeIndex {
 }
 
 impl ProjectTypeIndex {
-    pub(super) fn of(sources: &IndexedSources) -> Result<Self, BuiltinModelError> {
+    fn of(
+        sources: &IndexedSources,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        check_search_preparation(cancelled, "structural-types")?;
         let mut index = Self::default();
         for (_, record) in &sources.files {
+            check_search_preparation(cancelled, "structural-types-file")?;
             let Some(file) = record.file_fields() else {
                 continue;
             };
             visit_complete_declarations(sources, record, |declaration| {
+                check_search_preparation(cancelled, "structural-type")?;
                 if !declares_a_type(declaration.kind()) {
                     return Ok(());
                 }
@@ -296,7 +307,15 @@ impl StructuralProjectionPlan {
         sources: &IndexedSources,
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     ) -> Result<Self, BuiltinModelError> {
-        Self::plan(sources, complete, None)
+        Self::plan(sources, complete, None, None)
+    }
+
+    pub(super) fn of_controlled(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::plan(sources, complete, None, cancelled)
     }
 
     /// Plans structural rows for `only` these file keys.
@@ -309,17 +328,19 @@ impl StructuralProjectionPlan {
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
         only: &BTreeSet<[u8; 32]>,
     ) -> Result<Self, BuiltinModelError> {
-        Self::plan(sources, complete, Some(only))
+        Self::plan(sources, complete, Some(only), None)
     }
 
     fn plan(
         sources: &IndexedSources,
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
         only: Option<&BTreeSet<[u8; 32]>>,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Self, BuiltinModelError> {
-        let types = ProjectTypeIndex::of(sources)?;
+        let types = ProjectTypeIndex::of(sources, cancelled)?;
         let mut plan = Self::default();
         for (file_key, record) in &sources.files {
+            check_search_preparation(cancelled, "structural-plan-file")?;
             if only.is_some_and(|keys| !keys.contains(file_key)) {
                 continue;
             }
@@ -338,12 +359,18 @@ impl StructuralProjectionPlan {
             )? {
                 continue;
             }
-            let containment = FileContainment::for_file(sources, record, &project.label)?;
-            let duplicate_coordinates =
-                duplicate_declaration_coordinates(sources, record, &containment)?;
+            let containment =
+                FileContainment::for_file(sources, record, &project.label, cancelled)?;
+            let duplicate_coordinates = duplicate_declaration_coordinates(
+                sources,
+                record,
+                &containment,
+                cancelled,
+            )?;
             let mut occurrences = BTreeMap::new();
             let mut declarations = Vec::new();
             visit_complete_declarations(sources, record, |declaration| {
+                check_search_preparation(cancelled, "structural-plan-declaration")?;
                 declaration
                     .admit_binding_parentage()
                     .map_err(BuiltinModelError)?;
@@ -429,6 +456,7 @@ impl StructuralProjectionPlan {
         }
         for (file_key, file) in &plan.files {
             for declaration in &file.declarations {
+                check_search_preparation(cancelled, "structural-parent")?;
                 if let Some(binding) = declaration.parent_binding {
                     let (parent, parent_capture) =
                         plan.by_binding.get(&(*file_key, binding)).ok_or_else(|| {
@@ -448,10 +476,12 @@ impl StructuralProjectionPlan {
             }
         }
         for symbols in plan.by_coordinate.values_mut() {
+            check_search_preparation(cancelled, "structural-sort")?;
             symbols.sort_unstable_by_key(|symbol| {
                 (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
             });
         }
+        check_search_preparation(cancelled, "structural-plan-complete")?;
         Ok(plan)
     }
 
@@ -466,15 +496,37 @@ impl StructuralProjectionPlan {
         sources: &IndexedSources,
         exact: &super::exact_sites::ExactDeclarationSites,
     ) -> Result<(), BuiltinModelError> {
+        self.unify_exact_sites_controlled(sources, exact, None)
+    }
+
+    pub(super) fn unify_exact_sites_controlled(
+        &mut self,
+        sources: &IndexedSources,
+        exact: &super::exact_sites::ExactDeclarationSites,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(), BuiltinModelError> {
+        check_search_preparation(cancelled, "structural-unify")?;
         let mut remapped = BTreeMap::new();
         for (file_key, record) in &sources.files {
-            let Some(file) = record.file_fields() else { continue; };
-            let Some(plan) = self.files.get_mut(file_key) else { continue; };
+            check_search_preparation(cancelled, "structural-unify-file")?;
+            let Some(file) = record.file_fields() else {
+                continue;
+            };
+            let Some(plan) = self.files.get_mut(file_key) else {
+                continue;
+            };
             for declaration in &mut plan.declarations {
-                let Some(capture) = declaration.binding_capture else { continue; };
-                let Some(id) = exact.get(file.project, file.path, capture.binding()) else { continue; };
+                check_search_preparation(cancelled, "structural-unify-declaration")?;
+                let Some(capture) = declaration.binding_capture else {
+                    continue;
+                };
+                let Some(id) = exact.get(file.project, file.path, capture.binding()) else {
+                    continue;
+                };
                 if !matches!(id, RowId::Symbol(_)) {
-                    return Err(BuiltinModelError("exact compiler site is not a declaration".to_owned()));
+                    return Err(BuiltinModelError(
+                        "exact compiler site is not a declaration".to_owned(),
+                    ));
                 }
                 remapped.insert(declaration.id, id);
                 declaration.id = id;
@@ -484,11 +536,17 @@ impl StructuralProjectionPlan {
         }
         for symbols in self.by_coordinate.values_mut() {
             for symbol in symbols {
-                if let Some(id) = remapped.get(&symbol.id) { symbol.id = *id; }
+                check_search_preparation(cancelled, "structural-unify-symbol")?;
+                if let Some(id) = remapped.get(&symbol.id) {
+                    symbol.id = *id;
+                }
             }
         }
         for (id, _) in self.by_binding.values_mut() {
-            if let Some(mapped) = remapped.get(id) { *id = *mapped; }
+            check_search_preparation(cancelled, "structural-unify-binding")?;
+            if let Some(mapped) = remapped.get(id) {
+                *id = *mapped;
+            }
         }
         Ok(())
     }
@@ -626,12 +684,15 @@ impl<'a> FileContainment<'a> {
         sources: &IndexedSources,
         record: &'a super::super::ProductSourceRecord,
         label: &'a str,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Self, BuiltinModelError> {
+        check_search_preparation(cancelled, "structural-containment")?;
         let file = record.file_fields().ok_or_else(|| {
             BuiltinModelError("structural source row changed type during admission".to_owned())
         })?;
         let mut local_types = BTreeMap::<String, u32>::new();
         visit_complete_declarations(sources, record, |declaration| {
+            check_search_preparation(cancelled, "structural-containment-declaration")?;
             if declares_a_type(declaration.kind()) {
                 local_types
                     .entry(declaration.name().to_owned())

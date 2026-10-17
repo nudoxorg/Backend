@@ -1674,3 +1674,57 @@ mod prepared_writer_tests;
 
 #[path = "prepared_read_head_tests.rs"]
 mod prepared_read_head_tests;
+
+#[test]
+fn search_source_cancellation_preserves_the_complete_persisted_frontier() -> Result<(), String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let temp = TempWorkspace::new();
+    let mut daemon = open_daemon(temp.0.path());
+    let label = "pkg:generic/cancel-search-sources@1";
+    let package = backend_engine::PackageKey::from_value(label);
+    let files = file_frontier(1025, package);
+    let (intent, _) = paged_index_intent(package, label, &files);
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+        .map_err(|error| error.to_string())?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let baseline =
+        super::super::read_indexed_sources(&snapshot).map_err(|error| error.to_string())?;
+    let token = Arc::new(AtomicBool::new(true));
+    assert!(super::super::read_indexed_sources_controlled(&snapshot, Some(&token)).is_err());
+    for (point, visits) in [
+        ("source-row", 512),
+        ("source-membership-key", 512),
+        ("source-file", 512),
+        ("source-sort", 1),
+        ("source-snapshot", 1),
+    ] {
+        token.store(false, Ordering::Release);
+        let _cancel =
+            super::super::cancel_search_preparation_after(point, visits, Arc::clone(&token));
+        let error = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
+            .err()
+            .ok_or("cancelled source walk returned a partial source set")?;
+        assert!(
+            error.to_string().contains("search preparation cancelled"),
+            "{point}: {error}"
+        );
+        assert!(
+            token.load(Ordering::Acquire),
+            "the real source walk reached {point}"
+        );
+        assert_eq!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            snapshot.root()
+        );
+    }
+    token.store(false, Ordering::Release);
+    let resumed = super::super::read_indexed_sources_controlled(&snapshot, Some(&token))
+        .map_err(|error| error.to_string())?;
+    assert_eq!(resumed.files, baseline.files);
+    assert_eq!(
+        resumed.projects[&package.to_bytes()].files,
+        baseline.projects[&package.to_bytes()].files
+    );
+    assert_eq!(resumed.files.len(), 1025);
+    Ok(())
+}

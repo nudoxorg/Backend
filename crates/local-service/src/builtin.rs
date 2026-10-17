@@ -734,16 +734,84 @@ struct IndexedSources {
     source_snapshot: Option<backend_engine::ProductSourceSnapshot>,
 }
 
+/// Cancellation for disposable search preparation, never durable publication.
+/// A caller's response deadline does not retire this shared selected lifetime.
+pub(crate) fn check_search_preparation(
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+    _point: &'static str,
+) -> Result<(), BuiltinModelError> {
+    #[cfg(test)]
+    SEARCH_PREPARATION_CANCEL.with_borrow_mut(|slot| {
+        if let Some((point, remaining, token)) = slot.as_mut()
+            && *point == _point
+        {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                token.store(true, std::sync::atomic::Ordering::Release);
+                *slot = None;
+            }
+        }
+    });
+    if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+        Err(BuiltinModelError("search preparation cancelled".to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+type SearchPreparationCancelPoint = (&'static str, usize, Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(test)]
+std::thread_local! {
+    static SEARCH_PREPARATION_CANCEL: std::cell::RefCell<Option<SearchPreparationCancelPoint>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct SearchPreparationCancelGuard;
+
+#[cfg(test)]
+pub(crate) fn cancel_search_preparation_after(
+    point: &'static str,
+    visits: usize,
+    token: Arc<std::sync::atomic::AtomicBool>,
+) -> SearchPreparationCancelGuard {
+    assert!(visits != 0);
+    SEARCH_PREPARATION_CANCEL.with_borrow_mut(|slot| *slot = Some((point, visits, token)));
+    SearchPreparationCancelGuard
+}
+
+#[cfg(test)]
+impl Drop for SearchPreparationCancelGuard {
+    fn drop(&mut self) {
+        SEARCH_PREPARATION_CANCEL.with_borrow_mut(|slot| *slot = None);
+    }
+}
+
 fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, BuiltinModelError> {
+    read_indexed_sources_controlled(snapshot, None)
+}
+
+fn read_indexed_sources_controlled(
+    snapshot: &WorkspaceSnapshot,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<IndexedSources, BuiltinModelError> {
+    check_search_preparation(cancelled, "source-open")?;
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open indexed source relation: {error}")))?;
-    let mut sources = read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)?;
+    let mut sources = read_indexed_relation_controlled(
+        &relation,
+        profile::SourceFileKeyLayout::Current,
+        cancelled,
+    )?;
+    check_search_preparation(cancelled, "source-snapshot")?;
     sources.source_snapshot = Some(
         backend_engine::ProductSourceSnapshot::from_workspace(snapshot).map_err(|error| {
             BuiltinModelError(format!("admit selected source closure: {error}"))
         })?,
     );
+    check_search_preparation(cancelled, "source-complete")?;
     Ok(sources)
 }
 
@@ -751,6 +819,15 @@ fn read_indexed_relation(
     relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
     layout: profile::SourceFileKeyLayout,
 ) -> Result<IndexedSources, BuiltinModelError> {
+    read_indexed_relation_controlled(relation, layout, None)
+}
+
+fn read_indexed_relation_controlled(
+    relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    layout: profile::SourceFileKeyLayout,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<IndexedSources, BuiltinModelError> {
+    check_search_preparation(cancelled, "source-relation")?;
     let root = relation
         .root_node()
         .map_err(|error| BuiltinModelError(format!("open indexed source root: {error}")))?;
@@ -768,10 +845,12 @@ fn read_indexed_relation(
     let mut cargo_aliases = BTreeMap::new();
     let mut after = None;
     loop {
+        check_search_preparation(cancelled, "source-page")?;
         let page = relation
             .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
             .map_err(|error| BuiltinModelError(format!("read indexed source page: {error}")))?;
         for (key, record) in page.entries() {
+            check_search_preparation(cancelled, "source-row")?;
             if let Some(fields) = record.project_fields() {
                 if layout == profile::SourceFileKeyLayout::Retired
                     && (!fields.files.page_keys().is_empty() || fields.cargo_aliases.is_some())
@@ -825,12 +904,20 @@ fn read_indexed_relation(
     let mut selected_pages = std::collections::BTreeSet::new();
     let mut resolved_files = Vec::with_capacity(files.len());
     for (project_key, project_record) in &project_records {
+        check_search_preparation(cancelled, "source-project")?;
         let fields = project_record.project_fields().ok_or_else(|| {
             BuiltinModelError("project frontier row changed type during admission".to_owned())
         })?;
         let file_keys = fields
             .iter_file_keys(*project_key, |page_key| {
+                check_search_preparation(cancelled, "source-membership-page")
+                    .map_err(|error| error.to_string())?;
                 relation.lookup(page_key).map_err(|error| error.to_string())
+            })
+            .map(|key| {
+                check_search_preparation(cancelled, "source-membership-key")
+                    .map_err(|error| error.to_string())?;
+                key
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(BuiltinModelError)?;
@@ -840,6 +927,7 @@ fn read_indexed_relation(
         let ordered_file_keys: Arc<[[u8; 32]]> = Arc::from(file_keys.into_boxed_slice());
         project.files = Arc::clone(&ordered_file_keys);
         for page_key in fields.files.page_keys() {
+            check_search_preparation(cancelled, "source-selected-page")?;
             if !selected_pages.insert(*page_key) {
                 return Err(BuiltinModelError(
                     "membership page is referenced by multiple project frontiers".to_owned(),
@@ -847,6 +935,7 @@ fn read_indexed_relation(
             }
         }
         for file_key in ordered_file_keys.iter().copied() {
+            check_search_preparation(cancelled, "source-file")?;
             let file = files.remove(&file_key).ok_or_else(|| {
                 BuiltinModelError("project frontier refers to a missing source file".to_owned())
             })?;
@@ -864,7 +953,9 @@ fn read_indexed_relation(
             "source relation contains an unreferenced membership page".to_owned(),
         ));
     }
+    check_search_preparation(cancelled, "source-sort")?;
     resolved_files.sort_unstable_by_key(|(key, _)| *key);
+    check_search_preparation(cancelled, "source-sorted")?;
     Ok(IndexedSources {
         projects,
         files: resolved_files,
