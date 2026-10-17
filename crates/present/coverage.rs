@@ -133,6 +133,7 @@ pub struct CoverageLine {
     lanes: [LaneCoverage; 4],
     rows: Option<RowCount>,
     semantic_search: Option<SemanticSearchStatus>,
+    published_names: Option<backend_library::PublishedSearchReadiness>,
 }
 
 /// The number of rows a complete lane stands behind.
@@ -167,6 +168,7 @@ impl CoverageLine {
             lanes,
             rows: rows.map(RowCount::new),
             semantic_search: None,
+            published_names: None,
         }
     }
 
@@ -175,6 +177,22 @@ impl CoverageLine {
     pub const fn with_semantic_search_status(mut self, status: SemanticSearchStatus) -> Self {
         self.semantic_search = Some(status);
         self
+    }
+
+    /// Records that this response considered names only, never full lexical search.
+    #[must_use]
+    pub const fn with_published_names(
+        mut self,
+        readiness: backend_library::PublishedSearchReadiness,
+    ) -> Self {
+        self.published_names = Some(readiness);
+        self
+    }
+
+    /// Full-search state observed alongside the separate name-only result scope.
+    #[must_use]
+    pub const fn published_names(&self) -> Option<backend_library::PublishedSearchReadiness> {
+        self.published_names
     }
 
     /// Returns the semantic search status, when this is a search result line.
@@ -248,6 +266,7 @@ impl CoverageLine {
             lanes,
             rows,
             semantic_search,
+            published_names: self.published_names.or(next.published_names),
         }
     }
 
@@ -301,17 +320,19 @@ impl CoverageLine {
     /// search does not withhold compiler completeness.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.lanes.iter().all(|lane| match lane.state {
-            LaneState::Complete => true,
-            LaneState::Unavailable { .. } => false,
-            LaneState::Partial { .. } | LaneState::Gapped | LaneState::Unobserved => false,
-        }) && self.semantic_search.is_none_or(|status| match status {
-            SemanticSearchStatus::Available => true,
-            SemanticSearchStatus::Unavailable { reason } => {
-                reason == SemanticSearchReason::Unconfigured
-            }
-            SemanticSearchStatus::Stale { .. } => false,
-        })
+        self.published_names.is_none()
+            && self.lanes.iter().all(|lane| match lane.state {
+                LaneState::Complete => true,
+                LaneState::Unavailable { .. } => false,
+                LaneState::Partial { .. } | LaneState::Gapped | LaneState::Unobserved => false,
+            })
+            && self.semantic_search.is_none_or(|status| match status {
+                SemanticSearchStatus::Available => true,
+                SemanticSearchStatus::Unavailable { reason } => {
+                    reason == SemanticSearchReason::Unconfigured
+                }
+                SemanticSearchStatus::Stale { .. } => false,
+            })
     }
 
     /// Returns the single-word readiness summary.
@@ -330,6 +351,8 @@ impl CoverageLine {
     pub fn state(&self) -> ReadinessState {
         if self.has_failed_lane() {
             ReadinessState::Unavailable
+        } else if self.published_names.is_some() {
+            ReadinessState::Partial
         } else if self
             .lanes
             .iter()
@@ -377,6 +400,29 @@ impl CoverageLine {
             )
         {
             let _ = write!(line, " semantic-search {}", semantic_search_name(status));
+        }
+        if let Some(readiness) = self.published_names {
+            let state = match readiness.full_search {
+                backend_library::FullSearchReadiness::Preparing => "preparing",
+                backend_library::FullSearchReadiness::Retiring => "retiring",
+                backend_library::FullSearchReadiness::Ready => "ready",
+            };
+            let _ = write!(line, " results published-names-only full-search {state}");
+            match readiness.semantic {
+                backend_library::PublishedSemanticReadiness::Pending => {
+                    line.push_str(" semantic-ranking pending");
+                }
+                backend_library::PublishedSemanticReadiness::NotQueried => {
+                    line.push_str(" semantic-ranking not-queried");
+                }
+                backend_library::PublishedSemanticReadiness::Unavailable { reason } => {
+                    let _ = write!(
+                        line,
+                        " semantic-ranking unavailable ({})",
+                        semantic_search_reason_name(reason)
+                    );
+                }
+            }
         }
         line
     }

@@ -75,3 +75,34 @@ pub struct SearchPage {
     /// Continuation, when the producer has more rows.
     pub next: Option<SearchContinuation>,
 }
+
+impl SearchPage {
+    /// Explains the partial result scope without presenting names as full search.
+    #[must_use]
+    pub fn published_names_status(&self) -> Option<String> {
+        use backend_library::{FullSearchReadiness, PublishedSemanticReadiness};
+        let readiness = self.coverage.published_names()?;
+        let full = match readiness.full_search {
+            FullSearchReadiness::Preparing => "Full search is preparing.",
+            FullSearchReadiness::Retiring => {
+                "Full search is waiting for earlier preparation to stop."
+            }
+            FullSearchReadiness::Ready => {
+                "Full search is ready; this continuation still shows names only."
+            }
+        };
+        let semantic = match readiness.semantic {
+            PublishedSemanticReadiness::Pending => "Semantic ranking is pending.".to_owned(),
+            PublishedSemanticReadiness::NotQueried => {
+                "Semantic ranking was not queried for this page.".to_owned()
+            }
+            PublishedSemanticReadiness::Unavailable { reason } => format!(
+                "Semantic ranking is unavailable. {}",
+                reason.setup_instruction()
+            ),
+        };
+        Some(format!(
+            "Showing published declaration names. {full} {semantic}"
+        ))
+    }
+}

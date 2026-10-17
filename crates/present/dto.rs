@@ -144,7 +144,9 @@ impl IdentityDto {
 
 pub(crate) fn identity_semantic_data(identity: &Identity) -> Option<IdentitySemanticData> {
     match identity.key() {
-        crate::IdentityKey::Symbol(key) => SelectedSymbolIdDto::new(*key.as_bytes()).map(IdentitySemanticData::SelectedSymbolId),
+        crate::IdentityKey::Symbol(key) => {
+            SelectedSymbolIdDto::new(*key.as_bytes()).map(IdentitySemanticData::SelectedSymbolId)
+        }
         crate::IdentityKey::Package(_) | crate::IdentityKey::Absent => None,
     }
 }
@@ -611,6 +613,15 @@ pub struct RecordListDto {
     /// Per-query outcome of the optional semantic ranking lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_search: Option<backend_library::SemanticSearchStatus>,
+    /// Present only for an explicitly name-only search result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_scope: Option<String>,
+    /// Independent full-search state; does not promote this page's result scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_search: Option<backend_library::FullSearchReadiness>,
+    /// Semantic ranking is explicitly pending, not queried, or unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
 }
 
 impl RecordListDto {
@@ -625,6 +636,18 @@ impl RecordListDto {
             more: list.has_more(),
             empty_reason: list.empty_reason().map(str::to_owned),
             semantic_search: list.coverage().semantic_search_status(),
+            search_scope: list
+                .coverage()
+                .published_names()
+                .map(|_| "published_names_only".to_owned()),
+            full_search: list
+                .coverage()
+                .published_names()
+                .map(|readiness| readiness.full_search),
+            semantic_preparation: list
+                .coverage()
+                .published_names()
+                .map(|readiness| readiness.semantic),
         }
     }
 }

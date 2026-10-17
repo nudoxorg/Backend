@@ -43,6 +43,12 @@ impl Library {
             Command::Add { .. } | Command::Remove { .. } | Command::Surface(_) => Ok(
                 CommandReply::Failed(crate::CommandFailure::MutationRequiresOwner),
             ),
+            Command::SearchPublishedNames(_) => {
+                Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                    "published-name search requires an observed owner preparation context"
+                        .to_owned(),
+                )))
+            }
             Command::Document(query) | Command::Source(query) => {
                 self.document(query).map(CommandReply::Document)
             }

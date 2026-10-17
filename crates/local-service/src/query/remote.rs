@@ -292,6 +292,17 @@ impl RemoteSemantic {
         }
     }
 
+    /// Reports only setup refusal already owned locally. This never queries a
+    /// provider or guesses projection availability from a name-stage request.
+    pub(crate) fn unprepared_unavailability(&self) -> Option<SemanticSearchReason> {
+        match self {
+            Self::Unconfigured => Some(SemanticSearchReason::Unconfigured),
+            Self::Unavailable(_) => Some(SemanticSearchReason::InvalidConfiguration),
+            Self::LocalUnavailable(error) => Some(error.reason()),
+            Self::Configured(_) | Self::Local(_) => None,
+        }
+    }
+
     /// Configured provider, when every required input was admitted.
     #[must_use]
     pub fn configured(&self) -> Option<&ConfiguredQdrant> {
