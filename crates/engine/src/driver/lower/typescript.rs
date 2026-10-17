@@ -500,6 +500,14 @@ struct Projector<'x, 'report, 'source, 'tsz> {
     /// Claimed embodiment per member fact (`UNSET` when the span-containment
     /// parent stands). Indexed by fact ordinal.
     member_parents: Vec<u32>,
+    /// Exact native owner override for roles whose source span nests inside
+    /// another declaration (notably a constructor parameter-property field).
+    /// Sparse, strictly emission-ordered ordinals; ordinary facts allocate no
+    /// entries and both parentage sweeps consume this list linearly.
+    native_member_parents: Vec<(u32, TypeScriptLexicalOwner)>,
+    /// Native class symbol/site proofs and lexical identities, computed once
+    /// before declaration lowering and sorted by exact source range.
+    native_class_owners: Vec<(u32, u32, TypeScriptLexicalOwner)>,
     /// Constructor parameter-property field facts whose declaration span sits
     /// inside the constructor function rather than the class body.
     parameter_properties: Vec<u32>,
@@ -1423,7 +1431,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     fn push_parameter_properties(
         &mut self,
         params_span: Span,
-        _declaration: Span,
+        declaration: Span,
     ) -> Result<(), TypeScriptCollectError> {
         let Some(params_kind) = self.ast_kind_at_exact_span(params_span.start, params_span.end)
         else {
@@ -1431,6 +1439,31 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         };
         let Some(params) = params_kind.as_formal_parameters() else {
             return Ok(());
+        };
+        if !params
+            .items
+            .iter()
+            .any(|parameter| parameter.accessibility.is_some() || parameter.readonly)
+        {
+            return Ok(());
+        }
+        // The nearest syntax class wins even when an outer named Record
+        // exists. Its exact native owner was admitted once at file entry.
+        let anonymous_owner = if let Some(span) = self.anonymous_class_scope(declaration) {
+            let index = self
+                .native_class_owners
+                .binary_search_by_key(&(span.start, span.end), |(start, end, _)| (*start, *end))
+                .map_err(|_| lane_rejection())?;
+            if !(span.start <= declaration.start
+                && declaration.start <= params_span.start
+                && params_span.end <= declaration.end
+                && declaration.end <= span.end)
+            {
+                return Err(lane_rejection());
+            }
+            Some(self.native_class_owners[index].2)
+        } else {
+            None
         };
         for parameter in params.items.iter() {
             if !parameter.accessibility.is_some() && !parameter.readonly {
@@ -1453,9 +1486,14 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     continue;
                 }
             }
-            let Some(class) = self.enclosing_record(identifier.span.start) else {
-                continue;
+            let class = if anonymous_owner.is_none() {
+                self.enclosing_record(identifier.span.start)
+            } else {
+                None
             };
+            if anonymous_owner.is_none() && class.is_none() {
+                continue;
+            }
             let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
             let cells = match parameter.type_annotation.as_ref() {
                 Some(annotation) => {
@@ -1472,14 +1510,45 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             );
             let ordinal = self.push(fact)?;
             self.register(ordinal, parameter.span, identifier.span, EntityKind::Field)?;
-            if let Some(index) = usize::try_from(ordinal).ok() {
-                if let Some(slot) = self.member_parents.get_mut(index) {
-                    *slot = class;
-                }
+            let index = usize::try_from(ordinal).map_err(|_| lane_rejection())?;
+            if let Some(owner) = anonymous_owner {
+                self.native_member_parents.push((ordinal, owner));
+            } else if let Some(class) = class {
+                self.member_parents[index] = class;
             }
             self.parameter_properties.push(ordinal);
         }
         Ok(())
+    }
+
+    /// Finds the nearest unnamed class syntax scope for a native declaration
+    /// or occurrence. This exact-span comparison never enters an identity;
+    /// emitted native ownership requires the separately admitted class proof.
+    fn anonymous_class_scope(&self, declaration: Span) -> Option<Span> {
+        self.tsz_bound_file?;
+        let key = (declaration.start, declaration.end);
+        let first = self
+            .node_index
+            .partition_point(|(span, _)| (span.start, span.end) < key);
+        let (span, mut current) = *self.node_index.get(first)?;
+        if (span.start, span.end) != key {
+            return None;
+        }
+        let nodes = self.semantic.nodes();
+        loop {
+            let kind = nodes.get_node(current).kind();
+            if matches!(kind, AstKind::Program(_)) {
+                return None;
+            }
+            if let Some(class) = kind.as_class() {
+                return class.id.is_none().then_some(class.span);
+            }
+            let parent = nodes.parent_id(current);
+            if parent == current {
+                return None;
+            }
+            current = parent;
+        }
     }
 
     /// Counts already-committed same-kind, same-name, same-owner signatures
@@ -1500,6 +1569,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             return 0;
         }
         let owner = self.enclosing_registered_owner(declaration.start, None);
+        let class_scope = self.anonymous_class_scope(declaration);
         let mut twins = 0_u32;
         for ordinal in candidates {
             let Some(index) = usize::try_from(ordinal).ok() else {
@@ -1516,6 +1586,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 continue;
             }
             if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            let decl_end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if self.anonymous_class_scope(Span::new(decl_start, decl_end)) != class_scope {
                 continue;
             }
             if self.committed_frame_matches(index, fact, MAX_TYPE_DEPTH) {
@@ -4130,6 +4204,8 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             extension_type_parameters: Vec::new(),
             staged_members: Vec::new(),
             member_parents: Vec::new(),
+            native_member_parents: Vec::new(),
+            native_class_owners: Vec::new(),
             parameter_properties: Vec::new(),
             setters: Vec::new(),
             synthetic_starts: Vec::new(),
@@ -4267,6 +4343,21 @@ struct NativeAnonymousCallable<'source> {
     scope: Option<[u8; 32]>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TypeScriptLexicalOwner {
+    Declaration(u32),
+    UnrepresentedNativeClass {
+        family: [u8; 16],
+        instance: u32,
+        multiplicity: u32,
+    },
+}
+
+enum NativeClassRouteStep<'source> {
+    Named { kind: u16, name: &'source [u8] },
+    Expression(CallableAnchorStep<'source>),
+}
+
 #[derive(Clone, Copy)]
 enum NativeCallableScopeEvent {
     Named {
@@ -4343,7 +4434,7 @@ fn native_tsz_object_method_step<'source>(
     })
 }
 
-fn native_tsz_callable_parent_step<'source>(
+fn native_tsz_expression_parent_step<'source>(
     source: &'source str,
     arena: &TszNodeArena,
     callable: TszNodeIndex,
@@ -4432,6 +4523,83 @@ fn native_tsz_callable_parent_step<'source>(
         return Some(step);
     }
     None
+}
+
+/// Native lexical roles and named enclosing declarations form the class
+/// family route. Exact source coordinates are deliberately not route steps.
+fn native_tsz_anonymous_class_route(
+    source: &str,
+    file: &TszBoundFile,
+    declaration: TszNodeIndex,
+) -> Option<[u8; 16]> {
+    let arena = &file.arena;
+    let mut steps = Vec::new();
+    let mut current = declaration;
+    let mut reached_source_file = false;
+    for _ in 0..arena.nodes.len() {
+        let node = arena.get(current)?;
+        let name = arena
+            .get_class(node)
+            .map(|class| class.name)
+            .or_else(|| arena.get_function(node).map(|function| function.name))
+            .or_else(|| arena.get_method_decl(node).map(|method| method.name))
+            .or_else(|| arena.get_accessor(node).map(|accessor| accessor.name))
+            .or_else(|| arena.get_property_decl(node).map(|property| property.name))
+            .or_else(|| arena.get_module(node).map(|module| module.name));
+        if node.kind == TszSyntaxKind::CONSTRUCTOR {
+            steps.push(NativeClassRouteStep::Named {
+                kind: node.kind,
+                name: &[],
+            });
+        }
+        if let Some(name) = name.filter(|name| !name.is_none()) {
+            steps.push(NativeClassRouteStep::Named {
+                kind: node.kind,
+                name: source_node_bytes(source, arena, name)?,
+            });
+        }
+        if let Some(step) = native_tsz_expression_parent_step(source, arena, current) {
+            steps.push(NativeClassRouteStep::Expression(step));
+        }
+        let parent = arena.parent_of(current)?;
+        if current == file.source_file {
+            // The native root has a present parent cell containing NONE;
+            // a missing cell is not proof of a source-file root.
+            if node.kind != TszSyntaxKind::SOURCE_FILE || !parent.is_none() {
+                return None;
+            }
+            reached_source_file = true;
+            break;
+        }
+        if parent.is_none() {
+            return None;
+        }
+        current = parent;
+    }
+    if !reached_source_file {
+        return None;
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.typescript.native-anonymous-class-family.v1\0");
+    hash.update((file.file_name.len() as u64).to_le_bytes());
+    hash.update(file.file_name.as_bytes());
+    for step in steps.into_iter().rev() {
+        match step {
+            NativeClassRouteStep::Named { kind, name } => {
+                hash.update([0]);
+                hash.update(kind.to_le_bytes());
+                hash.update((name.len() as u64).to_le_bytes());
+                hash.update(name);
+            }
+            NativeClassRouteStep::Expression(step) => {
+                hash.update([1]);
+                hash_callable_anchor_step(&mut hash, step);
+            }
+        }
+    }
+    let mut family = [0_u8; 16];
+    family.copy_from_slice(&hash.finalize()[..16]);
+    Some(family)
 }
 
 /// Gives a source function type its owner-local signature role. The owning
@@ -4825,6 +4993,8 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     extension_type_parameters: Vec::new(),
                     staged_members: Vec::new(),
                     member_parents: Vec::new(),
+                    native_member_parents: Vec::new(),
+                    native_class_owners: Vec::new(),
                     parameter_properties: Vec::new(),
                     setters: Vec::new(),
                     synthetic_starts: Vec::new(),
@@ -4888,6 +5058,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// the enum-member pass, the static property-access pass, then the
     /// documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
+        self.native_class_owners = self.native_anonymous_class_owners()?;
         self.pass_declarations()?;
         self.pass_members()?;
         self.pass_checker()?;
@@ -5032,6 +5203,89 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         Ok(())
     }
 
+    /// Retains TSZ's actual bound anonymous class declarations as owners,
+    /// without inventing named class rows. Exact source/site binding is
+    /// admission evidence; lexical roles alone enter the owner family.
+    /// Same-route siblings retain native source-order instance ordinals in
+    /// variants, explicitly separating ambiguity from durable family identity.
+    fn native_anonymous_class_owners(
+        &self,
+    ) -> Result<Vec<(u32, u32, TypeScriptLexicalOwner)>, TypeScriptCollectError> {
+        let (Some(file), Some(binder), Some(file_index)) =
+            (self.tsz_bound_file, self.tsz_binder, self.tsz_file_index)
+        else {
+            return Ok(Vec::new());
+        };
+        let mut owners = Vec::new();
+        for (raw, node) in file.arena.nodes.iter().enumerate() {
+            if node.kind != TszSyntaxKind::CLASS_EXPRESSION {
+                continue;
+            }
+            let class = file.arena.get_class(node).ok_or_else(lane_rejection)?;
+            if !class.name.is_none() {
+                continue;
+            }
+            let raw = coordinate(raw)?;
+            let declaration = TszNodeIndex(raw);
+            let (start, end) = file
+                .arena
+                .pos_end_at(declaration)
+                .ok_or_else(lane_rejection)?;
+            if start >= end || self.source.get(start as usize..end as usize).is_none() {
+                return Err(lane_rejection());
+            }
+            let Some(symbol) = file
+                .node_symbols
+                .get(&raw)
+                .and_then(|id| binder.symbols.get(*id))
+            else {
+                return Err(lane_rejection());
+            };
+            // Only a unique native declaration with its exact stable file
+            // and range proves this otherwise unrepresented owner.
+            if symbol.declarations.as_slice() != [declaration]
+                || symbol.stable_declarations.len() != 1
+                || symbol.value_declaration != declaration
+            {
+                return Err(lane_rejection());
+            }
+            let stable = &symbol.stable_declarations[0];
+            if usize::try_from(stable.file_idx).ok() != Some(file_index)
+                || (stable.pos, stable.end) != (start, end)
+            {
+                return Err(lane_rejection());
+            }
+            let Some(family) = native_tsz_anonymous_class_route(self.source, file, declaration)
+            else {
+                return Err(lane_rejection());
+            };
+            owners.push((start, end, family));
+        }
+        owners.sort_unstable_by_key(|(start, end, _)| (*start, *end));
+        let mut counts = HashMap::<[u8; 16], u32>::new();
+        for (_, _, family) in &owners {
+            *counts.entry(*family).or_default() += 1;
+        }
+        let mut instances = HashMap::<[u8; 16], u32>::new();
+        Ok(owners
+            .into_iter()
+            .map(|(start, end, family)| {
+                let next = instances.entry(family).or_default();
+                let instance = *next;
+                *next += 1;
+                (
+                    start,
+                    end,
+                    TypeScriptLexicalOwner::UnrepresentedNativeClass {
+                        family,
+                        instance,
+                        multiplicity: counts[&family],
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Pass eight: binds every pushed fact to its innermost enclosing
     /// declaration by strict span containment, exactly as the lexical scope it
     /// lives in. TypeScript reuses member names across classes, interfaces,
@@ -5047,15 +5301,35 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// objects that span containment cannot tell apart.
     fn pass_parentage(&mut self) -> Result<(), TypeScriptCollectError> {
         let length = self.facts.len;
+        if self
+            .native_member_parents
+            .windows(2)
+            .any(|pair| pair[0].0 >= pair[1].0)
+            || self
+                .native_member_parents
+                .last()
+                .is_some_and(|(ordinal, _)| *ordinal as usize >= length)
+        {
+            return Err(lane_rejection());
+        }
         // One sweep over source-ordered events: an owner opens its lexical
         // range, and every other fact asks the innermost still-open owner for
         // its parent. Declaration spans nest or stay disjoint, so a stack is
         // exact, and the pass stays O(facts log facts) instead of rescanning
         // every candidate for every fact.
-        let mut events: Vec<(u32, u32, u32, bool)> = Vec::with_capacity(length * 2);
+        let mut events = Vec::with_capacity(length * 2);
+        let mut native_parent_cursor = 0;
         for index in 0..length {
             let ordinal = coordinate(index)?;
-            let is_member = self.member_parents.get(index).copied().unwrap_or(UNSET) != UNSET;
+            let native_member = self
+                .native_member_parents
+                .get(native_parent_cursor)
+                .is_some_and(|(fact, _)| *fact == ordinal);
+            if native_member {
+                native_parent_cursor += 1;
+            }
+            let is_member =
+                self.member_parents.get(index).copied().unwrap_or(UNSET) != UNSET || native_member;
             let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
             let decl_end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
             let synthetic = decl_start == UNSET || decl_end == UNSET;
@@ -5068,7 +5342,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 (decl_start, decl_end)
             };
             if !is_member && start != UNSET && end != UNSET {
-                events.push((start, end, ordinal, false));
+                events.push((start, end, None, Some(ordinal)));
             }
             if !synthetic
                 && ts_lexical_owner(
@@ -5079,34 +5353,55 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 )
             {
                 if let Some(parts) = self.merged_declaration_parts.get(&ordinal) {
-                    events.extend(parts.iter().map(|part| (part.start, part.end, ordinal, true)));
+                    events.extend(parts.iter().map(|part| {
+                        (
+                            part.start,
+                            part.end,
+                            Some(TypeScriptLexicalOwner::Declaration(ordinal)),
+                            None,
+                        )
+                    }));
                 } else {
-                    events.push((decl_start, decl_end, ordinal, true));
+                    events.push((
+                        decl_start,
+                        decl_end,
+                        Some(TypeScriptLexicalOwner::Declaration(ordinal)),
+                        None,
+                    ));
                 }
             }
         }
+        events.extend(
+            self.native_class_owners
+                .iter()
+                .copied()
+                .map(|(start, end, owner)| (start, end, Some(owner), None)),
+        );
         events.sort_unstable_by(|left, right| {
             left.0
                 .cmp(&right.0)
                 .then(right.1.cmp(&left.1))
-                .then(left.3.cmp(&right.3))
+                .then(left.2.is_some().cmp(&right.2.is_some()))
         });
-        let mut stack: Vec<(u32, u32, u32)> = Vec::new();
-        let mut owners: Vec<Option<u32>> = vec![None; length];
-        for (start, end, ordinal, is_owner) in events {
+        let mut stack: Vec<(u32, u32, TypeScriptLexicalOwner)> = Vec::new();
+        let mut owners = vec![None; length];
+        for (start, end, owner, ordinal) in events {
             while stack
                 .last()
                 .is_some_and(|(top_end, _, _)| *top_end <= start)
             {
                 stack.pop();
             }
-            if is_owner {
-                stack.push((end, start, ordinal));
+            if let Some(owner) = owner {
+                stack.push((end, start, owner));
                 continue;
             }
+            let Some(ordinal) = ordinal else {
+                continue;
+            };
             let mut found = None;
             for &(top_end, top_start, top_ordinal) in stack.iter().rev() {
-                if top_ordinal == ordinal {
+                if top_ordinal == TypeScriptLexicalOwner::Declaration(ordinal) {
                     continue;
                 }
                 if top_start == start && top_end == end {
@@ -5119,21 +5414,60 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
             owners[usize::try_from(ordinal).unwrap_or(0)] = found;
         }
+        let mut native_parent_cursor = 0;
         for index in 0..length {
             let ordinal = coordinate(index)?;
+            let native_parent = self
+                .native_member_parents
+                .get(native_parent_cursor)
+                .copied()
+                .filter(|(fact, _)| *fact == ordinal)
+                .map(|(_, owner)| owner);
+            if native_parent.is_some() {
+                native_parent_cursor += 1;
+            }
             if let Some(embodiment) = self
                 .member_parents
                 .get(index)
                 .copied()
                 .filter(|parent| *parent != UNSET)
             {
+                if native_parent.is_some() {
+                    return Err(lane_rejection());
+                }
                 self.facts
                     .attach_parent(ordinal, embodiment)
                     .map_err(fault)?;
                 continue;
             }
-            match owners[index] {
-                Some(parent) => self.facts.attach_parent(ordinal, parent).map_err(fault)?,
+            match native_parent.or(owners[index]) {
+                Some(TypeScriptLexicalOwner::Declaration(parent)) => {
+                    self.facts.attach_parent(ordinal, parent).map_err(fault)?
+                }
+                Some(TypeScriptLexicalOwner::UnrepresentedNativeClass {
+                    family,
+                    instance,
+                    multiplicity,
+                }) => {
+                    debug_assert!(instance < multiplicity);
+                    self.facts
+                        .mark_unrepresented_parent(ordinal, family)
+                        .map_err(fault)?;
+                    // Keep the native sibling instance out of the family.
+                    // Preserve any existing overload/twin discriminator.
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.typescript.native-class-member-instance.v1\0");
+                    hash.update(instance.to_le_bytes());
+                    if let Some(existing) = self.facts.identity_discriminators[index] {
+                        hash.update([1]);
+                        hash.update(existing);
+                    } else {
+                        hash.update([0]);
+                    }
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    self.facts.identity_discriminators[index] = Some(discriminator);
+                }
                 None => self.facts.mark_parentage_root(ordinal).map_err(fault)?,
             }
         }
@@ -6061,7 +6395,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 if !function.name.is_none() {
                     continue;
                 }
-                native_tsz_callable_parent_step(self.source, arena, callable)
+                native_tsz_expression_parent_step(self.source, arena, callable)
             } else {
                 if function_type {
                     if arena.get_function_type_at(callable).is_none() {
@@ -7750,6 +8084,12 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         property_span: Span,
         kind: ReferenceKind,
     ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        // This compatibility lookup requires an emitted Record. An unnamed
+        // class must not borrow an outer named class's `this` members. The
+        // native TSZ occurrence pass may still prove its own exact target.
+        if self.anonymous_class_scope(property_span).is_some() {
+            return self.syntactic_property_target(property_span);
+        }
         let Some(class) = self.enclosing_record(property_span.start) else {
             return self.syntactic_property_target(property_span);
         };
@@ -12588,6 +12928,433 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 active.len(),
                 1,
                 "{name} retains its exact active field, not a shared same-name row"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_anonymous_classes_keep_native_owners_and_declared_roles() -> Result<(), LaneError>
+    {
+        use crate::driver::types::ParentageState;
+        let source = "const mocks = { First: class { input: unknown; constructor(input: unknown) {} }, Second: class { input: unknown; constructor(input: unknown) {} }, Named: class Named { input: unknown; constructor(private http: unknown) {} } };";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("anonymous class project"))?;
+        let facts = collect_native_tsz_file(project, "input.ts", source)?;
+        let fields = (0..facts.len())
+            .filter(|&index| {
+                facts.kinds[index] == EntityKind::Field && facts.names[index] == b"input"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 3, "every declared field survives");
+        let parent = |index| facts.provenance.parentage()[index];
+        let (
+            ParentageState::UnrepresentedAuthorityOwner { identity: first },
+            ParentageState::UnrepresentedAuthorityOwner { identity: second },
+        ) = (parent(fields[0]), parent(fields[1]))
+        else {
+            return Err(LaneError::Missing("exact native anonymous class owners"));
+        };
+        assert_ne!(
+            first, second,
+            "distinct bound native classes own distinct fields"
+        );
+        assert!(
+            matches!(parent(fields[2]), ParentageState::Bound { .. }),
+            "named class keeps its emitted owner"
+        );
+        let constructors = (0..facts.len())
+            .filter(|&index| {
+                facts.names[index] == b"constructor" && facts.kinds[index] == EntityKind::Function
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(constructors.len(), 3);
+        for (field, constructor) in fields.iter().zip(&constructors) {
+            assert_eq!(
+                parent(*field),
+                parent(*constructor),
+                "field and constructor retain their actual class owner"
+            );
+        }
+        let parameters = (0..facts.len())
+            .filter(|&index| {
+                facts.kinds[index] == EntityKind::Parameter && facts.names[index] == b"input"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(parameters.len(), 2, "both constructor parameters survive");
+        for index in parameters {
+            let ParentageState::Bound { parent: owner } = parent(index) else {
+                return Err(LaneError::Missing("constructor parameter owner"));
+            };
+            assert!(
+                constructors
+                    .iter()
+                    .any(|&constructor| constructor == owner.raw as usize)
+            );
+        }
+        let roles = (0..facts.len())
+            .filter(|&index| facts.names[index] == b"http")
+            .map(|index| facts.kinds[index])
+            .collect::<Vec<_>>();
+        assert_eq!(roles.len(), 2);
+        assert!(roles.contains(&EntityKind::Field));
+        assert!(roles.contains(&EntityKind::Parameter));
+
+        // A fresh authority with another file may allocate different native
+        // SymbolIds; source-qualified ownership must remain identical.
+        let other = native_tsz_project_with_resolutions(
+            &[
+                ("a.ts", "export const unrelated = 1;"),
+                ("input.ts", source),
+            ],
+            &[],
+        )?;
+        let repeated = collect_native_tsz_file(
+            other
+                .project()
+                .ok_or(LaneError::Missing("second class project"))?,
+            "input.ts",
+            source,
+        )?;
+        for index in &fields {
+            assert_eq!(parent(*index), repeated.provenance.parentage()[*index]);
+        }
+        let ir = owned_tsz_ir(source)?;
+        assert_eq!(
+            ir.items()
+                .filter(|item| item.kind() == EntityKind::Field && item.name() == b"input")
+                .count(),
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_anonymous_class_families_survive_unrelated_same_file_edits()
+    -> Result<(), LaneError> {
+        let source = "const mocks = { First: class { input: unknown; constructor(input: unknown) {} }, Second: class { input: unknown; constructor(input: unknown) {} } };";
+        let before = owned_tsz_ir(source)?;
+        let edited =
+            format!("const unrelated = 'changed';\n{source}\n// unrelated trailing prose\n");
+        let after = owned_tsz_ir(&edited)?;
+        for name in [b"input".as_slice(), b"constructor"] {
+            let rows = |ir: &backend_semantic::ir::Ir| {
+                ir.items()
+                    .filter(|item| item.name() == name)
+                    .map(|item| (item.kind(), item.version()))
+                    .collect::<Vec<_>>()
+            };
+            let original = rows(&before);
+            let current = rows(&after);
+            assert!(!original.is_empty());
+            assert_eq!(
+                original, current,
+                "unrelated source/site changes do not remint {name:?} families or structural variants"
+            );
+        }
+        let structural_change =
+            owned_tsz_ir(&source.replacen("input: unknown;", "input: number;", 1))?;
+        let field = |ir: &backend_semantic::ir::Ir| {
+            ir.items()
+                .find(|item| item.kind() == EntityKind::Field && item.name() == b"input")
+                .map(|item| item.version())
+                .ok_or(LaneError::Missing("anonymous class field version"))
+        };
+        assert_eq!(field(&before)?.family, field(&structural_change)?.family);
+        assert_ne!(field(&before)?.variant, field(&structural_change)?.variant);
+
+        let siblings = owned_tsz_ir(
+            "const siblings = [class { value: unknown; }, class { value: unknown; }];",
+        )?;
+        let fields = siblings
+            .items()
+            .filter(|item| item.kind() == EntityKind::Field && item.name() == b"value")
+            .map(|item| item.version())
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 2, "same-route source classes both survive");
+        assert_eq!(
+            fields[0].family, fields[1].family,
+            "ambiguous siblings share their honest lexical family"
+        );
+        assert_ne!(
+            fields[0].variant, fields[1].variant,
+            "native sibling instances stay distinct"
+        );
+
+        let holder = "class Holder { left = class { value: unknown; constructor(value: unknown) {} }; right = class { value: unknown; constructor(value: unknown) {} }; first() { return class { value: unknown; constructor(value: unknown) {} }; } second() { return class { value: unknown; constructor(value: unknown) {} }; } }";
+        let original = owned_tsz_ir(holder)?;
+        let inserted = owned_tsz_ir(&holder.replacen(
+            "class Holder {",
+            "class Holder { unrelated = class { value: unknown; constructor(value: unknown) {} };",
+            1,
+        ))?;
+        let values = |ir: &backend_semantic::ir::Ir| {
+            ir.items()
+                .filter(|item| {
+                    (item.kind() == EntityKind::Field && item.name() == b"value")
+                        || (item.kind() == EntityKind::Function && item.name() == b"constructor")
+                })
+                .map(|item| item.version())
+                .collect::<Vec<_>>()
+        };
+        let original = values(&original);
+        let inserted = values(&inserted);
+        assert_eq!(original.len(), 8);
+        assert_eq!(inserted.len(), 10);
+        for version in original {
+            assert!(
+                inserted.contains(&version),
+                "inserting a class in another named property must not renumber existing property/method classes"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_anonymous_parameter_properties_retain_both_exact_roles() -> Result<(), LaneError>
+    {
+        use crate::driver::types::ParentageState;
+        let source = "const Service = class { constructor(private readonly http: string) {} }; class Named { constructor(public named: number) {} }";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let facts = collect_native_tsz_file(
+            authority
+                .project()
+                .ok_or(LaneError::Missing("parameter-property project"))?,
+            "input.ts",
+            source,
+        )?;
+        let find = |name: &[u8], kind| {
+            (0..facts.len())
+                .find(|&index| facts.names[index] == name && facts.kinds[index] == kind)
+                .ok_or(LaneError::Missing("parameter-property role"))
+        };
+        let field = find(b"http", EntityKind::Field)?;
+        let parameter = find(b"http", EntityKind::Parameter)?;
+        assert_eq!(
+            (0..facts.len())
+                .filter(|&index| facts.names[index] == b"http")
+                .count(),
+            2
+        );
+        let ParentageState::UnrepresentedAuthorityOwner { identity } =
+            facts.provenance.parentage()[field]
+        else {
+            return Err(LaneError::Missing("anonymous field class owner"));
+        };
+        let ParentageState::Bound {
+            parent: constructor,
+        } = facts.provenance.parentage()[parameter]
+        else {
+            return Err(LaneError::Missing("parameter constructor owner"));
+        };
+        assert_eq!(facts.names[constructor.raw as usize], b"constructor");
+        assert_eq!(
+            facts.provenance.parentage()[constructor.raw as usize],
+            ParentageState::UnrepresentedAuthorityOwner { identity }
+        );
+        assert_eq!(facts.type_records[field], facts.type_records[parameter]);
+        let field_span = facts.provenance.source_spans()[field]
+            .ok_or(LaneError::Missing("field parameter syntax span"))?;
+        let parameter_span = facts.provenance.source_spans()[parameter]
+            .ok_or(LaneError::Missing("parameter identifier span"))?;
+        assert!(
+            source[field_span.start as usize..field_span.end as usize]
+                .contains("private readonly http: string")
+        );
+        assert_eq!(
+            &source[parameter_span.start as usize..parameter_span.end as usize],
+            "http"
+        );
+        let named_field = find(b"named", EntityKind::Field)?;
+        let named_parameter = find(b"named", EntityKind::Parameter)?;
+        let ParentageState::Bound {
+            parent: named_class,
+        } = facts.provenance.parentage()[named_field]
+        else {
+            return Err(LaneError::Missing("named property class owner"));
+        };
+        assert_eq!(facts.names[named_class.raw as usize], b"Named");
+        assert_ne!(
+            facts.provenance.parentage()[named_field],
+            facts.provenance.parentage()[named_parameter]
+        );
+        assert_eq!(
+            (0..facts.len())
+                .filter(|&index| facts.kinds[index] == EntityKind::Record)
+                .count(),
+            1,
+            "only the real named class has a Record"
+        );
+        let ir = owned_tsz_ir(source)?;
+        assert_eq!(ir.items().filter(|item| item.name() == b"http").count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_nested_anonymous_parameter_fields_do_not_borrow_outer_record()
+    -> Result<(), LaneError> {
+        use crate::driver::types::ParentageState;
+        let source = "class Outer { http: unknown; Service = class { constructor(private http: unknown) {} read() { return this.http; } }; make() { return class { constructor(readonly http: unknown) {} read() { return this.http; } }; } }";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let facts = collect_native_tsz_file(
+            authority
+                .project()
+                .ok_or(LaneError::Missing("nested parameter-property project"))?,
+            "input.ts",
+            source,
+        )?;
+        let fields = (0..facts.len())
+            .filter(|&index| {
+                facts.names[index] == b"http" && facts.kinds[index] == EntityKind::Field
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields.len(),
+            3,
+            "outer field plus both anonymous parameter-property fields"
+        );
+        let outer = fields
+            .iter()
+            .copied()
+            .find(|&index| {
+                matches!(
+                    facts.provenance.parentage()[index],
+                    ParentageState::Bound { .. }
+                )
+            })
+            .ok_or(LaneError::Missing("real outer field"))?;
+        let anonymous = fields
+            .iter()
+            .copied()
+            .filter_map(|index| match facts.provenance.parentage()[index] {
+                ParentageState::UnrepresentedAuthorityOwner { identity } => Some(identity),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(anonymous.len(), 2);
+        assert_ne!(
+            anonymous[0], anonymous[1],
+            "property and method retain different native owner routes"
+        );
+        let parameters = (0..facts.len())
+            .filter(|&index| {
+                facts.names[index] == b"http" && facts.kinds[index] == EntityKind::Parameter
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(parameters.len(), 2);
+        for parameter in parameters {
+            let ParentageState::Bound { parent } = facts.provenance.parentage()[parameter] else {
+                return Err(LaneError::Missing("nested constructor parameter parent"));
+            };
+            assert_eq!(facts.names[parent.raw as usize], b"constructor");
+        }
+        assert!(
+            !(0..facts.occurrence_len).any(|index| facts.occurrences[index].target
+                == OccurrenceTarget::Local(EntityId::new(outer as u32))),
+            "inner this.http must not resolve to the outer named class field"
+        );
+        owned_tsz_ir(source)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_anonymous_parameter_property_lineage_and_siblings_remain_distinct()
+    -> Result<(), LaneError> {
+        let source = "const Services = [class { constructor(private http: string) {} }, class { constructor(readonly http: string) {} }];";
+        let before = owned_tsz_ir(source)?;
+        let after = owned_tsz_ir(&format!(
+            "const unrelated = 1;\n{source}\n// changed unrelated prose\n"
+        ))?;
+        let rows = |ir: &backend_semantic::ir::Ir| {
+            ir.items()
+                .filter(|item| item.name() == b"http")
+                .map(|item| (item.kind(), item.version()))
+                .collect::<Vec<_>>()
+        };
+        let original = rows(&before);
+        assert_eq!(
+            original.len(),
+            4,
+            "both roles in both native anonymous classes"
+        );
+        assert_eq!(
+            original,
+            rows(&after),
+            "unrelated same-file edits preserve all role families/variants"
+        );
+        let fields = original
+            .iter()
+            .filter(|(kind, _)| *kind == EntityKind::Field)
+            .map(|(_, version)| version)
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].family, fields[1].family);
+        assert_ne!(fields[0].variant, fields[1].variant);
+        let changed = owned_tsz_ir(&source.replacen("http: string", "http: number", 1))?;
+        let changed_fields = rows(&changed)
+            .into_iter()
+            .filter(|(kind, _)| *kind == EntityKind::Field)
+            .map(|(_, version)| version)
+            .collect::<Vec<_>>();
+        assert_eq!(fields[0].family, changed_fields[0].family);
+        assert_ne!(fields[0].variant, changed_fields[0].variant);
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_lowers_whole_docs_migration_with_anonymous_class_members() -> Result<(), LaneError>
+    {
+        use sha2::{Digest, Sha256};
+        let source =
+            include_str!("../../../tests/fixtures/typescript/docs-6e5dee38/migration.spec.ts");
+        assert_eq!(source.len(), 21_322);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(source.as_bytes())),
+            "d6ea04f08213179eab0e4b1eb6c208c55c10e7b7f193a8e08be76c2177d7d532"
+        );
+        let path = "src/yhub-server/__tests__/migration.spec.ts";
+        let authority = native_tsz_project_with_resolutions(&[(path, source)], &[])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("Docs migration project"))?;
+        let facts = collect_native_tsz_file(project, path, source)?;
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let scope = crate::driver::types::DeclarationScope::fixture();
+        let versions = super::super::identity::versions(&facts, scope, profile)?;
+        let mut duplicates = Vec::new();
+        for left in 0..versions.len() {
+            for right in left + 1..versions.len() {
+                if versions[left].family == versions[right].family
+                    && versions[left].variant == versions[right].variant
+                {
+                    duplicates.push(format!(
+                        "{left} {:?} {:?} {:?} {:?} == {right} {:?} {:?} {:?} {:?}",
+                        facts.kinds[left],
+                        String::from_utf8_lossy(facts.names[left]),
+                        facts.provenance.parentage()[left],
+                        facts.provenance.source_spans()[left],
+                        facts.kinds[right],
+                        String::from_utf8_lossy(facts.names[right]),
+                        facts.provenance.parentage()[right],
+                        facts.provenance.source_spans()[right],
+                    ));
+                }
+            }
+        }
+        assert!(
+            duplicates.is_empty(),
+            "whole Docs declarations collide: {duplicates:#?}"
+        );
+        let ir = owned_tsz_ir_at_path(source, path)?;
+        for name in [b"input".as_slice(), b"kind"] {
+            assert_eq!(
+                ir.items()
+                    .filter(|item| item.kind() == EntityKind::Field && item.name() == name)
+                    .count(),
+                2,
+                "both real anonymous class fields survive: {name:?}"
             );
         }
         Ok(())

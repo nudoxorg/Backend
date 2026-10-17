@@ -69,6 +69,22 @@ impl RetainedProduct {
 }
 
 impl Engine for RetainedProduct {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let mut owner = DocumentQuery::selected(document.symbol, document.basis);
+        if let Some(source) = document.source_basis() {
+            owner = owner.with_source_basis(source);
+        }
+        let page = self
+            .library
+            .members_page(owner, self.page(limit, continuation))
+            .map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         Ok(self.library.revision_root())
     }

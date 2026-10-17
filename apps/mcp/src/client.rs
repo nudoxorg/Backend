@@ -261,9 +261,11 @@ pub(crate) fn request_basis(command: &Command) -> Option<ViewRevision> {
         Command::Outline(query) => Some(query.basis()),
         Command::PackagePage(page)
         | Command::OutlinePage { page, .. }
-        | Command::GraphPage { page, .. } => Some(page.basis()),
+        | Command::GraphPage { page, .. }
+        | Command::MembersPage { page, .. } => Some(page.basis()),
         Command::Name(query) => Some(query.basis()),
         Command::Search(query) => Some(query.basis()),
+        Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Graph(query) => Some(query.basis()),
         Command::GraphQuery(query) => Some(query.page().basis()),
         _ => None,

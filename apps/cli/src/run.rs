@@ -35,6 +35,15 @@ impl<'a> SessionEngine<'a> {
 }
 
 impl Engine for SessionEngine<'_> {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.session.members_page(document, limit, continuation)
+    }
+
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.session.revision().map(|revision| revision.root)
     }

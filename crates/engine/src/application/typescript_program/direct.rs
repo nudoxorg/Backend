@@ -590,6 +590,7 @@ mod tests {
     }
 
     mod dotted_modules;
+    mod pocketbase_captured45_diagnostic;
 }
 
 #[cfg(test)]

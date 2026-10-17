@@ -161,8 +161,12 @@ pub fn prepare_find(query: &str, answers: &Known<SearchPage>, packages: &[FindPa
     let mut coverage = Vec::new();
     if let Some(gap) = package_coverage.gap() { coverage.push(gap_words(gap)); }
     if let Some(answers) = answers.known() {
-        let text = if answers.coverage.is_complete() { "Searched the declarations in the local index" } else { "Declaration search has partial coverage" };
-        coverage.push(text.into());
+        if let Some(status) = answers.published_names_status() {
+            coverage.push(status.into());
+        } else {
+            let text = if answers.coverage.is_complete() { "Searched the declarations in the local index" } else { "Declaration search has partial coverage" };
+            coverage.push(text.into());
+        }
     } else if !query.is_empty() && let Some(gap) = answers.gap() {
         coverage.push(gap_words(gap));
     }

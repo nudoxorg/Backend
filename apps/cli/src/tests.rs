@@ -1796,3 +1796,71 @@ fn cli_selected_id_is_copyable_full_width_and_optional_coordinate_is_an_assertio
     }
     assert!(invoke::parse(&words("references --selected-id 6262"), None).is_err());
 }
+
+#[test]
+fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_exit() {
+    let base = root();
+    let coordinate = "/workspace/docs::models.py:994::Document";
+    let symbol = backend_library::symbol_key("native Document search-stage identity");
+    let row = backend_library::Row::in_package(
+        backend_library::RowId::Symbol(symbol),
+        base.basis(),
+        package_key("/workspace/docs"),
+        coordinate,
+    )
+    .with_kind(backend_library::DeclarationKind::Class)
+    .with_source(backend_library::SourceLocation::new("models.py", 994).expect("authored site"));
+    let view = ViewRoot::new_incomplete(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        vec![row],
+        Vec::new(),
+    )
+    .expect("exact retained projection");
+    let snapshot = ViewSnapshot {
+        root: view,
+        freshness: Freshness::Current,
+        next: None,
+        graph_relations: None,
+        rich_graph: None,
+    };
+    let reply = ReplyDto::new(
+        1,
+        CommandReply::PublishedNameSearch(backend_library::PublishedNameSearchPage {
+            snapshot,
+            readiness: backend_library::PublishedSearchReadiness {
+                full_search: backend_library::FullSearchReadiness::Preparing,
+                semantic: backend_library::PublishedSemanticReadiness::Pending,
+            },
+        }),
+    );
+    let answer = backend_present::catalog_page_answer(
+        &backend_present::Request::Search {
+            text: "Document".to_owned(),
+            limit: 10,
+        },
+        reply,
+    )
+    .expect("shared admitted route");
+    let value: serde_json::Value =
+        serde_json::from_str(&render::json(&answer)).expect("ordinary CLI JSON");
+    assert_eq!(value["readiness"], "partial");
+    assert_eq!(value["search_scope"], "published_names_only");
+    assert_eq!(value["full_search"], "preparing");
+    assert_eq!(value["semantic_preparation"]["state"], "pending");
+    assert_eq!(value["records"].as_array().expect("useful names").len(), 1);
+    assert_eq!(value["records"][0]["identity"]["coordinate"], coordinate);
+    assert_eq!(
+        value["records"][0]["identity"]["semantic_data"]["value"],
+        serde_json::json!(*symbol.as_bytes())
+    );
+    assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+    let text = render::markdown_text(&answer);
+    assert!(text.contains("Document"));
+    assert!(
+        text.contains("published-names-only")
+            && text.contains("preparing")
+            && text.contains("pending")
+    );
+}

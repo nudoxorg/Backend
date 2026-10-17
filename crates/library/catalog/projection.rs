@@ -111,6 +111,47 @@ impl QueryPageRecipe {
         ))
     }
 
+    /// Binds a current published-name stage independently of full lexical search.
+    #[must_use]
+    pub fn published_names(root: ViewStateRoot, request: &crate::PublishedNameSearchQuery) -> Self {
+        let query = request.query();
+        Self::published_names_at_window(root, request, query.window())
+    }
+
+    /// Authenticates this stage's exact previous delivery credit.
+    #[must_use]
+    pub fn published_names_predecessor(
+        root: ViewStateRoot,
+        request: &crate::PublishedNameSearchQuery,
+    ) -> Option<Self> {
+        let window = Self::predecessor_window(request.query().window(), request.query().cursor())?;
+        Some(Self::published_names_at_window(root, request, window))
+    }
+
+    fn published_names_at_window(
+        root: ViewStateRoot,
+        request: &crate::PublishedNameSearchQuery,
+        window: QueryWindow,
+    ) -> Self {
+        let query = request.query();
+        let base = Self::new(
+            QueryPageKind::Names,
+            query.text(),
+            window,
+            root,
+            query.read_manifest(),
+        );
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"published-name-search-v1",
+            base.canonical_preimage(),
+        ])
+        .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
     /// Authenticates legacy predecessors before issuing a new windowed graph recipe.
     #[must_use]
     pub fn graph_predecessor(
@@ -148,6 +189,19 @@ impl QueryPageRecipe {
         window: QueryWindow,
     ) -> Self {
         let recipe = graph_page_recipe(address, window);
+        let preimage =
+            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
+                .into_boxed_slice();
+        Self {
+            identity: ViewRecipeId::from_value(&preimage),
+            preimage,
+        }
+    }
+
+    /// Binds immediate membership to its exact selected owner, source and credit.
+    #[must_use]
+    pub fn members(root: ViewStateRoot, owner: crate::SymbolAddress, limit: QueryLimit) -> Self {
+        let recipe = members_page_recipe(owner, limit);
         let preimage =
             crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
                 .into_boxed_slice();
@@ -219,6 +273,14 @@ impl QueryPageRecipe {
 pub(crate) fn outline_page_recipe(package: PackageKey, limit: QueryLimit) -> Vec<u8> {
     let mut bytes = b"outline-page-v3\0".to_vec();
     bytes.extend_from_slice(package.as_bytes());
+    bytes.extend_from_slice(&limit.get().to_be_bytes());
+    bytes
+}
+
+fn members_page_recipe(owner: crate::SymbolAddress, limit: QueryLimit) -> Vec<u8> {
+    let mut bytes = b"members-page-v1\0".to_vec();
+    bytes.push(u8::from(owner.is_selected()));
+    bytes.extend_from_slice(&owner.claimed_bytes());
     bytes.extend_from_slice(&limit.get().to_be_bytes());
     bytes
 }
@@ -340,6 +402,79 @@ impl Library {
         self.projection_page(&recipe_bytes, &result, start, limit)
     }
 
+    /// Pages one retained owner and its immediate members from the existing
+    /// parent arrangement. Unrelated package rows and semantic images are never
+    /// visited. The owner prefix proves membership even for an empty member set.
+    ///
+    /// # Errors
+    /// Refuses a stale source, missing owner, changed credit or foreign cursor.
+    pub fn members_page(
+        &self,
+        owner: DocumentQuery,
+        page: PageRequest,
+    ) -> Result<ProjectionPage, LibraryError> {
+        self.check_basis(owner.basis())?;
+        self.check_basis(page.basis())?;
+        if owner.basis() != page.basis()
+            || owner
+                .source_basis()
+                .is_some_and(|source| source != self.revision_basis())
+            || page.window().is_windowed()
+            || page
+                .continuation()
+                .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
+        {
+            return Err(LibraryError::InvalidQuery(
+                "member page changed its owner/source/fixed credit".to_owned(),
+            ));
+        }
+        let symbol = owner
+            .resolve_symbol(&self.view)
+            .ok_or(LibraryError::NotFound)?;
+        let root = self
+            .view
+            .row_ref(RowId::Symbol(symbol))
+            .ok_or(LibraryError::NotFound)?;
+        let recipe_bytes = members_page_recipe(owner.symbol(), page.limit());
+        let recipe = self.query_recipe(&recipe_bytes, None);
+        let limit = usize::from(page.limit().get());
+        let cursor = page.continuation().map(crate::PageContinuation::cursor);
+        let start = self.check_query_cursor(cursor, recipe, limit, |offset, count| {
+            self.member_page_ids(root, symbol, offset, count)
+        })?;
+        let result = self.member_page_ids(root, symbol, start, limit);
+        self.projection_page(&recipe_bytes, &result, start, limit)
+    }
+
+    fn member_page_ids(
+        &self,
+        root: &Row,
+        symbol: SymbolKey,
+        start: usize,
+        limit: usize,
+    ) -> ArrangementPage {
+        let mut ids = Vec::with_capacity(limit.saturating_add(1));
+        if start == 0 {
+            ids.push(RowId::Symbol(symbol));
+        }
+        let mut has_more = false;
+        if let Some(package) = root.package {
+            let children = self.arrangement.children_page_from(
+                package,
+                Some(symbol),
+                start.saturating_sub(1),
+                limit.saturating_add(1).saturating_sub(ids.len()),
+            );
+            has_more = children.has_more;
+            ids.extend(children.ids);
+        }
+        has_more |= ids.len() > limit;
+        ids.truncate(limit);
+        self.work.record_seek();
+        self.work.record_output(ids.len());
+        ArrangementPage { ids, has_more }
+    }
+
     /// Looks up one document under an exact source basis.
     ///
     /// # Errors
@@ -382,15 +517,49 @@ impl Library {
     /// Returns [`LibraryError::WrongBasis`] for a stale query and
     /// [`LibraryError::View`] when the bounded snapshot cannot be constructed.
     pub fn names(&self, query: &NameQuery) -> Result<ViewSnapshot, LibraryError> {
-        self.check_basis(query.basis)?;
         let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
+        let predecessor = QueryPageRecipe::names_predecessor(self.revision_root(), query)
+            .ok_or(LibraryError::CursorMismatch)?
+            .identity();
+        self.names_at_recipe(query, recipe, predecessor)
+    }
+
+    /// Reads current owner-bound names without opening compiler images.
+    /// This cursor belongs exclusively to the published-name search stage.
+    ///
+    /// # Errors
+    /// Refuses stale source roots and changed stage/query/credit continuations.
+    pub fn search_published_names(
+        &self,
+        request: &crate::PublishedNameSearchQuery,
+    ) -> Result<ViewSnapshot, LibraryError> {
+        let query = request.query();
+        let names = NameQuery {
+            text: query.text.clone(),
+            basis: query.basis,
+            window: query.window,
+            cursor: query.cursor,
+            read_manifest: query.read_manifest.clone(),
+        };
+        let recipe = QueryPageRecipe::published_names(self.revision_root(), request).identity();
+        let predecessor =
+            QueryPageRecipe::published_names_predecessor(self.revision_root(), request)
+                .ok_or(LibraryError::CursorMismatch)?
+                .identity();
+        self.names_at_recipe(&names, recipe, predecessor)
+    }
+
+    fn names_at_recipe(
+        &self,
+        query: &NameQuery,
+        recipe: ViewRecipeId,
+        previous_recipe: ViewRecipeId,
+    ) -> Result<ViewSnapshot, LibraryError> {
+        self.check_basis(query.basis)?;
         self.work.record_seek();
         let window = query.window();
         let limit = usize::from(window.issued().get());
         let delivery = usize::from(window.delivery().get());
-        let previous_recipe = QueryPageRecipe::names_predecessor(self.revision_root(), query)
-            .ok_or(LibraryError::CursorMismatch)?
-            .identity();
         let fetch = |offset, count| {
             self.arrangement.names_page(
                 query.selection(),

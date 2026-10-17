@@ -53,6 +53,40 @@ pub(crate) fn reply_certificate(
                 base,
             )?)
         }
+        CommandReply::PublishedNameSearch(page) => {
+            let query = match command {
+                Command::SearchPublishedNames(query) => query.clone(),
+                Command::Search(query) if query.cursor().is_none() => {
+                    backend_library::PublishedNameSearchQuery::admit(query.clone()).map_err(
+                        |_| {
+                            BuiltinModelError(
+                                "published-name source query changed grammar".to_owned(),
+                            )
+                        },
+                    )?
+                }
+                _ => {
+                    return Err(BuiltinModelError(
+                        "published-name source command changed domain".to_owned(),
+                    ));
+                }
+            };
+            let recipe = backend_library::QueryPageRecipe::published_names(
+                page.snapshot.root.basis().root,
+                &query,
+            );
+            if recipe.identity() != page.snapshot.root.recipe() {
+                return Err(BuiltinModelError(
+                    "published-name source recipe mismatch".to_owned(),
+                ));
+            }
+            Some(view_certificate(
+                &page.snapshot.root,
+                recipe.canonical_preimage(),
+                Some(owner_root),
+                base,
+            )?)
+        }
         CommandReply::Resolved(rows) => Some(view_commitment_certificate(
             owner_root,
             b"library-view-v1",
@@ -285,6 +319,14 @@ fn projection_page_certificate(
         } => backend_engine::QueryPageRecipe::outline(
             page.snapshot.root.basis().root,
             *package,
+            request.limit(),
+        ),
+        Command::MembersPage {
+            owner,
+            page: request,
+        } => backend_engine::QueryPageRecipe::members(
+            page.snapshot.root.basis().root,
+            owner.symbol(),
             request.limit(),
         ),
         Command::GraphPage {

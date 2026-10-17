@@ -398,6 +398,15 @@ impl Links {
         }
     }
 
+    /// A resolved graph destination retains its selection/owner request
+    /// through the same deferred boundary as departure reading state.
+    pub(crate) fn dispatch_graph_navigation(&self, route: crate::navigation::Route, cx: &mut App) {
+        if let Some(root) = self.root.upgrade() {
+            self.capture_departure(&Intent::Navigate(route.clone()), &root, cx);
+            root.update(cx, |root, cx| root.queue_graph_navigation(route, cx));
+        }
+    }
+
     /// Capture current painted scalar intent before queued navigation. No handles
     /// or resource receipts enter history; the Reader only lends its live values.
     fn capture_departure(&self, intent: &Intent, root: &Entity<UiRootEntity>, cx: &mut App) {
