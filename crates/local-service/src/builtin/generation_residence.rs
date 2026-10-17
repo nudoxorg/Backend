@@ -2542,8 +2542,15 @@ mod tests {
         drop(before);
         drop(authority);
         drop(daemon);
-        let cold = open_owner(workspace.path())?;
+        let mut cold = open_owner(workspace.path())?;
         let mut cold_authority = SemanticAuthority::open(workspace.path()).test_value()?;
+        // Match production startup: opening retained storage does not restore
+        // the serving selector. Reconcile the durable product marker first so
+        // the cold assertions inspect an admitted retained generation and its
+        // selected history through the same serving state as a restarted owner.
+        cold_authority
+            .reconcile_workspace(&mut cold)
+            .test_value()?;
         let snapshot = cold.engine().daemon().owner().snapshot();
         assert_eq!(snapshot.root(), final_root);
         assert_eq!(

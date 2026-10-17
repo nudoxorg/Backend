@@ -1561,6 +1561,10 @@ pub(crate) struct SemanticAuthority {
 }
 
 impl SemanticAuthority {
+    /// Opens retained storage with an empty process-local serving selector.
+    /// Recover an existing workspace through [`Self::reconcile_workspace`]
+    /// before serving it: an authority storage head alone cannot establish
+    /// which semantic generation the durable product marker selected.
     pub(crate) fn open(workspace: &Path) -> Result<Self, BuiltinModelError> {
         Self::open_with_product_authority(workspace, None)
     }
