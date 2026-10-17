@@ -30,6 +30,7 @@ mod error;
 mod embedding_setup;
 mod embedding_package;
 mod index_wait;
+mod mcp_config;
 mod owner_recovery;
 pub mod invoke;
 pub mod options;

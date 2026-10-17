@@ -164,7 +164,7 @@ pub fn help() -> String {
         "  nudox embedding-setup  Optional Linux semantic setup, before starting the local owner\n",
         "  nudox add . --wait  Wait for the exact operation; inspect its terminal receipt before searching\n",
         "  nudox search \"error handling\"  Find declarations at the published revision\n",
-        "  Claude Code: claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${CLAUDE_PROJECT_DIR:-.}'\n",
+        "  nudox mcp-config  Print installed Claude Code/Codex stdio setup; no config writes or service start\n",
     ));
     for domain in domains() {
         let _ = writeln!(out, "\n{}", domain_name(domain));
