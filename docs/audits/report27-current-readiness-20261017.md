@@ -1,6 +1,6 @@
 # Report 27: current verification checkpoint
 
-Updated 2026-10-17, 16:25 UTC. This brief distinguishes current observations from the [historical checkpoints](report22-current-readiness-20261013.md).
+Updated 2026-10-17, 16:55 UTC. This brief distinguishes current observations from the [historical checkpoints](report22-current-readiness-20261013.md).
 
 ## Actual build and native results
 
@@ -17,7 +17,9 @@ Root adoption SHA-256: `16a218108a26cdf1530f6b52339094e0cf2ad850d7f560e6d7483640
 
 The separate native run executed **85 of 289 selected bodies: 84 passed, one failed, 204 unrun**. The remaining package bodies did not compile because of a stale test-only call. One TSZ library-origin assertion failed. Parser Clippy failed on three argument-count diagnostics; semantic-render Clippy passed. All-crate Clippy retained 24,246 warnings. The controller subsequently hit its retained-log limit, so no terminal `check-result.json` exists. Root verified raw checkpoint `cee76c67c044864dc6823987c47be951470b0cbecf7a60268264e7b4c1ca4020` and failed scope closure. That failure has not been relabeled.
 
-Proposed repair source `0f23e973f49619131929aeb4731c7bf8e5bf9837`, tree `603efbc586c463d3cce9857b7b15c171edca21d6`, matches the PR's production/test postimages. Its 294 selected bodies and three Clippy commands remain unrun. No later source inherits an earlier pass.
+Proposed repair source `0f23e973f49619131929aeb4731c7bf8e5bf9837`, tree `603efbc586c463d3cce9857b7b15c171edca21d6`, matches the PR's production/test postimages. The first current38 attempt completed the genuine source transition and full 18,536-blob before/after verification, then failed its inventory comparison before Cargo: the helper omitted the semantic renderer and emitted a different order from the nine pinned test images. All 294 selected bodies and three Clippy commands remained unrun. Root independently replayed its closed 92-file courier (replay SHA-256 `ba68d225536bb747ed75ca0bbf9686fc6cbc7512a874a3469cd8135cf857e7ab`).
+
+The corrected R2 helper includes the renderer and uses the unchanged strict ordered nine-image comparison. Root verified all 52 frozen files and 20 staged members, then dispatched R2 at 16:55 UTC with fresh fleet guards and a managed destination permit required before launch. It resumes the existing current38 source, with no repeated source transition, new allocation, reset or prior-body credit. Dispatch is not evidence that Cargo or test bodies ran. No later source inherits an earlier pass.
 
 ## Actual GUI failure
 
@@ -32,11 +34,11 @@ The Rust process emitted drawn frames, but the observer found no visible PID-own
 | Gate | Current status |
 | --- | --- |
 | TypeScript identity and full search | Current37 full lexical chain and exact import/declaration checks remain unrun. Angular36 sampled early `published_names_only` pages. |
-| Runtime admission | Fresh local, ILO and Prod census passed, with Mac freshly excluded as offline. A wrong native-accounting input lineage stopped preflight before any permit. The corrected immutable resume derives its binding from the actual current37 ordinary configuration and requires fresh guards. |
+| Runtime admission | The corrected current37 Angular scope acquired its permit but refused entry on a stale nested runner hash. Zero application or MCP calls ran. Root replayed all 136 courier files and confirmed scope closure/release; replay SHA-256 `8eb5c5e98e34357dc56e8a9b8a12a1df0623543505d4fa41acd3de61073cb596`. The future recipe derives this hash and checks its semantic joins before admission. |
 | Restart and removal | Current37 must prove graceful restart and post-removal cold state. The earlier second shutdown hit an exclusive-filename harness bug. |
 | Python and Go | Fresh full Docs and PocketBase CLI/MCP runs remain unrun. The 456.50-second PocketBase diagnostic checked inferred JavaScript roots, not Go application acceptance. |
 | Original reproductions | Exact ASP/GymBroApp sources remain unavailable here; representative projects do not close those reproductions. |
 | Other report findings | Registry latency, row-count accounting, HTTP MCP auto-start, original N15, configured vector search and broad-corpus acceptance remain open. |
 | Delivery | Historical installer/help checks are separate. No current binary release, Homebrew proof or current Mac bundle is established. |
 
-Coworker refs were freshly fetched from Forgejo into a private bare store; canonical remains `83e9df85c7d3c8de8e4fba9a647f7ae6bc9576fc`. The temporarily unreadable Downloads checkout was not reset, replaced or edited. The preexisting Nix edit was not touched. Heavy compilation stays on ILO; Prod lacks destination disk for another workload. No production-readiness or full report closure is claimed.
+Coworker refs were freshly fetched from Forgejo into a private bare store; canonical is now `8ef5db43d2d20ecb68376c3fe1d5f27e3126ac56` after [PR 500](https://dev.nudox.org/git/Nudox/Backend/pulls/500). Root and Luna reviewed its five confirmed unused test imports; Root merged it and fetched/verified the resulting tree. No test body, assertion, condition or coverage changed. This import-only delta is separate from the current38 validation source. The temporarily unreadable Downloads checkout was not reset, replaced or edited. The preexisting Nix edit was not touched. Heavy compilation stays on ILO; Prod lacks destination disk for another workload. No production-readiness or full report closure is claimed.
