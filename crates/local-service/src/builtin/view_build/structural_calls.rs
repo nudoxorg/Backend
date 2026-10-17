@@ -167,11 +167,13 @@ struct FileDeclarations<'a> {
 struct ScopedCallName {
     bindings: usize,
     targets: BTreeSet<DeclarationId>,
+    import: Option<backend_compile::SourceBinding>,
 }
 
 enum LocalCallTarget {
     Unbound,
     Bound(DeclarationId),
+    Imported(backend_compile::SourceBinding),
     Unresolved,
 }
 
@@ -186,6 +188,11 @@ impl FileDeclarations<'_> {
         let mut scope = Some(caller);
         for _ in 0..256 {
             if let Some(bound) = scopes.get(&scope) {
+                if bound.bindings == 1 {
+                    if let Some(binding) = bound.import {
+                        return LocalCallTarget::Imported(binding);
+                    }
+                }
                 return match (bound.bindings, unique_target(bound.targets.iter().copied())) {
                     (1, Some(target)) => LocalCallTarget::Bound(target),
                     _ => LocalCallTarget::Unresolved,
@@ -210,21 +217,24 @@ impl FileDeclarations<'_> {
 struct ImportedCalls {
     #[cfg(test)]
     resolved_specifiers: usize,
+    // Name-only resolution belongs to legacy imports. Exact imports must be
+    // selected through the nearest captured lexical binding first.
     unqualified: BTreeMap<String, BTreeSet<DeclarationId>>,
+    exact_unqualified: BTreeMap<backend_compile::SourceBinding, BTreeSet<DeclarationId>>,
     qualified: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
     classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
 }
 
 impl ImportedCalls {
     fn join(
-        imports: impl Iterator<Item = ImportBinding>,
+        imports: impl Iterator<Item = (ImportBinding, Option<backend_compile::SourceBinding>)>,
         path: &str,
         modules: &ModuleIndex<'_>,
         files: &[FileDeclarations<'_>],
     ) -> Self {
         let mut joined = Self::default();
         let mut resolved = BTreeMap::<String, BTreeSet<FileId>>::new();
-        for import in imports {
+        for (import, binding) in imports {
             let specifier = match &import.kind {
                 ImportBindingKind::Qualifier { specifier }
                 | ImportBindingKind::Value { specifier, .. } => specifier,
@@ -258,11 +268,19 @@ impl ImportedCalls {
                                 }
                             }
                         } else if let Some(targets) = file.callable.get(exported.as_str()) {
-                            joined
-                                .unqualified
-                                .entry(import.local.clone())
-                                .or_default()
-                                .extend(targets);
+                            if let Some(binding) = binding {
+                                joined
+                                    .exact_unqualified
+                                    .entry(binding)
+                                    .or_default()
+                                    .extend(targets);
+                            } else {
+                                joined
+                                    .unqualified
+                                    .entry(import.local.clone())
+                                    .or_default()
+                                    .extend(targets);
+                            }
                         }
                     }
                 }
@@ -286,6 +304,11 @@ impl ImportedCalls {
                 if let Some(caller) = exact_caller {
                     match local.scoped_target(caller, &call.name) {
                         LocalCallTarget::Bound(target) => return Some(target),
+                        LocalCallTarget::Imported(binding) => {
+                            return unique_target(
+                                self.exact_unqualified.get(&binding)?.iter().copied(),
+                            );
+                        }
                         LocalCallTarget::Unresolved => return None,
                         LocalCallTarget::Unbound => {}
                     }
@@ -459,13 +482,16 @@ impl ProjectCalls {
                 };
                 if let Some((binding, scope)) = exact_scope {
                     lookup.scope_parents.insert(binding, scope);
-                    lookup
+                    let name = lookup
                         .scoped_names
                         .entry(declaration.name())
                         .or_default()
                         .entry(scope)
-                        .or_default()
-                        .bindings += 1;
+                        .or_default();
+                    name.bindings += 1;
+                    if parse_import_binding(declaration).is_some() {
+                        name.import = Some(binding);
+                    }
                 }
                 if !structural_callable(declaration.kind()) {
                     continue;
@@ -559,7 +585,16 @@ impl ProjectCalls {
         }
         for (at, file) in files.iter().enumerate() {
             let imported = ImportedCalls::join(
-                file.declarations.iter().filter_map(parse_import_binding),
+                file.declarations.iter().filter_map(|declaration| {
+                    let import = parse_import_binding(declaration)?;
+                    let binding = match declaration.binding_identity() {
+                        backend_compile::SourceBindingIdentity::Exact(capture) => {
+                            Some(capture.binding())
+                        }
+                        backend_compile::SourceBindingIdentity::Legacy => None,
+                    };
+                    Some((import, binding))
+                }),
                 file.path,
                 &modules,
                 &declarations,
@@ -941,7 +976,7 @@ mod tests {
         let (added, package) = cross_file_sources(&[
             ("one/caller.ts", TypeScript, caller),
             ("two/target.ts", TypeScript, decoy),
-            ("one/target.ts", TypeScript, target),
+            ("one/target.ts", TypeScript, target.clone()),
         ])?;
         assert_eq!(
             StructuralCallResidence::default()
@@ -953,6 +988,47 @@ mod tests {
                 "fixture::one/target.ts:1::validate".to_owned()
             )]
         );
+        for (source, imported, local) in [
+            (
+                "import { validate as check } from './target';\nexport function caller() { const check = 0; check(); }\n",
+                false,
+                false,
+            ),
+            (
+                "import { validate as check } from './target';\nexport function caller() { function check() {} check(); }\n",
+                false,
+                true,
+            ),
+            (
+                "import { validate as check } from './target';\nfunction hidden() { const check = 0; }\nexport function caller() { check(); }\n",
+                true,
+                false,
+            ),
+        ] {
+            let caller = analyze_source(TypeScript, "one/caller.ts", source)?;
+            let (sources, package) = cross_file_sources(&[
+                ("one/caller.ts", TypeScript, caller),
+                ("one/target.ts", TypeScript, target.clone()),
+            ])?;
+            let pairs = ProjectCalls::build(&sources, package)
+                .map_err(|e| e.to_string())?
+                .coordinate_pairs();
+            assert_eq!(
+                pairs
+                    .iter()
+                    .any(|(_, target)| target == "fixture::one/target.ts:1::validate"),
+                imported,
+                "only the nearest exact lexical binding can select the import: {source}"
+            );
+            assert_eq!(
+                pairs.iter().any(|(_, target)| target.ends_with("::check")),
+                local,
+                "a local callable stays distinct from its imported namesake: {source}"
+            );
+            if !imported && !local {
+                assert!(pairs.is_empty(), "noncallable local shadow: {source}");
+            }
+        }
         Ok(())
     }
     #[test]
