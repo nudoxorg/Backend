@@ -161,16 +161,7 @@ impl WorkspacePaths {
         data: Option<PathBuf>,
         endpoint: Option<PathBuf>,
     ) -> Result<Self, RuntimeError> {
-        let requested_project =
-            project.or_else(|| std::env::var_os(PROJECT_ENV).map(PathBuf::from));
-        let project = match requested_project {
-            Some(project) => project,
-            None => project_root_from(&std::env::current_dir().map_err(RuntimeError::Io)?),
-        };
-        if project.as_os_str().is_empty() {
-            return Err(RuntimeError::InvalidPath("project path is empty"));
-        }
-        let project = normalize_identity(&project);
+        let project = discover_project(project)?;
         let configured_data = data.or_else(|| std::env::var_os(DATA_ENV).map(PathBuf::from));
         let (data, private_application_root) = match configured_data {
             Some(data) => (data, None),
@@ -303,6 +294,38 @@ impl ApplicationStateRoot {
             .iter()
             .fold(self.anchor.clone(), |path, name| path.join(name))
     }
+}
+
+/// Discovers the indexed project without selecting or initializing durable state.
+///
+/// Explicit selection takes precedence over [`PROJECT_ENV`]. Without either,
+/// the current directory selects its Git root or nearest language manifest,
+/// using the same identity as CLI, MCP, and desktop workspace discovery.
+///
+/// # Errors
+/// Returns an error for an empty selection or an unavailable current directory
+/// when no explicit or environment selection exists.
+pub fn discover_project(project: Option<PathBuf>) -> Result<PathBuf, RuntimeError> {
+    select_project(
+        project,
+        std::env::var_os(PROJECT_ENV).map(PathBuf::from),
+        std::env::current_dir,
+    )
+}
+
+fn select_project(
+    project: Option<PathBuf>,
+    environment: Option<PathBuf>,
+    current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<PathBuf, RuntimeError> {
+    let project = match project.or(environment) {
+        Some(project) => project,
+        None => project_root_from(&current_dir().map_err(RuntimeError::Io)?),
+    };
+    if project.as_os_str().is_empty() {
+        return Err(RuntimeError::InvalidPath("project path is empty"));
+    }
+    Ok(normalize_identity(&project))
 }
 
 fn initialize_default_state(state: &ApplicationStateRoot, data: &Path) -> std::io::Result<()> {
@@ -2211,6 +2234,50 @@ mod tests {
         #[cfg(windows)]
         backend_platform::durable::ensure_private_child_directory(path)
             .expect("private fixture directory");
+    }
+
+    #[test]
+    fn onboarding_project_selection_matches_workspace_defaults_and_preserves_overrides() {
+        let root = test_directory("onboarding-project-selection");
+        let nested = root.join("packages/web/src");
+        fs::create_dir_all(root.join(".git")).expect("Git marker");
+        fs::create_dir_all(&nested).expect("nested project");
+        fs::write(root.join("packages/web/package.json"), b"{}\n")
+            .expect("nested language manifest");
+
+        let selected =
+            select_project(None, None, || Ok(nested.clone())).expect("default project selection");
+        assert_eq!(selected, normalize_identity(&root));
+        let unreadable_cwd = || Err(std::io::Error::other("current directory unavailable"));
+        assert_eq!(
+            select_project(None, Some(nested.clone()), unreadable_cwd)
+                .expect("environment selection does not require cwd"),
+            normalize_identity(&nested),
+            "an environment-selected subproject stays explicit"
+        );
+        assert_eq!(
+            select_project(Some(nested.clone()), Some(root.clone()), unreadable_cwd)
+                .expect("CLI selection does not require cwd"),
+            normalize_identity(&nested),
+            "--project wins over the environment without widening to the Git root"
+        );
+        assert!(matches!(
+            select_project(Some(PathBuf::new()), Some(root.clone()), unreadable_cwd),
+            Err(RuntimeError::InvalidPath("project path is empty"))
+        ));
+        assert!(matches!(
+            select_project(None, Some(PathBuf::new()), unreadable_cwd),
+            Err(RuntimeError::InvalidPath("project path is empty"))
+        ));
+        assert!(matches!(
+            select_project(None, None, unreadable_cwd),
+            Err(RuntimeError::Io(_))
+        ));
+        assert!(
+            !root.join(".backend").exists(),
+            "project selection must not create checkout state"
+        );
+        fs::remove_dir_all(root).expect("remove project selection fixture");
     }
 
     #[test]
