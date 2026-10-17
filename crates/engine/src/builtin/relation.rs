@@ -21,7 +21,7 @@ use backend_library::{
     MAX_RUST_CARGO_METADATA_TEXT_BYTES,
 };
 use backend_replication::ImmutableObjectSchema;
-use backend_semantic::vocabulary::{LanguageProfile, PythonVersion};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, PythonVersion};
 use backend_version::{
     CanonicalRelation, ContentId, CoverageWitness, CutPolicy, DEFAULT_CUT_POLICY, Relation,
     RelationState, SourceFactDomain, StateRoot, WorkspaceRoot, anchored_cut_points,
@@ -59,13 +59,15 @@ const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
 
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 16;
+const SOURCE_RECORD_VERSION: u8 = 17;
 
 /// File format with a literal supported Python minor, full facts, and optional identity.
 const SOURCE_RECORD_FORMAT_PYTHON_PROFILE: &[u8; 4] = b"PSRF";
 
 /// Exact bindings with an optional Python minor, full facts, and optional identity.
 const SOURCE_RECORD_FORMAT_BINDINGS: &[u8; 4] = b"PSRG";
+/// Exact bindings with a literal Go source language version.
+const SOURCE_RECORD_FORMAT_GO_PROFILE: &[u8; 4] = b"PSRH";
 
 /// Orthogonal file-only extensions. Historical formats keep their exact bytes;
 /// Python's literal-profile layout never acquires the binding layout's fields.
@@ -74,11 +76,18 @@ enum FileRecordExtension {
     Legacy,
     PythonProfile,
     Bindings,
+    GoProfile,
 }
 
 impl FileRecordExtension {
-    fn for_file(declarations: &[SourceDeclaration], python_version: Option<PythonVersion>) -> Self {
-        if declarations.iter().any(|declaration| {
+    fn for_file(
+        declarations: &[SourceDeclaration],
+        python_version: Option<PythonVersion>,
+        go_version: Option<GoVersion>,
+    ) -> Self {
+        if go_version.is_some() {
+            Self::GoProfile
+        } else if declarations.iter().any(|declaration| {
             matches!(
                 declaration.binding_identity(),
                 backend_compile::SourceBindingIdentity::Exact(_)
@@ -96,6 +105,7 @@ impl FileRecordExtension {
         match version {
             15 => Self::PythonProfile,
             16 => Self::Bindings,
+            17 => Self::GoProfile,
             _ => Self::Legacy,
         }
     }
@@ -105,10 +115,11 @@ impl FileRecordExtension {
             Self::Legacy => None,
             Self::PythonProfile => Some(SOURCE_RECORD_FORMAT_PYTHON_PROFILE),
             Self::Bindings => Some(SOURCE_RECORD_FORMAT_BINDINGS),
+            Self::GoProfile => Some(SOURCE_RECORD_FORMAT_GO_PROFILE),
         }
     }
 
-    fn profile_byte(self, profile: Option<PythonVersion>) -> Option<u8> {
+    fn profile_byte(self, profile: Option<PythonVersion>, go: Option<GoVersion>) -> Option<u8> {
         let minor = |profile| match profile {
             PythonVersion::Python310 => 10,
             PythonVersion::Python311 => 11,
@@ -120,6 +131,13 @@ impl FileRecordExtension {
             Self::Legacy => None,
             Self::PythonProfile => Some(minor(profile.expect("selected literal Python profile"))),
             Self::Bindings => Some(profile.map_or(0, minor)),
+            Self::GoProfile => Some(match go? {
+                GoVersion::Go122 => 0,
+                GoVersion::Go123 => 1,
+                GoVersion::Go124 => 2,
+                GoVersion::Go125 => 3,
+                GoVersion::Go126 => 4,
+            }),
         }
     }
 
@@ -210,11 +228,12 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
         ProductSourceRecord::File {
             declarations,
             python_version,
+            go_version,
             source_identity,
             ..
         } => {
             if let Some(format) =
-                FileRecordExtension::for_file(declarations, *python_version).format()
+                FileRecordExtension::for_file(declarations, *python_version, *go_version).format()
             {
                 format
             } else if states_facts(declarations) {
@@ -260,6 +279,7 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'E' => 14,
         b'F' => 15,
         b'G' => 16,
+        b'H' => 17,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -310,6 +330,8 @@ pub enum ProductSourceRecord {
         /// Actual admitted Python minor. None means a historical legacy record,
         /// whose Python producer used 3.14; it does not infer a current environment.
         python_version: Option<PythonVersion>,
+        /// Actual admitted Go source language version. None preserves legacy bytes.
+        go_version: Option<GoVersion>,
         /// The `SourceFactDomain` content identity the semantic compiler
         /// derives from the same bytes, when it is known to the producer.
         ///
@@ -784,6 +806,8 @@ pub struct ProductFileRef<'a> {
     pub analysis_version: [u8; 32],
     /// Explicit admitted Python minor; None preserves historical 3.14 records.
     pub python_version: Option<PythonVersion>,
+    /// Explicit admitted Go source language version; None preserves legacy records.
+    pub go_version: Option<GoVersion>,
     /// The semantic source content identity, when the producer stated it.
     pub source_identity: Option<ContentId<SourceFactDomain>>,
     /// Shared declaration storage.
@@ -1184,8 +1208,37 @@ impl ProductSourceRecord {
         source_identity: Option<ContentId<SourceFactDomain>>,
         python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
+        Self::file_with_retention_and_identity_go(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            retention,
+            source_identity,
+            python_version,
+            None,
+        )
+    }
+
+    fn file_with_retention_and_identity_go(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        retention: DeclarationRetention,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
+        go_version: Option<GoVersion>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
+        if go_version.is_some() && language != SourceLanguage::Go {
+            return Err("Go profile is invalid on a different language row".to_owned());
+        }
         if python_version.is_some() && language != SourceLanguage::Python {
             return Err("Python profile is invalid on a different language row".to_owned());
         }
@@ -1205,6 +1258,7 @@ impl ProductSourceRecord {
             content_version,
             analysis_version,
             python_version,
+            go_version,
             source_identity,
             declarations,
             retention,
@@ -1247,6 +1301,35 @@ impl ProductSourceRecord {
         )
     }
 
+    /// Adds an admitted Go source language version while preserving the checked row bound.
+    ///
+    /// # Errors
+    /// Rejects a non-Go row or an encoded row above canonical capacity.
+    pub fn with_go_version(mut self, go_version: Option<GoVersion>) -> Result<Self, String> {
+        if go_version.is_some()
+            && !matches!(
+                self,
+                Self::File {
+                    language: SourceLanguage::Go,
+                    ..
+                }
+            )
+        {
+            return Err("Go profile is invalid on a different language row".to_owned());
+        }
+        if let Self::File {
+            go_version: current,
+            ..
+        } = &mut self
+        {
+            *current = go_version;
+        }
+        if self.encoded_value_bytes() > Self::ROW_VALUE_CAPACITY {
+            return Err("Go-profiled source file exceeds row capacity".to_owned());
+        }
+        Ok(self)
+    }
+
     /// Constructs a file record that always fits one canonical relation row.
     ///
     /// A single real source file routinely extracts more detail than one row
@@ -1269,13 +1352,14 @@ impl ProductSourceRecord {
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
     ) -> Result<Self, String> {
-        Self::file_within_row_capacity_and_identity(
+        Self::file_within_row_capacity_and_identity_go(
             project,
             path,
             language,
             content_version,
             analysis_version,
             declarations,
+            None,
             None,
             None,
         )
@@ -1299,7 +1383,7 @@ impl ProductSourceRecord {
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         source_identity: ContentId<SourceFactDomain>,
     ) -> Result<Self, String> {
-        Self::file_within_row_capacity_and_identity(
+        Self::file_within_row_capacity_and_identity_go(
             project,
             path,
             language,
@@ -1307,6 +1391,7 @@ impl ProductSourceRecord {
             analysis_version,
             declarations,
             Some(source_identity),
+            None,
             None,
         )
     }
@@ -1376,10 +1461,34 @@ impl ProductSourceRecord {
         source_identity: Option<ContentId<SourceFactDomain>>,
         python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity_go(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            source_identity,
+            python_version,
+            None,
+        )
+    }
+
+    fn file_within_row_capacity_and_identity_go(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
+        go_version: Option<GoVersion>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let extracted = declarations.into();
         let build = |declarations: Arc<[SourceDeclaration]>, retention| {
-            Self::file_with_retention_and_identity(
+            Self::file_with_retention_and_identity_go(
                 project,
                 path.clone(),
                 language,
@@ -1389,6 +1498,7 @@ impl ProductSourceRecord {
                 retention,
                 source_identity,
                 python_version,
+                go_version,
             )
         };
         if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
@@ -1435,6 +1545,32 @@ impl ProductSourceRecord {
                 .ok_or("retained declaration prefix is out of range")?
                 .into(),
             DeclarationRetention::Truncated(counts),
+        )
+    }
+
+    /// Constructs a capacity-fitted file row carrying an exact Go profile.
+    ///
+    /// # Errors
+    /// Rejects invalid paths, declarations, or an identity that cannot fit a row.
+    pub fn go_profiled_file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+        go_version: GoVersion,
+    ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity_go(
+            project,
+            path,
+            SourceLanguage::Go,
+            content_version,
+            analysis_version,
+            declarations,
+            source_identity,
+            None,
+            Some(go_version),
         )
     }
 
@@ -1491,6 +1627,7 @@ impl ProductSourceRecord {
                 content_version,
                 analysis_version,
                 python_version,
+                go_version,
                 source_identity,
                 declarations,
                 retention,
@@ -1501,6 +1638,7 @@ impl ProductSourceRecord {
                 content_version: *content_version,
                 analysis_version: *analysis_version,
                 python_version: *python_version,
+                go_version: *go_version,
                 source_identity: *source_identity,
                 declarations,
                 retention: *retention,
@@ -1853,6 +1991,7 @@ fn encode_file_record(value: &ProductSourceRecord, format: &[u8; 4], output: &mu
         content_version,
         analysis_version,
         python_version,
+        go_version,
         source_identity,
         declarations,
         retention,
@@ -1863,7 +2002,10 @@ fn encode_file_record(value: &ProductSourceRecord, format: &[u8; 4], output: &mu
     let extension = FileRecordExtension::from_version(
         format_version(format).expect("selected canonical source format"),
     );
-    let bindings = extension == FileRecordExtension::Bindings;
+    let bindings = matches!(
+        extension,
+        FileRecordExtension::Bindings | FileRecordExtension::GoProfile
+    );
     let factual = format == SOURCE_RECORD_FORMAT_FACTS || extension != FileRecordExtension::Legacy;
     let identified = !factual && source_identity.is_some();
     debug_assert_eq!(
@@ -1878,7 +2020,7 @@ fn encode_file_record(value: &ProductSourceRecord, format: &[u8; 4], output: &mu
     output.push(language.wire_tag());
     output.extend_from_slice(content_version);
     output.extend_from_slice(analysis_version);
-    if let Some(profile) = extension.profile_byte(*python_version) {
+    if let Some(profile) = extension.profile_byte(*python_version, *go_version) {
         output.push(profile);
     }
     if factual {
@@ -2352,7 +2494,23 @@ fn decode_file_record(
     } else {
         [0; 32]
     };
-    let python_version = extension.decode_profile(reader, language)?;
+    let python_version = if extension == FileRecordExtension::GoProfile {
+        None
+    } else {
+        extension.decode_profile(reader, language)?
+    };
+    let go_version = if extension == FileRecordExtension::GoProfile {
+        Some(match reader.byte()? {
+            0 => GoVersion::Go122,
+            1 => GoVersion::Go123,
+            2 => GoVersion::Go124,
+            3 => GoVersion::Go125,
+            4 => GoVersion::Go126,
+            _ => return Err(()),
+        })
+    } else {
+        None
+    };
     let source_identity = if version >= 11 {
         match reader.byte()? {
             0 => None,
@@ -2392,7 +2550,8 @@ fn decode_file_record(
         retention,
         source_identity,
         python_version,
-    )
+    )?
+    .with_go_version(go_version)
     .map_err(|_| ())
 }
 
@@ -2427,7 +2586,13 @@ fn decode_declaration(
         SourceExcerpt::NotCaptured
     };
     let decoded_container = if contained {
-        decode_container(reader, extension == FileRecordExtension::Bindings)?
+        decode_container(
+            reader,
+            matches!(
+                extension,
+                FileRecordExtension::Bindings | FileRecordExtension::GoProfile
+            ),
+        )?
     } else {
         Container::Module
     };
@@ -2436,7 +2601,10 @@ fn decode_declaration(
     } else {
         DeclarationFacts::UNOBSERVED
     };
-    let identity = if extension == FileRecordExtension::Bindings {
+    let identity = if matches!(
+        extension,
+        FileRecordExtension::Bindings | FileRecordExtension::GoProfile
+    ) {
         match reader.byte()? {
             0 => backend_compile::SourceBindingIdentity::Legacy,
             1 => backend_compile::SourceBindingIdentity::Exact(decode_binding_capture(reader)?),
@@ -3701,6 +3869,7 @@ mod tests {
             (b'E', 14_u8),
             (b'F', 15_u8),
             (b'G', 16_u8),
+            (b'H', 17_u8),
         ] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
@@ -3709,7 +3878,7 @@ mod tests {
             );
         }
 
-        for tag in [b'0', b'1', b':', b';', b'<', b'H', b'?', 0xff] {
+        for tag in [b'0', b'1', b':', b';', b'<', b'?', 0xff] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 None,
@@ -3893,6 +4062,92 @@ mod tests {
             ProductSourceRelation::decode_value(&bytes).unwrap(),
             compact
         );
+    }
+
+    #[test]
+    fn go_profile_roundtrip_preserves_exact_bindings_and_compacts() {
+        use backend_semantic::vocabulary::GoVersion;
+        for version in [GoVersion::Go125, GoVersion::Go126] {
+            let record = ProductSourceRecord::go_profiled_file_within_row_capacity(
+                [3; 32],
+                "main.go",
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                Some(fixture_source_identity()),
+                version,
+            )
+            .unwrap();
+            let bytes = encode_source_record(&record);
+            assert_eq!(&bytes[..4], b"PSRH");
+            let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+            assert_eq!(decoded.file_fields().unwrap().go_version, Some(version));
+            assert_eq!(decoded, record);
+        }
+        let exact = extension_fixture(super::SourceLanguage::Go, None, true, true, false)
+            .with_go_version(Some(GoVersion::Go126))
+            .unwrap();
+        let fields = exact.file_fields().unwrap();
+        assert_eq!(fields.go_version, Some(GoVersion::Go126));
+        assert!(fields.declarations.iter().any(|d| matches!(
+            d.binding_identity(),
+            backend_compile::SourceBindingIdentity::Exact(_)
+        )));
+        let bytes = encode_source_record(&exact);
+        assert_eq!(&bytes[..4], b"PSRH");
+        assert_eq!(ProductSourceRelation::decode_value(&bytes).unwrap(), exact);
+
+        let declarations = (0..2048)
+            .map(|index| wide_declaration_at_path(index, "main.go"))
+            .collect::<Vec<_>>();
+        let compact = ProductSourceRecord::go_profiled_file_within_row_capacity(
+            [3; 32],
+            "main.go",
+            [4; 32],
+            [5; 32],
+            Arc::<[SourceDeclaration]>::from(declarations),
+            Some(fixture_source_identity()),
+            GoVersion::Go125,
+        )
+        .unwrap();
+        assert!(compact.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        assert_eq!(
+            compact.file_fields().unwrap().go_version,
+            Some(GoVersion::Go125)
+        );
+        assert_eq!(
+            ProductSourceRelation::decode_value(&encode_source_record(&compact)).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
+    fn go_profile_rejects_cross_language_and_unknown_discriminants() {
+        use backend_semantic::vocabulary::GoVersion;
+        let python = ProductSourceRecord::file(
+            [3; 32],
+            "main.py",
+            super::SourceLanguage::Python,
+            [1; 32],
+            [2; 32],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(python.with_go_version(Some(GoVersion::Go126)).is_err());
+        let record = ProductSourceRecord::go_profiled_file_within_row_capacity(
+            [3; 32],
+            "main.go",
+            [4; 32],
+            [5; 32],
+            Vec::new(),
+            None,
+            GoVersion::Go126,
+        )
+        .unwrap();
+        let mut bytes = encode_source_record(&record);
+        let profile_offset = 4 + 1 + 32 + 4 + "main.go".len() + 1 + 32 + 32;
+        bytes[profile_offset] = 5;
+        assert!(ProductSourceRelation::decode_value(&bytes).is_err());
     }
 
     fn extension_fixture(

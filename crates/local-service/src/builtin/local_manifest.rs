@@ -1080,6 +1080,15 @@ impl std::fmt::Display for GoReleaseError<'_> {
 }
 
 fn go_release(text: &str) -> Result<GoVersion, GoReleaseError<'_>> {
+    Ok(go_declared_release(text)?.unwrap_or(GoVersion::Go125))
+}
+
+pub(super) fn captured_go_language_profile(bytes: &[u8]) -> Result<Option<GoVersion>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "go.mod is not UTF-8".to_owned())?;
+    go_declared_release(text).map_err(|error| error.to_string())
+}
+
+fn go_declared_release(text: &str) -> Result<Option<GoVersion>, GoReleaseError<'_>> {
     let mut release = None;
     for raw in text.lines() {
         let line = strip_line_comment(raw).trim();
@@ -1097,7 +1106,7 @@ fn go_release(text: &str) -> Result<GoVersion, GoReleaseError<'_>> {
     }
     // Preserve the established fallback for manifests without a go directive.
     // A toolchain directive selects an executable, not a language profile.
-    Ok(release.unwrap_or(GoVersion::Go125))
+    Ok(release)
 }
 
 fn classify_go(token: &str) -> Result<GoVersion, GoReleaseError<'_>> {
