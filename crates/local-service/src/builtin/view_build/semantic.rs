@@ -12,8 +12,8 @@ use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
-    profile_source_paths, projected_source_capacity,
+    StructuralProjectionPlan, profile_source_identities, profile_source_paths,
+    projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -1088,12 +1088,22 @@ pub(super) struct SemanticRowSink<'a> {
 pub(crate) struct StructuralSites<'a> {
     sources: &'a IndexedSources,
     files: BTreeMap<([u8; 32], String), &'a super::super::ProductSourceRecord>,
+    cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> StructuralSites<'a> {
     pub(super) fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
+        Self::of_controlled(sources, None)
+    }
+
+    pub(super) fn of_controlled(
+        sources: &'a IndexedSources,
+        cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        super::super::check_search_preparation(cancelled, "structural-sites")?;
         let mut files = BTreeMap::new();
         for (_, record) in &sources.files {
+            super::super::check_search_preparation(cancelled, "structural-sites-file")?;
             let file = record
                 .file_fields()
                 .ok_or_else(|| BuiltinModelError("expected a source file record".to_owned()))?;
@@ -1106,7 +1116,11 @@ impl<'a> StructuralSites<'a> {
                 ));
             }
         }
-        Ok(Self { sources, files })
+        Ok(Self {
+            sources,
+            files,
+            cancelled,
+        })
     }
 
     fn declarations(
@@ -1117,7 +1131,11 @@ impl<'a> StructuralSites<'a> {
         let Some(record) = self.files.get(&(*project, path.to_owned())) else {
             return Ok(Vec::new());
         };
-        complete_declarations_for_file(self.sources, record)
+        super::structural::complete_declarations_for_file_controlled(
+            self.sources,
+            record,
+            self.cancelled,
+        )
     }
 
     /// Returns the declarations of a file that provably hold the same bytes a
@@ -1201,10 +1219,25 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
     session: &DocumentationSession<'_, Reader>,
     declarations: &[&'site backend_compile::SourceDeclaration],
 ) -> Result<EntityKinds<'site>, BuiltinModelError> {
+    entity_kinds_controlled(profile, reader, session, declarations, None)
+}
+
+pub(super) fn entity_kinds_controlled<
+    'site,
+    Reader: backend_semantic::ir::SemanticReader + ?Sized,
+>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    reader: &Reader,
+    session: &DocumentationSession<'_, Reader>,
+    declarations: &[&'site backend_compile::SourceDeclaration],
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<EntityKinds<'site>, BuiltinModelError> {
+    super::super::check_search_preparation(cancelled, "semantic-kinds")?;
     let language = backend_semantic::vocabulary::Language::from(profile);
     let mut derived = BTreeMap::new();
     let mut pairing = Vec::new();
     for entity in session.publication_entities() {
+        super::super::check_search_preparation(cancelled, "semantic-kind-entity")?;
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let identity = entity.entity.version.identity();
@@ -1241,6 +1274,7 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
             start: entity.entity.source.map(|span| span.start()),
         });
     }
+    super::super::check_search_preparation(cancelled, "semantic-kind-exact-sites")?;
     let exact = match reader.image_facts().provenance {
         backend_semantic::ir::ImageProvenance::Captured { scope, .. } => {
             match reader
@@ -1259,49 +1293,70 @@ pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader +
         }
         _ => BTreeMap::new(),
     };
+    super::super::check_search_preparation(cancelled, "semantic-kind-pairing")?;
     let sites = if matches!(
         language,
         backend_semantic::vocabulary::Language::Go
             | backend_semantic::vocabulary::Language::TypeScript
     ) {
-        let written = declarations
-            .iter()
-            .filter_map(|site| match site.binding_identity() {
-                backend_compile::SourceBindingIdentity::Exact(capture) => {
-                    Some((capture.binding(), *site))
-                }
-                _ => None,
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut sites = exact
-            .iter()
-            .filter_map(|(identity, binding)| written.get(binding).map(|site| (*identity, *site)))
-            .collect::<BTreeMap<_, _>>();
+        let mut written = BTreeMap::new();
+        for site in declarations {
+            super::super::check_search_preparation(cancelled, "semantic-kind-written-site")?;
+            if let backend_compile::SourceBindingIdentity::Exact(capture) = site.binding_identity()
+            {
+                written.insert(capture.binding(), *site);
+            }
+        }
+        let mut sites = BTreeMap::new();
+        for (identity, binding) in &exact {
+            super::super::check_search_preparation(cancelled, "semantic-kind-exact-pair")?;
+            if let Some(site) = written.get(binding) {
+                sites.insert(*identity, *site);
+            }
+        }
         if language == backend_semantic::vocabulary::Language::TypeScript {
             // Presentation pairing is not declaration identity. Preserve its
             // existing metadata fallback where extent proof is unavailable,
             // without allowing a fallback to consume an exactly owned site.
-            let unresolved = pairing
-                .into_iter()
-                .filter(|entity| !exact.contains_key(&entity.identity))
-                .collect::<Vec<_>>();
-            let bound = exact.values().copied().collect::<BTreeSet<_>>();
-            let remaining = declarations
-                .iter()
-                .copied()
-                .filter(|site| {
-                    !matches!(site.binding_identity(),
+            let mut unresolved = Vec::new();
+            for entity in pairing {
+                super::super::check_search_preparation(cancelled, "semantic-kind-unresolved")?;
+                if !exact.contains_key(&entity.identity) {
+                    unresolved.push(entity);
+                }
+            }
+            let mut bound = BTreeSet::new();
+            for binding in exact.values() {
+                super::super::check_search_preparation(cancelled, "semantic-kind-bound")?;
+                bound.insert(*binding);
+            }
+            let mut remaining = Vec::new();
+            for site in declarations.iter().copied() {
+                super::super::check_search_preparation(cancelled, "semantic-kind-remaining")?;
+                if !matches!(site.binding_identity(),
                     backend_compile::SourceBindingIdentity::Exact(capture)
                         if bound.contains(&capture.binding()))
-                })
-                .collect::<Vec<_>>();
-            sites.extend(kinds::pair_sites(language, &unresolved, &remaining));
+                {
+                    remaining.push(site);
+                }
+            }
+            // The existing image-bounded pairing call is atomic; its result is
+            // disposable until the next checkpoint admits this selected lifetime.
+            for (identity, site) in kinds::pair_sites(language, &unresolved, &remaining) {
+                super::super::check_search_preparation(cancelled, "semantic-kind-paired-site")?;
+                sites.insert(identity, site);
+            }
         }
         sites
     } else {
         kinds::pair_sites(language, &pairing, declarations)
     };
-    Ok(EntityKinds { derived, sites, exact })
+    super::super::check_search_preparation(cancelled, "semantic-kinds-complete")?;
+    Ok(EntityKinds {
+        derived,
+        sites,
+        exact,
+    })
 }
 
 pub(super) struct SemanticRowContent {
@@ -1979,5 +2034,49 @@ mod tests {
             "package seek {range_median} ns was not 8× cheaper than a full publication walk \
              {page_median} ns"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_cancellation_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[test]
+    fn cancelled_entity_kind_walk_preserves_the_complete_image_classification() -> Result<(), String>
+    {
+        let encoded = super::super::image_reopen::fixture_semantic_image("src/worker.rs")?;
+        let view = SemanticImageView::reopen(&encoded).map_err(|error| error.to_string())?;
+        let session = DocumentationSession::new(&view);
+        let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+            backend_semantic::vocabulary::RustEdition::Rust2024,
+        );
+        let baseline =
+            entity_kinds(profile, &view, &session, &[]).map_err(|error| error.to_string())?;
+        assert_eq!(baseline.derived.len(), 4);
+        let token = Arc::new(AtomicBool::new(true));
+        assert!(entity_kinds_controlled(profile, &view, &session, &[], Some(&token)).is_err());
+        token.store(false, Ordering::Release);
+        let cancel = crate::builtin::cancel_search_preparation_after(
+            "semantic-kind-entity",
+            2,
+            Arc::clone(&token),
+        );
+        let error = entity_kinds_controlled(profile, &view, &session, &[], Some(&token))
+            .err()
+            .ok_or("cancelled entity walk returned partial classification")?;
+        assert!(error.to_string().contains("search preparation cancelled"));
+        assert!(token.load(Ordering::Acquire));
+        drop(cancel);
+        token.store(false, Ordering::Release);
+        let resumed = entity_kinds_controlled(profile, &view, &session, &[], Some(&token))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(resumed.derived, baseline.derived);
+        assert_eq!(resumed.exact, baseline.exact);
+        assert_eq!(resumed.sites, baseline.sites);
+        Ok(())
     }
 }

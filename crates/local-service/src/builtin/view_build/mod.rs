@@ -94,7 +94,7 @@ pub(crate) use identity::query_semantic_id;
 #[cfg(test)]
 pub(crate) use identity::semantic_coordinate;
 pub(super) use identity::{external_semantic_symbol, semantic_symbol};
-pub(super) use query::semantic_query_corpus;
+pub(super) use query::{semantic_query_corpus, semantic_query_corpus_controlled};
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(in crate::builtin) use source_availability::{

@@ -182,17 +182,23 @@ impl SearchLane {
                     let corpus = projection.admit_corpus(
                         snapshot.root(),
                         || {
-                            let read = || super::super::read_indexed_sources(&snapshot);
+                            let read = || {
+                                super::super::read_indexed_sources_controlled(
+                                    &snapshot,
+                                    Some(&control),
+                                )
+                            };
                             diagnostic::measure(source_phase, read)
                         },
                         |sources| {
                             let admit = || {
-                                super::super::view_build::semantic_query_corpus(
+                                super::super::view_build::semantic_query_corpus_controlled(
                                     &snapshot,
                                     &capture.compiler,
                                     &sources,
                                     &mut generations,
                                     &mut image_rows,
+                                    Some(&control),
                                 )
                             };
                             diagnostic::measure(corpus_phase, admit)
@@ -203,7 +209,13 @@ impl SearchLane {
                             Some(diagnostic::Generations::capture(&generations));
                         observation.corpus = corpus.as_ref().ok().map(diagnostic::Corpus::capture);
                     }
-                    let corpus = corpus.map_err(Failure::Capture)?;
+                    let corpus = corpus.map_err(|error| {
+                        if control.load(Ordering::Acquire) {
+                            Failure::Cancelled
+                        } else {
+                            Failure::Capture(error)
+                        }
+                    })?;
                     if control.load(Ordering::Acquire) {
                         return Err(Failure::Cancelled);
                     }

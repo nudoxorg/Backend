@@ -6,7 +6,7 @@
 //! so provider availability and recall never become coverage authority.
 
 mod candle_acquisition;
-mod controlled_sort;
+pub(in crate::builtin) mod controlled_sort;
 mod embedding_cache;
 mod local;
 mod local_preset;
