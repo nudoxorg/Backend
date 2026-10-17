@@ -33,8 +33,8 @@ use backend_semantic::ir::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
-fn package_manifest_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
-    super::super::local_manifest::indexed_package_manifest_name(label, workspace)
+fn package_row_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
+    super::super::local_manifest::indexed_package_row_name(label, workspace)
 }
 
 pub(crate) struct ProjectedRows {
@@ -161,7 +161,7 @@ impl<'a> SourceRowProjection<'a> {
                 initial.basis(),
                 &project.label,
             );
-            rows.push(match package_manifest_name(&project.label, workspace) {
+            rows.push(match package_row_name(&project.label, workspace) {
                 Ok(name) => row.with_signature(name),
                 Err(error) => {
                     if project.label.starts_with("pkg:")
