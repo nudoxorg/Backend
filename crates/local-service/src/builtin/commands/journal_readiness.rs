@@ -493,7 +493,7 @@ impl JournalReadiness {
             match receipt.try_recv() {
                 Ok(()) => break,
                 Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected(_)) => panic!("reader hold disconnected"),
+                Err(mpsc::TryRecvError::Disconnected) => panic!("reader hold disconnected"),
             }
             assert!(std::time::Instant::now() < deadline, "reader is held");
             std::thread::yield_now();
