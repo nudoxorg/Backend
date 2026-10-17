@@ -3672,6 +3672,83 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_pass_cancellation_never_admits_a_checked_project() {
+        use std::sync::Mutex;
+        use std::sync::atomic::Ordering;
+        use tsz_common::{ProjectExecutionEvent, ProjectExecutionPhase as Phase, ProjectExecutionTransition as Transition};
+
+        struct StopInPhase {
+            phase: Phase,
+            armed: AtomicBool,
+            emitted: AtomicBool,
+            events: Mutex<Vec<(Phase, Transition)>>,
+        }
+        impl ExecutionCheckpoint for StopInPhase {
+            fn checkpoint(&self, _work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if self.armed.load(Ordering::Acquire) && !self.emitted.swap(true, Ordering::AcqRel) {
+                    return Err(tsz_common::ProjectExecutionStop::Cancelled);
+                }
+                Ok(())
+            }
+            fn observe(&self, event: ProjectExecutionEvent<'_>) {
+                self.events.lock().unwrap().push((event.phase, event.transition));
+                if event.phase == self.phase && event.transition == Transition::Entered {
+                    self.armed.store(true, Ordering::Release);
+                }
+            }
+        }
+        let source = "export interface Base { value: number; } export interface Child extends Base { extra: string; } export const bad: string = 1;";
+        for phase in [Phase::SourcePreparation, Phase::SourceStatements, Phase::SourcePostchecks] {
+            let stop = StopInPhase {
+                phase,
+                armed: AtomicBool::new(false),
+                emitted: AtomicBool::new(false),
+                events: Mutex::new(Vec::new()),
+            };
+            let mut authority = TszProjectAuthority::new();
+            authority.update(vec![input("src/value.ts", "export const prior = 1;")], options(), &[]).unwrap();
+            let result = authority.update_with_checker_execution(
+                vec![input("src/value.ts", source)], options(), &[],
+                TszProjectCheckerExecution { checkpoint: &stop, workers: std::num::NonZeroUsize::new(1).unwrap() },
+            );
+            assert!(matches!(result, Err(TszAuthorityError::ProjectCheck(
+                tsz::parallel::ProjectProgramCheckError::ExecutionStopped(tsz_common::ProjectExecutionStop::Cancelled)
+            ))), "actual source phase {phase:?}: {result:?}");
+            assert!(stop.emitted.load(Ordering::Acquire));
+            assert_eq!(stop.checkpoint(0), Ok(()), "the source stops only once");
+            assert!(authority.project().is_none(), "neither changed partial output nor the prior checked project is admissible");
+            let events = stop.events.lock().unwrap();
+            assert!(events.contains(&(phase, Transition::Unwound)), "stop is observed inside {phase:?}: {events:?}");
+            assert!(!events.contains(&(phase, Transition::Returned)), "stopped source phase must not finish");
+            if phase == Phase::SourcePreparation {
+                assert!(!events.iter().any(|(phase, _)| *phase == Phase::SourceStatements));
+            }
+            if phase != Phase::SourcePostchecks {
+                assert!(!events.iter().any(|(phase, _)| *phase == Phase::SourcePostchecks));
+            }
+        }
+
+        // The exact same real project still checks and exposes typed query authority
+        // without cancellation; boundary polls must not erase genuine diagnostics.
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled, 1_000_000);
+        let mut authority = TszProjectAuthority::new();
+        authority.update_with_checker_execution(
+            vec![input("src/value.ts", source)], options(), &[],
+            TszProjectCheckerExecution { checkpoint: &budget, workers: std::num::NonZeroUsize::new(1).unwrap() },
+        ).unwrap();
+        let project = authority.project().unwrap();
+        assert!(project.check_result().file_results.iter().flat_map(|file| &file.diagnostics).any(|diagnostic| diagnostic.code == 2322));
+        let session = project.checked_query_session(&budget).unwrap();
+        let file = session.file_index("src/value.ts").unwrap();
+        let child = session.with_file_checker_and_types(file, |checker, binder, _file, _types| {
+            checker.get_type_of_symbol(binder.file_locals.get("Child").unwrap())
+        }).unwrap();
+        assert_ne!(child, TszTypeId::UNKNOWN);
+    }
+
     fn hot_file_fixture() -> (Vec<TszFileInput>, TszProjectOptions) {
         let hot = (0..20_000)
             .map(|n| format!("export const v{n}: number = {n};"))
