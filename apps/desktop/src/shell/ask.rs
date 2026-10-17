@@ -667,7 +667,10 @@ impl Ask {
         match admit_resource(&results, root, serving) {
             ResourceAdmission::Current(page) if self.draft.query().is_some_and(|query| page.query.as_ref() != query.text.as_ref()) =>
                 (Some("Search replied for a different query; links unavailable.".into()), None),
-            ResourceAdmission::Current(page) => (None, page.coverage.semantic_search_status()),
+            ResourceAdmission::Current(page) => (
+                page.published_names_status().map(Into::into),
+                page.coverage.semantic_search_status(),
+            ),
             ResourceAdmission::Retained { reason, .. } => {
                 (Some(format!("Earlier search results · {} · links unavailable", read_hold_words(reason)).into()), None)
             }
