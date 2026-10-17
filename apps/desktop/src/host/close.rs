@@ -84,6 +84,7 @@ impl GracefulClose {
         cx.set_quit_mode(gpui::QuitMode::Explicit);
         let quit = close.downgrade();
         cx.on_action(move |_: &super::menus::Quit, cx| {
+            crate::runtime::trace::mark("close.quit_action", "public Quit action received");
             let quit = quit.clone();
             cx.defer(move |cx| {
                 let _ = quit.update(cx, |close, cx| close.request(CloseTarget::Application, cx));
@@ -145,6 +146,7 @@ impl GracefulClose {
     }
 
     fn request(&mut self, target: CloseTarget, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.request", format_args!("target {target:?}; phase {:?}", self.phase));
         if self.phase == Phase::Committed {
             return;
         }
@@ -189,6 +191,7 @@ impl GracefulClose {
         let checkpoint = match checkpoint {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
+                crate::runtime::trace::mark("close.save_refused", &error.message);
                 self.phase = Phase::NeedsDecision(attempt, error.message.to_string());
                 cx.notify();
                 return;
@@ -205,6 +208,7 @@ impl GracefulClose {
                 .is_none_or(|pages| pages.captured_root() == basis)
         );
         self.phase = Phase::Saving(attempt);
+        crate::runtime::trace::mark("close.saving", format_args!("attempt {}", attempt.0));
         cx.notify();
         let timer = cx.background_executor().timer(self.deadline);
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -235,8 +239,14 @@ impl GracefulClose {
                 if close.phase != Phase::Saving(attempt) { return; }
                 close.task = None;
                 match result {
-                    Ok(()) => close.begin_finish(attempt, cx),
-                    Err(error) => { close.phase = Phase::NeedsDecision(attempt, error); cx.notify(); }
+                    Ok(()) => {
+                        crate::runtime::trace::mark("close.saved", format_args!("attempt {}", attempt.0));
+                        close.begin_finish(attempt, cx);
+                    },
+                    Err(error) => {
+                        crate::runtime::trace::mark("close.save_failed", &error);
+                        close.phase = Phase::NeedsDecision(attempt, error); cx.notify();
+                    }
                 }
             });
             drop(retained);
@@ -306,6 +316,7 @@ impl GracefulClose {
     /// The save decision is now irreversible. Transfer only Send join handles;
     /// window/root Drop cannot synchronously wait for these workers any more.
     fn begin_finish(&mut self, attempt: Attempt, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.stop_admitted", format_args!("attempt {}", attempt.0));
         let finish = self
             .root
             .update(cx, |root, cx| root.commit_close(cx))
@@ -337,6 +348,7 @@ impl GracefulClose {
             return;
         };
         self.phase = Phase::Finishing(attempt);
+        crate::runtime::trace::mark("close.finishing_workers", format_args!("attempt {}", attempt.0));
         cx.notify();
         let timer = cx.background_executor().timer(self.deadline);
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -368,6 +380,7 @@ impl GracefulClose {
                     // The Send-only join remains tracked by this live window.
                     // Retry watches that same job; it never creates another.
                     close.phase = Phase::WorkerBlocked(attempt);
+                    crate::runtime::trace::mark("close.workers_blocked", format_args!("attempt {}", attempt.0));
                     cx.notify();
                 }
             });
@@ -375,6 +388,7 @@ impl GracefulClose {
     }
 
     fn finalize(&mut self, cx: &mut Context<Self>) {
+        crate::runtime::trace::mark("close.committed", format_args!("target {:?}", self.target));
         self.phase = Phase::Committed;
         self.approved.set(true);
         cx.notify();
