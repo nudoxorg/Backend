@@ -829,6 +829,9 @@ fn foreign_native_source_retarget(
 /// Resolves a native TSZ endpoint by its complete program/source/extent/kind
 /// proof. This is shared by row, document, graph, references and query
 /// projection; npm spellings and same-name declarations are not candidates.
+/// `published` comes from the same `publication_entities` inventory that the
+/// successful row/query projection emits in full. Duplicate/capacity errors
+/// abort that projection; they never admit a view with omitted owned rows.
 pub(crate) fn join_native_typescript_target(
     image: &SemanticImageView<'_>,
     external: ExternalId,
@@ -2096,7 +2099,10 @@ mod tsz_source_coordinate_tests {
         let package = backend_engine::package_key("fixture");
         let project = IndexedProject { package, label: "fixture".to_owned(), files: Arc::from([]) };
         let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
-        for (admitted_source, selected) in [(source_id, true), ([99; 32], true), (source_id, false)] {
+        for (admitted_source, selected, target_present) in [
+            (source_id, true, true), ([99; 32], true, true),
+            (source_id, false, true), (source_id, true, false),
+        ] {
             let (caller_bytes, owner) = source_image("src/app.controller.ts", caller, 9,
                 Some(("src/app.service.ts".to_owned(), start, end, start, program, admitted_source, at, at + 8)))?;
             let target_image = SemanticImageView::reopen(&target_bytes).map_err(|error| error.to_string())?;
@@ -2122,12 +2128,18 @@ mod tsz_source_coordinate_tests {
             rows[0].document = vec![Fragment::Link { label: "authored use".to_owned(), target: endpoint }].into_boxed_slice();
             let mut aliases = NativeTargetAliases::default();
             aliases.record_image(package, digest, &caller_image, &index, &published).map_err(|error| error.to_string())?;
+            // Defensive projection boundary: even a correctly recorded
+            // selected alias cannot remove an endpoint if no real target row
+            // survived admission. Record first, then remove only that row.
+            if !target_present { rows.retain(|row| row.id != RowId::Symbol(owned)); }
             aliases.apply(&mut rows);
-            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(endpoint)), !succeeds,
+            let admitted = succeeds && target_present;
+            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(endpoint)), !admitted,
                 "only an exact selected endpoint becomes the existing declaration row");
-            assert!(rows.iter().any(|row| row.id == RowId::Symbol(owned)), "authored target is never filtered");
+            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(owned)), target_present,
+                "the arrangement never filters an authored target");
             assert!(matches!(rows[0].document[0], Fragment::Link { target, .. }
-                if target == if succeeds { owned } else { endpoint }), "document links share the exact same key arrangement");
+                if target == if admitted { owned } else { endpoint }), "document links share the exact same key arrangement");
         }
         Ok(())
     }

@@ -304,6 +304,9 @@ fn append_compiler_query_facts(
                             }
                         }
                         LinkTarget::External(external) => {
+                            // `published` is the same selected entity inventory
+                            // this loop emits in full below. A successful corpus
+                            // cannot omit the joined declaration's fact.
                             if let Some(index) = callable_index
                                 && let Some(target) = join_native_typescript_target(image, external, index, &published)?
                             {
