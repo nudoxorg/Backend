@@ -130,6 +130,7 @@ impl CheckerState<'_> {
     }
 
     fn prepare_source_file_for_checking(&mut self, root_idx: NodeIndex) -> Option<NodeIndex> {
+        self.ctx.types.execution_checkpoint(0).ok()?;
         // Reset per-file flags
         self.ctx.is_in_ambient_declaration_file = false;
 
@@ -156,6 +157,8 @@ impl CheckerState<'_> {
             self.register_function_def_ids_early();
         }
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         // Phase 1 DefId-first: warm local caches with stable DefIds.
         //
         // When the checker received a pre-populated shared DefinitionStore
@@ -173,6 +176,8 @@ impl CheckerState<'_> {
             self.ctx.pre_populate_def_ids_from_lib_binders();
         }
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         // Phase 1c: resolve cross-batch heritage. Now that all DefIds from both
         // the primary binder and lib binders are registered, resolve heritage_names
         // (e.g., `class MyError extends Error`) to DefId-level extends/implements.
@@ -182,15 +187,21 @@ impl CheckerState<'_> {
             self.ctx.resolve_cross_batch_heritage();
         }
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         // Seed the well-known-symbol name registry from the lib `Symbol`
         // members before the environment build eagerly evaluates (and caches)
         // `keyof`/indexed-access type aliases over well-known-symbol keys.
         self.seed_well_known_symbol_names();
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         // Build TypeEnvironment with all type-defining symbols.
         // This populates both ctx.type_env and ctx.type_environment in-place
         // via get_type_of_symbol -> compute_type_of_symbol -> register_def_in_envs.
         self.build_type_environment();
+
+        self.ctx.types.execution_checkpoint(0).ok()?;
 
         // Wire up DefinitionStore so TypeEnvironment::get_def_kind can fall
         // back to it when the local def_kinds map is incomplete.
@@ -228,6 +239,8 @@ impl CheckerState<'_> {
             "flow-analyzer env writes must be fully reconciled at file preparation"
         );
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         // Register boxed types (String, Number, Boolean, etc.) from lib.d.ts
         // This enables primitive property access to use lib definitions instead of hardcoded lists
         // IMPORTANT: Must run AFTER build_type_environment() because it replaces the
@@ -235,6 +248,8 @@ impl CheckerState<'_> {
         if self.needs_boxed_type_registration() {
             self.register_boxed_types();
         }
+
+        self.ctx.types.execution_checkpoint(0).ok()?;
 
         // Type setup can spend the per-file resolution/application budget or
         // trip the stack/depth breaker while probing large lib-facing types.
@@ -263,6 +278,8 @@ impl CheckerState<'_> {
             self.ctx.is_in_ambient_declaration_file = true;
         }
 
+        self.ctx.types.execution_checkpoint(0).ok()?;
+
         Some(root_idx)
     }
 
@@ -273,6 +290,9 @@ impl CheckerState<'_> {
     /// other files evaluate applications of these definitions.
     fn publish_heritage_interface_bodies(&mut self, statements: &[NodeIndex]) {
         for &stmt_idx in statements {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             let Some(stmt_node) = self.ctx.arena.get(stmt_idx) else {
                 continue;
             };
@@ -506,6 +526,19 @@ impl CheckerState<'_> {
     /// This is the primary entry point for type checking after parsing and binding.
     /// It traverses the entire AST and performs all type checking operations.
     pub fn check_source_file(&mut self, root_idx: NodeIndex) {
+        // A stop can be latched inside a pass that returns a semantic sentinel.
+        // Do not start the next pass or report this source phase as returned.
+        macro_rules! source_pass {
+            ($pass:expr) => {
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return;
+                }
+                $pass;
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return;
+                }
+            };
+        }
         let _span = span!(
             Level::INFO,
             "check_source_file",
@@ -513,7 +546,7 @@ impl CheckerState<'_> {
             file = %self.ctx.file_name
         )
         .entered();
-        // Observe only existing boundaries: no extra checkpoint/type/cache work.
+        // Observation is separate from the stop polls around each source pass.
         let types = self.ctx.types;
         let file_name = self.ctx.file_name.clone();
         let observed_file = Some(tsz_common::ProjectExecutionFile {
@@ -554,7 +587,7 @@ impl CheckerState<'_> {
         // order-independently to every dynamic-import `assert` occurrence,
         // regardless of whether it appears before or after the file's
         // type-position sibling in source order.
-        self.prescan_type_position_deprecated_import_assert(&sf.statements.nodes);
+        source_pass!(self.prescan_type_position_deprecated_import_assert(&sf.statements.nodes));
 
         // Resolve (and publish to the shared `DefinitionStore`, per the
         // INTERFACE-branch publication gate) every heritage-bearing interface
@@ -567,7 +600,7 @@ impl CheckerState<'_> {
         // the declaring file's own statements incidentally referenced the
         // interface, making member resolution order-dependent.
         if !self.ctx.is_declaration_file() {
-            self.publish_heritage_interface_bodies(&sf.statements.nodes);
+            source_pass!(self.publish_heritage_interface_bodies(&sf.statements.nodes));
         }
 
         // Type-environment prewarming may construct large alias bodies before
@@ -619,7 +652,7 @@ impl CheckerState<'_> {
         // TS1046: In .d.ts files, top-level value declarations must start
         // with 'declare' or 'export'. Report the first violation only.
         if is_dts && !suppress_grammar {
-            self.check_dts_top_level_declare_or_export(&sf.statements.nodes);
+            source_pass!(self.check_dts_top_level_declare_or_export(&sf.statements.nodes));
         }
 
         // Grammar: TS1330/1331/1332/1333/1334/1335 (+ TS1005) for misplaced
@@ -633,14 +666,14 @@ impl CheckerState<'_> {
         // tsc 6.0 stops compilation at the deprecation and never reaches the
         // per-node grammar checks, so emitting these here would diverge.
         if !suppress_grammar && !self.ctx.capabilities.has_deprecation_diagnostics {
-            self.check_unique_symbol_grammar();
+            source_pass!(self.check_unique_symbol_grammar());
         }
 
         // Grammar: TS1314/TS1315/TS1316 for `export as namespace N;`. Like the
         // `unique symbol` sweep above this is position-independent, because a
         // nested occurrence never reaches the top-level statement list below.
         if !suppress_grammar {
-            self.check_namespace_export_declaration_grammar(&sf.statements.nodes, is_dts);
+            source_pass!(self.check_namespace_export_declaration_grammar(&sf.statements.nodes, is_dts));
         }
 
         let mut seen_dts_ambient_violation = false;
@@ -681,6 +714,10 @@ impl CheckerState<'_> {
         self.ctx.is_unreachable = prev_unreachable;
         self.ctx.has_reported_unreachable = prev_reported;
 
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            return;
+        }
+
         statements_span.returned();
         let post_span = tsz_common::ProjectExecutionSpan::with_observer(
             &observe,
@@ -688,7 +725,7 @@ impl CheckerState<'_> {
             observed_file,
         );
         if self.is_js_file() && self.ctx.should_resolve_jsdoc() {
-            self.recheck_checked_js_import_diagnostics(&sf.statements.nodes);
+            source_pass!(self.recheck_checked_js_import_diagnostics(&sf.statements.nodes));
         }
 
         // Re-check closures that deferred TS7006 during type env building.
@@ -696,42 +733,42 @@ impl CheckerState<'_> {
         // was false. Now that all statements have been checked (giving closures a
         // chance to be re-processed with contextual types), any remaining unchecked
         // closures truly have no contextual type and need TS7006 emitted.
-        self.recheck_deferred_implicit_any_closures();
+        source_pass!(self.recheck_deferred_implicit_any_closures());
 
-        self.check_isolated_declarations(&sf.statements.nodes);
-        self.check_isolated_decl_class_expressions(&sf.statements.nodes);
-        self.check_isolated_decl_augmentations(&sf.statements.nodes);
-        self.check_reserved_await_identifier_in_module(root_idx);
+        source_pass!(self.check_isolated_declarations(&sf.statements.nodes));
+        source_pass!(self.check_isolated_decl_class_expressions(&sf.statements.nodes));
+        source_pass!(self.check_isolated_decl_augmentations(&sf.statements.nodes));
+        source_pass!(self.check_reserved_await_identifier_in_module(root_idx));
         // Check for function overload implementations (2389, 2391)
-        self.check_function_implementations(&sf.statements.nodes);
+        source_pass!(self.check_function_implementations(&sf.statements.nodes));
 
         // Check for export assignment with other exports (2309)
-        self.check_export_assignment(&sf.statements.nodes);
+        source_pass!(self.check_export_assignment(&sf.statements.nodes));
         // TS7: JS `module.exports = X` mixed with sibling property exports (2309)
-        self.check_js_commonjs_export_assignment_conflict();
-        self.check_import_alias_duplicates(&sf.statements.nodes);
+        source_pass!(self.check_js_commonjs_export_assignment_conflict());
+        source_pass!(self.check_import_alias_duplicates(&sf.statements.nodes));
         // Function-like bodies and class static blocks are declaration
         // containers with no statement-list call site of their own; sweep them
         // from here so `function f() { import a = ...; import a = ...; }` gets
         // its TS2300 alongside the two TS1232s.
-        self.check_import_alias_duplicates_in_nested_containers();
-        self.check_import_declaration_duplicate_bindings(&sf.statements.nodes);
+        source_pass!(self.check_import_alias_duplicates_in_nested_containers());
+        source_pass!(self.check_import_declaration_duplicate_bindings(&sf.statements.nodes));
 
         // TS4094: exported `export default <call-returning-anonymous-class>` patterns.
         if self.ctx.emit_declarations() && !self.ctx.is_declaration_file() {
-            self.check_ts4094_in_export_assignments(&sf.statements.nodes);
+            source_pass!(self.check_ts4094_in_export_assignments(&sf.statements.nodes));
         }
 
         // Check for wildcard re-export collisions (2308)
-        self.check_wildcard_reexport_collisions(&sf.statements.nodes);
+        source_pass!(self.check_wildcard_reexport_collisions(&sf.statements.nodes));
 
         // Check for circular import aliases (2303)
-        self.check_circular_import_aliases();
+        source_pass!(self.check_circular_import_aliases());
 
         // Check for circular CommonJS export aliases (2303)
         // e.g., `exports.blah = exports.someProp` in JS files
         if self.ctx.is_js_file() {
-            self.check_commonjs_circular_aliases(&sf.statements.nodes);
+            source_pass!(self.check_commonjs_circular_aliases(&sf.statements.nodes));
         }
 
         // Check for cross-file circular type aliases (TS2456).
@@ -741,8 +778,8 @@ impl CheckerState<'_> {
         // compute_type_of_symbol handles same-file cycles, but cross-file
         // cycles can only be detected post-hoc because the DefinitionStore
         // bodies aren't available during the initial build_type_environment pass.
-        self.check_cross_file_circular_type_aliases();
-        self.recheck_static_member_class_type_param_refs_in_source_file(&sf.statements.nodes);
+        source_pass!(self.check_cross_file_circular_type_aliases());
+        source_pass!(self.recheck_static_member_class_type_param_refs_in_source_file(&sf.statements.nodes));
 
         // Check for TS1148: module none errors
         if matches!(
@@ -751,84 +788,84 @@ impl CheckerState<'_> {
         ) && !is_dts
             && !self.ctx.compiler_options.target.supports_es2015()
         {
-            self.check_module_none_statements(&sf.statements.nodes);
+            source_pass!(self.check_module_none_statements(&sf.statements.nodes));
         }
 
         // Check for duplicate identifiers (2300)
-        self.check_duplicate_identifiers();
-        self.check_lib_merged_interface_duplicate_index_signatures();
+        source_pass!(self.check_duplicate_identifiers());
+        source_pass!(self.check_lib_merged_interface_duplicate_index_signatures());
 
         // Check for constructor parameter property vs explicit property conflicts (2300/2687)
-        self.check_constructor_parameter_property_conflicts();
+        source_pass!(self.check_constructor_parameter_property_conflicts());
 
         // Check for built-in global identifier conflicts (2397)
-        self.check_built_in_global_identifier_conflicts();
+        source_pass!(self.check_built_in_global_identifier_conflicts());
 
         // Check for missing global types (2318)
         // Emits errors at file start for essential types when libs are not loaded
-        self.check_missing_global_types();
+        source_pass!(self.check_missing_global_types());
 
         // Check triple-slash reference directives (TS6053).
         // tsc suppresses TS6053 when the file has syntax errors (TS1011),
         // so only check when there are no parse errors.
         if !self.ctx.compiler_options.no_resolve && !self.ctx.has_parse_errors {
-            self.check_triple_slash_references(&sf.file_name, &sf.text);
+            source_pass!(self.check_triple_slash_references(&sf.file_name, &sf.text));
         }
 
         // Check for duplicate AMD module name assignments (TS2458)
-        self.check_amd_module_names(&sf.text);
+        source_pass!(self.check_amd_module_names(&sf.text));
 
         // Check for unused declarations (TS6133/TS6196)
         if self.ctx.no_unused_locals() || self.ctx.no_unused_parameters() {
-            self.check_unused_declarations();
+            source_pass!(self.check_unused_declarations());
         }
         // JS grammar checks: emit TS8xxx errors for TypeScript-only syntax in JS files
         if self.is_js_file() {
-            self.check_js_grammar_statements(&sf.statements.nodes);
+            source_pass!(self.check_js_grammar_statements(&sf.statements.nodes));
 
             // TS8033: Check for @typedef comments with multiple @type tags
-            self.check_typedef_duplicate_type_tags();
+            source_pass!(self.check_typedef_duplicate_type_tags());
 
             // TS2300: Check JSDoc typedefs against class-like value/export declarations
-            self.check_jsdoc_typedef_name_conflicts();
+            source_pass!(self.check_jsdoc_typedef_name_conflicts());
 
             // TS2300: Check for duplicate @import names across JSDoc comments
-            self.check_jsdoc_duplicate_imports();
+            source_pass!(self.check_jsdoc_duplicate_imports());
 
             // TS1005: Closure `function(...)` JSDoc types, which TypeScript 7
             // does not accept in any tag position.
-            self.check_jsdoc_closure_function_types();
+            source_pass!(self.check_jsdoc_closure_function_types());
 
             // TS8030 on object-literal method shorthands, which the
             // function-declaration callback never reaches.
-            self.check_jsdoc_type_tag_callable_on_object_methods();
+            source_pass!(self.check_jsdoc_type_tag_callable_on_object_methods());
 
             // TS1069: `@template {Constraint}` with no following type-parameter name
-            self.check_jsdoc_template_brace_syntax();
+            source_pass!(self.check_jsdoc_template_brace_syntax());
 
             // TS1003: Check @param tags for malformed `*` names
-            self.check_jsdoc_param_invalid_names();
+            source_pass!(self.check_jsdoc_param_invalid_names());
 
             // TS1003: `@typedef {Type}` with no name after the type expression
-            self.check_jsdoc_typedef_missing_name();
+            source_pass!(self.check_jsdoc_typedef_missing_name());
 
             // TS1003: Check @property/@member tags for private-name syntax
-            self.check_jsdoc_property_private_names();
+            source_pass!(self.check_jsdoc_property_private_names());
 
             // TS7014/TS1110/TS2304: malformed JSDoc function parameter types
-            self.check_malformed_jsdoc_function_type_params();
+            source_pass!(self.check_malformed_jsdoc_function_type_params());
 
             // TS1110: unsupported multiline @typedef wrappers without leading `*`
-            self.check_jsdoc_unwrapped_multiline_typedefs();
+            source_pass!(self.check_jsdoc_unwrapped_multiline_typedefs());
 
             // TS8039: Check for @template tags after @typedef/@callback/@overload
-            self.check_template_after_typedef_callback();
+            source_pass!(self.check_template_after_typedef_callback());
 
             // TS1273/TS1277: Check for invalid modifiers on @template type parameters
-            self.check_jsdoc_template_modifiers();
+            source_pass!(self.check_jsdoc_template_modifiers());
 
             // TS2304: Check for @typedef base types that can't be resolved
-            self.check_jsdoc_typedef_base_types();
+            source_pass!(self.check_jsdoc_typedef_base_types());
         }
 
         // Emit deferred TS2875 (JSX import source not found) if set.
@@ -850,6 +887,9 @@ impl CheckerState<'_> {
         // if the diagnostic is not already present (dedup by error_at_node).
         let deferred_ts2454 = std::mem::take(&mut self.ctx.deferred_ts2454_errors);
         for (node_idx, sym_id) in deferred_ts2454 {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             let name = self
                 .ctx
                 .binder
@@ -873,6 +913,9 @@ impl CheckerState<'_> {
         // survived speculation, this is a no-op.
         let deferred_truthiness = std::mem::take(&mut self.ctx.deferred_truthiness_diagnostics);
         for diag in deferred_truthiness {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             self.ctx
                 .error(diag.start, diag.length, diag.message_text, diag.code);
         }
@@ -885,6 +928,9 @@ impl CheckerState<'_> {
         let deferred_excess_implicit_any =
             std::mem::take(&mut self.ctx.deferred_excess_property_implicit_any_diagnostics);
         for diag in deferred_excess_implicit_any {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             if self
                 .ctx
                 .diagnostics
@@ -928,8 +974,8 @@ impl CheckerState<'_> {
                 || !is_same_display_assignability_message(&diag.message_text)
         });
 
-        self.inject_conditional_types1_indexed_access_narrowing_diagnostic(&sf.text);
-        self.suppress_incorrectly_extends_on_simultaneous_extend_conflict();
+        source_pass!(self.inject_conditional_types1_indexed_access_narrowing_diagnostic(&sf.text));
+        source_pass!(self.suppress_incorrectly_extends_on_simultaneous_extend_conflict());
         post_span.returned();
     }
 
@@ -989,6 +1035,9 @@ impl CheckerState<'_> {
         let is_external_module = self.ctx.is_external_module_file();
         let mut violations: Vec<(NodeIndex, &'static str, u32)> = Vec::new();
         for i in 0..self.ctx.arena.len() {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             let idx = NodeIndex(i as u32);
             let Some(kind) = self.ctx.arena.get(idx).map(|node| node.kind) else {
                 continue;
@@ -1034,6 +1083,9 @@ impl CheckerState<'_> {
         use crate::types_domain::unique_symbol_arena::unique_symbol_grammar_violation;
 
         for i in 0..self.ctx.arena.len() {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             let idx = NodeIndex(i as u32);
             let Some(node) = self.ctx.arena.get(idx) else {
                 continue;
@@ -1560,3 +1612,7 @@ fn is_same_display_assignability_message(message: &str) -> bool {
 
     source == target
 }
+
+#[cfg(test)]
+#[path = "source_file_execution_tests.rs"]
+mod execution_tests;
