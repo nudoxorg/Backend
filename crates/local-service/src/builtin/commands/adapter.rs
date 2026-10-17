@@ -5767,6 +5767,7 @@ impl CommandAdapter {
                 super::package_profile::read(
                     &daemon.engine().daemon().owner().snapshot(),
                     &self.index_operations,
+                    &self.semantic_authority,
                     &package,
                     Some(&read)
                 )
@@ -6215,6 +6216,7 @@ impl CommandAdapter {
                         *compiler_outcomes = super::package_profile::read(
                             &daemon.engine().daemon().owner().snapshot(),
                             &self.index_operations,
+                           &self.semantic_authority,
                             package,
                             compiler_outcome.as_ref(),
                         )
@@ -8567,6 +8569,170 @@ mod tests {
         fixture.adapter.as_mut().expect("adapter").compiler = compiler;
     }
 
+    #[test]
+    fn native_typescript_partial_coverage_pages_preserve_actual_causes_across_cold_owner_restart() {
+        use backend_library::{
+            PackageCompilerCoverage as Availability, PackageCompilerOutcomeRead as Read,
+            PackageCompilerOutcomes as Outcomes,
+        };
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        for (path, source) in [
+            (
+                "package.json",
+                r#"{"name":"coverage-restart","version":"1.0.0"}"#,
+            ),
+            (
+                "tsconfig.app.json",
+                r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"Bundler"},"files":["src/main.ts"]}"#,
+            ),
+            (
+                "angular.json",
+                r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+            ),
+            ("src/main.ts", "export const main = 1;"),
+            ("src/main.spec.ts", "export const spec = 2;"),
+            ("playwright.config.ts", "export const tooling = 3;"),
+        ] {
+            let path = Path::new(&label).join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
+        fixture.adapter.as_mut().unwrap().compiler =
+            backend_engine::application::LocalCompilerHost::new(
+                MixedNativeEnvironment(fixture.root.0.join("compiler-coverage-native")),
+                backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
+            )
+            .open()
+            .expect("linked TSZ owner without external checker overrides");
+        let (adapter, daemon) = fixture.parts();
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &add_body(0x5012, package, &label), 0x15012),
+            Ok(Executed::Deferred)
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while adapter.indexing.is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            adapter.poll_deferred(daemon);
+            std::thread::yield_now();
+        }
+        let package = backend_library::PackageReference::parse(label).unwrap();
+        let mut retained = None;
+        let mut original_rows = None;
+        for epoch in 0..2 {
+            let (adapter, daemon) = fixture.parts();
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let current = package_profile::read(
+                &snapshot,
+                &adapter.index_operations,
+                &adapter.semantic_authority,
+                &package,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let Outcomes::Summary {
+                refusals,
+                coverage,
+                source_capture,
+                ..
+            } = current
+            else {
+                panic!("published partial summary")
+            };
+            assert!(
+                refusals.is_empty(),
+                "configured source exclusions are not terminal profile refusals: {refusals:?}; capture={source_capture:?}"
+            );
+            assert_eq!(source_capture.profiles.len(), 1);
+            assert_eq!(source_capture.profiles[0].source_count, 3);
+            assert!(matches!(source_capture.profiles[0].state,
+                backend_library::IndexOperationSemanticProfileState::Published {
+                    coverage: backend_library::IndexOperationSemanticCoverage::Partial {completed:1,total:3},..
+                }), "publication must retain the genuine TSZ partial outcome: {source_capture:?}");
+            let [Availability::Retained { read: first }] =
+                coverage.as_deref().expect("new producer coverage list")
+            else {
+                panic!("one authenticated TS coverage catalog: {coverage:?}")
+            };
+            if let Some(previous) = retained {
+                assert_eq!(
+                    *first, previous,
+                    "source/catalog/generation bound selector survives restart"
+                );
+            } else {
+                retained = Some(*first);
+            }
+            let Read::Coverage(first_selector)=first else{panic!("copyable coverage read kind")};
+            let mut next = Some(*first);
+            let mut rows = Vec::new();
+            while let Some(request) = next {
+                let reply = package_profile::read(
+                    &snapshot,
+                    &adapter.index_operations,
+                    &adapter.semantic_authority,
+                    &package,
+                    Some(&request),
+                )
+                .unwrap()
+                .unwrap();
+                reply.admit_request(&package, Some(&request)).unwrap();
+                let Outcomes::Coverage { page, .. } = reply else {
+                    panic!("exact coverage page")
+                };
+                assert_eq!((page.source_count, page.completed), (3, 1));
+                assert_eq!(page.rows.len(), 1);
+                assert!(serde_json::to_vec(&page).unwrap().len() <= 4096);
+                rows.extend(page.rows);
+                next = page.next;
+                assert!(rows.len() <= 3, "bounded continuation does not repeat rows");
+            }
+            assert_eq!(rows.len(), 3);
+            let gaps=rows.iter().filter_map(|row|match row{backend_semantic::ir::SourceCoverageRow::Gap{path,cause,..}=>{
+                assert_eq!(*cause,backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram);Some(path.as_str())
+            },_=>None}).collect::<Vec<_>>();
+            assert_eq!(gaps, ["playwright.config.ts", "src/main.spec.ts"]);
+            assert!(
+                matches!(&rows[0],backend_semantic::ir::SourceCoverageRow::Configuration{path,..} if path=="tsconfig.app.json")
+            );
+            if let Some(previous) = &original_rows {
+                assert_eq!(
+                    &rows, previous,
+                    "cold owner retained exact cause/source/config facts"
+                );
+            } else {
+                original_rows = Some(rows);
+            }
+            for changed in 0..4 {
+                let mut selector = *first_selector;
+                match changed {
+                    0 => selector.outcome.basis[0] ^= 1,
+                    1 => selector.catalog[0] ^= 1,
+                    2 => selector.generation[0] ^= 1,
+                    _ => selector.input_digest[0] ^= 1,
+                };
+                let request = Read::Coverage(selector);
+                assert!(
+                    matches!(
+                        package_profile::read(
+                            &snapshot,
+                            &adapter.index_operations,
+                            &adapter.semantic_authority,
+                            &package,
+                            Some(&request)
+                        )
+                        .unwrap(),
+                        Some(Outcomes::Stale { .. })
+                    ),
+                    "old/foreign read {changed} never retargets"
+                );
+            }
+            if epoch == 0 {
+                fixture = fixture.reopen();
+            }
+        }
+    }
+
     fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
         let capabilities = compiler.capabilities();
         let python =
@@ -8704,12 +8870,12 @@ mod tests {
             assert_eq!(partial.source_capture.profiles.len(), 2);
             assert_eq!(partial.refused_profiles.len(), 1);
             let package_ref=backend_library::PackageReference::parse(label.clone()).expect("local");
-            let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,None).expect("current unkeyed partial captures").expect("local");
+            let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,None).expect("current unkeyed partial captures").expect("local");
             let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };
             assert_eq!(source_capture.profiles,partial.source_capture.profiles);
             assert_eq!(refusals.len(),1,"published Python and refused TS remain separate");
             let backend_library::PackageCompilerDiagnostic::Retained { read }=&refusals[0].diagnostic else { panic!("retained TS failure") };
-            let full=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&package_ref,Some(read)).expect("exact full failure").expect("local");
+            let full=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,Some(read)).expect("exact full failure").expect("local");
             let backend_library::PackageCompilerOutcomes::Diagnostic { refusal,.. }=full else { panic!("diagnostic") };
             assert_eq!(refusal,partial.refused_profiles[0],"reuse the exact typed refused fact");
             assert_eq!(
@@ -10637,6 +10803,7 @@ mod tests {
                     package_profile::read(
                         &daemon.engine().daemon().owner().snapshot(),
                         &adapter.index_operations,
+                        &adapter.semantic_authority,
                         &package,
                         Some(&old)
                     )
@@ -10668,6 +10835,7 @@ mod tests {
         let outcomes = package_profile::read(
             &snapshot,
             &adapter.index_operations,
+            &adapter.semantic_authority,
             &status.package,
             None,
         )
@@ -10695,6 +10863,7 @@ mod tests {
                 let full = package_profile::read(
                     &snapshot,
                     &adapter.index_operations,
+                    &adapter.semantic_authority,
                     &status.package,
                     Some(read),
                 )
@@ -10714,6 +10883,7 @@ mod tests {
                     package_profile::read(
                         &snapshot,
                         &adapter.index_operations,
+                        &adapter.semantic_authority,
                         &status.package,
                         Some(&wrong)
                     )
@@ -10726,7 +10896,7 @@ mod tests {
         assert!(retained > 0, "real compiler refusal remains retrievable");
         let other = backend_library::PackageReference::parse("/wrong-package").expect("local");
         assert!(matches!(
-            package_profile::read(&snapshot, &adapter.index_operations, &other, None)
+            package_profile::read(&snapshot, &adapter.index_operations, &adapter.semantic_authority, &other, None)
                 .expect("wrong package"),
             Some(Outcomes::Unavailable {
                 reason: backend_library::PackageCompilerOutcomesUnavailable::ProjectNotSelected,
@@ -11093,6 +11263,7 @@ mod tests {
                     package_profile::read(
                         &daemon.engine().daemon().owner().snapshot(),
                         &adapter.index_operations,
+                        &adapter.semantic_authority,
                         &package,
                         Some(read)
                     )
