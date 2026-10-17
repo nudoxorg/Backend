@@ -306,7 +306,7 @@ fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestA
 /// Source-fixture rows reconstructed from Run19's two physical files. These
 /// are not claimed to be a decoded owner response. They exercise the exact
 /// production row mapper and identity adapter, then real native activation.
-fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance: facet::tokens::Appearance) -> (Rig, crate::runtime::owner::OwnerGate) {
+pub(super) fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance: facet::tokens::Appearance) -> (Rig, crate::runtime::owner::OwnerGate) {
     use backend_library::{Basis, DeclarationKind, Row, RowId, SourceAvailability, SourceLocation, object_version, symbol_key, view_state_root};
     use facet::graph::{Module, Package, World};
     use crate::core::VersionedRoot;
