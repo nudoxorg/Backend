@@ -254,7 +254,7 @@ class Owner:
                     process_custody.signal_session(self.process, signal.SIGKILL)
                     reap_started = time.monotonic()
                     log("owner stop: waiting to reap SIGKILLed process")
-                    self.process.retire(time.monotonic()+5)
+                    process_custody.retire(self.process, time.monotonic()+5)
                     log(f"owner stop: reaped SIGKILLed process after {time.monotonic() - reap_started:.3f}s")
                     raise RuntimeError("backend-locald failed to retire through its idle timeout")
                 else:

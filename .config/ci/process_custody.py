@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -16,6 +17,9 @@ _children = set()
 _stopping = False
 _baseline = None
 _active = False
+_fallback_enabled = False
+_fallback_seen = False
+_fallback_children = set()
 
 
 class _RetirementDeadline(RuntimeError):
@@ -190,14 +194,27 @@ class OwnedPopen(subprocess.Popen):
 def activate():
     # Called once by the T2 case coordinator. Standalone CLI-contract tools
     # retain their existing cross-platform subprocess behavior.
-    global _active
+    global _active, _fallback_enabled
     with _lock:
-        _active = True
+        _active = sys.platform == 'linux'
+        _fallback_enabled = not _active
 
 
 def popen(*args, **kwargs):
+    global _fallback_seen
     if not _active:
-        return subprocess.Popen(*args, **kwargs)
+        if not _fallback_enabled:
+            return subprocess.Popen(*args, **kwargs)
+        with _lock:
+            if _stopping:
+                raise RuntimeError('surface interruption: new child admission is closed')
+            _fallback_seen = True
+            # Admission and registration share the interruption snapshot lock;
+            # stop_before_exit cannot miss a constructor already admitted here.
+            child = subprocess.Popen(*args, **kwargs)
+            child._nudox_new_session = kwargs.get('start_new_session') is True
+            _fallback_children.add(child)
+            return child
     with _lock:
         if _stopping:
             raise RuntimeError('surface interruption: new child admission is closed')
@@ -208,7 +225,27 @@ def popen(*args, **kwargs):
         return child
 
 
-def signal_session(child, sig):
+def signal_session(child, sig, deadline=None):
+    if not isinstance(child, OwnedPopen):
+        # Preserve ordinary POSIX Popen cleanup. Its waitpid lock prevents a
+        # concurrent poll/wait from reaping this PID before the signal; an
+        # already-reaped root can never authorize a numeric group signal.
+        if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL, None):
+            raise RuntimeError('ordinary Popen signal refused with an independent SIGCHLD reaper')
+        while not child._waitpid_lock.acquire(False):
+            if deadline is None or time.monotonic() >= deadline:
+                raise RuntimeError('ordinary Popen wait owns the anchor; unsafe concurrent signal refused')
+            time.sleep(min(.01, max(0, deadline-time.monotonic())))
+        try:
+            if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL, None):
+                raise RuntimeError('ordinary Popen signal refused with an independent SIGCHLD reaper')
+            if child.returncode is None:
+                send = os.killpg if getattr(child, '_nudox_new_session', False) is True else os.kill
+                try:send(child.pid, sig)
+                except ProcessLookupError:pass
+        finally:
+            child._waitpid_lock.release()
+        return
     with child.custody_lock:
         if not child.retired:
             os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
@@ -218,16 +255,74 @@ def signal_session(child, sig):
                 pass
 
 
+def retire(child, deadline):
+    if isinstance(child, OwnedPopen):
+        return child.retire(deadline)
+    # Ordinary Popen has no retire method; this is root wait, NOT a claim
+    # that non-Linux descendant sessions have been proved empty.
+    return child.wait(timeout=max(0, deadline-time.monotonic()))
+
+
 def stop(child):
     signal_session(child, signal.SIGTERM)
     try:
         child.wait(timeout=10)
     except (subprocess.TimeoutExpired, RuntimeError):
-        child.retire(time.monotonic()+5)
+        if not isinstance(child, OwnedPopen):
+            signal_session(child, signal.SIGKILL)
+        retire(child, time.monotonic()+5)
+
+
+def _run_ordinary(*args, input=None, capture_output=False, timeout=None, check=False, **kwargs):
+    if input is not None:
+        if kwargs.get('stdin') is not None:
+            raise ValueError('stdin and input arguments may not both be used.')
+        kwargs['stdin'] = subprocess.PIPE
+    if capture_output:
+        if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+            raise ValueError('stdout and stderr arguments may not be used with capture_output.')
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    child = popen(*args, **kwargs)  # Atomic admission and ordinary-root registration.
+    try:
+        deadline = None if timeout is None else time.monotonic()+timeout
+        pending_input = input
+        while True:
+            # A finite communicate slice also makes CPython's final wait finite:
+            # no worker holds _waitpid_lock in an indefinite wait during stop.
+            remaining = .1 if deadline is None else min(.1, max(0, deadline-time.monotonic()))
+            try:
+                stdout, stderr = child.communicate(pending_input, timeout=remaining)
+                break
+            except subprocess.TimeoutExpired as error:
+                # CPython retains unsent stdin and both output buffers across
+                # retries. Re-sending input would duplicate it or raise ValueError.
+                pending_input = None
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(child.args, timeout,
+                        output=error.output, stderr=error.stderr) from None
+        result = subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
+        if check:
+            result.check_returncode()
+        return result
+    except BaseException:
+        # No ordinary context-manager __exit__/unbounded wait: cleanup keeps
+        # its own existing5s bound, exact-root signal lock and unreaped identity.
+        cleanup_deadline = time.monotonic()+5
+        signal_session(child, signal.SIGKILL, cleanup_deadline)
+        retire(child, cleanup_deadline)
+        raise
+    finally:
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream is not None:
+                stream.close()
 
 
 def run(*args, input=None, capture_output=False, timeout=None, check=False, **kwargs):
+    global _fallback_seen
     if not _active:
+        if _fallback_enabled:
+            return _run_ordinary(*args, input=input, capture_output=capture_output,
+                                 timeout=timeout, check=check, **kwargs)
         return subprocess.run(*args, input=input, capture_output=capture_output,
                               timeout=timeout, check=check, **kwargs)
     if input is not None:
@@ -258,7 +353,20 @@ def stop_before_exit():
     global _stopping
     with _lock:
         _stopping = True
-        children = list(_children)
+        children = list(_fallback_children if _fallback_enabled else _children)
+        unproved_fallback = _fallback_enabled and _fallback_seen
+    if unproved_fallback:
+        deadline = time.monotonic()+5
+        for child in children:
+            signal_session(child, signal.SIGTERM, deadline)
+        while time.monotonic() < deadline and any(child.poll() is None for child in children):
+            time.sleep(.01)
+        deadline = time.monotonic()+5
+        for child in children:
+            if child.returncode is None:
+                signal_session(child, signal.SIGKILL, deadline)
+            retire(child, deadline)
+        raise RuntimeError('ordinary Popen roots cleaned; non-Linux descendant custody remains unproved; refusing early exit')
     for child in children:
         signal_session(child, signal.SIGTERM)
     deadline = time.monotonic()+5
@@ -266,6 +374,6 @@ def stop_before_exit():
         time.sleep(.01)
     deadline = time.monotonic()+5
     for child in children:
-        child.retire(deadline)
+        retire(child, deadline)
     return dict(owned_roots=len(children), owned_sessions_retired=True,
                 anchors_reaped_last=True, new_child_admission_closed=True)
