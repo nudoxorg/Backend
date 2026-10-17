@@ -100,6 +100,7 @@ impl PreparedPackageMetadata {
         self.queued_at = Some(Instant::now());
     }
 
+    #[cfg(test)]
     pub(crate) fn fetch(self, cancelled: impl Fn() -> bool) -> FetchedPackageMetadata {
         self.fetch_with_budget(cancelled, || REQUEST_TIMEOUT)
     }
@@ -863,6 +864,22 @@ mod tests {
             Some(Duration::from_secs(3))
         );
         assert_eq!(request_timeout(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn expired_metadata_budget_does_not_issue_a_get() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        listener.set_nonblocking(true).expect("nonblocking listener");
+        let url = format!(
+            "http://{}/metadata",
+            listener.local_addr().expect("loopback address")
+        );
+        let result = fetch_object(&url, 1024, || false, || Duration::ZERO, None);
+        assert!(matches!(result, Err(DiscoveryStoreError::Cancelled)));
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
     }
 
     fn server(
