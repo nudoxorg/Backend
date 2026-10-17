@@ -615,6 +615,10 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         use backend_compile::{Container, SourceBindingIdentity};
         let source = "const left = () => { const worker = () => { const value = 1; return value; }; return worker; }, right = () => { const worker = () => { const value = 1; return value; }; return worker; };";
+        let right_owner_start = source
+            .find("right")
+            .ok_or_else(|| std::io::Error::other("right declaration marker is missing"))?
+            as u32;
         let frontend = syntax_frontend()?;
         for path in ["shadow.ts", "shadow.tsx", "shadow.mjs"] {
             let analysis = frontend.analyze(Path::new(path), source.as_bytes())?;
@@ -654,7 +658,7 @@ mod tests {
                     panic!("exact outer");
                 };
                 let outer = analysis.declarations().iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *outer)).expect("outer binding");
-                let expected = if child.owner().0 < source.find("right").unwrap() as u32 {
+                let expected = if child.owner().0 < right_owner_start {
                     "left"
                 } else {
                     "right"
