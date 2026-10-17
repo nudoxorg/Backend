@@ -384,6 +384,16 @@ fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
     if spec.kind() == ArgumentKind::IndexJobTicket {
         return backend_present::decode_index_job_ticket(value).map(|_| ());
     }
+    if spec.kind() == ArgumentKind::SelectedSymbol {
+        return serde_json::from_value::<backend_present::IdentitySemanticData>(value.clone())
+            .map(|_| ())
+            .map_err(|_| {
+                argument_fault(
+                    spec,
+                    "the exact selected-symbol-id object returned in identity.semantic_data",
+                )
+            });
+    }
     let type_matches = match spec.json_type() {
         "string" => value.is_string(),
         "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
@@ -849,7 +859,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         output_schema["properties"]["metadata_call"] = json!({"type":"object","description":"Copy this separately executable read, then follow descriptor pages to the receipt's exact coordinate/profile/generation and semantic-source ranges for the complete captured record."});
         output_schema["properties"]["metadata_read"] = json!({"type":"string"});
     }
-    json!({
+    let mut tool = json!({
         "name": grammar.tool(),
         "title": title,
         "description": grammar.description(),
@@ -868,11 +878,26 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
             "openWorldHint": false
         },
         "_meta": { "backend/domain": domain_name(domain), "backend/command": grammar.name() }
-    })
+    });
+    if grammar
+        .options()
+        .iter()
+        .any(|spec| spec.kind() == ArgumentKind::SelectedSymbol)
+    {
+        tool["inputSchema"]["anyOf"] =
+            json!([{ "required": ["coordinate"] }, { "required": ["selected_symbol"] }]);
+    }
+    tool
 }
 
 /// Projects one operand into its JSON Schema property.
 fn property(spec: ArgumentSpec) -> Value {
+    if spec.kind() == ArgumentKind::SelectedSymbol {
+        return json!({"type":"object", "properties": {
+            "kind":{"const":"selected-symbol-id"},
+            "value":{"type":"array", "items":{"type":"integer", "minimum":0, "maximum":255}, "minItems":32, "maxItems":32, "contains":{"type":"integer","minimum":1,"maximum":255}}
+        }, "required":["kind","value"], "additionalProperties":false, "description":spec.help()});
+    }
     if spec.kind() == ArgumentKind::SemanticShapeRequest {
         let mut schema = backend_library::SemanticShapeReadRequest::json_schema();
         schema["description"] = json!(spec.help());

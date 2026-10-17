@@ -31,6 +31,33 @@ impl RetainedProduct {
         Ok(symbol)
     }
 
+    fn selected_row(
+        &self,
+        selector: &backend_library::DeclarationSelector,
+    ) -> Result<&Row, ClientError> {
+        let symbol =
+            selector
+                .address()
+                .resolve(self.library.view())
+                .ok_or(ClientError::CommandFailed(
+                    backend_library::CommandFailure::NotFound,
+                ))?;
+        let row = self.library.view().row_ref(RowId::Symbol(symbol)).ok_or(
+            ClientError::CommandFailed(backend_library::CommandFailure::NotFound),
+        )?;
+        if selector
+            .coordinate()
+            .is_some_and(|coordinate| coordinate != row.label)
+        {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::InvalidQuery(
+                    "selected coordinate mismatch".to_owned(),
+                ),
+            ));
+        }
+        Ok(row)
+    }
+
     fn page(&self, limit: u16, continuation: Option<PageContinuation>) -> PageRequest {
         let page = PageRequest::new(
             self.library.revision_root(),
@@ -55,6 +82,36 @@ impl Engine for RetainedProduct {
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
         let revision = self.library.revision_root();
         let reply = match probe {
+            Probe::Declaration { selector, read } => {
+                use backend_library::DeclarationRead;
+                let row = self.selected_row(selector)?;
+                if matches!(read, DeclarationRead::Document | DeclarationRead::Source) {
+                    let source = Basis {
+                        root: revision,
+                        ..self.library.view().basis()
+                    };
+                    let selection =
+                        DocumentSelection::from_row(row, source).expect("actual selected row");
+                    let document = self
+                        .library
+                        .document(
+                            DocumentQuery::addressed(selector.address(), revision)
+                                .with_source_basis(source),
+                        )
+                        .map_err(|error| ClientError::CommandFailed(error.into()))?
+                        .with_selection(selection)
+                        .map_err(|error| ClientError::Protocol(error.to_owned()))?;
+                    let coordinate = row.label.clone();
+                    self.selected_documents.push((coordinate, document.symbol));
+                    return Ok(ReplyDto::new(17, CommandReply::Document(document)));
+                }
+                self.library
+                    .graph(GraphNeighborhoodQuery::addressed(
+                        selector.address(),
+                        revision,
+                    ))
+                    .map(CommandReply::Graph)
+            }
             Probe::Packages => self.library.execute(Command::Packages),
             Probe::Search { text, limit } => selected_search_page(
                 &self.library,
@@ -214,6 +271,26 @@ impl Product for RetainedProduct {
                 backend_library::SymbolAddress::canonical(symbol_key(&coordinate)),
                 page,
             )
+            .map_err(|error| ClientError::CommandFailed(error.into()))?;
+        Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
+    }
+
+    fn graph_page_declaration(
+        &mut self,
+        selector: backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let RowId::Symbol(symbol) = self.selected_row(&selector)?.id else {
+            panic!("selected symbol")
+        };
+        let page = self
+            .page(window.issued().get(), continuation)
+            .with_window(window)
+            .expect("same credit");
+        let page = self
+            .library
+            .graph_page_for_address(symbol, selector.address(), page)
             .map_err(|error| ClientError::CommandFailed(error.into()))?;
         Ok(ReplyDto::new(17, CommandReply::ProjectionPage(page)))
     }
@@ -513,4 +590,186 @@ fn actual_package_only_route_keeps_unknown_counts_after_successful_selected_read
         assert!(text_of(&packages).contains("declaration count unavailable"));
         assert!(!text_of(&packages).contains("0 declaration"));
     }
+}
+
+#[test]
+fn returned_selected_ids_keep_same_coordinate_roles_distinct_on_named_and_registered_reads() {
+    let coordinate = format!("{SHELF}::box.ts:1::Box::constructor::item");
+    let mut rows = vec![Row::new(RowId::Package(package_key(SHELF)), basis(), SHELF)];
+    for (key, kind) in [
+        ("field identity", DeclarationKind::Field),
+        ("variable identity", DeclarationKind::Variable),
+    ] {
+        rows.push(
+            Row::in_package(
+                RowId::Symbol(symbol_key(key)),
+                basis(),
+                package_key(SHELF),
+                coordinate.clone(),
+            )
+            .with_kind(kind)
+            .with_source(SourceLocation::new("box.ts", 1).expect("site"))
+            .with_excerpt(SourceExcerpt::capture_bounded("item: number")),
+        );
+    }
+    let view = root(rows);
+    let library = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view))
+        .expect("immutable fixture");
+    let mut server = server(library);
+    let resolved = invoke(
+        &mut server,
+        "backend.resolve",
+        json!({"query":"item","limit":200}),
+    );
+    assert_eq!(resolved["isError"], false, "{resolved}");
+    let records = resolved["structuredContent"]["records"]
+        .as_array()
+        .expect("actual name rows");
+    assert_eq!(records.len(), 2);
+    let facets = records
+        .iter()
+        .map(|row| row["identity"]["semantic_data"].clone())
+        .collect::<Vec<_>>();
+    assert_ne!(facets[0], facets[1]);
+    let ambiguous = invoke(
+        &mut server,
+        "backend.document",
+        json!({"coordinate":coordinate}),
+    );
+    assert_eq!(ambiguous["isError"], true, "coordinate remains ambiguous");
+    for (record, facet) in records.iter().zip(facets) {
+        for (tool, answer) in [
+            ("backend.document", "page"),
+            ("backend.source", "page"),
+            ("backend.graph", "records"),
+            ("backend.related", "records"),
+        ] {
+            for named in [true, false] {
+                for with_coordinate in [false, true] {
+                    let mut arguments = json!({"selected_symbol":facet,"detail":"full"});
+                    if with_coordinate {
+                        arguments["coordinate"] = json!(coordinate);
+                    }
+                    let result = if named {
+                        invoke(&mut server, tool, arguments)
+                    } else {
+                        invoke(
+                            &mut server,
+                            "backend.call",
+                            json!({"name":tool,"arguments":arguments}),
+                        )
+                    };
+                    assert_eq!(result["isError"], false, "{tool}: {result}");
+                    assert_eq!(result["structuredContent"]["answer"], answer);
+                    let identity = if answer == "page" {
+                        &result["structuredContent"]["identity"]
+                    } else {
+                        &result["structuredContent"]["records"][0]["identity"]
+                    };
+                    assert_eq!(identity["semantic_data"], facet);
+                    assert_eq!(identity["coordinate"], coordinate);
+                    if answer == "records" {
+                        assert_eq!(
+                            result["structuredContent"]["records"][0]["kind"],
+                            record["kind"]
+                        );
+                    }
+                }
+            }
+            let mismatch = invoke(
+                &mut server,
+                tool,
+                json!({"selected_symbol":facet,"coordinate":"/foreign::box.ts:1::item"}),
+            );
+            assert_eq!(mismatch["isError"], true, "{tool}: {mismatch}");
+        }
+    }
+    for bad in [
+        json!({"kind":"selected-symbol-id","value":vec![0;32]}),
+        json!({"kind":"selected-symbol-id","value":vec![255;32]}),
+        json!({"kind":"selected-symbol-id","value":vec![1;31]}),
+        json!("display abbreviation"),
+    ] {
+        for tool in [
+            "backend.document",
+            "backend.source",
+            "backend.graph",
+            "backend.related",
+        ] {
+            let result = invoke(&mut server, tool, json!({"selected_symbol":bad}));
+            assert_eq!(result["isError"], true, "{tool}: {result}");
+        }
+    }
+}
+
+#[test]
+fn selected_graph_continuation_refuses_changed_id_or_coordinate_assertion() {
+    let coordinate = format!("{SHELF}::box.ts:1::item");
+    let center = symbol_key("selected graph center");
+    let neighbor = symbol_key("selected graph neighbor");
+    let rows = vec![
+        Row::new(RowId::Package(package_key(SHELF)), basis(), SHELF),
+        Row::in_package(
+            RowId::Symbol(center),
+            basis(),
+            package_key(SHELF),
+            coordinate.clone(),
+        ),
+        Row::in_package(
+            RowId::Symbol(neighbor),
+            basis(),
+            package_key(SHELF),
+            format!("{SHELF}::box.ts:2::neighbor"),
+        )
+        .with_parent(center),
+    ];
+    let view = root(rows);
+    let library = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view))
+        .expect("real catalog");
+    let mut server = server(library);
+    let selector = json!({"kind":"selected-symbol-id","value":center.as_bytes()});
+    let first = invoke(
+        &mut server,
+        "backend.graph",
+        json!({"selected_symbol":selector,"coordinate":coordinate,"limit":1}),
+    );
+    assert_eq!(first["isError"], false, "{first}");
+    let cursor = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("actual owner-issued successor");
+    for changed in [
+        json!({"selected_symbol":{"kind":"selected-symbol-id","value":neighbor.as_bytes()},"coordinate":coordinate,"limit":1,"cursor":cursor}),
+        json!({"selected_symbol":selector,"coordinate":format!("{coordinate}-wrong"),"limit":1,"cursor":cursor}),
+        json!({"selected_symbol":selector,"limit":1,"cursor":cursor}),
+    ] {
+        let result = invoke(&mut server, "backend.graph", changed);
+        assert_eq!(
+            result["isError"], true,
+            "changed selected cursor operand: {result}"
+        );
+    }
+    let next = invoke(
+        &mut server,
+        "backend.graph",
+        json!({"selected_symbol":selector,"coordinate":coordinate,"limit":1,"cursor":cursor}),
+    );
+    assert_eq!(next["isError"], false, "unchanged exact successor: {next}");
+    assert_eq!(
+        next["structuredContent"]["records"]
+            .as_array()
+            .expect("successor rows")
+            .len(),
+        1
+    );
+    assert_eq!(
+        first["structuredContent"]["records"]
+            .as_array()
+            .expect("first rows")
+            .len(),
+        1
+    );
+    assert_ne!(
+        first["structuredContent"]["records"][0]["identity"]["semantic_data"],
+        next["structuredContent"]["records"][0]["identity"]["semantic_data"]
+    );
 }

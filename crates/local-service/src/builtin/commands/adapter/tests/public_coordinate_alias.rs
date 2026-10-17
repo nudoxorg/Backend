@@ -308,3 +308,208 @@ fn public_alias_requests_refuse_foreign_malformed_stale_and_duplicate_claims() {
     );
     assert_eq!(owner_cursor(daemon), before);
 }
+
+#[test]
+fn selected_same_coordinate_roles_round_trip_documents_source_graph_and_pages() {
+    use backend_library::{
+        DeclarationKind, DeclarationRead, DeclarationSelector, NameQuery, SelectedSymbolId,
+        SourceExcerpt,
+    };
+    let mut fixture = AdapterFixture::new();
+    let label = format!("{}::box.ts:1::Box::constructor::item", fixture.label);
+    let package = fixture.package;
+    let basis = fixture.parts().1.engine().daemon().library().view().basis();
+    let field = symbol_key("compiler parameter-property field");
+    let variable = symbol_key("compiler parameter variable");
+    fixture.publish_rows(
+        [
+            (field, DeclarationKind::Field),
+            (variable, DeclarationKind::Variable),
+        ]
+        .into_iter()
+        .map(|(key, kind)| {
+            Row::in_package(RowId::Symbol(key), basis, package, label.clone())
+                .with_kind(kind)
+                .with_source(SourceLocation::new("box.ts", 1).expect("site"))
+                .with_excerpt(SourceExcerpt::capture_bounded("item: number"))
+        })
+        .collect(),
+    );
+    let (adapter, daemon) = fixture.parts();
+    let library = daemon.engine().daemon().library();
+    let root = library.revision_root();
+    let found = library
+        .names(&NameQuery::new(
+            "item",
+            root,
+            QueryLimit::new(200).expect("credit"),
+        ))
+        .expect("real name query");
+    let selected = found
+        .root
+        .row_refs()
+        .filter(|row| row.label == label)
+        .map(|row| (row.id, row.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), 2);
+    assert!(
+        backend_library::resolve_selected_document_row(library.view(), &label).is_err(),
+        "coordinate alone stays ambiguous"
+    );
+    let before = owner_cursor(daemon);
+    for (row_id, kind) in selected {
+        let RowId::Symbol(key) = row_id else {
+            panic!("symbol row")
+        };
+        let id = SelectedSymbolId::new(*key.as_bytes()).expect("actual row ID");
+        for selector in [
+            DeclarationSelector::Selected(id),
+            DeclarationSelector::SelectedAt {
+                symbol: id,
+                coordinate: label.clone(),
+            },
+        ] {
+            for read in [
+                DeclarationRead::Document,
+                DeclarationRead::Source,
+                DeclarationRead::Graph,
+                DeclarationRead::Related,
+            ] {
+                let query = DocumentQuery::addressed(selector.address(), root);
+                let graph = GraphNeighborhoodQuery::addressed(selector.address(), root);
+                let command = match read {
+                    DeclarationRead::Document => Command::Document(query),
+                    DeclarationRead::Source => Command::Source(query),
+                    DeclarationRead::Graph => Command::Graph(graph),
+                    DeclarationRead::Related => Command::Related(graph),
+                };
+                let mut certificate = WireCertificate::new()
+                    .with_claim(WireClaim::RootCommitment {
+                        schema: backend_library::WireSchema::ViewRelation,
+                        id: backend_library::encode_id(root.as_bytes()),
+                    })
+                    .with_claim(WireClaim::KeyCommitment {
+                        schema: backend_library::WireSchema::Symbol,
+                        id: backend_library::encode_id(id.bytes()),
+                    });
+                if let Some(label) = selector.coordinate() {
+                    certificate = certificate.with_claim(WireClaim::Key {
+                        schema: backend_library::WireSchema::Symbol,
+                        id: backend_library::encode_id(symbol_key(label).as_bytes()),
+                        value: label.to_owned(),
+                    });
+                }
+                let request =
+                    CommandDto::new(0x3190, command).with_certificate(certificate.clone());
+                let request = CommandDto::decode_for_owner(
+                    &serde_json::to_vec(&request).expect("public operand request"),
+                    library.cursor(),
+                )
+                .expect("strict selected request decoder");
+                let response = serve(adapter, daemon, &request);
+                match response.reply {
+                    CommandReply::Document(document) => {
+                        assert_eq!(document.symbol, key);
+                        assert_eq!(
+                            document
+                                .selection
+                                .as_ref()
+                                .expect("authenticated selected label")
+                                .coordinate(),
+                            label
+                        );
+                        assert_eq!(document.excerpt.text(), Some("item: number"));
+                    }
+                    CommandReply::Graph(snapshot) => {
+                        assert_eq!(
+                            snapshot
+                                .root
+                                .row_ref(RowId::Symbol(key))
+                                .expect("selected center")
+                                .kind,
+                            kind
+                        );
+                    }
+                    other => panic!("selected {read:?}: {other:?}"),
+                }
+                // Optional coordinate is checked by the real owner, never used as fallback.
+                let wrong = certificate.with_claim(WireClaim::Key {
+                    schema: backend_library::WireSchema::Symbol,
+                    id: backend_library::encode_id(symbol_key("wrong-coordinate").as_bytes()),
+                    value: "wrong-coordinate".to_owned(),
+                });
+                let request =
+                    CommandDto::new(0x3191, request.command.clone()).with_certificate(wrong);
+                assert!(matches!(
+                    serve(adapter, daemon, &request).reply,
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(_))
+                ));
+            }
+            let certificate = WireCertificate::new()
+                .with_claim(WireClaim::RootCommitment {
+                    schema: backend_library::WireSchema::ViewRelation,
+                    id: backend_library::encode_id(root.as_bytes()),
+                })
+                .with_claim(WireClaim::KeyCommitment {
+                    schema: backend_library::WireSchema::Symbol,
+                    id: backend_library::encode_id(id.bytes()),
+                });
+            let request = CommandDto::new(
+                0x3192,
+                Command::GraphPage {
+                    symbol: selector.address(),
+                    page: PageRequest::new(root, QueryLimit::new(1).expect("credit")),
+                },
+            )
+            .with_certificate(certificate);
+            let result = serve(adapter, daemon, &request);
+            assert!(
+                matches!(result.reply, CommandReply::ProjectionPage(_)),
+                "selected graph page"
+            );
+        }
+    }
+    assert_eq!(
+        owner_cursor(daemon),
+        before,
+        "all reads leave the owner unchanged"
+    );
+}
+
+#[test]
+fn selected_public_requests_refuse_missing_rows_and_stale_roots_without_coordinate_fallback() {
+    let (mut fixture, native, _, alias) = fixture();
+    let (adapter, daemon) = fixture.parts();
+    let library = daemon.engine().daemon().library();
+    let current = library.revision_root();
+    let stale = backend_library::view_state_root(&[("stale".to_owned(), "view".to_owned())]);
+    for (id, root) in [
+        (symbol_key("no-current-membership"), current),
+        (native, stale),
+    ] {
+        let address = SymbolAddress::Selected(*id.as_bytes());
+        let certificate = request_certificate(&alias, root).with_claim(WireClaim::KeyCommitment {
+            schema: backend_library::WireSchema::Symbol,
+            id: backend_library::encode_id(id.as_bytes()),
+        });
+        for command in [
+            Command::Document(DocumentQuery::addressed(address, root)),
+            Command::Source(DocumentQuery::addressed(address, root)),
+            Command::Graph(GraphNeighborhoodQuery::addressed(address, root)),
+            Command::Related(GraphNeighborhoodQuery::addressed(address, root)),
+            Command::GraphPage {
+                symbol: address,
+                page: PageRequest::new(root, QueryLimit::new(1).expect("credit")),
+            },
+        ] {
+            let request = CommandDto::new(0x3193, command).with_certificate(certificate.clone());
+            assert!(
+                matches!(
+                    serve(adapter, daemon, &request).reply,
+                    CommandReply::Failed(_)
+                ),
+                "no fallback to valid alias {alias}"
+            );
+        }
+    }
+}

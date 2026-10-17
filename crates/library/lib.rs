@@ -25,6 +25,7 @@ mod cargo_aliases;
 mod cargo_source;
 mod catalog;
 mod command;
+mod declaration_selector;
 mod command_registry;
 mod cursor;
 mod delta;
@@ -150,6 +151,7 @@ pub use cargo_source::{
     MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
 pub use catalog::{Library, QueryPageRecipe, RankedSearchSnapshot};
+pub use declaration_selector::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
 pub use command::ReferenceFact;
 pub use command::{
     Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,
