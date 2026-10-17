@@ -669,6 +669,8 @@ struct Fake {
     document_coordinates: Vec<String>,
     /// Bind the default document fixture to the requested display coordinate.
     document_matches_request: bool,
+    /// Typed useful name stage returned while richer search prepares.
+    published_name_readiness: Option<backend_library::PublishedSearchReadiness>,
 }
 
 impl Fake {
@@ -908,6 +910,57 @@ fn unreachable() -> ClientError {
 }
 
 impl Engine for Fake {
+    fn members_page(
+        &mut self,
+        document: &backend_library::Document,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if !self.page_limits.is_empty()
+            && let Some(replacement) = self.outline_source_after_first_page.take()
+        {
+            self.page_catalog = Some(replacement);
+        }
+        if let Some(catalog) = &self.page_catalog {
+            self.page_limits.push(limit);
+            let request = backend_library::PageRequest::new(
+                document.basis,
+                backend_library::QueryLimit::new(limit).expect("credit"),
+            );
+            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+            let mut owner =
+                backend_library::DocumentQuery::selected(document.symbol, document.basis);
+            if let Some(source) = document.source_basis() {
+                owner = owner.with_source_basis(source);
+            }
+            let page = catalog
+                .members_page(owner, request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
+        if continuation.is_some() {
+            return Err(ClientError::StaleCursor);
+        }
+        let reply = self.probe(Probe::OutlinePage {
+            path: PROJECT,
+            limit,
+        })?;
+        let CommandReply::ProjectionPage(mut page) = reply.reply else {
+            return Err(ClientError::Protocol("wrong member fixture".to_owned()));
+        };
+        let rows = page
+            .snapshot
+            .root
+            .rows()
+            .iter()
+            .filter(|row| {
+                row.id == RowId::Symbol(document.symbol) || row.parent == Some(document.symbol)
+            })
+            .cloned()
+            .collect();
+        page.snapshot = snapshot(rows);
+        Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
+    }
     fn index(
         &mut self,
         package: PackageReference,
@@ -1015,7 +1068,15 @@ impl Engine for Fake {
                 }
                 CommandReply::Graph(snapshot(vec![declaration_row()]))
             }
-            Probe::Search { .. } => CommandReply::Search(snapshot(vec![declaration_row()])),
+            Probe::Search { .. } => match self.published_name_readiness {
+                Some(readiness) => CommandReply::PublishedNameSearch(
+                    backend_library::PublishedNameSearchPage {
+                        snapshot: snapshot(vec![declaration_row()]),
+                        readiness,
+                    },
+                ),
+                None => CommandReply::Search(snapshot(vec![declaration_row()])),
+            },
             Probe::Names { .. } => CommandReply::Names(snapshot(vec![declaration_row()])),
             Probe::Outline(_) => {
                 if let Some(error) = self.outline_error.take() {
@@ -9165,5 +9226,45 @@ fn cli_attachment_metadata_probe() {
     println!(
         "\nCLI_CONTEXT={}",
         json!({"has_context":context.is_some(),"data_exists":paths.data().exists(),"endpoint_exists":paths.endpoint().exists(),"shell":context.map(|context|context.shell())})
+    );
+}
+
+#[test]
+fn search_published_names_preserves_useful_records_and_explicit_pending_scope() {
+    let mut server = ready(Fake {
+        published_name_readiness: Some(backend_library::PublishedSearchReadiness {
+            full_search: backend_library::FullSearchReadiness::Preparing,
+            semantic: backend_library::PublishedSemanticReadiness::Pending,
+        }),
+        ..Fake::default()
+    });
+    let response = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": "backend.search", "arguments": {"query": "Session", "limit": 10}
+        }),
+    );
+    let result = &response["result"];
+    assert_eq!(result["isError"], false, "{response}");
+    let page = &result["structuredContent"];
+    assert_eq!(page["readiness"], "partial");
+    assert_eq!(page["search_scope"], "published_names_only");
+    assert_eq!(page["full_search"], "preparing");
+    assert_eq!(page["semantic_preparation"]["state"], "pending");
+    assert_eq!(page["records"].as_array().expect("useful rows").len(), 1);
+    assert_eq!(page["records"][0]["identity"]["coordinate"], DECLARATION);
+    assert_eq!(
+        page["records"][0]["identity"]["semantic_data"]["value"],
+        json!(*symbol_key(DECLARATION).as_bytes())
+    );
+    assert!(
+        result["content"]
+            .as_array()
+            .expect("readable content")
+            .iter()
+            .any(|content| content["text"].as_str().is_some_and(|text| text
+                .contains("published-names-only")
+                && text.contains("pending")))
     );
 }

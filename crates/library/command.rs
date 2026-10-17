@@ -1203,6 +1203,8 @@ pub enum Command {
     },
     /// Search names and document text.
     Search(Query),
+    /// Read a separately authenticated current name stage while richer search prepares.
+    SearchPublishedNames(crate::PublishedNameSearchQuery),
     /// Read graph neighbors for one declaration.
     Graph(GraphNeighborhoodQuery),
     /// Read symbols related to one declaration.
@@ -1212,6 +1214,13 @@ pub enum Command {
         /// Declaration at the center of the graph neighborhood.
         symbol: SymbolAddress,
         /// Shared root/query-bound paging request.
+        page: PageRequest,
+    },
+    /// Read the selected declaration and its immediate owned members only.
+    MembersPage {
+        /// Exact selected owner and complete source basis, when captured.
+        owner: DocumentQuery,
+        /// Root/query-bound fixed page credit and continuation.
         page: PageRequest,
     },
     /// Execute or resume one structured graph query at an immutable revision.
@@ -1234,13 +1243,13 @@ impl Command {
             Self::Packages | Self::PackagePage(_) => CommandId::Packages,
             Self::Add { .. } => CommandId::Add,
             Self::Remove { .. } => CommandId::Remove,
-            Self::Document(_) => CommandId::Document,
+            Self::Document(_) | Self::MembersPage { .. } => CommandId::Document,
             Self::Source(_) => CommandId::Source,
             Self::Show { .. } => CommandId::Show,
             Self::Outline(_) | Self::OutlinePage { .. } => CommandId::Outline,
             Self::Name(_) => CommandId::Name,
             Self::Resolve { .. } => CommandId::Resolve,
-            Self::Search(_) => CommandId::Search,
+            Self::Search(_) | Self::SearchPublishedNames(_) => CommandId::Search,
             Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
             Self::Related(_) => CommandId::Related,
             Self::GraphQuery(_) => CommandId::GraphQuery,
@@ -1299,6 +1308,8 @@ pub enum CommandReply {
     Resolved(Box<[Row]>),
     /// Search arrangement view.
     Search(ViewSnapshot),
+    /// Name-only results with explicit full-search readiness; never lexical completion.
+    PublishedNameSearch(crate::PublishedNameSearchPage),
     /// Graph arrangement view.
     Graph(ViewSnapshot),
     /// Bounded structured graph-query rows and terminal.

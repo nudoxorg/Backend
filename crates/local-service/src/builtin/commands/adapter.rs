@@ -80,6 +80,7 @@ impl CatalogReplyRequest {
         match command {
             Command::Name(query) => Some(Self::Names(query.basis())),
             Command::Search(query) => Some(Self::Search(query.basis())),
+            Command::SearchPublishedNames(query) => Some(Self::Search(query.query().basis())),
             Command::GraphPage { page, .. } => Some(Self::Graph(page.basis())),
             _ => None,
         }
@@ -96,6 +97,7 @@ impl CatalogReplyRequest {
         let snapshot = match (self, &reply.reply) {
             (Self::Names(_), CommandReply::Names(snapshot))
             | (Self::Search(_), CommandReply::Search(snapshot)) => snapshot,
+            (Self::Search(_), CommandReply::PublishedNameSearch(page)) => &page.snapshot,
             (Self::Graph(_), CommandReply::ProjectionPage(page)) => {
                 if page.terminal == backend_library::PageTerminal::Cancelled {
                     return Ok(false);
@@ -587,9 +589,11 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Show { .. }
         | Command::Outline(_)
         | Command::OutlinePage { .. }
+        | Command::MembersPage { .. }
         | Command::Name(_)
         | Command::Resolve { .. }
         | Command::Search(_)
+        | Command::SearchPublishedNames(_)
         | Command::Graph(_)
         | Command::Related(_)
         | Command::GraphPage { .. }
@@ -4457,7 +4461,10 @@ impl CommandAdapter {
         }
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
-        let is_search = matches!(&request.command, Command::Search(_));
+        let is_search = matches!(
+            &request.command,
+            Command::Search(_) | Command::SearchPublishedNames(_)
+        );
         let catalog = CatalogReplyRequest::from_command(&request.command);
         self.pending_semantic_search = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
@@ -4866,6 +4873,9 @@ impl CommandAdapter {
                 self.remove(daemon, package, certificate.as_ref(), request_id)
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
+            Command::SearchPublishedNames(query) => {
+                self.published_name_search(daemon, &query, certificate, None)
+            }
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::GraphPage { symbol, page } => {
                 self.graph_page(daemon, symbol, page, certificate)
@@ -5453,7 +5463,28 @@ impl CommandAdapter {
             )];
         };
         match self.prepare_query(daemon, query.basis()) {
-            Ok(Some(backend_library::CommandFailure::QueryPreparation { .. })) => {
+            Ok(Some(backend_library::CommandFailure::QueryPreparation { state, .. })) => {
+                if query.cursor().is_none()
+                    && let Ok(names) =
+                        backend_library::PublishedNameSearchQuery::admit(query.clone())
+                {
+                    self.pending_semantic_search = None;
+                    let reply =
+                        self.published_name_search(daemon, &names, certificate, Some(state));
+                    let status = self.pending_semantic_search.take();
+                    return vec![(
+                        pending.ticket,
+                        reply.and_then(|reply| {
+                            Self::encode_with_catalog(
+                                daemon,
+                                pending.request_id,
+                                reply,
+                                status,
+                                Some(CatalogReplyRequest::Search(query.basis())),
+                            )
+                        }),
+                    )];
+                }
                 self.semantic_search_replies.push_front(pending);
                 return Vec::new();
             }
@@ -5516,6 +5547,12 @@ impl CommandAdapter {
             );
         }
         if let Some(failure) = self.prepare_query(daemon, query.basis())? {
+            if query.cursor().is_none()
+                && let backend_engine::CommandFailure::QueryPreparation { state, .. } = &failure
+                && let Ok(names) = backend_library::PublishedNameSearchQuery::admit(query.clone())
+            {
+                return self.published_name_search(daemon, &names, certificate, Some(*state));
+            }
             return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
         }
         let workspace = daemon.engine().daemon().owner().snapshot().root();
@@ -5546,6 +5583,74 @@ impl CommandAdapter {
         );
         self.pending_semantic_search = status;
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    /// Borrows only the exact current library's owner-bound name arrangement.
+    /// Continuations remain in this stage after richer search becomes ready.
+    fn published_name_search(
+        &mut self,
+        daemon: &ProductDaemon,
+        request: &backend_library::PublishedNameSearchQuery,
+        certificate: Option<WireCertificate>,
+        observed_preparation: Option<backend_library::QueryPreparationState>,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let command = Command::SearchPublishedNames(request.clone());
+        let full_search = match observed_preparation {
+            Some(state) => state.into(),
+            None => match self.prepare_query(daemon, request.query().basis())? {
+                None => backend_library::FullSearchReadiness::Ready,
+                Some(backend_engine::CommandFailure::QueryPreparation { state, .. }) => {
+                    state.into()
+                }
+                Some(failure) => {
+                    return Self::certify(
+                        daemon,
+                        &command,
+                        CommandReply::Failed(failure),
+                        certificate,
+                    );
+                }
+            },
+        };
+        let snapshot = match daemon
+            .engine()
+            .daemon()
+            .library()
+            .search_published_names(request)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Self::certify(
+                    daemon,
+                    &command,
+                    CommandReply::Failed(error.into()),
+                    certificate,
+                );
+            }
+        };
+        // Only locally owned setup/refusal is known at this stage; never
+        // query a provider or infer a projection result from name-only rows.
+        let unavailable = self.remote_semantic.unprepared_unavailability();
+        self.pending_semantic_search =
+            unavailable.map(|reason| backend_library::SemanticSearchStatus::Unavailable { reason });
+        Self::certify(
+            daemon,
+            &command,
+            CommandReply::PublishedNameSearch(backend_library::PublishedNameSearchPage {
+                snapshot,
+                readiness: backend_library::PublishedSearchReadiness {
+                    full_search,
+                    semantic: if let Some(reason) = unavailable {
+                        backend_library::PublishedSemanticReadiness::Unavailable { reason }
+                    } else if full_search == backend_library::FullSearchReadiness::Ready {
+                        backend_library::PublishedSemanticReadiness::NotQueried
+                    } else {
+                        backend_library::PublishedSemanticReadiness::Pending
+                    },
+                },
+            }),
+            certificate,
+        )
     }
 
     fn graph(
@@ -6791,12 +6896,12 @@ mod tests {
         index_operation_published_observation, index_publication_worker,
         legacy_add_compiler_failure, pending_capture_unresolved,
     };
+    use crate::builtin::commands::package_profile;
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
         BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET, SemanticDeployment, builtin_dispatcher,
         forge_gateway::ForgeGateway, genesis, profile_descriptor, publish_builtin_view,
     };
-    use crate::builtin::commands::package_profile;
     use crate::process::{ForgeAuthentication, ForgeConfig};
     use backend_engine::application::{
         LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -11724,6 +11829,38 @@ mod tests {
         );
     }
 
+    fn assert_published_names(
+        wire: &serde_json::Value,
+        state: &str,
+        daemon: &ProductDaemon,
+        text: &str,
+    ) {
+        assert_eq!(wire["reply"]["kind"], "published_name_search");
+        assert_eq!(wire["reply"]["data"]["readiness"]["full_search"], state);
+        let snapshot = &wire["reply"]["data"]["snapshot"];
+        assert_eq!(
+            snapshot["root"]["basis"]["root"],
+            backend_engine::encode_id(daemon.engine().daemon().library().view().root().as_bytes())
+        );
+        let names = daemon
+            .engine()
+            .daemon()
+            .library()
+            .names(&backend_library::NameQuery::new(
+                text,
+                daemon.engine().daemon().library().revision_root(),
+                backend_engine::QueryLimit::default(),
+            ))
+            .expect("independent exact-current name oracle");
+        let oracle =
+            serde_json::to_value(backend_engine::ReplyDto::new(1, CommandReply::Names(names)))
+                .expect("independent names wire rows");
+        assert_eq!(
+            snapshot["root"]["rows"], oracle["reply"]["data"]["root"]["rows"],
+            "full selected IDs, parent/package/source/kind and row payloads survive unchanged"
+        );
+    }
+
     fn finish_search_lane(adapter: &mut CommandAdapter, daemon: &mut ProductDaemon) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while adapter.search_lane.active() {
@@ -12191,6 +12328,54 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn configured_semantic_waiter_returns_current_names_without_waiting_for_corpus() {
+        let producer =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
+                .expect("protocol fixture activation");
+        let runtime = producer.provision.runtime().expect("runtime");
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        adapter.remote_semantic =
+            crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
+        let baseline = runtime.memory_budget().used();
+        let (entered, release) = adapter.search_lane.hold_next();
+        let body = search_body(daemon, 1591, "project");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &body, 2591),
+            Ok(Executed::Deferred)
+        ));
+        let replies = adapter.poll_deferred(daemon);
+        assert_eq!(replies.len(), 1, "name page does not owe corpus completion");
+        let (ticket, bytes) = replies.into_iter().next().expect("owned reply");
+        assert_eq!(ticket, 2591);
+        let wire: serde_json::Value =
+            serde_json::from_slice(&bytes.expect("bounded names reply")).expect("wire");
+        assert_published_names(&wire, "preparing", daemon, "project");
+        assert_eq!(
+            wire["reply"]["data"]["readiness"]["semantic"]["state"],
+            "pending"
+        );
+        assert!(
+            wire.get("semantic_search")
+                .is_none_or(serde_json::Value::is_null)
+        );
+        assert!(adapter.semantic_search_replies.is_empty());
+        assert!(adapter.remote_semantic.local_preparation().is_none());
+        assert_eq!(
+            runtime.memory_budget().used(),
+            baseline,
+            "waiter credit retired"
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("held worker");
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        release.send(()).expect("release corpus");
+        finish_search_lane(adapter, daemon);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache() {
         // This is an executed BEM2 protocol fixture, never a genuine model claim.
         let producer =
@@ -12608,18 +12793,20 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let (entered, release) = adapter.search_lane.hold_next();
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 601, "project"),
             "preparing",
             daemon,
+            "project",
         );
         entered
             .recv_timeout(Duration::from_secs(2))
             .expect("held corpus worker");
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 602, "project"),
             "preparing",
             daemon,
+            "project",
         );
         for (id, command) in [
             (
@@ -12650,6 +12837,11 @@ mod tests {
             assert_eq!(wire["request_id"], id);
             assert_ne!(wire["reply"]["kind"], "failed");
         }
+        assert_eq!(
+            adapter.search_snapshots.projection_builds(),
+            0,
+            "useful current names did not wait for or claim a lexical build"
+        );
         release.send(()).expect("warm corpus");
         finish_search_lane(adapter, daemon);
         let cold = immediate_search(adapter, daemon, 605, "project");
@@ -12670,10 +12862,11 @@ mod tests {
             "invalid_query"
         );
         assert!(!adapter.search_lane.active());
-        assert_preparing(
+        assert_published_names(
             &immediate_search(adapter, daemon, 702, "never_published_identifier"),
             "preparing",
             daemon,
+            "never_published_identifier",
         );
         finish_search_lane(adapter, daemon);
         assert_eq!(
