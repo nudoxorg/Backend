@@ -2550,7 +2550,8 @@ fn decode_file_record(
         retention,
         source_identity,
         python_version,
-    )?
+    )
+    .map_err(|_| ())?
     .with_go_version(go_version)
     .map_err(|_| ())
 }
