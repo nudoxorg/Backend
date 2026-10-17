@@ -47,9 +47,7 @@ fn queue_then(
     };
     rig.cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
-            shell.reader.update(cx, |reader, cx| {
-                reader.open_graph_current(target, window, cx)
-            });
+            super::super::reader::Reader::open_graph_current(&shell.reader, target, window, cx);
         });
         assert_eq!(
             root.read(cx).queued_graph_navigations(),
