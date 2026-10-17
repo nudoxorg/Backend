@@ -250,7 +250,8 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
                 diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
                     .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
             },
-        )?
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?
         .ok_or_else(|| std::io::Error::other("native resolution must become a refusal"))?;
         let reply = crate::ReplyDto::new(
             1,
