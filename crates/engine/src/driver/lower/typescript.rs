@@ -6330,12 +6330,23 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         // its bare references, including type/value reads outside a call.
         // An exact existing import occurrence is required; unrelated same-name
         // identifiers cannot acquire another module's declaration authority.
+        let mut wanted = std::collections::HashSet::new();
+        for index in 0..self.facts.occurrence_len {
+            let occurrence = self.facts.occurrences[index];
+            if occurrence.confidence != OccurrenceConfidence::Import { continue; }
+            let owner = self.facts.occurrence_owners[index];
+            let Some(base) = self.decl_starts.get(owner as usize).copied() else { continue; };
+            if let (Some(start), Some(end)) = (
+                base.checked_add(occurrence.span.start), base.checked_add(occurrence.span.end),
+            ) { wanted.insert((start, end)); }
+        }
         let mut identifiers = HashMap::<(u32, u32), Option<TszNodeIndex>>::new();
         for (raw_node, _) in arena.nodes.iter().enumerate() {
             let Ok(raw_node) = u32::try_from(raw_node) else { continue; };
             let identifier = TszNodeIndex(raw_node);
             if arena.get_identifier_at(identifier).is_none() { continue; }
             let Some((start, end)) = arena.pos_end_at(identifier) else { continue; };
+            if !wanted.contains(&(start, end)) { continue; }
             identifiers.entry((start, end)).and_modify(|previous| {
                 if *previous != Some(identifier) { *previous = None; }
             }).or_insert(Some(identifier));
@@ -12480,11 +12491,11 @@ describe('suite', () => {\n\
                         .is_some_and(|span| (span.start, span.end) == capture.owner())
             }).count(), 1, "one compiler binding at the exact statement extent: {name}");
         }
-        for (name, expected_path, kind) in [
-            ("generateSchedule", "src/lib/scheduler.ts", EntityKind::Function),
-            ("ImportedWorkout", "src/lib/scheduler.ts", EntityKind::Trait),
-            ("scheduleVersion", "src/lib/scheduler.ts", EntityKind::Constant),
-            ("NavBar", "src/components/NavBar.ts", EntityKind::Record),
+        for (name, expected_path, kind, target_name, use_prefix) in [
+            ("generateSchedule", "src/lib/scheduler.ts", EntityKind::Function, "generateSchedule", "const run = "),
+            ("ImportedWorkout", "src/lib/scheduler.ts", EntityKind::Trait, "Workout", "POST(request: "),
+            ("scheduleVersion", "src/lib/scheduler.ts", EntityKind::Constant, "scheduleVersion", "run(request) + "),
+            ("NavBar", "src/components/NavBar.ts", EntityKind::Record, "NavBar", "const component = "),
         ] {
             let binding = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
                 && facts.kinds[index] == EntityKind::Reexport).expect("import binding");
@@ -12501,8 +12512,29 @@ describe('suite', () => {\n\
             assert_eq!(coordinate.path, expected_path);
             let OccurrenceTarget::Foreign(key) = facts.occurrences[index].target else { panic!("cross-file target"); };
             assert_eq!(key.kind, Some(kind));
-            assert!(staged_tsz_coordinates(&facts)?.iter().any(|(reference, path, _, _, _, _)|
-                *reference != ReferenceKind::Import && path == expected_path), "bare source use for {name}");
+            let target_source = if expected_path == "src/lib/scheduler.ts" { scheduler } else { navbar };
+            let target_facts = collect_native_tsz_file(project, expected_path, target_source)?;
+            let target = (0..target_facts.len()).find(|&index| target_facts.names[index] == target_name.as_bytes()
+                && target_facts.kinds[index] == kind).expect("actual emitted native target");
+            let extent = target_facts.provenance.source_spans()[target].expect("target source extent");
+            let use_start = (caller.find(use_prefix).expect("exact bare use prefix") + use_prefix.len()) as u32;
+            let uses = (0..facts.occurrence_len).filter(|&index| {
+                let owner = facts.occurrence_owners[index] as usize;
+                facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == use_start
+                        && span.start + facts.occurrences[index].span.end == use_start + name.len() as u32)
+            }).collect::<Vec<_>>();
+            assert_eq!(uses.len(), 1, "one exact bare use for {name}");
+            let index = uses[0];
+            assert_ne!(facts.occurrences[index].kind, ReferenceKind::Import);
+            assert_eq!(facts.occurrences[index].confidence, OccurrenceConfidence::Oracle);
+            let slot = facts.occurrence_source_coordinate_slot[index].expect("bare use native source target");
+            let coordinate = TypeScriptSourceCoordinate::decode(&facts.foreign_source_coordinate_text[slot as usize])
+                .expect("bare use native coordinate");
+            assert_eq!(coordinate.path, expected_path, "{name}");
+            assert_eq!((coordinate.declaration_start, coordinate.declaration_end), (extent.start, extent.end), "{name}");
+            let OccurrenceTarget::Foreign(key) = facts.occurrences[index].target else { panic!("cross-file bare use"); };
+            assert_eq!(key.kind, Some(kind), "{name}");
         }
         let remote = (0..facts.len()).find(|&index| facts.names[index] == b"remote").expect("external binding");
         assert!((0..facts.occurrence_len).any(|index| {
