@@ -1724,6 +1724,84 @@ fn staged_selection_removal(
         .selected_product_keys_for_package(package)
         .expect("actual prior selection");
     assert!(!keys.is_empty(), "native prior generation is required");
+    // Revoke the synthetic descriptor selection through the same capture
+    // state machine as production: Published -> Pending -> Failed(prior).
+    // Reuse only the actual unchanged source evidence, with an unkeyed
+    // request; this is not a second native compilation/publication claim.
+    use crate::builtin::BuiltinCaptureChange;
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, SemanticPublicationVersion, SemanticSourceCapture,
+        semantic_capture_relation,
+    };
+    let before = fixture.parts().1.engine().daemon().owner().snapshot();
+    let captures = semantic_capture_relation(&before)
+        .test_value()?
+        .test_value()?;
+    let publications = before.relation::<BuiltinSemanticRelation>().test_value()?;
+    let mut pending_changes = Vec::new();
+    for key in &keys {
+        let current = captures.lookup(key).test_value()?.test_value()?;
+        let ProductSemanticCaptureOutcome::Published { coverage, claim } = current.outcome() else {
+            panic!("actual published capture is required before selection removal");
+        };
+        assert_eq!(
+            publications.lookup(key).test_value()?,
+            Some(ProductSemanticPublicationRecord::Published { coverage, claim }),
+        );
+        let source = current.capture();
+        let capture = SemanticSourceCapture::new(
+            None,
+            *source.source_version(),
+            *source.input_digest(),
+            source.observation_sequence(),
+            source.source_count(),
+        )
+        .test_value()?;
+        pending_changes.push(BuiltinCaptureChange {
+            key: key.clone(),
+            expected: Some(current),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending {
+                prior: Some(SemanticPublicationVersion::new(coverage, claim)),
+            },
+            compiler_failure: None,
+        });
+    }
+    let pending = BuiltinIntent::index_with_capture(
+        package,
+        label.clone(),
+        Vec::new(),
+        Vec::new(),
+        pending_changes.clone(),
+    )
+    .test_value()?;
+    commit_builtin_intent(fixture.parts().1, 0xd0, &pending).test_value()?;
+    let base = fixture.parts().1.engine().daemon().owner().snapshot();
+    let captures = semantic_capture_relation(&base)
+        .test_value()?
+        .test_value()?;
+    let mut capture_changes = Vec::new();
+    for change in pending_changes {
+        let current = captures.lookup(&change.key).test_value()?.test_value()?;
+        assert_eq!(current.capture(), change.capture);
+        assert_eq!(current.outcome(), change.outcome);
+        assert_eq!(current.base_workspace_root(), before.root().as_bytes());
+        assert_eq!(current.source_workspace_root(), base.root().as_bytes());
+        let ProductSemanticCaptureOutcome::Pending { prior: Some(prior) } = current.outcome()
+        else {
+            panic!("actual committed Pending capture must preserve its prior generation");
+        };
+        capture_changes.push(BuiltinCaptureChange {
+            key: change.key,
+            expected: Some(current),
+            capture: change.capture,
+            outcome: ProductSemanticCaptureOutcome::Failed {
+                prior,
+                reason: SemanticUnavailableReason::ProjectAuthority,
+            },
+            compiler_failure: None,
+        });
+    }
     let coordinate = keys[0]
         .coordinate()
         .as_str()
@@ -1744,7 +1822,7 @@ fn staged_selection_removal(
             .test_value()?,
         );
     }
-    let intent = BuiltinIntent::index_with_semantics(
+    let intent = BuiltinIntent::index_with_capture(
         package,
         label,
         Vec::new(),
@@ -1756,6 +1834,7 @@ fn staged_selection_removal(
                 )),
             })
             .collect(),
+        capture_changes,
     )
     .test_value()?;
     let base = fixture.parts().1.engine().daemon().owner().snapshot();
@@ -1796,11 +1875,33 @@ fn assert_selection_removed(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .test_value()?;
+    let captures = backend_engine::builtin::semantic_capture_relation(&snapshot)
+        .test_value()?
+        .test_value()?;
     for key in keys {
         assert!(matches!(
             relation.lookup(key).test_value()?,
             Some(ProductSemanticPublicationRecord::Unavailable(_))
         ));
+        let capture = captures.lookup(key).test_value()?.test_value()?;
+        let backend_engine::builtin::ProductSemanticCaptureOutcome::Failed { prior, reason } =
+            capture.outcome()
+        else {
+            panic!("selection removal must terminalize its actual Pending capture");
+        };
+        assert_eq!(
+            reason,
+            backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority
+        );
+        let history = key.for_generation(prior.claim().binding().identity);
+        assert_eq!(
+            relation.lookup(&history).test_value()?,
+            Some(ProductSemanticPublicationRecord::Published {
+                coverage: prior.coverage(),
+                claim: prior.claim(),
+            }),
+            "removing the selected generation must retain its exact prior claim in history",
+        );
     }
     Ok(())
 }
