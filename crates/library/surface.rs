@@ -6045,6 +6045,63 @@ impl core::fmt::Display for ProductAdmissionError {
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    enum PackageCompilerFailureTestError {
+        Admission(ProductAdmissionError),
+        Json(serde_json::Error),
+        MissingDiagnostic(&'static str),
+        MissingProjectedFailure(&'static str),
+        ExpectedObject(&'static str),
+    }
+
+    impl From<ProductAdmissionError> for PackageCompilerFailureTestError {
+        fn from(error: ProductAdmissionError) -> Self {
+            Self::Admission(error)
+        }
+    }
+
+    impl From<serde_json::Error> for PackageCompilerFailureTestError {
+        fn from(error: serde_json::Error) -> Self {
+            Self::Json(error)
+        }
+    }
+
+    impl core::fmt::Display for PackageCompilerFailureTestError {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::Admission(error) => write!(formatter, "product admission failed: {error}"),
+                Self::Json(error) => write!(formatter, "JSON codec failed: {error}"),
+                Self::MissingDiagnostic(context) => {
+                    write!(
+                        formatter,
+                        "expected a bounded compiler diagnostic: {context}"
+                    )
+                }
+                Self::MissingProjectedFailure(context) => {
+                    write!(
+                        formatter,
+                        "expected a projected compiler failure: {context}"
+                    )
+                }
+                Self::ExpectedObject(context) => {
+                    write!(formatter, "expected a JSON object: {context}")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for PackageCompilerFailureTestError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Json(error) => Some(error),
+                Self::Admission(_)
+                | Self::MissingDiagnostic(_)
+                | Self::MissingProjectedFailure(_)
+                | Self::ExpectedObject(_) => None,
+            }
+        }
+    }
+
     fn compiler_failure(path: &str) -> PackageCompilerFailure {
         use crate::interface::{CompilerFragmentFailure, SourceAuthority};
         use backend_semantic::ir::{BuildError, EntityId};
@@ -6462,7 +6519,8 @@ mod tests {
     }
 
     #[test]
-    fn authority_admission_codec_rejects_recipe_and_foreign_language() {
+    fn authority_admission_codec_rejects_recipe_and_foreign_language()
+    -> Result<(), PackageCompilerFailureTestError> {
         use crate::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
             SourceAuthority, TypeScriptAuthorityFailureKind,
@@ -6478,28 +6536,44 @@ mod tests {
             stage: Stage::LowerIr,
             phase: AuthorityPhase::TypeCheck,
             class: AuthorityDiagnosticClass::Authority,
-            diagnostic: Some(CompilerDiagnostic::from_native(b"PRIVATE-ADMISSION-CAUSE", 23, false)
-                .unwrap().with_typescript_failure(TypeScriptAuthorityFailureKind::HostCompilerApiBridge)),
+            diagnostic: Some(
+                CompilerDiagnostic::from_native(b"PRIVATE-ADMISSION-CAUSE", 23, false)
+                    .ok_or(PackageCompilerFailureTestError::MissingDiagnostic(
+                        "TypeScript admission codec",
+                    ))?
+                    .with_typescript_failure(TypeScriptAuthorityFailureKind::HostCompilerApiBridge),
+            ),
         };
-        let failure = PackageCompilerFailure::from_package_terminal(".lintstagedrc.js", &terminal)
-            .unwrap().unwrap();
+        let failure = PackageCompilerFailure::from_package_terminal(".lintstagedrc.js", &terminal)?
+            .ok_or(PackageCompilerFailureTestError::MissingProjectedFailure(
+                "TypeScript authority admission",
+            ))?;
         assert_eq!(failure.recipe_identity(), None);
         assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
         assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
-        assert_eq!(failure.retained_diagnostic_for_local_debug(), Some(b"PRIVATE-ADMISSION-CAUSE".as_slice()));
-        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            failure.retained_diagnostic_for_local_debug(),
+            Some(b"PRIVATE-ADMISSION-CAUSE".as_slice())
+        );
+        let encoded = failure.encode_bounded_json()?;
         assert!(!String::from_utf8_lossy(&encoded).contains("PRIVATE-ADMISSION-CAUSE"));
-        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)?;
         assert_eq!(reopened, failure);
         assert!(reopened.retained_diagnostic_for_local_debug().is_none());
-        let mut forged: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let mut forged: serde_json::Value = serde_json::from_slice(&encoded)?;
         forged["recipe_identity"] = serde_json::json!(
-            ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"never admitted recipe").to_string()
+            ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"never admitted recipe")
+                .to_string()
         );
-        assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap()).is_err());
-        let mut foreign: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged)?).is_err()
+        );
+        let mut foreign: serde_json::Value = serde_json::from_slice(&encoded)?;
         foreign["cause"]["fault"]["language"] = serde_json::json!("python");
-        assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&foreign)?).is_err()
+        );
+        Ok(())
     }
 
     #[test]
@@ -6621,7 +6695,8 @@ mod tests {
     }
 
     #[test]
-    fn python_configuration_refusal_codec_keeps_source_and_rejects_cause_mismatch() {
+    fn python_configuration_refusal_codec_keeps_source_and_rejects_cause_mismatch()
+    -> Result<(), PackageCompilerFailureTestError> {
         use crate::interface::{
             AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
             CompilerDiagnostic, CompilerTerminal, PythonAuthorityFailureKind,
@@ -6634,7 +6709,9 @@ mod tests {
             evidence_truncated: true,
         };
         let diagnostic = CompilerDiagnostic::from_native(b"private config value", 20, false)
-            .unwrap()
+            .ok_or(PackageCompilerFailureTestError::MissingDiagnostic(
+                "Python configuration refusal",
+            ))?
             .with_python_configuration(facts);
         let terminal = CompilerTerminal::Compile {
             attempted: CompilerAttempt {
@@ -6650,13 +6727,14 @@ mod tests {
                 diagnostic: Some(diagnostic),
             },
         };
-        let failure = PackageCompilerFailure::from_package_terminal("pkg/module.py", &terminal)
-            .unwrap()
-            .unwrap();
+        let failure = PackageCompilerFailure::from_package_terminal("pkg/module.py", &terminal)?
+            .ok_or(PackageCompilerFailureTestError::MissingProjectedFailure(
+                "Python configuration refusal",
+            ))?;
         assert_eq!(failure.kind_tag(), "python_configuration_refused");
-        let encoded = failure.encode_bounded_json().unwrap();
+        let encoded = failure.encode_bounded_json()?;
         assert!(!String::from_utf8_lossy(&encoded).contains("private config value"));
-        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)?;
         assert_eq!(reopened, failure);
         let PackageCompilerFailureCause::Authority {
             diagnostic: Some(summary),
@@ -6670,32 +6748,34 @@ mod tests {
             summary.python_failure,
             Some(PythonAuthorityFailureKind::ConfigurationRefused)
         );
-        let original: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&encoded)?;
         let mut missing = original.clone();
         missing["cause"]["fault"]["diagnostic"]
             .as_object_mut()
-            .unwrap()
+            .ok_or(PackageCompilerFailureTestError::ExpectedObject(
+                "typed diagnostic object",
+            ))?
             .remove("python_configuration");
         assert!(
-            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&missing).unwrap())
-                .is_err()
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&missing)?).is_err()
         );
         let mut mismatch = original.clone();
-        mismatch["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::json!("project_panic");
+        mismatch["cause"]["fault"]["diagnostic"]["python_failure"] =
+            serde_json::json!("project_panic");
         mismatch["kind_tag"] = serde_json::json!("python_project_panic");
         assert!(
-            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mismatch).unwrap())
-                .is_err()
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mismatch)?).is_err()
         );
         let mut unknown = original;
         unknown["cause"]["fault"]["diagnostic"]["python_configuration"]["unadmitted"] =
             serde_json::json!(true);
         assert!(
-            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown).unwrap())
-                .is_err()
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown)?).is_err()
         );
         let cleared = CompilerDiagnostic::from_native(b"x", 1, false)
-            .unwrap()
+            .ok_or(PackageCompilerFailureTestError::MissingDiagnostic(
+                "legacy configuration refusal",
+            ))?
             .with_python_configuration(facts)
             .with_python_failure(PythonAuthorityFailureKind::ProjectPanic);
         assert!(cleared.python_configuration.is_none());
@@ -6715,19 +6795,23 @@ mod tests {
                 diagnostic: Some(cleared),
             },
         };
-        let legacy_failure = PackageCompilerFailure::from_package_terminal("pkg/legacy.py", &legacy)
-            .unwrap()
-            .unwrap();
-        let legacy_bytes = legacy_failure.encode_bounded_json().unwrap();
-        let legacy_json: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
+        let legacy_failure =
+            PackageCompilerFailure::from_package_terminal("pkg/legacy.py", &legacy)?.ok_or(
+                PackageCompilerFailureTestError::MissingProjectedFailure(
+                    "legacy Python configuration refusal",
+                ),
+            )?;
+        let legacy_bytes = legacy_failure.encode_bounded_json()?;
+        let legacy_json: serde_json::Value = serde_json::from_slice(&legacy_bytes)?;
         assert!(
             legacy_json["cause"]["fault"]["diagnostic"]
                 .get("python_configuration")
                 .is_none()
         );
-        let legacy_reopened = PackageCompilerFailure::decode_bounded_json(&legacy_bytes).unwrap();
-        assert_eq!(legacy_reopened.encode_bounded_json().unwrap(), legacy_bytes);
+        let legacy_reopened = PackageCompilerFailure::decode_bounded_json(&legacy_bytes)?;
+        assert_eq!(legacy_reopened.encode_bounded_json()?, legacy_bytes);
         assert_eq!(legacy_reopened.kind_tag(), "python_project_panic");
+        Ok(())
     }
 
     #[test]
@@ -6896,21 +6980,33 @@ mod tests {
     }
 
     #[test]
-    fn go_authority_failures_round_trip_and_refuse_contradictory_markers() {
-        use crate::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt,
-            CompilerCause, CompilerDiagnostic, CompilerTerminal, GoAuthorityFailureKind as G,
-            SourceAuthority};
-        for kind in [G::DependencyInvocation, G::DependencyProtocol, G::DependencyPackageLoad,
-            G::DependencyEmptyGraph, G::DependencyIncompleteFiles, G::DependencyUnsafePath,
-            G::DependencyLimit] {
+    fn go_authority_failures_round_trip_and_refuse_contradictory_markers()
+    -> Result<(), PackageCompilerFailureTestError> {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, GoAuthorityFailureKind as G, SourceAuthority,
+        };
+        for kind in [
+            G::DependencyInvocation,
+            G::DependencyProtocol,
+            G::DependencyPackageLoad,
+            G::DependencyEmptyGraph,
+            G::DependencyIncompleteFiles,
+            G::DependencyUnsafePath,
+            G::DependencyLimit,
+        ] {
             let private = b"private dependency path /home/user/go/pkg/mod and native stderr";
             let terminal = CompilerTerminal::Compile {
                 attempted: CompilerAttempt {
                     source: SourceAuthority {
-                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package main\n"),
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                            b"package main\n",
+                        ),
                         byte_len: 13,
                     },
-                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"selected-go-loader"),
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"selected-go-loader",
+                    ),
                 },
                 cause: CompilerCause::Authority {
                     phase: AuthorityPhase::Resolve,
@@ -6920,7 +7016,8 @@ mod tests {
                 },
             };
             let failure = PackageCompilerFailure::from_package_terminal("src/main.go", &terminal)
-                .expect("closed Go projection").expect("authority refusal");
+                .expect("closed Go projection")
+                .expect("authority refusal");
             assert_eq!(failure.kind_tag(), kind.kind_tag());
             assert_eq!(failure.detail(), kind.detail());
             assert!(!failure.cause().requires_tool_configuration());
@@ -6929,17 +7026,31 @@ mod tests {
             let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).expect("Go codec");
             assert_eq!(reopened, failure);
             assert!(reopened.retained_diagnostic_for_local_debug().is_none());
-            let original: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            let original: serde_json::Value = serde_json::from_slice(&encoded)?;
             for (python, typescript) in [(true, false), (false, true), (true, true)] {
                 let mut mutant = original.clone();
-                if python { mutant["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::json!("project_panic"); }
-                if typescript { mutant["cause"]["fault"]["diagnostic"]["typescript_failure"] = serde_json::json!("checker_exit"); }
-                assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mutant).unwrap()).is_err());
+                if python {
+                    mutant["cause"]["fault"]["diagnostic"]["python_failure"] =
+                        serde_json::json!("project_panic");
+                }
+                if typescript {
+                    mutant["cause"]["fault"]["diagnostic"]["typescript_failure"] =
+                        serde_json::json!("checker_exit");
+                }
+                assert!(
+                    PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mutant)?)
+                        .is_err()
+                );
             }
             let mut unknown = original;
-            unknown["cause"]["fault"]["diagnostic"]["go_failure"] = serde_json::json!("invented_cause");
-            assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+            unknown["cause"]["fault"]["diagnostic"]["go_failure"] =
+                serde_json::json!("invented_cause");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown)?)
+                    .is_err()
+            );
         }
+        Ok(())
     }
 
     #[test]
