@@ -2015,7 +2015,7 @@ fn compiler_outcome_rows(
         PackageCompilerOutcomes as Outcomes,
     };
     match outcomes {
-        Outcomes::Summary { source_capture, refusals, .. } => source_capture.profiles.iter().map(|profile| {
+        Outcomes::Summary { source_capture, refusals, coverage, .. } => source_capture.profiles.iter().map(|profile| {
             let state = match profile.state {
                 State::Pending { .. } => "pending".to_owned(),
                 State::Published { coverage, .. } => format!("published with {coverage}"),
@@ -2023,13 +2023,26 @@ fn compiler_outcome_rows(
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
             let mut tags = vec![format!("{} captured source file(s)", profile.source_count)];
-            let operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {
+            let mut operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {
                 Diagnostic::NotRecorded => { tags.push("no typed compiler diagnostic was recorded".to_owned()); None },
                 Diagnostic::Retained { read } => {
                     tags.push("full compiler diagnostic retained; copy this selector into package-profile --compiler-outcome (MCP: compiler_outcome)".to_owned());
                     serde_json::to_string(read).ok()
                 },
             });
+            if let Some(observation)=coverage.iter().flat_map(|rows|rows.iter()).find(|observation|match observation {
+                backend_library::PackageCompilerCoverage::LegacyNotRecorded{profile:seen}|backend_library::PackageCompilerCoverage::NotRecordedCapacity{profile:seen,..}=>*seen==profile.profile,
+                backend_library::PackageCompilerCoverage::Retained{read}=>read.selector().is_some_and(|read|read.profile==profile.profile),
+            }) {
+                match observation {
+                    backend_library::PackageCompilerCoverage::LegacyNotRecorded{..}=>tags.push("per-file compiler coverage causes were not recorded".to_owned()),
+                    backend_library::PackageCompilerCoverage::NotRecordedCapacity{reason,..}=>tags.push(format!("per-file compiler coverage explanation was not recorded: {reason:?} recording budget; semantic publication unchanged")),
+                    backend_library::PackageCompilerCoverage::Retained{read}=>{
+                        tags.push("exact compiler coverage/config observations retained; copy selector into package-profile --compiler-outcome (MCP: compiler_outcome)".to_owned());
+                        operand=serde_json::to_string(read).ok();
+                    }
+                }
+            }
             ProductRecord::new(format!("{}: {state}", profile.profile.name().unwrap_or("unknown profile")), operand, tags)
         }).collect(),
         Outcomes::Diagnostic { selector, refusal, .. } => {
@@ -2037,6 +2050,13 @@ fn compiler_outcome_rows(
                 |failure| Fault::compiler_refusal(failure, Operand::Whole).cause().sentence().to_owned());
             vec![ProductRecord::new(format!("{}: {}", selector.profile.name().unwrap_or("unknown profile"), single_line(&detail)), None, Vec::new())]
         },
+        Outcomes::Coverage {page,..} => page.rows.iter().map(|row| {
+            let title=match row {
+                backend_library::PackageCompilerCoverageRow::Configuration{path,..}=>format!("selected TypeScript config: {}",single_line(path)),
+                backend_library::PackageCompilerCoverageRow::Gap{path,cause,..}=>format!("{}: {cause}",single_line(path)),
+            };
+            ProductRecord::new(title,page.next.and_then(|read|serde_json::to_string(&read).ok()),vec![format!("{} of {} captured sources have semantic artifacts",page.completed,page.source_count)])
+        }).collect(),
         Outcomes::Stale { .. } => vec![ProductRecord::new("compiler outcome selection changed; read package-profile again", None, Vec::new())],
         Outcomes::Unavailable { reason, .. } => vec![ProductRecord::new(format!("current compiler outcomes unavailable: {}", wire_words(reason)), None, Vec::new())],
     }

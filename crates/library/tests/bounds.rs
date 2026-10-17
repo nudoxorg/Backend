@@ -236,6 +236,7 @@ fn cli_admits_every_closed_compiler_target_without_stringly_core_vocabulary()
             LanguageProfile::Python(PythonVersion::Python314),
         ),
         ("go-1.25", LanguageProfile::Go(GoVersion::Go125)),
+        ("go-1.26", LanguageProfile::Go(GoVersion::Go126)),
         ("java-21", LanguageProfile::Java(JavaRelease::Java21)),
         (
             "csharp-14",

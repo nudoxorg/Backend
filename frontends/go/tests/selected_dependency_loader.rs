@@ -55,6 +55,64 @@ fn installed_go() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn real_selected_loader_preserves_go_126_module_requirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    // This is an actual authority test, not an ambient-tool or silent-skip
+    // control. The managed validator supplies a freshly admitted Go 1.26 tool.
+    let _explicit = std::env::var_os("COMPILER_GO_COMPILER")
+        .ok_or("COMPILER_GO_COMPILER must select the admitted Go 1.26 compiler")?;
+    let (go, goroot) = installed_go()?;
+    let root = tempfile::tempdir()?;
+    let project = root.path().join("project");
+    std::fs::create_dir(&project)?;
+    let project = project.canonicalize()?;
+    std::fs::write(
+        project.join("go.mod"),
+        "module example.com/go126\n\ngo 1.26.2\n",
+    )?;
+    let source = project.join("main.go");
+    std::fs::write(
+        &source,
+        "package main\nfunc Answer() int { return 42 }\nfunc main() { _ = Answer() }\n",
+    )?;
+    let modules = root.path().join("modules");
+    std::fs::create_dir(&modules)?;
+    let environment = GoOracleChildEnvironment::new(
+        go.clone(),
+        goroot,
+        modules,
+        root.path().join("build-cache"),
+    )?;
+    let identity = environment.toolchain_identity();
+    let owner = GoOracle::default()
+        .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+        .with_child_environment(environment.clone())?;
+    let cancelled = AtomicBool::new(false);
+    let witness = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
+    assert!(witness.is_complete());
+    let bytes = owner.authority_image_for_package_with_authority_witness_cancellable(
+        &source,
+        &project,
+        &witness,
+        Some(&cancelled),
+    )?;
+    let image = GoImage::open(&bytes)?;
+    let module = image.module()?.ok_or("actual module metadata is missing")?;
+    assert_eq!(module.path, b"example.com/go126");
+    assert_eq!(
+        module.go_version, b"1.26.2",
+        "the selected authority must retain the actual module requirement"
+    );
+    assert!(
+        image
+            .declarations()
+            .any(|row| row.is_ok_and(|row| row.name == b"Answer" && row.bound))
+    );
+    assert_eq!(environment.toolchain_identity(), identity);
+    Ok(())
+}
+
+#[test]
 fn real_selected_loader_binds_inactive_platform_source_without_active_calls()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

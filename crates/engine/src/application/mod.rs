@@ -175,3 +175,6 @@ pub const DEFAULT_RUST_CARGO_METADATA_POLICY: RustCargoMetadataPolicy =
 pub use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };
+
+#[cfg(test)]
+mod compiler_coverage_tests;

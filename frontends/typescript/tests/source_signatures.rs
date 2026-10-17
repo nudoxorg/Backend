@@ -19,6 +19,34 @@ fn declaration<'a>(analysis: &'a SourceAnalysis, name: &str) -> &'a SourceDeclar
 }
 
 #[test]
+fn class_binding_extents_include_only_grammar_owned_decorators_and_terminators()
+-> Result<(), SyntaxError> {
+    use backend_compile::SourceBindingIdentity;
+    let source = "class Example {\n  @Input() currentPage = 1 /* before terminator */;\n  automatic = 2\n  @Input() /* between decorator and method */ set ifAuthenticated(value: boolean) {}\n  plain() {};\n}\n";
+    let analysis = analyze(source)?;
+    for (name, expected) in [
+        (
+            "currentPage",
+            "@Input() currentPage = 1 /* before terminator */;",
+        ),
+        ("automatic", "automatic = 2"),
+        (
+            "ifAuthenticated",
+            "@Input() /* between decorator and method */ set ifAuthenticated(value: boolean) {}",
+        ),
+        ("plain", "plain() {}"),
+    ] {
+        let SourceBindingIdentity::Exact(capture) = declaration(&analysis, name).binding_identity()
+        else {
+            panic!("exact TypeScript binding");
+        };
+        let (start, end) = capture.owner();
+        assert_eq!(&source[start as usize..end as usize], expected, "{name}");
+    }
+    Ok(())
+}
+
+#[test]
 fn object_types_in_a_header_do_not_end_it() -> Result<(), SyntaxError> {
     let analysis = analyze(
         "export function run(x: { a: number }): { b: string } {\n  return { b: \"\" };\n}\n\n\

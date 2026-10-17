@@ -224,8 +224,13 @@ impl<'a> SourceRowProjection<'a> {
         }
         let profile =
             super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?;
-        if semantic_profile_is_complete(complete, Some(project.package), path, file.python_version)?
-        {
+        if semantic_profile_is_complete(
+            complete,
+            Some(project.package),
+            path,
+            file.python_version,
+            file.go_version,
+        )? {
             // The semantic lane owns this file: its published image answered,
             // so the structural baseline is suppressed entirely. Even a stale
             // image answers (typed stale) rather than falling back silently.

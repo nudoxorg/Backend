@@ -787,12 +787,12 @@ fn configured_package_keeps_selected_semantics_excluded_gaps_and_exact_source_fr
         changed
             .native_program_sources()
             .unwrap()
-            .single_program()
-            .expect("single configured program")
+            .nodes().expect("configured program node").1[0]
+            .program.as_ref().expect("single leaf")
             .program(),
         program
-            .single_program()
-            .expect("single configured program")
+            .nodes().expect("configured program node").1[0]
+            .program.as_ref().expect("single leaf")
             .program()
     );
     assert_eq!(

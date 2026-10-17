@@ -35,6 +35,8 @@ mod package_compiler_outcomes;
 mod package_graph_budget;
 #[path = "tests/record_budget_pages.rs"]
 mod record_budget_pages;
+#[path = "tests/semantic_selection.rs"]
+mod semantic_selection;
 #[path = "tests/semantic_source_pages.rs"]
 mod semantic_source_pages;
 #[path = "tests/source_membership_pages.rs"]

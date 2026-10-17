@@ -103,6 +103,8 @@ pub enum GoVersion {
     Go124,
     /// Go 1.25.
     Go125,
+    /// Go 1.26.
+    Go126,
 }
 
 /// C# language version selected by Roslyn.

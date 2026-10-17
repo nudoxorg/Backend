@@ -334,6 +334,7 @@ impl StructuralProjectionPlan {
                 Some(project.package),
                 file.path,
                 file.python_version,
+                file.go_version,
             )? {
                 continue;
             }
@@ -718,6 +719,7 @@ pub(super) fn projected_source_capacity(
                 .map(|project| project.package),
             fields.path,
             fields.python_version,
+            fields.go_version,
         )? {
             continue;
         }
