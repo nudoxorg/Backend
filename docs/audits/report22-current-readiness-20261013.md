@@ -6,7 +6,7 @@ Native35 closed on source `16dbe7a8b36e3aa8943a7a1fc3ccc9ac3a19fe09` / tree `e61
 
 The ordinary four-binary build phase passed, and Root adopted those four ELFs for runtime experiments only (`actual-ilo-native35-H2/ROOT-ADOPTED-ORDINARY-NATIVE35.json`, SHA-256 `324a4575e22f1954bf87c2c0a30e38fb86471e724c40c965024746f6d7f518b5`). This is not current application acceptance: fresh current-35 MCP/GUI execution remains unrun/in preparation, and installer/current Mac bundle acceptance remains unproven. The verified continued-epoch accounting leaves 5,266,100,224 bytes; no new allocation is claimed.
 
-PRs 468–475 remain source candidates, not merged/current-native-verified checkpoints. PR473's three review blockers are being repaired. PR474 addresses the three TSZ failures; the GUI work includes a five-case fixture-entry repair (`d994`) and a separate three-production-case/frame change in PR475. PocketBase still has a test fixture using a legacy version. These are source-review status statements, not test results.
+PRs 468–476 remain source candidates, not merged/current-native-verified checkpoints. PR473's three review blockers have source corrections in `10016dcc`; native verification remains unrun. PR474 addresses the three TSZ failures. PR475 contains two production graph-navigation repairs plus one test-frame synchronization correction. PR476's five-case fixture-entry repair is source commit `d994` and remains open. PocketBase still has a test fixture using a legacy version. These are source-review status statements, not test results.
 
 ## Follow-up: 2026-10-17, Native34 closure and Native35 H2
 
