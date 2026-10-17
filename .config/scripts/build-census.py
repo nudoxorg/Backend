@@ -39,6 +39,8 @@ MAX_PROCESS_TABLE_LINE_BYTES = 4 * 1024
 PROCESS_TABLE_TIMEOUT_SECONDS = 10.0
 NATIVE_SCAN_TIMEOUT_SECONDS = 10.0
 MAX_ARG_BYTES = 128 * 1024
+MAX_CARGO_BUILD_ENV_BYTES = 64 * 1024
+MAX_CARGO_BUILD_ENVIRONMENT_READS = 32
 MAX_ARG_COUNT = 512
 MAX_SNAPSHOT_ARG_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_ARG_PROCESSES = 512
@@ -276,6 +278,27 @@ class _LinuxProcDirectory:
         try:
             with os.fdopen(descriptor, "rb", closefd=False) as source:
                 return source.read(limit + 1)
+        finally:
+            os.close(descriptor)
+
+    def read_environ_bounded(self, limit: int) -> bytes:
+        """Read the single whitelisted proc environment file, bounded and nofollow."""
+        descriptor = os.open(
+            "environ",
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=self._directory_fd(),
+        )
+        try:
+            output = bytearray()
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                while True:
+                    chunk = source.read(min(4096, limit + 1 - len(output)))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > limit:
+                        raise CensusError("linux-proc-file-limit")
+            return bytes(output)
         finally:
             os.close(descriptor)
 
@@ -613,6 +636,7 @@ class ProcessRecord:
     compiler_candidate: bool = False
     runtime_owner_candidate: bool = False
     unknown_executable_candidate: bool = False
+    environment_cargo_jobs: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -670,6 +694,19 @@ class _ArgvBudget:
 
     def exhaust(self) -> None:
         self.exhausted = True
+
+
+@dataclasses.dataclass(slots=True)
+class _CargoEnvironmentBudget:
+    """Bound optional Cargo environment captures across one process scan."""
+
+    reads: int = 0
+
+    def admit(self) -> bool:
+        if self.reads >= MAX_CARGO_BUILD_ENVIRONMENT_READS:
+            return False
+        self.reads += 1
+        return True
 
 
 def _parse_ps_row(raw_line: bytes | str) -> _PsRow | None:
@@ -810,6 +847,56 @@ def _is_runtime_owner_executable(executable: str) -> bool:
     }
 
 
+def _positive_job_count(value: str) -> int | None:
+    """Parse a positive ASCII decimal Cargo job count without leaking errors."""
+    if not value or not value.isascii() or not value.isdecimal():
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _cargo_jobs_option_present(argv: tuple[str, ...] | None) -> bool:
+    """Whether argv contains any jobs option, valid or malformed, before `--`."""
+    if argv is None:
+        return False
+    for token in argv[1:]:
+        if token == "--":
+            return False
+        if token in {"--jobs", "-j"} or token.startswith("--jobs="):
+            return True
+        if token.startswith("-j") and len(token) > 2:
+            return True
+    return False
+
+
+def _cargo_build_jobs_from_environ(raw: bytes) -> int | None:
+    """Extract only one positive CARGO_BUILD_JOBS value from bounded environ bytes."""
+    if not raw or len(raw) > MAX_CARGO_BUILD_ENV_BYTES or raw[-1:] != b"\0":
+        return None
+    matches: list[bytes] = []
+    for entry in raw[:-1].split(b"\0"):
+        if not entry:
+            return None
+        name, separator, value = entry.partition(b"=")
+        if not separator or not name:
+            return None
+        if name == b"CARGO_BUILD_JOBS":
+            matches.append(value)
+    if len(matches) != 1:
+        return None
+    try:
+        text = matches[0].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    count = _positive_job_count(text)
+    if count is None or count > sys.maxsize:
+        return None
+    return count
+
+
 def _requested_cargo_jobs(argv: tuple[str, ...] | None) -> int | None:
     """Read only an explicit positive Cargo `--jobs` setting from argv."""
     if argv is None:
@@ -831,10 +918,9 @@ def _requested_cargo_jobs(argv: tuple[str, ...] | None) -> int | None:
         elif token.startswith("-j") and len(token) > 2:
             values.append(token[2:])
         index += 1
-    if len(values) != 1 or not values[0].isascii() or not values[0].isdecimal():
+    if len(values) != 1:
         return None
-    parsed = int(values[0], 10)
-    return parsed if parsed > 0 else None
+    return _positive_job_count(values[0])
 
 
 def _safe_argv(record: ProcessRecord, verb: str | None) -> dict[str, Any]:
@@ -884,7 +970,10 @@ def classify_cargo_process(record: ProcessRecord) -> CargoEntry | None:
     classification, verb, reason = _argv_command(record.argv)
     if record.argv_error:
         classification, verb, reason = "unknown", None, record.argv_error
-    return CargoEntry(record, classification, verb, reason, _requested_cargo_jobs(record.argv))
+    requested_jobs = _requested_cargo_jobs(record.argv)
+    if record.argv is not None and not _cargo_jobs_option_present(record.argv):
+        requested_jobs = record.environment_cargo_jobs
+    return CargoEntry(record, classification, verb, reason, requested_jobs)
 
 
 def cargo_entries(snapshot: ProcessSnapshot) -> list[CargoEntry]:
@@ -1334,7 +1423,11 @@ def _linux_process_record(
     argv_budget: _ArgvBudget,
     *,
     proc_factory: Any = _LinuxProcDirectory,
+    environment_budget: _CargoEnvironmentBudget | None = None,
 ) -> ProcessRecord | _LinuxKernelThreadWithoutExecutable | _LinuxTerminalProcRow | None:
+    if environment_budget is None:
+        environment_budget = _CargoEnvironmentBudget()
+
     def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
         process_uids = _parse_proc_status_uids(proc.read_text("status"))
         if row.effective_uid is not None and process_uids[1] != row.effective_uid:
@@ -1351,6 +1444,7 @@ def _linux_process_record(
                 }
             raise
         if _is_cargo_executable(executable):
+            environment_cargo_jobs = None
             if argv_budget.exhausted:
                 argv = None
                 argv_error = "snapshot-argv-budget-exhausted"
@@ -1375,11 +1469,29 @@ def _linux_process_record(
                     else:
                         argv = tuple(os.fsdecode(part) for part in parts)
                         argv_error = None
+                        if (
+                            not _cargo_jobs_option_present(argv)
+                            and environment_budget.admit()
+                        ):
+                            read_environment = getattr(proc, "read_environ_bounded", None)
+                            if callable(read_environment):
+                                try:
+                                    environment = read_environment(MAX_CARGO_BUILD_ENV_BYTES)
+                                except (OSError, CensusError):
+                                    # Environment availability is optional and
+                                    # may never make an otherwise readable
+                                    # Cargo process disappear from the census.
+                                    pass
+                                else:
+                                    environment_cargo_jobs = _cargo_build_jobs_from_environ(
+                                        environment
+                                    )
         else:
             if not _is_rustc_executable(executable) and not _is_runtime_owner_executable(executable):
                 executable = None
             argv = None
             argv_error = None
+            environment_cargo_jobs = None
         return {
             "ppid": stat.ppid,
             "pgid": stat.pgid,
@@ -1388,6 +1500,7 @@ def _linux_process_record(
             "executable": executable,
             "argv": argv,
             "argv_error": argv_error,
+            "environment_cargo_jobs": environment_cargo_jobs,
         }
 
     capture = _capture_linux_proc_pid(row.pid, read_process, proc_factory=proc_factory)
@@ -1415,6 +1528,7 @@ def _linux_process_record(
         argv=details["argv"],
         argv_error=details["argv_error"],
         state=details["state"],
+        environment_cargo_jobs=details["environment_cargo_jobs"],
     )
 
 
@@ -1539,6 +1653,7 @@ def _linux_processes(
     records: dict[int, ProcessRecord] = {}
     issues: dict[str, int] = {}
     races: dict[str, int] = {}
+    environment_budget = _CargoEnvironmentBudget()
 
     def record_issue(category: str, row: _PsRow, error: BaseException) -> None:
         issues[category] = issues.get(category, 0) + 1
@@ -1558,7 +1673,13 @@ def _linux_processes(
         if not same_uid and not cargo_hint and not compiler_hint and not runtime_hint:
             continue
         try:
-            record = _linux_process_record(row, boot_id, argv_budget, proc_factory=proc_factory)
+            record = _linux_process_record(
+                row,
+                boot_id,
+                argv_budget,
+                proc_factory=proc_factory,
+                environment_budget=environment_budget,
+            )
             if isinstance(record, (_LinuxKernelThreadWithoutExecutable, _LinuxTerminalProcRow)):
                 continue
             if record is not None:

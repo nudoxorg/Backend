@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import importlib.util
+import os
 import pathlib
 import shutil
 import sys
@@ -38,7 +39,10 @@ class FakeProc:
                  fail_path: str | None = None, flags: int = 0, status_uid: int = 1000,
                  directory_error: OSError | None = None,
                  current_stats: list[tuple[str, int] | BaseException] | None = None,
-                 pidfd_open_error: ProcessLookupError | None = None) -> None:
+                 pidfd_open_error: ProcessLookupError | None = None,
+                 cmdline: bytes = b"/usr/bin/cargo\0build\0",
+                 environment: bytes | None = None,
+                 environment_error: BaseException | None = None) -> None:
         self.pid = pid
         self.pidfd = 73
         self.starts = list(starts or [("R", 101)] * 3)
@@ -50,6 +54,9 @@ class FakeProc:
         self.directory_open_error = directory_error
         self.current_stats = list(current_stats or [])
         self.pidfd_open_error = pidfd_open_error
+        self.cmdline = cmdline
+        self.environment = environment
+        self.environment_error = environment_error
         self.events: list[str] = []
 
     def __enter__(self) -> "FakeProc":
@@ -110,8 +117,16 @@ class FakeProc:
         if self.failure is not None and self.fail_path == relative_path:
             raise self.failure
         if relative_path == "cmdline":
-            return b"/usr/bin/cargo\0build\0"
+            return self.cmdline
         raise AssertionError(relative_path)
+
+    def read_environ_bounded(self, _limit: int) -> bytes:
+        self.events.append("read-nofollow:environ")
+        if self.environment_error is not None:
+            raise self.environment_error
+        if self.environment is None:
+            raise PermissionError(errno.EACCES, "environment-unavailable")
+        return self.environment
 
     def stat_path(self, relative_path: str) -> object:
         self.events.append("stat:" + relative_path)
@@ -132,6 +147,31 @@ class FakePoll:
     def poll(self, timeout: int) -> list[tuple[int, int]]:
         assert timeout == 0
         return [] if self.flags == 0 else [(self.descriptor, self.flags)]
+
+
+class LinuxProcBoundedEnvironmentTests(unittest.TestCase):
+    def test_environment_reader_is_nofollow_and_enforces_stream_cap(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="linux-proc-environ-test-") as root_text:
+            root = pathlib.Path(root_text)
+            directory_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            proc = census._LinuxProcDirectory(41)
+            proc.directory_fd = directory_fd
+            try:
+                (root / "environ").write_bytes(b"A=1\0")
+                self.assertEqual(proc.read_environ_bounded(4), b"A=1\0")
+
+                (root / "environ").unlink()
+                (root / "target").write_bytes(b"CARGO_BUILD_JOBS=9\0")
+                (root / "environ").symlink_to(root / "target")
+                with self.assertRaises(OSError):
+                    proc.read_environ_bounded(128)
+
+                (root / "environ").unlink()
+                (root / "environ").write_bytes(b"X" * 9)
+                with self.assertRaisesRegex(census.CensusError, "linux-proc-file-limit"):
+                    proc.read_environ_bounded(8)
+            finally:
+                proc.close()
 
 
 class GoneAtPidfdOpen:
@@ -165,6 +205,67 @@ class LinuxProcRaceTests(unittest.TestCase):
     @staticmethod
     def cargo_row() -> census._PsRow:
         return census._PsRow(41, 1, 41, 1000, "Mon Oct 12 00:00:00 2026", "cargo")
+
+    def test_cargo_environment_jobs_are_read_only_for_optionless_same_identity_row(self) -> None:
+        factory, rows = self.factory(
+            environment=b"UNRELATED_SECRET=private\0CARGO_BUILD_JOBS=3\0"
+        )
+        record = census._linux_process_record(
+            self.cargo_row(), "boot", census._ArgvBudget(), proc_factory=factory
+        )
+
+        self.assertIsInstance(record, census.ProcessRecord)
+        assert isinstance(record, census.ProcessRecord)
+        self.assertEqual(record.environment_cargo_jobs, 3)
+        entry = census.classify_cargo_process(record)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry.requested_jobs, 3)
+        self.assertNotIn("private", repr(record))
+        self.assertNotIn("private", census.json.dumps(census._entry_json(entry, {record.pid: record}, None)))
+        events = rows[0].events
+        environ_read = events.index("read-nofollow:environ")
+        stat_reads = [index for index, event in enumerate(events) if event == "stat"]
+        self.assertEqual(len(stat_reads), 3)
+        self.assertLess(stat_reads[1], environ_read)
+        self.assertLess(environ_read, stat_reads[2])
+
+    def test_cli_jobs_skip_environment_and_environment_denial_stays_unknown(self) -> None:
+        cli_factory, cli_rows = self.factory(
+            cmdline=b"/usr/bin/cargo\0build\0--jobs=4\0",
+            environment=b"CARGO_BUILD_JOBS=9\0",
+        )
+        cli_record = census._linux_process_record(
+            self.cargo_row(), "boot", census._ArgvBudget(), proc_factory=cli_factory
+        )
+        self.assertIsInstance(cli_record, census.ProcessRecord)
+        assert isinstance(cli_record, census.ProcessRecord)
+        self.assertIsNone(cli_record.environment_cargo_jobs)
+        self.assertNotIn("read-nofollow:environ", cli_rows[0].events)
+        self.assertEqual(census.classify_cargo_process(cli_record).requested_jobs, 4)
+
+        denied_factory, denied_rows = self.factory(
+            environment_error=PermissionError(errno.EACCES, "denied")
+        )
+        denied_record = census._linux_process_record(
+            self.cargo_row(), "boot", census._ArgvBudget(), proc_factory=denied_factory
+        )
+        self.assertIsInstance(denied_record, census.ProcessRecord)
+        assert isinstance(denied_record, census.ProcessRecord)
+        self.assertIsNone(denied_record.environment_cargo_jobs)
+        self.assertIsNone(census.classify_cargo_process(denied_record).requested_jobs)
+        self.assertIn("read-nofollow:environ", denied_rows[0].events)
+
+    def test_environment_read_refuses_pid_start_change_during_capture(self) -> None:
+        factory, rows = self.factory(
+            starts=[("R", 101), ("R", 101), ("R", 102)],
+            environment=b"CARGO_BUILD_JOBS=3\0",
+        )
+        with self.assertRaisesRegex(census._LinuxProcRace, "pid-start-changed-during-proc-read"):
+            census._linux_process_record(
+                self.cargo_row(), "boot", census._ArgvBudget(), proc_factory=factory
+            )
+        self.assertIn("read-nofollow:environ", rows[0].events)
 
     def test_gui_supervisor_capture_preserves_all_ownership_fields(self) -> None:
         factory, rows = self.factory()
