@@ -5,6 +5,8 @@
 //! mutation. Missing, active and unresolved evidence never creates a new key.
 
 use crate::ClientError;
+#[cfg(any(unix, windows))]
+use crate::RequestContext;
 use backend_library::{
     CompileExecutionIntent, IndexOperationKey, IndexOperationObservation, IndexOperationState,
     PackageReference, SurfaceCommand, SurfaceReply, index_operation_request_digest,
@@ -540,29 +542,86 @@ pub fn index_with_journal(
     execution_intent: CompileExecutionIntent,
     mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
 ) -> Result<SurfaceReply, ClientError> {
-    index_with_journal_recovery(paths, package, execution_intent, |dispatch| match dispatch {
-        IndexJournalDispatch::Observe(operation_key) => transport(
-            SurfaceCommand::IndexOperationStatus { operation_key },
-        ),
-        IndexJournalDispatch::Start(start) => {
-            // This adapter is the actual transport boundary. The recovery API's
-            // callback can still refuse its attachment before sending anything.
-            let command = start.command();
-            let SurfaceCommand::IndexOperationStart { operation_key, .. } = &command else {
-                unreachable!("the held start has one exact command shape");
-            };
-            let operation_key = *operation_key;
-            exchange(&mut transport, command).map_err(|cause| match cause {
-                ClientError::IndexOperationDeliveryUnknown { operation_key: observed, .. }
-                    if observed == operation_key => cause,
-                ClientError::RequestCancelled(_) | ClientError::CommandFailed(_) => cause,
-                cause => ClientError::IndexOperationDeliveryUnknown {
-                    operation_key,
-                    cause: Box::new(cause),
-                },
-            })
-        }
-    })
+    index_with_journal_transport(
+        paths,
+        package,
+        execution_intent,
+        &mut transport,
+        None,
+        std::thread::park_timeout,
+    )
+}
+
+/// Reconciles a default request after a bounded, cancellable journal-lock wait.
+/// Only pre-dispatch lock contention is waited on; no transport is retried.
+/// A contended caller can only observe the exact saved request after acquiring
+/// its lock, never allocate or replace an operation key.
+/// # Errors
+/// Returns cancellation, the original request deadline, bounded lock exhaustion,
+/// or the same journal and receipt failures as `index_with_journal`.
+#[cfg(any(unix, windows))]
+pub fn index_with_journal_wait(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    context: Option<&RequestContext>,
+    mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_transport(
+        paths,
+        package,
+        execution_intent,
+        &mut transport,
+        Some(&|| {
+            context
+                .map(RequestContext::remaining_read_budget)
+                .transpose()
+                .map(Option::flatten)
+        }),
+        std::thread::park_timeout,
+    )
+}
+
+fn index_with_journal_transport(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    wait: JournalWait<'_>,
+    park: impl FnMut(std::time::Duration),
+) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_recovery_inner(
+        paths,
+        package,
+        execution_intent,
+        |dispatch| match dispatch {
+            IndexJournalDispatch::Observe(operation_key) => {
+                transport(SurfaceCommand::IndexOperationStatus { operation_key })
+            }
+            IndexJournalDispatch::Start(start) => {
+                // This adapter is the actual transport boundary. The recovery API's
+                // callback can still refuse its attachment before sending anything.
+                let command = start.command();
+                let SurfaceCommand::IndexOperationStart { operation_key, .. } = &command else {
+                    unreachable!("the held start has one exact command shape");
+                };
+                let operation_key = *operation_key;
+                exchange(&mut transport, command).map_err(|cause| match cause {
+                    ClientError::IndexOperationDeliveryUnknown {
+                        operation_key: observed,
+                        ..
+                    } if observed == operation_key => cause,
+                    ClientError::RequestCancelled(_) | ClientError::CommandFailed(_) => cause,
+                    cause => ClientError::IndexOperationDeliveryUnknown {
+                        operation_key,
+                        cause: Box::new(cause),
+                    },
+                })
+            }
+        },
+        wait,
+        park,
+    )
 }
 
 /// Executes the same caller journal with a borrowed capability on every start.
@@ -578,6 +637,122 @@ pub fn index_with_journal_recovery(
         IndexJournalDispatch<'held>,
     ) -> Result<SurfaceReply, ClientError>,
 ) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_recovery_inner(
+        paths,
+        package,
+        execution_intent,
+        &mut transport,
+        None,
+        std::thread::park_timeout,
+    )
+}
+
+/// Bounded journal-lock admission for synchronous CLI/MCP request workers.
+/// The callback retains the same unforgeable held-start capability. Waiting
+/// never installs a deadline on an admitted mutation and never retries it.
+/// # Errors
+/// Returns caller cancellation/deadline, exhausted lock admission, or the
+/// existing exact journal/attachment/receipt failures.
+#[cfg(any(unix, windows))]
+pub fn index_with_journal_recovery_wait(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    context: Option<&RequestContext>,
+    mut transport: impl for<'held> FnMut(
+        IndexJournalDispatch<'held>,
+    ) -> Result<SurfaceReply, ClientError>,
+) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_recovery_inner(
+        paths,
+        package,
+        execution_intent,
+        &mut transport,
+        Some(&|| {
+            context
+                .map(RequestContext::remaining_read_budget)
+                .transpose()
+                .map(Option::flatten)
+        }),
+        std::thread::park_timeout,
+    )
+}
+
+// These synchronous entrypoints run on the CLI/stdio actor or the MCP HTTP
+// spawn_blocking worker, never on the shared async executor. The independent
+// admission ceiling does not become an owner mutation execution deadline.
+const REQUEST_LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+type JournalWait<'a> = Option<&'a dyn Fn() -> Result<Option<std::time::Duration>, ClientError>>;
+
+fn acquire_request_lock(
+    lock: &File,
+    wait: JournalWait<'_>,
+    deadline: std::time::Instant,
+    mut park: impl FnMut(std::time::Duration),
+) -> Result<bool, ClientError> {
+    let mut contended = false;
+    let mut backoff = std::time::Duration::from_millis(1);
+    loop {
+        if let Some(check) = wait {
+            check()?;
+        }
+        // A wakeup at/after the boundary cannot admit a late request.
+        if contended && std::time::Instant::now() >= deadline {
+            return Err(io_error(
+                "another caller is still reconciling this request; bounded journal admission expired",
+            ));
+        }
+        match lock.try_lock() {
+            Ok(()) => {
+                if contended && std::time::Instant::now() >= deadline {
+                    lock.unlock().map_err(io_error)?;
+                    return Err(io_error(
+                        "another caller is still reconciling this request; bounded journal admission expired",
+                    ));
+                }
+                if let Some(check) = wait {
+                    check()?;
+                }
+                return Ok(contended);
+            }
+            Err(std::fs::TryLockError::WouldBlock) if wait.is_some() => {
+                contended = true;
+                let mut remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if let Some(check) = wait
+                    && let Some(budget) = check()?
+                {
+                    remaining = remaining.min(budget);
+                }
+                if remaining.is_zero() {
+                    return Err(io_error(
+                        "another caller is still reconciling this request; bounded journal admission expired",
+                    ));
+                }
+                // Recheck the exact OS lock and cancellation after every wake,
+                // including spurious wakes; no command has been dispatched.
+                park(backoff.min(remaining));
+                backoff = (backoff * 2).min(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(io_error(format!(
+                    "another caller is reconciling this request; retry: {error}"
+                )));
+            }
+        }
+    }
+}
+
+fn index_with_journal_recovery_inner(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    mut transport: impl for<'held> FnMut(
+        IndexJournalDispatch<'held>,
+    ) -> Result<SurfaceReply, ClientError>,
+    wait: JournalWait<'_>,
+    park: impl FnMut(std::time::Duration),
+) -> Result<SurfaceReply, ClientError> {
+    let deadline = std::time::Instant::now() + REQUEST_LOCK_BUDGET;
     let package = match package {
         PackageReference::Local(path) => {
             let canonical = backend_runtime::normalize_surface_path(Path::new(path.as_str()));
@@ -607,11 +782,7 @@ pub fn index_with_journal_recovery(
     let lock = directory
         .open_private_file_read_write(&format!("{name}.lock"), true)
         .map_err(io_error)?;
-    lock.try_lock().map_err(|error| {
-        io_error(format!(
-            "another caller is reconciling this request; retry: {error}"
-        ))
-    })?;
+    let contended = acquire_request_lock(&lock, wait, deadline, park)?;
     directory.sync_all().map_err(io_error)?;
     root.verify_path(paths.data()).map_err(io_error)?;
     let saved = read_claim(&directory, &name)?;
@@ -627,6 +798,11 @@ pub fn index_with_journal_recovery(
         Some(_) => {
             return Err(io_error(
                 "the saved claim names a different request or workspace authority",
+            ));
+        }
+        None if contended => {
+            return Err(io_error(
+                "the contended request no longer has a saved claim; no new operation was allocated",
             ));
         }
         None => {
@@ -649,6 +825,9 @@ pub fn index_with_journal_recovery(
         lock: &lock,
     };
     verify_attachment(paths, &root, &directory, &claim)?;
+    if let Some(check) = wait {
+        check()?;
+    }
     let observation = if saved.is_some() {
         let command = SurfaceCommand::IndexOperationStatus {
             operation_key: claim.operation_key,
@@ -667,6 +846,9 @@ pub fn index_with_journal_recovery(
         None
     };
     let mut reply = match observation {
+        // The owning caller already reconciled this request. Contention only
+        // permits observation, never replay or replacement of a saved key.
+        Some(observation) if contended => SurfaceReply::IndexOperationStatus(observation),
         Some(observation) => match saved_operation_action(&observation) {
             SavedOperationAction::Observe => SurfaceReply::IndexOperationStatus(observation),
             SavedOperationAction::ReplaySameKey => {
@@ -678,7 +860,7 @@ pub fn index_with_journal_recovery(
     };
     let observation = reply_observation(&reply)?;
     admit_observation(&claim, observation)?;
-    if saved.is_some() {
+    if saved.is_some() && !contended {
         if let Some(failed) = failed_operation(&claim, observation)? {
             verify_attachment(paths, &root, &directory, &claim)?;
             let mut next = claim.clone();
@@ -967,6 +1149,253 @@ mod tests {
     }
 
     #[test]
+    fn contended_caller_joins_after_reconciliation_without_a_second_start() {
+        for missing_after_release in [false, true] {
+            let fixture = Fixture::new();
+            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::scope(|scope| {
+                let owner_fixture = &fixture;
+                let owner = scope.spawn(move || {
+                    let fixture = owner_fixture;
+                    let reply = fixture
+                        .index(|command| {
+                            let SurfaceCommand::IndexOperationStart { operation_key, .. } = command
+                            else {
+                                panic!("one original admission");
+                            };
+                            let claim = fixture.claims().pop().expect("durable before dispatch");
+                            assert_eq!(operation_key, claim.operation_key);
+                            entered_tx
+                                .send(claim.clone())
+                                .expect("original holds real lock");
+                            release_rx
+                                .recv_timeout(std::time::Duration::from_secs(2))
+                                .expect("contender reached lock wait");
+                            Ok(SurfaceReply::IndexOperationStarted(known(
+                                &claim,
+                                if missing_after_release {
+                                    IndexOperationState::Failed {
+                                        reason: IndexOperationFailureReason::Cancelled,
+                                        detail: ProductText::from_static("terminal original"),
+                                        compiler_failure: None,
+                                    }
+                                } else {
+                                    IndexOperationState::Accepted
+                                },
+                            )))
+                        })
+                        .expect("original reconciliation completes");
+                    closed_tx.send(()).expect("original released real lock");
+                    reply
+                });
+                let original = entered_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("original actually dispatches under lock");
+                let mut observed = 0;
+                let mut released = false;
+                let joined = index_with_journal_recovery_inner(
+                    &fixture.paths,
+                    fixture.package.clone(),
+                    CompileExecutionIntent::Interactive,
+                    |dispatch| {
+                        observed += 1;
+                        let IndexJournalDispatch::Observe(key) = dispatch else {
+                            panic!("contender cannot acquire a mutation capability");
+                        };
+                        assert_eq!(key, original.operation_key);
+                        Ok(SurfaceReply::IndexOperationStatus(known(
+                            &original,
+                            IndexOperationState::Accepted,
+                        )))
+                    },
+                    Some(&|| Ok(None)),
+                    |_| {
+                        assert!(!released, "deterministic release needs only one wake");
+                        released = true;
+                        release_tx
+                            .send(())
+                            .expect("release original reconciliation");
+                        closed_rx
+                            .recv_timeout(std::time::Duration::from_secs(2))
+                            .expect("original API returned and dropped lock");
+                    },
+                );
+                assert!(released, "real contention reached bounded wait");
+                owner.join().expect("original thread drained");
+                if missing_after_release {
+                    assert!(
+                        joined.is_err(),
+                        "lost terminal claim cannot authorize a new key"
+                    );
+                    assert_eq!(observed, 0, "no dispatch after a lost claim");
+                    assert!(fixture.claims().is_empty());
+                } else {
+                    assert_eq!(
+                        joined.expect("joined saved request"),
+                        SurfaceReply::IndexOperationStatus(known(
+                            &original,
+                            IndexOperationState::Accepted
+                        ))
+                    );
+                    assert_eq!(observed, 1, "only one exact same-key observation");
+                    assert_eq!(fixture.claims(), [original]);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn contended_wait_preserves_cancellation_deadline_and_admission_ceiling() {
+        let fixture = Fixture::new();
+        fixture
+            .index(|_| Err(ClientError::Io("saved before interrupted send".into())))
+            .expect_err("retain saved claim");
+        let original = fixture.claims().pop().expect("original identity");
+        let directory = DirectoryCapability::open(&fixture.paths.data().join(JOURNAL_DIRECTORY))
+            .expect("private journal");
+        let name = format!(
+            "{}.json.lock",
+            blake3::Hash::from(index_operation_request_digest(
+                &fixture.package,
+                CompileExecutionIntent::Interactive
+            ))
+            .to_hex()
+        );
+        let held = directory
+            .open_private_file_read_write(&name, false)
+            .expect("real original lock");
+        held.try_lock().expect("original owns lock");
+        let context = RequestContext::new();
+        let mut waited = false;
+        let error = index_with_journal_recovery_inner(
+            &fixture.paths,
+            fixture.package.clone(),
+            CompileExecutionIntent::Interactive,
+            |_| panic!("cancelled waiter cannot dispatch"),
+            Some(&|| context.remaining_read_budget()),
+            |_| {
+                waited = true;
+                context.cancel(crate::RequestCancellationReason::Explicit);
+            },
+        )
+        .expect_err("cancel before next acquisition");
+        assert!(waited);
+        assert!(matches!(
+            error,
+            ClientError::RequestCancelled(crate::RequestCancellationReason::Explicit)
+        ));
+        let expired = RequestContext::new();
+        assert!(expired.read_deadline(std::time::Duration::ZERO).is_err());
+        assert!(matches!(
+            index_with_journal_recovery_inner(
+                &fixture.paths,
+                fixture.package.clone(),
+                CompileExecutionIntent::Interactive,
+                |_| panic!("expired waiter cannot dispatch"),
+                Some(&|| expired.remaining_read_budget()),
+                |_| panic!("expired scope cannot wait")
+            ),
+            Err(ClientError::RemoteDeadlineExceeded)
+        ));
+        let contender = directory
+            .open_private_file_read_write(&name, false)
+            .expect("separate lock descriptor");
+        assert!(
+            acquire_request_lock(
+                &contender,
+                Some(&|| Ok(None)),
+                std::time::Instant::now(),
+                |_| panic!("zero remaining admission cannot park")
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fixture.claims(),
+            [original],
+            "every refusal retains the exact claim"
+        );
+    }
+
+    #[test]
+    fn contended_observer_never_replays_unknown_or_replaces_failed_operation() {
+        let fixture = Fixture::new();
+        fixture
+            .index(|_| Err(ClientError::Io("original send interrupted".into())))
+            .expect_err("retained claim");
+        let original = fixture.claims().pop().expect("original identity");
+        for state in 0..3 {
+            let failed = state == 2;
+            let directory =
+                DirectoryCapability::open(&fixture.paths.data().join(JOURNAL_DIRECTORY))
+                    .expect("journal");
+            let name = format!(
+                "{}.json.lock",
+                blake3::Hash::from(index_operation_request_digest(
+                    &fixture.package,
+                    CompileExecutionIntent::Interactive
+                ))
+                .to_hex()
+            );
+            let mut held = Some(
+                directory
+                    .open_private_file_read_write(&name, false)
+                    .expect("original lock"),
+            );
+            held.as_ref()
+                .expect("held")
+                .try_lock()
+                .expect("real contention");
+            let observation = if failed {
+                known(
+                    &original,
+                    IndexOperationState::Failed {
+                        reason: IndexOperationFailureReason::Cancelled,
+                        detail: ProductText::from_static("original failed"),
+                        compiler_failure: None,
+                    },
+                )
+            } else if state == 1 {
+                known(&original, IndexOperationState::Unresolved {
+                    reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                    detail: ProductText::from_static("captured work remains interrupted"),
+                })
+            } else {
+                IndexOperationObservation::Unknown {
+                    operation_key: original.operation_key,
+                }
+            };
+            let mut calls = 0;
+            let reply = index_with_journal_recovery_inner(
+                &fixture.paths,
+                fixture.package.clone(),
+                CompileExecutionIntent::Interactive,
+                |dispatch| {
+                    calls += 1;
+                    let IndexJournalDispatch::Observe(key) = dispatch else {
+                        panic!("no contended mutation capability");
+                    };
+                    assert_eq!(key, original.operation_key);
+                    Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                },
+                Some(&|| Ok(None)),
+                |_| {
+                    drop(held.take());
+                },
+            )
+            .expect("honest existing observation");
+            assert_eq!(reply, SurfaceReply::IndexOperationStatus(observation));
+            assert_eq!(calls, 1, "no same-key replay or failed-key replacement");
+            assert_eq!(
+                fixture.claims().is_empty(),
+                failed,
+                "existing terminal acknowledgment only"
+            );
+        }
+    }
+
+    #[test]
     fn held_start_capability_excludes_same_request_race_and_keeps_other_project_independent() {
         let fixture = Fixture::new();
         let other_path = fixture.root.join("independent-project");
@@ -995,7 +1424,10 @@ mod tests {
                         .join()
                         .expect("contender drained")
                         .expect_err("held real lock excludes second caller");
-                    assert!(matches!(&error, ClientError::Io(_)), "request-lock refusal happens before any dispatch: {error}");
+                    assert!(
+                        matches!(&error, ClientError::Io(_)),
+                        "request-lock refusal happens before any dispatch: {error}"
+                    );
                     assert!(
                         error
                             .to_string()
@@ -1159,26 +1591,51 @@ mod tests {
     fn queued_dispatch_without_reply_retains_claim_and_observes_original_key() {
         let fixture = Fixture::new();
         let mut delivered = Vec::new();
-        let error = fixture.index(|command| {
-            delivered.push(command);
-            Err(ClientError::Disconnected(io::ErrorKind::WouldBlock))
-        }).expect_err("queued delivery has no admitted reply");
-        let claim = fixture.claims().pop().expect("saved before attempted delivery");
-        assert_eq!(error, ClientError::IndexOperationDeliveryUnknown {
-            operation_key: claim.operation_key,
-            cause: Box::new(ClientError::Disconnected(io::ErrorKind::WouldBlock)),
-        });
+        let error = fixture
+            .index(|command| {
+                delivered.push(command);
+                Err(ClientError::Disconnected(io::ErrorKind::WouldBlock))
+            })
+            .expect_err("queued delivery has no admitted reply");
+        let claim = fixture
+            .claims()
+            .pop()
+            .expect("saved before attempted delivery");
+        assert_eq!(
+            error,
+            ClientError::IndexOperationDeliveryUnknown {
+                operation_key: claim.operation_key,
+                cause: Box::new(ClientError::Disconnected(io::ErrorKind::WouldBlock)),
+            }
+        );
         let original_claim = claim.clone();
-        let reply = fixture.index(|command| {
-            assert_eq!(command, SurfaceCommand::IndexOperationStatus { operation_key: claim.operation_key });
-            delivered.push(command);
-            Ok(SurfaceReply::IndexOperationStatus(known(&claim, IndexOperationState::Accepted)))
-        }).expect("observe the exact queued/accepted operation without another start");
-        assert_eq!(reply, SurfaceReply::IndexOperationStatus(known(&claim, IndexOperationState::Accepted)));
+        let reply = fixture
+            .index(|command| {
+                assert_eq!(
+                    command,
+                    SurfaceCommand::IndexOperationStatus {
+                        operation_key: claim.operation_key
+                    }
+                );
+                delivered.push(command);
+                Ok(SurfaceReply::IndexOperationStatus(known(
+                    &claim,
+                    IndexOperationState::Accepted,
+                )))
+            })
+            .expect("observe the exact queued/accepted operation without another start");
+        assert_eq!(
+            reply,
+            SurfaceReply::IndexOperationStatus(known(&claim, IndexOperationState::Accepted))
+        );
         assert_eq!(fixture.claims(), [original_claim]);
         assert_eq!(delivered.len(), 2);
-        assert!(matches!(delivered[0], SurfaceCommand::IndexOperationStart { operation_key, .. } if operation_key == claim.operation_key));
-        assert!(matches!(delivered[1], SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == claim.operation_key));
+        assert!(
+            matches!(delivered[0], SurfaceCommand::IndexOperationStart { operation_key, .. } if operation_key == claim.operation_key)
+        );
+        assert!(
+            matches!(delivered[1], SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == claim.operation_key)
+        );
     }
 
     #[test]

@@ -143,11 +143,13 @@ impl Engine for SessionEngine<'_> {
     ) -> Result<SurfaceReply, ClientError> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
+        let context = session.request_context().cloned();
         match self.paths {
-            Some(paths) => backend_client::index_with_journal_recovery(
+            Some(paths) => backend_client::index_with_journal_recovery_wait(
                 paths,
                 package,
                 execution_intent,
+                context.as_ref(),
                 |dispatch| match recovery.as_deref_mut() {
                     Some(recovery) => recovery.journal(session, dispatch, None),
                     None => session.surface(dispatch.command()),
@@ -227,17 +229,36 @@ pub(crate) fn execute_with_output_admission(
     let Request::Surface(command) = request else {
         return backend_present::answer(&mut engine, request);
     };
-    if let SurfaceCommand::SemanticVersions { package, limit, cursor } = command.as_ref() {
+    if let SurfaceCommand::SemanticVersions {
+        package,
+        limit,
+        cursor,
+    } = command.as_ref()
+    {
         let original_context = engine.session.request_context().cloned();
         let lifetime = original_context.clone().unwrap_or_default();
-        lifetime.read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+        lifetime
+            .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
             .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
-        engine.session.set_request_context(Some(lifetime.clone()))
+        engine
+            .session
+            .set_request_context(Some(lifetime.clone()))
             .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
-        let result = versions_with_output_admission(&mut engine, package, *limit, cursor.as_ref(),
-            || lifetime.check().map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole)),
-            &mut admit);
-        let restored = engine.session.set_request_context(original_context)
+        let result = versions_with_output_admission(
+            &mut engine,
+            package,
+            *limit,
+            cursor.as_ref(),
+            || {
+                lifetime.check().map_err(|error| {
+                    Fault::from_client_error(&error, backend_present::Operand::Whole)
+                })
+            },
+            &mut admit,
+        );
+        let restored = engine
+            .session
+            .set_request_context(original_context)
             .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
         return result.and_then(|answer| restored.map(|()| answer));
     }
@@ -348,26 +369,50 @@ fn versions_with_output_admission(
     let mut pinned = None;
     loop {
         check()?;
-        let command = SurfaceCommand::SemanticVersions { package: package.clone(), limit: effective, cursor: cursor.cloned() };
-        command.admit().map_err(|error| Fault::admission(error, backend_present::Operand::Whole))?;
-        let reply = engine.surface(command.clone())
-            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
-        backend_library::admit_surface_reply(&command, &reply)
-            .map_err(|error| Fault::from_client_error(&ClientError::Protocol(error.to_string()), backend_present::Operand::Whole))?;
-        let SurfaceReply::SemanticVersionsPage(page) = &reply else {
-            return Err(Fault::from_client_error(&ClientError::Protocol("native semantic versions page changed shape".to_owned()), backend_present::Operand::Whole));
+        let command = SurfaceCommand::SemanticVersions {
+            package: package.clone(),
+            limit: effective,
+            cursor: cursor.cloned(),
         };
-        let basis = (page.source_relation_root, page.semantic_relation_root, page.total);
+        command
+            .admit()
+            .map_err(|error| Fault::admission(error, backend_present::Operand::Whole))?;
+        let reply = engine
+            .surface(command.clone())
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        backend_library::admit_surface_reply(&command, &reply).map_err(|error| {
+            Fault::from_client_error(
+                &ClientError::Protocol(error.to_string()),
+                backend_present::Operand::Whole,
+            )
+        })?;
+        let SurfaceReply::SemanticVersionsPage(page) = &reply else {
+            return Err(Fault::from_client_error(
+                &ClientError::Protocol("native semantic versions page changed shape".to_owned()),
+                backend_present::Operand::Whole,
+            ));
+        };
+        let basis = (
+            page.source_relation_root,
+            page.semantic_relation_root,
+            page.total,
+        );
         if pinned.is_some_and(|expected| expected != basis) {
             return Err(Fault::from_client_error(&ClientError::Protocol("semantic version roots changed while selecting a bounded page; restart discovery explicitly".to_owned()), backend_present::Operand::Whole));
         }
         pinned = Some(basis);
-        let answer = Answer::Product(Box::new(backend_present::product_view_for_owned_command(&command, reply)));
+        let answer = Answer::Product(Box::new(backend_present::product_view_for_owned_command(
+            &command, reply,
+        )));
         let result = admit(&answer);
         check()?;
         match result {
             Ok(()) => return Ok(answer),
-            Err(fault) if cursor.is_none() && effective > 1 && fault.cause().slug() == backend_present::CauseSlug::Oversized => {
+            Err(fault)
+                if cursor.is_none()
+                    && effective > 1
+                    && fault.cause().slug() == backend_present::CauseSlug::Oversized =>
+            {
                 effective = effective.div_ceil(2);
             }
             Err(fault) => return Err(fault),
