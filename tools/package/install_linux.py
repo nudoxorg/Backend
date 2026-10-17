@@ -398,6 +398,41 @@ def _nixos_stub_loader_diagnosis(stderr) -> str | None:
     return None
 
 
+def _linux_distribution_id() -> str | None:
+    """Read only the simple ID field from a bounded os-release file."""
+    try:
+        with open("/etc/os-release", "rb") as stream:
+            contents = stream.read(65537)
+    except OSError:
+        return None
+    if len(contents) > 65536:
+        return None
+    try:
+        lines = contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    for line in lines:
+        if not line.startswith("ID="):
+            continue
+        value = line[3:]
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value.lower() if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
+    return None
+
+
+def _reject_known_unsupported_loader() -> None:
+    # This preview has only been validated on Ubuntu 24.04+; NixOS's generic
+    # /lib64 loader is a stub and cannot start these packaged ELF binaries.
+    # Refuse before fetching the ~186 MB archive, without evaluating os-release.
+    if _linux_distribution_id() == "nixos":
+        raise InstallError(
+            "NixOS is not supported by this Linux preview: its generic Linux loader "
+            "cannot start the packaged executables. Use the validated Ubuntu 24.04+ "
+            "environment (glibc 2.39 or newer); no release archive was downloaded."
+        )
+
+
 def _sdk_probe_failure(label, expected, returncode, stdout, stderr, detail=None) -> InstallError:
     diagnosis = _nixos_stub_loader_diagnosis(stderr)
     parts = [f"TypeScript SDK {label} probe failed"]
@@ -979,6 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if sys.platform != "linux" or not (os.uname().machine.lower() in {"x86_64", "amd64"}):
         raise InstallError("this installer supports Linux x86_64 only")
+    _reject_known_unsupported_loader()
     raw_home = os.environ.get("HOME")
     if not raw_home:
         raise InstallError("HOME is unset; pass --prefix with a user-writable directory")
