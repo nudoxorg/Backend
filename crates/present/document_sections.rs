@@ -4,6 +4,8 @@
 //! normal exact document, member and relation admissions, then checks a content
 //! commitment including the complete source basis. They cannot turn stale page
 //! bytes into a current read or hide a failed required subread.
+//! Each section request currently repeats the complete outline read/admission;
+//! this bounds delivery, and does not optimize producer-side member selection.
 
 use backend_library::{Document, DocumentVersion, encode_id};
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,35 @@ const ROWS: usize = 16;
 // admission still measures the complete actual envelope under its own ceiling.
 const PAGE_BYTES: usize = 32 * 1024;
 const PAGE_TOKENS: usize = 8_000;
+
+/// Copy this complete arguments object to backend.document. Selected bytes
+/// remain a locator; the ordinary owner read must prove its current membership.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentContinuation {
+    /// Exact label asserted for the selected row.
+    pub coordinate: String,
+    /// Full public selected-symbol-id object, never its display abbreviation.
+    pub selected_symbol: crate::IdentitySemanticData,
+    /// Exact source/content-bound section position.
+    pub cursor: String,
+}
+
+impl DocumentContinuation {
+    /// Executable CLI arguments equivalent to this MCP arguments object.
+    #[must_use]
+    pub fn cli_arguments(&self) -> Vec<String> {
+        let crate::IdentitySemanticData::SelectedSymbolId(symbol) = &self.selected_symbol;
+        vec![
+            "show".to_owned(),
+            self.coordinate.clone(),
+            "--selected-id".to_owned(),
+            encode_id(symbol.bytes()),
+            "--cursor".to_owned(),
+            self.cursor.clone(),
+        ]
+    }
+}
 
 /// Extent of member/relation rows in this declaration response. Documentation,
 /// signature, exact selected identity, source availability and faults repeat on
@@ -33,10 +64,13 @@ pub struct DocumentSectionPage {
     /// Opaque content/source-bound continuation; absent only at the terminal page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// Complete next-call arguments, preserving the exact selected ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<DocumentContinuation>,
 }
 
 impl DocumentSectionPage {
-    pub(crate) fn description(&self, coordinate: &str) -> String {
+    pub(crate) fn description(&self, _coordinate: &str) -> String {
         let extent = format!(
             "Declaration sections {}..{} of {} ({} members, {} relations).",
             self.start,
@@ -46,14 +80,17 @@ impl DocumentSectionPage {
             self.total_relations
         );
         match &self.next_cursor {
-            Some(cursor) => {
-                let command = crate::shell::command(
-                    "show",
-                    &[coordinate.to_owned(), "--cursor".to_owned(), cursor.clone()],
-                )
-                .unwrap_or_default();
+            Some(_) => {
+                let command = self
+                    .continuation
+                    .as_ref()
+                    .map(|next| {
+                        let arguments = next.cli_arguments();
+                        crate::shell::command("show", &arguments[1..]).unwrap_or_default()
+                    })
+                    .unwrap_or_default();
                 format!(
-                    "{extent} More: {command} (backend.document: preserve coordinate and pass section_page.next_cursor as cursor)."
+                    "{extent} More: {command}. MCP: copy section_page.continuation unchanged to backend.document; retain selected_symbol."
                 )
             }
             None => format!("{extent} Complete."),
@@ -207,12 +244,32 @@ pub(crate) fn window(page: Page, document: &Document, cursor: Option<&str>) -> R
     let mut end = start.saturating_add(ROWS).min(total);
     loop {
         let mut selected = page.select_sections(start, end);
+        let next_cursor = (end < total).then(|| format!("ds1:{committed}:{end}"));
+        let continuation = next_cursor
+            .as_ref()
+            .map(|cursor| {
+                let selected_id =
+                    backend_library::SelectedSymbolId::new(*document.symbol.as_bytes())
+                        .ok_or_else(|| {
+                            Fault::usage(
+                                "document",
+                                "cannot continue a declaration without a full selected row ID",
+                            )
+                        })?;
+                Ok::<_, Fault>(DocumentContinuation {
+                    coordinate: page.identity().coordinate().as_str().to_owned(),
+                    selected_symbol: crate::IdentitySemanticData::SelectedSymbolId(selected_id),
+                    cursor: cursor.clone(),
+                })
+            })
+            .transpose()?;
         selected.section_page = Some(DocumentSectionPage {
             start,
             end,
             total_members,
             total_relations,
-            next_cursor: (end < total).then(|| format!("ds1:{committed}:{end}")),
+            next_cursor,
+            continuation,
         });
         let failure = match fit(&selected) {
             Ok(()) => return Ok(selected),
@@ -478,6 +535,17 @@ mod tests {
                 "ds1:{}:1",
                 commitment(&huge, &document).expect("commitment")
             )),
+            continuation: Some(DocumentContinuation {
+                coordinate: COORDINATE.to_owned(),
+                selected_symbol: crate::IdentitySemanticData::SelectedSymbolId(
+                    backend_library::SelectedSymbolId::new(*document.symbol.as_bytes())
+                        .expect("fixture selected id"),
+                ),
+                cursor: format!(
+                    "ds1:{}:1",
+                    commitment(&huge, &document).expect("commitment")
+                ),
+            }),
         });
         let expected = crate::encode_answer(
             &Answer::Page(Box::new(singleton)),
@@ -535,7 +603,13 @@ mod tests {
         invocation.push(COORDINATE);
         invocation.set("cursor", "ds1:test:16");
         assert!(
-            matches!(crate::lower(&invocation, "/unused"), Ok(crate::Request::ResumePage { coordinate, cursor }) if coordinate == COORDINATE && cursor == "ds1:test:16")
+            crate::lower(&invocation, "/unused").is_err(),
+            "coordinate cannot silently replace a selected ID on resume"
+        );
+        invocation.set("selected-id", encode_id(document.symbol.as_bytes()));
+        assert!(
+            matches!(crate::lower(&invocation, "/unused"), Ok(crate::Request::ResumePage { selector, cursor })
+            if selector.selected_id().map(|id| *id.bytes()) == Some(*document.symbol.as_bytes()) && cursor == "ds1:test:16")
         );
     }
 }

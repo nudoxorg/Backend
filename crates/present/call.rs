@@ -14,10 +14,10 @@
 use crate::fault::{Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
-    CommandId, CompileExecutionIntent, IndexJobTicket, IndexSearchCursor, OverrideEvidence,
-    PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
-    SemanticGenerationId, SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener,
-    TreeSubject, decode_id,
+    CommandId, CompileExecutionIntent, DeclarationRead, DeclarationSelector, IndexJobTicket,
+    IndexSearchCursor, OverrideEvidence, PackageCoordinate, PackageReference, ProductText,
+    ProjectName, ProjectSelector, SelectedSymbolId, SemanticGenerationId, SemanticLanguageProfile,
+    SurfaceCommand, TreeNodeId, TreeOpener, TreeSubject, decode_id,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -130,6 +130,22 @@ impl Invocation {
                 format!("usage: {}", self.grammar.installed_usage()),
             ));
         }
+        if self
+            .grammar
+            .options()
+            .iter()
+            .any(|spec| spec.kind() == ArgumentKind::SelectedSymbol)
+            && self.at(0).is_none()
+            && self.option("selected-id").is_none()
+        {
+            return Err(Fault::usage(
+                self.grammar.name(),
+                format!(
+                    "usage: {} (supply a coordinate or --selected-id)",
+                    self.grammar.installed_usage()
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -190,6 +206,12 @@ fn take_json(
             spec.json_name(),
             "native continuation must be the exact cursor object from the preceding page",
         ));
+    }
+    if spec.kind() == ArgumentKind::SelectedSymbol {
+        let crate::IdentitySemanticData::SelectedSymbolId(symbol) = serde_json::from_value(value.clone())
+            .map_err(|_| Fault::usage("selected_symbol", "expected the exact identity.semantic_data selected-symbol-id object with 32 bytes and a nonzero ID"))?;
+        call.set(spec.name(), backend_library::encode_id(symbol.bytes()));
+        return Ok(());
     }
     if spec.kind() == ArgumentKind::Flag {
         if value.as_bool().unwrap_or(false) {
@@ -283,8 +305,8 @@ pub enum Request {
     Page(String),
     /// Resume exact declaration sections after revalidating its source and complete content.
     ResumePage {
-        /// Original exact declaration operand.
-        coordinate: String,
+        /// Full selected operand; a coordinate never replaces the selected row.
+        selector: DeclarationSelector,
         /// Content-bound section continuation.
         cursor: String,
     },
@@ -296,6 +318,13 @@ pub enum Request {
         coordinate: String,
         /// Whether incoming relations are included.
         incoming: bool,
+    },
+    /// Exact selected declaration read, with an optional owner-checked label assertion.
+    Declaration {
+        /// Closed coordinate/selected/selected-with-coordinate operand.
+        selector: DeclarationSelector,
+        /// Which selected declaration capability to read.
+        read: DeclarationRead,
     },
     /// A bounded search page.
     Search {
@@ -337,6 +366,59 @@ fn query_cursor(invocation: &Invocation, query: Request) -> Result<Request, Faul
         )),
         None => Ok(query),
     }
+}
+
+/// Parses the three valid declaration operand states shared by CLI and MCP.
+/// Selected IDs remain untrusted locators until the owner resolves them.
+///
+/// # Errors
+/// Rejects missing operands, empty coordinate assertions, zero or malformed IDs.
+pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelector, Fault> {
+    let coordinate = invocation.at(0);
+    if coordinate.is_some_and(str::is_empty) {
+        return Err(Fault::usage("coordinate", "coordinate must not be empty"));
+    }
+    match invocation.option("selected-id") {
+        Some(text) => {
+            let symbol = SelectedSymbolId::from_hex(text).ok_or_else(|| {
+                Fault::usage(
+                    "selected-id",
+                    "expected exactly 64 hexadecimal digits for a nonzero selected row ID",
+                )
+            })?;
+            Ok(match coordinate {
+                Some(coordinate) => DeclarationSelector::SelectedAt {
+                    symbol,
+                    coordinate: coordinate.to_owned(),
+                },
+                None => DeclarationSelector::Selected(symbol),
+            })
+        }
+        None => coordinate
+            .map(|value| DeclarationSelector::Coordinate(value.to_owned()))
+            .ok_or_else(|| Fault::usage("coordinate", "supply a coordinate or a selected row ID")),
+    }
+}
+
+fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
+    let selector = declaration_selector(invocation)?;
+    if read == DeclarationRead::Document && let Some(cursor) = invocation.option("cursor") {
+        if cursor.is_empty() || selector.selected_id().is_none() {
+            return Err(Fault::usage("cursor", "copy the full document continuation including selected_symbol / --selected-id; a coordinate alone cannot resume a selected row"));
+        }
+        return Ok(Request::ResumePage { selector, cursor: cursor.to_owned() });
+    }
+    if let DeclarationSelector::Coordinate(coordinate) = selector {
+        return Ok(match read {
+            DeclarationRead::Document => Request::Page(coordinate),
+            DeclarationRead::Source => Request::Source(coordinate),
+            DeclarationRead::Graph | DeclarationRead::Related => Request::Neighbourhood {
+                coordinate,
+                incoming: read == DeclarationRead::Related,
+            },
+        });
+    }
+    Ok(Request::Declaration { selector, read })
 }
 
 /// Lowers one invocation into a typed request.
@@ -382,25 +464,13 @@ pub fn lower_with_opener(
         }
         CommandId::Remove => Ok(Request::Remove(invocation.require(0)?.to_owned())),
         CommandId::Show | CommandId::Document => {
-            let coordinate = invocation.require(0)?.to_owned();
-            match invocation.option("cursor") {
-                Some("") => Err(Fault::usage("cursor", "continuation must not be empty")),
-                Some(cursor) => Ok(Request::ResumePage {
-                    coordinate,
-                    cursor: cursor.to_owned(),
-                }),
-                None => Ok(Request::Page(coordinate)),
-            }
+            declaration_request(invocation, DeclarationRead::Document)
         }
-        CommandId::Source => Ok(Request::Source(invocation.require(0)?.to_owned())),
-        CommandId::Related => Ok(Request::Neighbourhood {
-            coordinate: invocation.require(0)?.to_owned(),
-            incoming: true,
-        }),
-        CommandId::Graph | CommandId::GraphQuery => Ok(Request::Neighbourhood {
-            coordinate: invocation.require(0)?.to_owned(),
-            incoming: false,
-        }),
+        CommandId::Source => declaration_request(invocation, DeclarationRead::Source),
+        CommandId::Related => declaration_request(invocation, DeclarationRead::Related),
+        CommandId::Graph | CommandId::GraphQuery => {
+            declaration_request(invocation, DeclarationRead::Graph)
+        }
         CommandId::Search => query_cursor(
             invocation,
             Request::Search {

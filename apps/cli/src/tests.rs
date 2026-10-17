@@ -549,7 +549,7 @@ fn a_missing_operand_prints_the_exact_usage_line() {
     let fault = invoke::parse(&words("show"), None).expect_err("missing coordinate");
     assert_eq!(fault.slug(), FaultSlug::Usage);
     assert!(
-        fault.cause().sentence().contains("nudox show <COORDINATE>"),
+        fault.cause().sentence().contains("nudox show [COORDINATE]"),
         "{}",
         fault.cause().sentence()
     );
@@ -562,7 +562,7 @@ fn a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command() {
     assert_eq!(fault.operand().render(), "document");
     assert_eq!(
         fault.cause().sentence(),
-        "usage: nudox document <COORDINATE>"
+        "usage: nudox document [COORDINATE] [--selected-id SELECTED_ID]"
     );
     assert_eq!(render::exit_code(&fault), ExitCode::from(64));
 }
@@ -1757,3 +1757,42 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
 
 #[path = "tests/composite_show.rs"]
 mod composite_show;
+
+#[test]
+fn cli_selected_id_is_copyable_full_width_and_optional_coordinate_is_an_assertion() {
+    const PROJECT: &str = "/abs/app";
+    const DECLARATION: &str = "/abs/app::box.ts:1::Box::constructor::item";
+    use backend_library::{DeclarationSelector, SelectedSymbolId};
+    let id = SelectedSymbolId::new([0x62; 32]).expect("nonzero row");
+    for verb in ["show", "source", "graph", "related"] {
+        for coordinate in [None, Some(DECLARATION)] {
+            let mut args = vec![verb.to_owned(), "--selected-id".to_owned(), "62".repeat(32)];
+            if let Some(coordinate) = coordinate {
+                args.push(coordinate.to_owned());
+            }
+            let invocation = invoke::parse(&args, None).expect("actual CLI parser");
+            let Request::Declaration { selector, .. } =
+                lower(&invocation, PROJECT).expect("typed read")
+            else {
+                panic!("selected request")
+            };
+            assert_eq!(selector.selected_id(), Some(id));
+            assert_eq!(selector.coordinate(), coordinate);
+            assert!(matches!(
+                selector,
+                DeclarationSelector::Selected(_) | DeclarationSelector::SelectedAt { .. }
+            ));
+        }
+        for invalid in [
+            "62".repeat(8),
+            "00".repeat(32),
+            format!("0x{}", "62".repeat(32)),
+            "gg".repeat(32),
+        ] {
+            let args = vec![verb.to_owned(), "--selected-id".to_owned(), invalid];
+            let invocation = invoke::parse(&args, None).expect("grammar accepts operand text");
+            assert!(lower(&invocation, PROJECT).is_err());
+        }
+    }
+    assert!(invoke::parse(&words("references --selected-id 6262"), None).is_err());
+}

@@ -630,6 +630,12 @@ impl Engine for SessionEngine {
         let asking = std::time::Instant::now();
         let name = match &probe {
             Probe::Packages => "probe.packages",
+            Probe::Declaration { read, .. } => match read {
+                backend_library::DeclarationRead::Document => "probe.document",
+                backend_library::DeclarationRead::Source => "probe.source",
+                backend_library::DeclarationRead::Graph => "probe.graph",
+                backend_library::DeclarationRead::Related => "probe.related",
+            },
             Probe::Document(_) => "probe.document",
             Probe::Source(_) => "probe.source",
             Probe::Related(_) => "probe.related",
@@ -643,6 +649,7 @@ impl Engine for SessionEngine {
         };
         let reply = self.with_session(|session| match probe {
             Probe::Packages => session.packages(),
+            Probe::Declaration { selector, read } => session.declaration(selector, read),
             Probe::Document(at) => session.document(at),
             Probe::Source(at) => session.source(at),
             Probe::Related(at) => session.related(at),

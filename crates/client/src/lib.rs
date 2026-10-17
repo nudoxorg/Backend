@@ -59,12 +59,12 @@ pub use subscription_observation::{
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
-    CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
-    GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
-    IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
-    IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery, PackageReference,
-    PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1, PageContinuation,
-    PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
+    CompileExecutionIntent, CoverageCapability, DeclarationRead, DeclarationSelector, DiffRecord,
+    DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest, GraphValue,
+    HealthReport, IndexCancelReceipt, IndexJobObservation, IndexJobTerminal, IndexJobTicket,
+    IndexOperationKey, IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery,
+    PackageReference, PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1,
+    PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
     RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticShapeBatch,
     SemanticShapeBudget, SemanticShapeRequest, SemanticVersionRecord, SurfaceCommand, SurfaceReply,
     SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim,
@@ -919,6 +919,7 @@ pub struct Session {
     search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
     admitted_owner: Option<backend_library::Cursor>,
+    admitted_source: Option<backend_library::SemanticObject>,
     prepared_query: Option<CommandDto>,
     continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
     preparation_progress: Option<Box<dyn FnMut(QueryPreparationProgress) -> bool + Send>>,
@@ -930,6 +931,7 @@ struct RetainedContinuation {
     certificate: WireCertificate,
     owner: backend_library::Cursor,
     next_request: Option<CommandDto>,
+    selected_coordinate: Option<PinnedSelectedCoordinate>,
 }
 
 /// The producer certificate state needed to resume one bounded page after a
@@ -1005,6 +1007,7 @@ impl Session {
             search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
+            admitted_source: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
@@ -1042,6 +1045,7 @@ impl Session {
             search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
+            admitted_source: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
@@ -1235,6 +1239,7 @@ impl Session {
             id: encode_id(receipt.root().as_bytes()),
         });
         self.admitted_owner = Some(receipt.cursor());
+        self.admitted_source = Some(receipt.source());
         Ok(Revision {
             root: receipt.root(),
             source: receipt.source(),
@@ -1570,6 +1575,74 @@ impl Session {
         self.send_success(
             Command::Document(DocumentQuery::selected(symbol, revision.root)),
             Some(certificate),
+        )
+    }
+
+    /// Reads a public declaration operand without promoting selected bytes to a key.
+    /// A supplied coordinate is checked by the owner against the selected row label.
+    ///
+    /// # Errors
+    /// Refuses absent/stale row membership, mismatched labels, and admission failures.
+    pub fn declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        read: DeclarationRead,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        let certificate = declaration_certificate(revision.certificate, selector);
+        let address = selector.address();
+        let command = match read {
+            DeclarationRead::Document => {
+                Command::Document(DocumentQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Source => {
+                Command::Source(DocumentQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Graph => {
+                Command::Graph(GraphNeighborhoodQuery::addressed(address, revision.root))
+            }
+            DeclarationRead::Related => {
+                Command::Related(GraphNeighborhoodQuery::addressed(address, revision.root))
+            }
+        };
+        self.send_success(command, Some(certificate))
+    }
+
+    /// Reads a graph window while retaining the exact selected ID and optional label.
+    ///
+    /// # Errors
+    /// Refuses changed continuation operands or any ordinary owner/window admission failure.
+    pub fn graph_page_declaration(
+        &mut self,
+        selector: &DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.prepare_query_window(window, continuation, None)?;
+        if let Some(prepared) = &self.prepared_query {
+            if !declaration_coordinate_claims_match(prepared.certificate(), selector) {
+                return Err(ClientError::Protocol(
+                    "graph continuation changed declaration coordinate assertion".to_owned(),
+                ));
+            }
+            return self.resume_prepared_graph_window(
+                selector.address(),
+                window.issued().get(),
+                continuation,
+                Some(window),
+            );
+        }
+        let revision = self.revision()?;
+        let certificate = declaration_certificate(revision.certificate, selector);
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window)
+            .ok_or_else(|| ClientError::Protocol("graph window changed credit".to_owned()))?;
+        self.send_success(
+            Command::GraphPage {
+                symbol: selector.address(),
+                page,
+            },
+            Some(self.page_certificate(certificate, continuation)),
         )
     }
 
@@ -2431,6 +2504,46 @@ impl Session {
         remaining: Option<Duration>,
     ) -> Result<ReplyDto, ClientError> {
         let started = std::time::Instant::now();
+        let selected_assertion = selected_coordinate_assertion(&command, certificate.as_ref())?;
+        // A small graph page may legitimately omit its center. Authenticate
+        // that selected row through a document at this already admitted source,
+        // never through a refreshed revision or an echoed coordinate claim.
+        let pinned_center = if let (Some(assertion), Command::GraphPage { page, .. }) =
+            (&selected_assertion, &command)
+        {
+            let owner = self.admitted_owner.ok_or(ClientError::StaleCursor)?;
+            let source = backend_library::Basis {
+                root: owner.root(),
+                object: self.admitted_source.ok_or(ClientError::StaleCursor)?,
+                branch: owner.branch(),
+                log: owner.log(),
+                schema: owner.schema(),
+            };
+            if !page.basis().matches(source.root) {
+                return Err(ClientError::StaleCursor);
+            }
+            let retained = page
+                .continuation()
+                .and_then(|cursor| self.continuations.get(&cursor.cursor()))
+                .and_then(|retained| retained.selected_coordinate.as_ref())
+                .filter(|center| center.matches(assertion, source))
+                .cloned();
+            Some(if let Some(center) = retained {
+                center
+            } else {
+                let document = self.send_success_with_budget(
+                    Command::Document(
+                        DocumentQuery::addressed(assertion.symbol, source.root)
+                            .with_source_basis(source),
+                    ),
+                    certificate.clone(),
+                    remaining.map(|budget| budget.saturating_sub(started.elapsed())),
+                )?;
+                assertion.admit_document(&document, source)?
+            })
+        } else {
+            None
+        };
         let portable = matches!(
             &command,
             Command::Search(_)
@@ -2447,7 +2560,10 @@ impl Session {
             }
             None => self.send_query_ready(command, certificate)?,
         })?;
-        self.remember_continuation(&reply);
+        if let Some(assertion) = selected_assertion {
+            assertion.admit_payload(&reply, pinned_center.as_ref())?;
+        }
+        self.remember_continuation(&reply, pinned_center);
         if let Some((command, Some(certificate))) = portable {
             self.retain_portable_query(command, &certificate, &reply)?;
         }
@@ -2475,7 +2591,11 @@ impl Session {
         with_page_continuation_claim(certificate, Some(continuation))
     }
 
-    fn remember_continuation(&mut self, reply: &ReplyDto) {
+    fn remember_continuation(
+        &mut self,
+        reply: &ReplyDto,
+        selected_coordinate: Option<PinnedSelectedCoordinate>,
+    ) {
         let terminal = match &reply.reply {
             CommandReply::ProjectionPage(page) => page.terminal,
             CommandReply::GraphQueryPage(page) => page.terminal,
@@ -2502,6 +2622,7 @@ impl Session {
                 certificate,
                 owner,
                 next_request: None,
+                selected_coordinate,
             },
         );
     }
@@ -2613,6 +2734,183 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
         id: encode_id(id),
         value: value.to_owned(),
     })
+}
+
+// A peer on the same DTO version may decode the label claim without enforcing
+// it. Only the admitted selected payload can discharge that assertion.
+#[cfg(any(unix, windows))]
+struct SelectedCoordinateAssertion {
+    symbol: SymbolAddress,
+    coordinate: String,
+}
+
+#[cfg(any(unix, windows))]
+#[derive(Clone)]
+struct PinnedSelectedCoordinate {
+    symbol: SymbolKey,
+    source: backend_library::Basis,
+    coordinate: String,
+}
+
+#[cfg(any(unix, windows))]
+impl PinnedSelectedCoordinate {
+    fn matches(
+        &self,
+        assertion: &SelectedCoordinateAssertion,
+        source: backend_library::Basis,
+    ) -> bool {
+        assertion.symbol.matches(self.symbol)
+            && assertion.coordinate == self.coordinate
+            && self.source == source
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl SelectedCoordinateAssertion {
+    fn admit_document(
+        &self,
+        reply: &ReplyDto,
+        source: backend_library::Basis,
+    ) -> Result<PinnedSelectedCoordinate, ClientError> {
+        self.admit_payload(reply, None)?;
+        let (CommandReply::Document(document) | CommandReply::Page(document)) = &reply.reply else {
+            return Err(ClientError::Protocol(
+                "selected document changed shape".to_owned(),
+            ));
+        };
+        if document.source_basis() != Some(source) || document.basis != source.root {
+            return Err(ClientError::StaleCursor);
+        }
+        Ok(PinnedSelectedCoordinate {
+            symbol: document.symbol,
+            source,
+            coordinate: self.coordinate.clone(),
+        })
+    }
+
+    fn admit_payload(
+        &self,
+        reply: &ReplyDto,
+        pinned_center: Option<&PinnedSelectedCoordinate>,
+    ) -> Result<(), ClientError> {
+        let coordinate = match &reply.reply {
+            CommandReply::Document(document) | CommandReply::Page(document) => document
+                .selection
+                .as_ref()
+                .filter(|selection| {
+                    self.symbol.matches(document.symbol)
+                        && selection.symbol() == document.symbol
+                        && Some(selection.source()) == document.source_basis()
+                })
+                .map(backend_library::DocumentSelection::coordinate),
+            CommandReply::Graph(snapshot) => self.center_coordinate(&snapshot.root),
+            CommandReply::ProjectionPage(page) => {
+                self.center_coordinate(&page.snapshot.root).or_else(|| {
+                    pinned_center
+                        .filter(|center| {
+                            self.symbol.matches(center.symbol)
+                                && center.source == page.snapshot.root.basis()
+                        })
+                        .map(|center| center.coordinate.as_str())
+                })
+            }
+            _ => None,
+        };
+        if coordinate != Some(self.coordinate.as_str()) {
+            return Err(ClientError::Protocol(
+                "selected reply omitted or mismatched its asserted coordinate".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn center_coordinate<'a>(&self, root: &'a backend_library::ViewRoot) -> Option<&'a str> {
+        root.row_refs().find_map(|row| match row.id {
+            backend_library::RowId::Symbol(symbol) if self.symbol.matches(symbol) => {
+                Some(row.label.as_str())
+            }
+            _ => None,
+        })
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn selected_coordinate_assertion(
+    command: &Command,
+    certificate: Option<&WireCertificate>,
+) -> Result<Option<SelectedCoordinateAssertion>, ClientError> {
+    let symbol = match command {
+        Command::Document(query) | Command::Source(query) => query.symbol(),
+        Command::Graph(query) | Command::Related(query) => query.symbol(),
+        Command::GraphPage { symbol, .. } => *symbol,
+        _ => return Ok(None),
+    };
+    if !symbol.is_selected() {
+        return Ok(None);
+    }
+    let mut coordinates = certificate
+        .into_iter()
+        .flat_map(|certificate| &certificate.claims)
+        .filter_map(|claim| match claim {
+            WireClaim::Key {
+                schema: WireSchema::Symbol,
+                value,
+                ..
+            } => Some(value),
+            _ => None,
+        });
+    let Some(coordinate) = coordinates.next() else {
+        return Ok(None);
+    };
+    if coordinates.next().is_some() {
+        return Err(ClientError::Protocol(
+            "selected declaration has multiple coordinate assertions".to_owned(),
+        ));
+    }
+    Ok(Some(SelectedCoordinateAssertion {
+        symbol,
+        coordinate: coordinate.clone(),
+    }))
+}
+#[cfg(any(unix, windows))]
+fn declaration_coordinate_claims_match(
+    certificate: Option<&WireCertificate>,
+    selector: &DeclarationSelector,
+) -> bool {
+    let labels: Vec<_> = certificate
+        .into_iter()
+        .flat_map(|certificate| certificate.claims.iter())
+        .filter_map(|claim| match claim {
+            WireClaim::Key {
+                schema: WireSchema::Symbol,
+                value,
+                ..
+            } => Some(value.as_str()),
+            _ => None,
+        })
+        .collect();
+    labels.as_slice() == selector.coordinate().as_slice()
+}
+
+#[cfg(any(unix, windows))]
+fn declaration_certificate(
+    mut certificate: WireCertificate,
+    selector: &DeclarationSelector,
+) -> WireCertificate {
+    if let Some(symbol) = selector.selected_id() {
+        certificate = certificate.with_claim_once(WireClaim::KeyCommitment {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.bytes()),
+        });
+    }
+    if let Some(coordinate) = selector.coordinate() {
+        certificate = certificate.with_claim_once(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol_key(coordinate).as_bytes()),
+            value: coordinate.to_owned(),
+        });
+    }
+    certificate
 }
 
 #[cfg(any(unix, windows))]

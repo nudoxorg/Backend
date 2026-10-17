@@ -2073,3 +2073,167 @@ fn lifecycle_tempdir() -> Result<tempfile::TempDir, Box<dyn Error>> {
         Ok(tempfile::Builder::new().prefix("b-").tempdir()?)
     }
 }
+
+/// Actual in-process TSZ publication, authenticated Session transport and selected
+/// reads. Public CLI/MCP parsing and rendering have separate route controls.
+#[test]
+fn native_typescript_parameter_property_selected_operands_read_both_current_roles()
+-> Result<(), Box<dyn Error>> {
+    use backend_library::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
+    let fixture = lifecycle_tempdir()?;
+    let project = fixture.path().join("selected-typescript");
+    fs::create_dir(&project)?;
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true,"target":"ES2022"},"files":["box.ts"]}"#,
+    )?;
+    fs::write(
+        project.join("box.ts"),
+        "export class Box { constructor(public item: number) {} }\n",
+    )?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().to_path_buf()),
+        Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let mut config = ProcessConfig::parse([
+        "--endpoint".to_owned(),
+        paths.endpoint().to_string_lossy().into_owned(),
+        "--workspace".to_owned(),
+        paths.data().to_string_lossy().into_owned(),
+        "--registry-offline".to_owned(),
+        "--registry-discovery-offline".to_owned(),
+        "--advisory-offline".to_owned(),
+        "--forge-offline".to_owned(),
+    ])?;
+    config.profile = "builtin".to_owned();
+    config.worker_endpoint = None;
+    config.authority_secret = Some(paths.authority_secret().to_path_buf());
+    let owner = EmbeddedLocalService::start(config)?;
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let mut session = Session::connect(owner.endpoint())?;
+        let package =
+            PackageReference::parse(project.canonicalize()?.to_string_lossy().into_owned())
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        let key = IndexOperationKey::from_bytes([0x71; 32])
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let mut status =
+            session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let IndexOperationObservation::Known(known) = status else {
+                return Err(io::Error::other("index operation unknown").into());
+            };
+            match known.state {
+                IndexOperationState::Published(_) => break,
+                IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
+                state => {
+                    return Err(io::Error::other(format!(
+                        "native TSZ publication refused: {state:?}"
+                    ))
+                    .into());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::other("native TSZ publication deadline").into());
+            }
+            thread::sleep(Duration::from_millis(20));
+            status = session.index_operation_status(key)?;
+        }
+        session.reconnect()?;
+        let CommandReply::Names(names) = session.names("item", 200)?.reply else {
+            return Err(io::Error::other("name reply").into());
+        };
+        let roles = names
+            .root
+            .row_refs()
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    Some(DeclarationKind::Field | DeclarationKind::Variable)
+                ) && row.label.ends_with("::item")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles.len(),
+            2,
+            "actual TSZ parameter property has two native roles"
+        );
+        assert_eq!(
+            roles[0].label, roles[1].label,
+            "ambiguous copied coordinate"
+        );
+        assert_ne!(
+            roles[0].id, roles[1].id,
+            "different native selected row IDs"
+        );
+        assert!(
+            session.document(&roles[0].label).is_err(),
+            "coordinate alone refuses ambiguity"
+        );
+        for row in roles {
+            let RowId::Symbol(symbol) = row.id else {
+                panic!("native symbol")
+            };
+            let id =
+                SelectedSymbolId::new(*symbol.as_bytes()).expect("actual nonzero selected row");
+            for selector in [
+                DeclarationSelector::Selected(id),
+                DeclarationSelector::SelectedAt {
+                    symbol: id,
+                    coordinate: row.label.clone(),
+                },
+            ] {
+                for read in [
+                    DeclarationRead::Document,
+                    DeclarationRead::Source,
+                    DeclarationRead::Graph,
+                    DeclarationRead::Related,
+                ] {
+                    let reply = session.declaration(&selector, read)?.reply;
+                    match reply {
+                        CommandReply::Document(document) => {
+                            assert_eq!(document.symbol, symbol);
+                            assert_eq!(
+                                document
+                                    .selection
+                                    .as_ref()
+                                    .expect("owner-committed label")
+                                    .coordinate(),
+                                row.label
+                            );
+                            assert!(document.excerpt.text().is_some());
+                        }
+                        CommandReply::Graph(graph) => {
+                            assert!(graph.root.row_ref(row.id).is_some(), "exact native center");
+                        }
+                        other => {
+                            return Err(io::Error::other(format!(
+                                "selected read {read:?}: {other:?}"
+                            ))
+                            .into());
+                        }
+                    }
+                }
+            }
+            let wrong = DeclarationSelector::SelectedAt {
+                symbol: id,
+                coordinate: format!("{}-other", row.label),
+            };
+            for read in [
+                DeclarationRead::Document,
+                DeclarationRead::Source,
+                DeclarationRead::Graph,
+                DeclarationRead::Related,
+            ] {
+                assert!(session.declaration(&wrong, read).is_err());
+            }
+        }
+        Ok(())
+    })();
+    let closed = owner.close()?;
+    assert_eq!(closed.failures, 0);
+    result
+}

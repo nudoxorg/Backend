@@ -646,6 +646,16 @@ impl DocumentQuery {
         }
     }
 
+    /// Creates a lookup from an untrusted locator, resolved against the exact view.
+    #[must_use]
+    pub const fn addressed(symbol: SymbolAddress, basis: ViewStateRoot) -> Self {
+        Self {
+            symbol,
+            basis: ViewRevision(basis.to_bytes()),
+            source: None,
+        }
+    }
+
     /// Binds this lookup to the complete source basis used by its producer.
     #[must_use]
     pub const fn with_source_basis(mut self, source: crate::Basis) -> Self {
@@ -1069,6 +1079,15 @@ impl GraphNeighborhoodQuery {
     pub const fn selected(symbol: SymbolKey, basis: ViewStateRoot) -> Self {
         Self {
             symbol: SymbolAddress::selected(symbol),
+            basis: ViewRevision(basis.to_bytes()),
+        }
+    }
+
+    /// Creates a graph lookup from an untrusted current-view locator.
+    #[must_use]
+    pub const fn addressed(symbol: SymbolAddress, basis: ViewStateRoot) -> Self {
+        Self {
+            symbol,
             basis: ViewRevision(basis.to_bytes()),
         }
     }

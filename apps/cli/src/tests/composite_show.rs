@@ -78,6 +78,26 @@ impl Engine for Reader {
     }
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
         match probe {
+            Probe::Declaration { selector, read } => {
+                use backend_library::{DeclarationRead, DocumentSelection};
+                let symbol = selector.address().resolve(self.catalog.view()).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                let row = self.catalog.view().row(RowId::Symbol(symbol)).ok_or(ClientError::CommandFailed(backend_library::CommandFailure::NotFound))?;
+                if selector.coordinate().is_some_and(|label| label != row.label) {
+                    return Err(ClientError::Protocol("selected coordinate mismatch".to_owned()));
+                }
+                match read {
+                    DeclarationRead::Document | DeclarationRead::Source => {
+                        self.calls.push("selected document");
+                        let document = self.catalog.document(DocumentQuery::selected(symbol, self.catalog.revision_root())).expect("selected current row");
+                        let selection = DocumentSelection::from_row(&row, document.source_basis().expect("source basis")).expect("selected label");
+                        return Ok(ReplyDto::new(1, CommandReply::Document(document.with_selection(selection).expect("exact selected row"))));
+                    }
+                    DeclarationRead::Related | DeclarationRead::Graph => {
+                        self.calls.push("selected related");
+                        return Ok(ReplyDto::new(2, CommandReply::Graph(self.snapshot())));
+                    }
+                }
+            }
             Probe::Document(COORDINATE) | Probe::Source(COORDINATE) => {
                 self.calls.push("document");
                 Ok(ReplyDto::new(
@@ -330,9 +350,51 @@ fn large_show_defaults_keep_exact_identity_and_page_all_members_with_zero_exit()
                 assert!(seen.insert(row["identity"]["coordinate"].as_str().expect("exact address").to_owned()));
             }
         }
-        let Some(next) = value["section_page"]["next_cursor"].as_str() else { break; };
-        let invocation = invoke::parse(&words(&format!("show {COORDINATE} --cursor {next}")), None).expect("actual CLI continuation grammar");
+        let Some(next) = value["section_page"]["continuation"].as_object() else { break; };
+        let continuation: backend_present::DocumentContinuation = serde_json::from_value(serde_json::Value::Object(next.clone())).expect("complete selected continuation");
+        assert_eq!(continuation.selected_symbol, backend_present::IdentitySemanticData::SelectedSymbolId(backend_library::SelectedSymbolId::new(*symbol_key(COORDINATE).as_bytes()).expect("selected id")));
+        let invocation = invoke::parse(&continuation.cli_arguments(), None).expect("copied CLI continuation grammar");
         request = backend_present::lower(&invocation, "/abs/app").expect("shared lowering");
     }
     assert_eq!(seen.len(), 80, "no member dropped or repeated");
+    assert_eq!(reader.calls.iter().filter(|call| **call == "document").count(), 1,
+        "only the initial legacy call used coordinate lookup");
+}
+
+#[test]
+fn copied_show_selected_continuation_keeps_same_coordinate_rows_distinct() {
+    use backend_library::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
+    let mut reader = Reader::new(false, false, true);
+    let basis = reader.catalog.view().basis();
+    let mut rows = reader.catalog.view().rows().to_vec();
+    let other = symbol_key("second same-coordinate declaration");
+    rows.push(Row::in_package(RowId::Symbol(other), basis, package_key("/abs/app"), COORDINATE)
+        .with_kind(backend_library::DeclarationKind::Class).with_signature("class Second:"));
+    for (owner, family) in [(symbol_key(COORDINATE), "first"), (other, "second")] {
+        for index in 0..24 {
+            let label = format!("/abs/app::scheduler.ts:{}::{family}_{index:02}", index + 100);
+            rows.push(Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package_key("/abs/app"), &label)
+                .with_parent(owner).with_kind(backend_library::DeclarationKind::Method));
+        }
+    }
+    let view = backend_library::ViewRoot::new_incomplete(reader.catalog.view().recipe(), basis, reader.catalog.view().frontier(), rows, Vec::new()).expect("two same-coordinate roots");
+    reader.catalog = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view)).expect("catalog");
+    for (native, other) in [(symbol_key(COORDINATE), other), (other, symbol_key(COORDINATE))] {
+        reader.calls.clear();
+        let request = Request::Declaration { selector: DeclarationSelector::SelectedAt { symbol: SelectedSymbolId::new(*native.as_bytes()).expect("full selected id"), coordinate: COORDINATE.to_owned() }, read: DeclarationRead::Document };
+        let first = backend_present::answer(&mut reader, &request).expect("selected first page");
+        let Answer::Page(page) = first else { panic!("page"); };
+        let next = page.section_page().expect("extent").continuation.as_ref().expect("next selected page");
+        let invocation = invoke::parse(&next.cli_arguments(), None).expect("copy exact CLI continuation");
+        let resumed = backend_present::lower(&invocation, "/abs/app").expect("typed selected continuation");
+        let answer = backend_present::answer(&mut reader, &resumed).expect("same selected row");
+        let Answer::Page(page) = answer else { panic!("page"); };
+        assert_eq!(page.identity().key(), backend_present::IdentityKey::Symbol(native));
+        let mut wrong = next.clone();
+        wrong.selected_symbol = backend_present::IdentitySemanticData::SelectedSymbolId(SelectedSymbolId::new(*other.as_bytes()).expect("other full id"));
+        let input = invoke::parse(&wrong.cli_arguments(), None).expect("syntax still valid");
+        let input = backend_present::lower(&input, "/abs/app").expect("typed changed selector");
+        assert!(backend_present::answer(&mut reader, &input).is_err(), "same display coordinate cannot substitute another selected row");
+        assert!(!reader.calls.contains(&"document"), "selected reads never fall back to coordinate lookup");
+    }
 }

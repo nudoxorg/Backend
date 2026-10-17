@@ -135,6 +135,19 @@ pub(super) trait Product: Engine {
         self.graph_page(coordinate, window.issued().get(), continuation)
     }
 
+    /// Reads a selected declaration window, without weakening its opaque cursor.
+    fn graph_page_declaration(
+        &mut self,
+        selector: backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, window, continuation);
+        Err(ClientError::Protocol(
+            "this product does not expose selected graph windows".to_owned(),
+        ))
+    }
+
     fn graph_query(
         &mut self,
         input: AdmittedGraphQueryInput,
@@ -188,6 +201,7 @@ impl Engine for SessionProduct {
                 execution_intent,
             } => self.0.index_with_execution_intent(path, execution_intent),
             Probe::Remove(path) => self.0.remove(path),
+            Probe::Declaration { selector, read } => self.0.declaration(selector, read),
             Probe::Document(at) => self.0.document(at),
             Probe::Source(at) => self.0.source(at),
             Probe::Related(at) => self.0.related(at),
@@ -285,6 +299,16 @@ impl Product for SessionProduct {
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         self.0.graph_page_window(&coordinate, window, continuation)
+    }
+
+    fn graph_page_declaration(
+        &mut self,
+        selector: backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0
+            .graph_page_declaration(&selector, window, continuation)
     }
 
     fn graph_query(
@@ -1334,11 +1358,48 @@ impl<P: Product> Server<P> {
         invocation: McpInvocation<'_>,
         response_id: &Value,
     ) -> Result<Value, RpcError> {
-        no_extra(arguments, &["coordinate", "limit", "cursor", "detail"])?;
-        let coordinate = string(arguments, "coordinate")?.to_owned();
-        let coordinate =
-            backend_present::resolve_declaration(&mut self.product, &coordinate, "graph")
-                .map_err(|fault| RpcError::from_fault(&fault))?;
+        no_extra(
+            arguments,
+            &["coordinate", "selected_symbol", "limit", "cursor", "detail"],
+        )?;
+        let operands = arguments
+            .iter()
+            .filter(|(key, _)| matches!(key.as_str(), "coordinate" | "selected_symbol"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let grammar = backend_present::grammar_for("graph").expect("graph grammar");
+        tools::validate_registry_arguments(grammar, &operands)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let invocation_operand = backend_present::Invocation::from_json(grammar, &operands)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = backend_present::declaration_selector(&invocation_operand)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let selector = match selector {
+            backend_library::DeclarationSelector::Coordinate(coordinate) => {
+                backend_library::DeclarationSelector::Coordinate(
+                    backend_present::resolve_declaration(&mut self.product, &coordinate, "graph")
+                        .map_err(|fault| RpcError::from_fault(&fault))?,
+                )
+            }
+            selected => selected,
+        };
+        let coordinate = match &selector {
+            backend_library::DeclarationSelector::Coordinate(value)
+            | backend_library::DeclarationSelector::SelectedAt {
+                coordinate: value, ..
+            } => value.clone(),
+            backend_library::DeclarationSelector::Selected(id) => {
+                backend_library::encode_id(id.bytes())
+            }
+        };
+        let probe = if selector.selected_id().is_some() {
+            Probe::Declaration {
+                selector: &selector,
+                read: backend_library::DeclarationRead::Graph,
+            }
+        } else {
+            Probe::Graph(&coordinate)
+        };
         let lifetime = self.semantic_lifetime()?;
         let budget = wire_admission::ResponseBudget::new(response_id);
         let mut effective = limit(arguments)?;
@@ -1355,9 +1416,13 @@ impl<P: Product> Server<P> {
             lifetime
                 .check()
                 .map_err(semantic_pages::semantic_client_error)?;
-            let reply = self
-                .product
-                .graph_page_window(coordinate.clone(), window, continuation);
+            let reply = if selector.selected_id().is_some() {
+                self.product
+                    .graph_page_declaration(selector.clone(), window, continuation)
+            } else {
+                self.product
+                    .graph_page_window(coordinate.clone(), window, continuation)
+            };
             lifetime
                 .check()
                 .map_err(semantic_pages::semantic_client_error)?;
@@ -1374,13 +1439,12 @@ impl<P: Product> Server<P> {
                     }
                     return Err(RpcError::from_fault(&backend_present::probe_fault(
                         &ClientError::ResponseTooLarge { basis: Some(basis) },
-                        Probe::Graph(&coordinate),
+                        probe,
                     )));
                 }
                 Err(error) => {
                     return Err(RpcError::from_fault(&backend_present::probe_fault(
-                        &error,
-                        Probe::Graph(&coordinate),
+                        &error, probe,
                     )));
                 }
                 Ok(reply) => reply,
@@ -1390,7 +1454,7 @@ impl<P: Product> Server<P> {
                 backend_library::CommandReply::Failed(failure) => {
                     return Err(RpcError::from_fault(&backend_present::probe_fault(
                         &ClientError::CommandFailed(failure),
-                        Probe::Graph(&coordinate),
+                        probe,
                     )));
                 }
                 _ => return Err(RpcError::tool("graph page reply changed shape")),

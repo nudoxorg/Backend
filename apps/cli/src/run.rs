@@ -62,6 +62,7 @@ impl Engine for SessionEngine<'_> {
                 .index_with_execution_intent(path, execution_intent)
                 .map_err(nonrepeatable),
             Probe::Remove(path) => self.session.remove(path).map_err(nonrepeatable),
+            Probe::Declaration { selector, read } => self.session.declaration(selector, read),
             Probe::Document(at) => self.session.document(at),
             Probe::Source(at) => self.session.source(at),
             Probe::Related(at) => self.session.related(at),

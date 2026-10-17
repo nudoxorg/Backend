@@ -5100,6 +5100,7 @@ impl CommandAdapter {
             else {
                 return Ok(None);
             };
+            Self::assert_selected_coordinate(row, certificate)?;
             row
         } else {
             let Some(label) = label else {
@@ -5130,12 +5131,17 @@ impl CommandAdapter {
             .with_location(row.source.clone())
             .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
-        if !query.symbol().is_selected() {
-            let Some(selection) = backend_library::DocumentSelection::from_selected_view(
-                library.view(),
-                source_basis,
-                requested_coordinate.unwrap_or(label),
-            ) else {
+        {
+            let selection = if query.symbol().is_selected() {
+                backend_library::DocumentSelection::from_row(row, source_basis)
+            } else {
+                backend_library::DocumentSelection::from_selected_view(
+                    library.view(),
+                    source_basis,
+                    requested_coordinate.unwrap_or(label),
+                )
+            };
+            let Some(selection) = selection else {
                 return Ok(None);
             };
             let selected = document
@@ -5691,6 +5697,35 @@ impl CommandAdapter {
             .map_or(query, |symbol| query.with_resolved_symbol(symbol)))
     }
 
+    /// An optional text preimage is only a label assertion for selected reads.
+    /// Its hash never supplies authority for the selected row.
+    fn assert_selected_coordinate(
+        row: &backend_library::Row,
+        certificate: Option<&WireCertificate>,
+    ) -> Result<(), backend_library::CommandFailure> {
+        if let Some(certificate) = certificate {
+            for claim in &certificate.claims {
+                if let WireClaim::Key {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id,
+                    value,
+                } = claim
+                {
+                    if id
+                        != &backend_engine::encode_id(backend_engine::symbol_key(value).as_bytes())
+                        || value != &row.label
+                    {
+                        return Err(backend_library::CommandFailure::InvalidQuery(
+                            "selected symbol coordinate does not match its current row label"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Shares the exact admitted coordinate lookup between complete and paged graphs.
     fn claimed_graph_symbol(
         daemon: &ProductDaemon,
@@ -5701,6 +5736,17 @@ impl CommandAdapter {
         let library = daemon.engine().daemon().library();
         let view = library.view();
         let requested = address.resolve(view);
+        if address.is_selected() {
+            if basis.matches(library.revision_root()) {
+                if let Some(row) =
+                    requested.and_then(|symbol| view.row_ref(backend_engine::RowId::Symbol(symbol)))
+                {
+                    Self::assert_selected_coordinate(row, certificate)?;
+                }
+            }
+            // Missing selected membership never falls back to a coordinate lookup.
+            return Ok(address);
+        }
         if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
             || !basis.matches(library.revision_root())
         {

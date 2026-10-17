@@ -2423,3 +2423,61 @@ fn continuation_domain_owns_native_json_shape_and_preserves_cli_and_mcp_lowering
         FaultSlug::Usage
     );
 }
+
+#[test]
+fn selected_declaration_inputs_share_the_three_closed_states_and_refuse_bad_ids() {
+    use backend_library::{DeclarationSelector, SelectedSymbolId};
+    let id = SelectedSymbolId::new([0x53; 32]).expect("selected row");
+    let facet =
+        serde_json::to_value(IdentitySemanticData::SelectedSymbolId(id)).expect("returned facet");
+    for name in ["show", "source", "graph", "related"] {
+        let grammar = grammar_for(name).expect("grammar");
+        for coordinate in [None, Some(DECLARATION)] {
+            let mut cli = Invocation::new(grammar);
+            cli.set("selected-id", "53".repeat(32));
+            let mut object = serde_json::Map::new();
+            object.insert("selected_symbol".to_owned(), facet.clone());
+            if let Some(value) = coordinate {
+                cli.push(value);
+                object.insert("coordinate".to_owned(), serde_json::json!(value));
+            }
+            cli.check().expect("selected CLI input");
+            let mcp = Invocation::from_json(grammar, &object).expect("same copied facet");
+            let selected = declaration_selector(&cli).expect("CLI selector");
+            assert_eq!(selected, declaration_selector(&mcp).expect("MCP selector"));
+            assert_eq!(selected.selected_id(), Some(id));
+            assert_eq!(selected.coordinate(), coordinate);
+            assert!(matches!(
+                lower(&mcp, PROJECT).expect("typed read"),
+                Request::Declaration { .. }
+            ));
+        }
+        let mut coordinate = Invocation::new(grammar);
+        coordinate.push(DECLARATION);
+        assert!(matches!(
+            declaration_selector(&coordinate).expect("old path"),
+            DeclarationSelector::Coordinate(_)
+        ));
+        assert!(Invocation::from_json(grammar, &serde_json::Map::new()).is_err());
+        for bad in [
+            serde_json::json!("53".repeat(32)),
+            serde_json::json!({"kind":"package-id","value":vec![83;32]}),
+            serde_json::json!({"kind":"selected-symbol-id","value":vec![0;32]}),
+            serde_json::json!({"kind":"selected-symbol-id","value":vec![83;31]}),
+            serde_json::json!({"kind":"selected-symbol-id","value":vec![83;32],"extra":true}),
+        ] {
+            let object = serde_json::json!({"selected_symbol":bad});
+            assert!(
+                Invocation::from_json(grammar, object.as_object().expect("object")).is_err(),
+                "{name}: {object}"
+            );
+        }
+    }
+    let references = grammar_for("references").expect("references grammar");
+    assert!(
+        references
+            .options()
+            .iter()
+            .all(|spec| spec.kind() != ArgumentKind::SelectedSymbol)
+    );
+}
