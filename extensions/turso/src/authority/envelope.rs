@@ -1562,7 +1562,7 @@ fn verify_native_program_image(
     mappings: Option<&std::collections::BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
 ) -> Result<(), String> {
     use backend_semantic::ir::{
-        ImageProvenance, SemanticCoreReader, SemanticImageView, SemanticReader,
+        ImageProvenance, SemanticCoreReader, SemanticImageView,
     };
     let Some(program) = program else {
         return Ok(());

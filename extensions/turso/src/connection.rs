@@ -1,15 +1,14 @@
 //! Database opening and process-shared generation policy.
 
 use crate::projection_namespace::{
-    ProjectionGenerationId, ProjectionGraphSeed, ProjectionNamespace, ProjectionOperationGuard,
+    ProjectionGraphSeed, ProjectionNamespace, ProjectionOperationGuard,
     ProjectionSeed, ProjectionSelector, PublishOutcome,
 };
 use crate::read::metadata_from;
 use crate::schema;
 use crate::sharing::SharedWalBackend;
 use crate::{ProjectionError, TursoProjection};
-use backend_library::CheckedPackageGraphFacts;
-use backend_platform::{CreatedDirectory, DirectoryCapability, FileIdentity};
+use backend_platform::{CreatedDirectory, FileIdentity};
 use std::path::Path;
 use std::time::Duration;
 
