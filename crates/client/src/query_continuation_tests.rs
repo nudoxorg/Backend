@@ -4027,6 +4027,17 @@ fn copied_search_stage_continuation_never_promotes_after_full_projection_becomes
                 Command::Revision | Command::SearchPublishedNames(_)
             ))
     );
+    assert_eq!(
+        requests.lock().expect("commands").iter()
+            .filter(|command| matches!(command, Command::SearchPublishedNames(_))).count(),
+        3,
+        "all seven rows require three name-stage pages under fixed credit three",
+    );
+    let mut changed_credit = make();
+    let continuation = changed_credit.decode_page_continuation(&token)
+        .expect("exact authenticated stage before changed-credit control");
+    assert!(changed_credit.search_page("Thing", 2, Some(continuation)).is_err(),
+        "a copied stage cursor cannot change its issued credit");
     let mut wrong = make();
     let continuation = wrong
         .decode_page_continuation(&token)

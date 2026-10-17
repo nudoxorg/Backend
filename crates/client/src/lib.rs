@@ -1445,6 +1445,25 @@ impl Session {
                 .as_ref()
                 .or(self.request_context.as_ref()),
         )?;
+        // A cursor issued by the useful name stage cannot be sent as a full
+        // Search command, even after richer search becomes ready. Reopen the
+        // retained exact next command with the existing owner/proof admission.
+        if self.prepared_query.is_none()
+            && continuation.is_some_and(|continuation| {
+                self.continuations.get(&continuation.cursor())
+                    .and_then(|retained| retained.next_request.as_ref())
+                    .is_some_and(|request| matches!(&request.command, Command::SearchPublishedNames(_)))
+            })
+        {
+            let limit = QueryLimit::new(limit).ok_or_else(|| {
+                ClientError::Protocol("query limit is outside its bound".to_owned())
+            })?;
+            self.prepare_query_window(
+                backend_library::QueryWindow::fixed(limit),
+                continuation,
+                Some(deadline.remaining()?),
+            )?;
+        }
         if self.prepared_query.is_some() {
             return self.resume_prepared_query_with_budget(
                 "Search",
