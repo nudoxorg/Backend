@@ -479,7 +479,9 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
         }]
         .into_boxed_slice(),
-        next: Some(PackageCompilerOutcomeRead::Coverage(PackageCompilerCoverageSelector { offset: 1, ..first })),
+        next: Some(PackageCompilerOutcomeRead::Coverage(
+            PackageCompilerCoverageSelector { offset: 1, ..first },
+        )),
     };
     let observed = PackageCompilerOutcomes::Coverage {
         package: package.clone(),
@@ -498,7 +500,7 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             )
             .is_err()
     );
-    for change in 0..10 {
+    for change in 0..11 {
         let mut forged = observed.clone();
         let PackageCompilerOutcomes::Coverage { selector, page, .. } = &mut forged else {
             unreachable!()
@@ -507,12 +509,27 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             0 => page.generation[0] ^= 1,
             1 => page.input_digest[0] ^= 1,
             2 => page.next = None,
-            3 => {let Some(PackageCompilerOutcomeRead::Coverage(next))=&mut page.next else{unreachable!()};next.offset=0;},
-            4 => {let Some(PackageCompilerOutcomeRead::Coverage(next))=&mut page.next else{unreachable!()};next.catalog[0]^=1;},
+            3 => {
+                let Some(PackageCompilerOutcomeRead::Coverage(next)) = &mut page.next else {
+                    unreachable!()
+                };
+                next.offset = 0;
+            }
+            4 => {
+                let Some(PackageCompilerOutcomeRead::Coverage(next)) = &mut page.next else {
+                    unreachable!()
+                };
+                next.catalog[0] ^= 1;
+            }
             5 => page.rows = Box::default(),
             6 => selector.offset = 11,
             7 => page.rows = vec![page.rows[0].clone(), page.rows[0].clone()].into_boxed_slice(),
             8 => page.completed = 51,
+            9 => {
+                page.source_count = 1;
+                page.completed = 0;
+                page.row_count = 16_640;
+            }
             _ => {
                 let SourceCoverageRow::Gap { cause, .. } = &mut page.rows[0] else {
                     unreachable!()
@@ -525,12 +542,16 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             "forged page {change}"
         );
     }
-    let mut tsx=observed.clone();
-    let PackageCompilerOutcomes::Coverage{selector,page,..}=&mut tsx else{unreachable!()};
-    selector.outcome.profile=SemanticLanguageProfile::from_name("tsx").unwrap();
-    if let Some(PackageCompilerOutcomeRead::Coverage(next))=&mut page.next{next.outcome.profile=selector.outcome.profile;}
-    let tsx_read=PackageCompilerOutcomeRead::Coverage(*selector);
-    tsx.admit_request(&package,Some(&tsx_read)).unwrap();
+    let mut tsx = observed.clone();
+    let PackageCompilerOutcomes::Coverage { selector, page, .. } = &mut tsx else {
+        unreachable!()
+    };
+    selector.outcome.profile = SemanticLanguageProfile::from_name("tsx").unwrap();
+    if let Some(PackageCompilerOutcomeRead::Coverage(next)) = &mut page.next {
+        next.outcome.profile = selector.outcome.profile;
+    }
+    let tsx_read = PackageCompilerOutcomeRead::Coverage(*selector);
+    tsx.admit_request(&package, Some(&tsx_read)).unwrap();
     // A persisted observation is distinct from honest legacy absence, even when 41/50 is known.
     let unavailable = PackageCompilerOutcomes::Unavailable {
         package: package.clone(),
@@ -632,6 +653,7 @@ fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surfa
     crate::admit_surface_reply(&command, &stale).unwrap();
     for reason in [
         PackageCompilerOutcomesUnavailable::CoverageNotRecorded,
+        PackageCompilerOutcomesUnavailable::CoverageNotRecordedCapacity,
         PackageCompilerOutcomesUnavailable::ProfileNotPublished,
         PackageCompilerOutcomesUnavailable::CoverageRowTooLarge,
     ] {
@@ -643,4 +665,52 @@ fn coverage_stale_legacy_unpublished_and_oversized_results_pass_only_exact_surfa
         crate::admit_surface_reply(&command, &reply).unwrap();
         assert!(crate::admit_surface_reply(&diagnostic, &reply).is_err());
     }
+}
+
+#[test]
+fn coverage_capacity_summary_preserves_published_partial_and_never_advertises_a_cause_read() {
+    let (package, mut summary) = fixture();
+    let PackageCompilerOutcomes::Summary {
+        source_capture,
+        refusals,
+        coverage,
+        ..
+    } = &mut summary
+    else {
+        unreachable!()
+    };
+    let mut profiles = source_capture.profiles.to_vec();
+    profiles.truncate(1);
+    profiles[0].profile = SemanticLanguageProfile::from_name("typescript").unwrap();
+    profiles[0].source_count = 20_001;
+    profiles[0].state = State::Published {
+        generation: [7; 32],
+        coverage: crate::IndexOperationSemanticCoverage::Partial {
+            completed: 1,
+            total: 20_001,
+        },
+    };
+    let profile = profiles[0].profile;
+    source_capture.profiles = profiles.into_boxed_slice();
+    *refusals = Box::default();
+    *coverage = Some(
+        vec![PackageCompilerCoverage::NotRecordedCapacity {
+            profile,
+            reason: backend_semantic::ir::SourceCoverageCapacityReason::RowCount,
+        }]
+        .into_boxed_slice(),
+    );
+    summary
+        .admit_request(&package, Some(&PackageCompilerOutcomeRead::Current))
+        .unwrap();
+    let encoded = serde_json::to_value(&summary).unwrap();
+    assert_eq!(encoded["coverage"][0]["state"], "not-recorded-capacity");
+    assert!(encoded["coverage"][0].get("read").is_none());
+    assert_eq!(
+        encoded["source_capture"]["profiles"][0]["state"]["state"],
+        "published"
+    );
+    let cold: PackageCompilerOutcomes = serde_json::from_value(encoded).unwrap();
+    assert_eq!(cold, summary);
+    cold.admit_request(&package, None).unwrap();
 }

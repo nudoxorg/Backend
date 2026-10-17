@@ -1784,7 +1784,7 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
         expected: SemanticPublicationClaim,
-    ) -> Result<Option<Arc<backend_semantic::ir::SourceCoverageManifest>>, BuiltinModelError> {
+    ) -> Result<Option<Arc<backend_semantic::ir::SourceCoverageObservation>>, BuiltinModelError> {
         let (claim, selected) = self.read_selected_pair(key)?;
         if claim != expected {
             return Err(BuiltinModelError(

@@ -2031,11 +2031,12 @@ fn compiler_outcome_rows(
                 },
             });
             if let Some(observation)=coverage.iter().flat_map(|rows|rows.iter()).find(|observation|match observation {
-                backend_library::PackageCompilerCoverage::LegacyNotRecorded{profile:seen}=>*seen==profile.profile,
+                backend_library::PackageCompilerCoverage::LegacyNotRecorded{profile:seen}|backend_library::PackageCompilerCoverage::NotRecordedCapacity{profile:seen,..}=>*seen==profile.profile,
                 backend_library::PackageCompilerCoverage::Retained{read}=>read.selector().is_some_and(|read|read.profile==profile.profile),
             }) {
                 match observation {
                     backend_library::PackageCompilerCoverage::LegacyNotRecorded{..}=>tags.push("per-file compiler coverage causes were not recorded".to_owned()),
+                    backend_library::PackageCompilerCoverage::NotRecordedCapacity{reason,..}=>tags.push(format!("per-file compiler coverage explanation was not recorded: {reason:?} recording budget; semantic publication unchanged")),
                     backend_library::PackageCompilerCoverage::Retained{read}=>{
                         tags.push("exact compiler coverage/config observations retained; copy selector into package-profile --compiler-outcome (MCP: compiler_outcome)".to_owned());
                         operand=serde_json::to_string(read).ok();

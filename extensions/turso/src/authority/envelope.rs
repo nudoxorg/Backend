@@ -79,7 +79,7 @@ impl CompilerSourceCoverageMember {
     /// Admits a verified typed object and its canonical coverage catalog.
     pub fn from_verified_object(
         object: VerifiedObjectEnvelope,
-        coverage: &backend_semantic::ir::SourceCoverageManifest,
+        coverage: &backend_semantic::ir::SourceCoverageObservation,
     ) -> Result<Self, CompilerEnvelopeError> {
         let bytes = coverage.encode();
         let key =
@@ -1421,7 +1421,7 @@ fn metadata_member_count(
 pub fn reopen_source_coverage(
     closure: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
-) -> Result<Option<backend_semantic::ir::SourceCoverageManifest>, String> {
+) -> Result<Option<backend_semantic::ir::SourceCoverageObservation>, String> {
     let Some(member) = metadata.source_coverage() else {
         return Ok(None);
     };
@@ -1438,7 +1438,7 @@ pub fn reopen_source_coverage(
     {
         return Err("compiler coverage schema or extent mismatch".to_owned());
     }
-    let coverage = backend_semantic::ir::SourceCoverageManifest::decode(object.bytes())
+    let coverage = backend_semantic::ir::SourceCoverageObservation::decode(object.bytes())
         .map_err(str::to_owned)?;
     if coverage.identity() != *member.identity()
         || coverage.completed() as usize != metadata.images().len()
@@ -1450,6 +1450,7 @@ pub fn reopen_source_coverage(
     if coverage.program() != &program.membership_identity() {
         return Err("compiler coverage program identity mismatch".to_owned());
     }
+    if let Some(catalog)=coverage.catalog() {
     if let Some((_, nodes)) = program.nodes() {
         let expected = nodes
             .iter()
@@ -1461,7 +1462,7 @@ pub fn reopen_source_coverage(
                 )
             })
             .collect::<Vec<_>>();
-        let observed = coverage
+        let observed = catalog
             .rows()
             .iter()
             .filter_map(|row| match row {
@@ -1478,7 +1479,7 @@ pub fn reopen_source_coverage(
                 "compiler coverage configuration differs from native program forest".to_owned(),
             );
         }
-    } else if coverage.rows().iter().any(|row| {
+    } else if catalog.rows().iter().any(|row| {
         matches!(
             row,
             backend_semantic::ir::SourceCoverageRow::Configuration { .. }
@@ -1492,13 +1493,13 @@ pub fn reopen_source_coverage(
         .sources()
         .filter_map(|source| source.package_path.map(|path| (path, source.source)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    for row in coverage.rows() {
+    for row in catalog.rows() {
         if let backend_semantic::ir::SourceCoverageRow::Gap{path,cause:backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,..}=row
             && selected_sources.contains_key(path.as_str()) {
                 return Err("configured exclusion is present in actual native program".to_owned());
             }
     }
-    for row in coverage.rows() {
+    for row in catalog.rows() {
         if let backend_semantic::ir::SourceCoverageRow::Gap {
             path,
             source,
@@ -1515,6 +1516,7 @@ pub fn reopen_source_coverage(
                 );
             }
         }
+    }
     }
     Ok(Some(coverage))
 }
@@ -2377,6 +2379,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let coverage = backend_semantic::ir::SourceCoverageObservation::from_catalog(coverage).unwrap();
         let bytes = coverage.encode();
         let object = TypedObject::from_value(
             &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
@@ -2429,6 +2432,28 @@ mod tests {
             reopened, coverage,
             "cold CAS read retains actual config and gap cause"
         );
+        // Publication-boundary capacity control: this is authenticated retained
+        // evidence, not a claim that the native resolver compiled >16k inputs.
+        for reason in [backend_semantic::ir::SourceCoverageCapacityReason::RowCount,backend_semantic::ir::SourceCoverageCapacityReason::EncodedBytes] {
+            let capacity=backend_semantic::ir::SourceCoverageObservation::not_recorded_capacity([3;32],[1,0],program.membership_identity(),20_001,1,reason).unwrap();
+            let bytes=capacity.encode();
+            let object=TypedObject::from_value(&ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),bytes.as_slice());
+            let receipt=store.write_closure(&ClosureManifest::new(vec![object.clone(),program_object.clone()]).unwrap()).unwrap();
+            let verified=store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
+            let mut unavailable=current.clone();
+            unavailable.source_coverage=Some(CompilerSourceCoverageMember::from_verified_object(verified,&capacity).unwrap());
+            let encoded=unavailable.canonical_bytes();
+            let cold_store=FileStore::open(&directory,1024*1024).unwrap();
+            let closure=cold_store.open_closure(receipt).unwrap();
+            let cold=reopen_source_coverage(&closure,&CompilerPublicationMetadata::decode(&encoded).unwrap()).unwrap().unwrap();
+            assert_eq!(cold,capacity);
+            assert_eq!(cold.capacity_reason(),Some(reason));
+            assert_eq!((cold.source_count(),cold.completed()),(20_001,1));
+            assert!(cold.catalog().is_none(),"cold reopen cannot invent a cause catalog");
+            let mut forged=unavailable;
+            forged.source_coverage.as_mut().unwrap().identity[0]^=1;
+            assert!(reopen_source_coverage(&closure,&forged).is_err());
+        }
         let mut wrong = current.clone();
         wrong.source_coverage.as_mut().unwrap().identity[0] ^= 1;
         assert!(reopen_source_coverage(&closure, &wrong).is_err());
@@ -2436,7 +2461,7 @@ mod tests {
         wrong.source_coverage.as_mut().unwrap().byte_length += 1;
         assert!(reopen_source_coverage(&closure, &wrong).is_err());
         for change in 0..6 {
-            let mut rows = coverage.rows().to_vec();
+            let mut rows = coverage.catalog().unwrap().rows().to_vec();
             let mut program_id = program.membership_identity();
             match change {
                 0 => {
@@ -2475,6 +2500,7 @@ mod tests {
                 }
             }
             let forged = SourceCoverageManifest::new([3; 32], [1, 0], program_id, 2, 1, rows).unwrap();
+            let forged = backend_semantic::ir::SourceCoverageObservation::from_catalog(forged).unwrap();
             let bytes = forged.encode();
             let object = TypedObject::from_value(
                 &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),

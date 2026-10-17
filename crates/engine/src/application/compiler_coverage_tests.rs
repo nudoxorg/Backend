@@ -111,7 +111,7 @@ impl Fixture {
             .filter(|(path, _)| path.ends_with(".ts"))
             .map(|(path, text)| PackageSource::new(path, text).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(sources.len(), 50);
+
         compiler
             .compile_package_sources_staged(
                 PackageSourceSet::new(&request, &self.root, &sources).unwrap(),
@@ -149,7 +149,9 @@ fn linked_tsz_angular50_records_actual_config_and_exact_nine_scope_observations(
     );
     let coverage = staged
         .source_coverage()
-        .expect("producer retained observations");
+        .expect("producer retained observations")
+        .catalog()
+        .expect("complete explanation fits");
     assert_eq!((coverage.source_count(), coverage.completed()), (50, 41));
     assert_eq!(coverage.input_root(), staged.input_witness().input_root());
     let gaps=coverage.rows().iter().filter_map(|row|match row {SourceCoverageRow::Gap{path,source,byte_len,cause}=>{
@@ -193,7 +195,7 @@ fn linked_tsz_coverage_follows_imports_instead_of_spec_filename_and_keeps_change
         first.source_coverage().unwrap().identity(),
         changed.source_coverage().unwrap().identity()
     );
-    assert!(changed.source_coverage().unwrap().rows().iter().any(|row|matches!(row,SourceCoverageRow::Gap{path:seen,source,..} if seen==path && *source==*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(text.as_bytes()).as_ref())));
+    assert!(changed.source_coverage().unwrap().catalog().unwrap().rows().iter().any(|row|matches!(row,SourceCoverageRow::Gap{path:seen,source,..} if seen==path && *source==*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(text.as_bytes()).as_ref())));
     // Import a previously excluded spec. Its filename does not decide TSZ membership.
     let imported = EXCLUDED[1];
     let text = "export const includedSpec = 1;\n";
@@ -220,4 +222,62 @@ fn linked_tsz_coverage_follows_imports_instead_of_spec_filename_and_keeps_change
             .sources()
             .any(|row| row.package_path == Some(imported))
     );
+}
+
+#[test]
+fn linked_tsz_explanation_byte_capacity_keeps_successful_partial_artifacts_and_exact_basis() {
+    let mut fixture = Fixture::new();
+    let angular = fixture.files["angular.json"].clone();
+    fixture.files.clear();
+    fixture.files.insert("angular.json".into(), angular);
+    fixture.files.insert(
+        "tsconfig.json".into(),
+        r#"{"compilerOptions":{"target":"ES2022","noLib":true}}"#.into(),
+    );
+    fixture.files.insert(
+        "tsconfig.app.json".into(),
+        r#"{"extends":"./tsconfig.json","files":["src/main.ts"]}"#.into(),
+    );
+    fixture
+        .files
+        .insert("src/main.ts".into(), "export const main = 1;".into());
+    // Actual source universe is below the independent existing 4096 resolver
+    // ceiling. Deep but valid paths exceed only this explanation's byte budget.
+    let prefix = std::iter::repeat_n("x".repeat(190), 20)
+        .collect::<Vec<_>>()
+        .join("/");
+    for n in 0..2300 {
+        fixture.files.insert(
+            format!("{prefix}/outside-{n:04}.ts"),
+            "export const outside = 1;".into(),
+        );
+    }
+    for (path, text) in &fixture.files {
+        fixture.write(path, text);
+    }
+    let staged = fixture.compile();
+    assert_eq!(staged.artifacts().len(), 1);
+    assert_eq!(staged.coverage_gaps().len(), 2300);
+    assert_eq!(
+        staged.input_witness().coverage().state(),
+        backend_version::Coverage::Partial
+    );
+    let recording = staged.source_coverage().unwrap();
+    assert_eq!(
+        recording.capacity_reason(),
+        Some(backend_semantic::ir::SourceCoverageCapacityReason::EncodedBytes)
+    );
+    assert!(recording.catalog().is_none());
+    assert_eq!((recording.source_count(), recording.completed()), (2301, 1));
+    assert_eq!(recording.input_root(), staged.input_witness().input_root());
+    assert_eq!(
+        recording.program(),
+        &staged
+            .native_program_sources()
+            .unwrap()
+            .membership_identity()
+    );
+    let cold =
+        backend_semantic::ir::SourceCoverageObservation::decode(&recording.encode()).unwrap();
+    assert_eq!(&cold, recording);
 }

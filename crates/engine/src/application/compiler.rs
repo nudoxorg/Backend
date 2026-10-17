@@ -1522,7 +1522,7 @@ impl StagedSemanticPackage {
 
     /// Exact compiler-observed coverage causes, authenticated with this publication.
     #[must_use]
-    pub fn source_coverage(&self) -> Option<&backend_semantic::ir::SourceCoverageManifest> {
+    pub fn source_coverage(&self) -> Option<&backend_semantic::ir::SourceCoverageObservation> {
         self.staged.source_coverage.as_ref()
     }
 
@@ -2554,7 +2554,7 @@ pub(crate) struct StagedPackageCompilation {
     typescript_closure_witness:
         Option<std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>>,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
-    source_coverage: Option<backend_semantic::ir::SourceCoverageManifest>,
+    source_coverage: Option<backend_semantic::ir::SourceCoverageObservation>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
@@ -2926,7 +2926,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_package_membership = BTreeMap::new();
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
-        let mut coverage_configurations = Vec::new();
         let mut tsz_node_metadata = Vec::new();
         let mut tsz_file_work_units = Vec::new();
         let mut forest_root = 0;
@@ -2983,12 +2982,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 let program_key = node.config.as_ref().map(|(path, _)| path.clone());
                 let native = node.native;
                 let retain_authority = native.requires_retained_authority();
-                if let Some((path, source)) = &node.config {
-                    coverage_configurations.push(backend_semantic::ir::SourceCoverageRow::Configuration {
-                        path: path.clone(), source: *source.as_ref(),
-                        environment: *native.options.environment.as_bytes(),
-                    });
-                }
                 tsz_node_metadata.push((
                     node.config,
                     node.references,
@@ -4430,83 +4423,32 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             }
         }
         let source_coverage = if typescript_project.is_some() {
-            use backend_semantic::ir::{SourceCoverageManifest, SourceCoverageRow, SourceIdentity};
-            let mut remaining = package
-                .compilation_sources()
-                .map(|source| {
-                    SourceIdentity::from_bytes(source.source.as_bytes())
-                        .map(|identity| (source.relative_path.to_owned(), identity))
-                        .ok_or(PackageSemanticError::Capacity {
-                            lane: "coverage source extent",
-                        })
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
-            let source_count = remaining.len();
-            coverage_configurations.sort_by(|a, b| a.path().cmp(b.path()));
-            let mut gaps = coverage_gaps.iter().collect::<Vec<_>>();
-            gaps.sort_by(|a, b| a.relative_path().cmp(b.relative_path()));
-            for gap in gaps {
-                let identity =
-                    remaining
-                        .remove(gap.relative_path())
-                        .ok_or(PackageSemanticError::Capacity {
-                            lane: "coverage gap source partition",
-                        })?;
-                if identity.identity != gap.source().identity
-                    || identity.byte_len != gap.source().byte_len
-                {
-                    return Err(PackageSemanticError::Capacity {
-                        lane: "coverage gap source identity",
-                    });
-                }
-                coverage_configurations.push(SourceCoverageRow::Gap {
-                    path: gap.relative_path().to_owned(),
-                    source: *identity.identity.as_ref(),
-                    byte_len: identity.byte_len,
-                    cause: gap.cause(),
-                });
+            use backend_semantic::ir::{SourceCoverageManifest,SourceCoverageObservation,SourceCoverageRow,SourceIdentity};
+            let mut remaining=package.compilation_sources().map(|source|SourceIdentity::from_bytes(source.source.as_bytes()).map(|identity|(source.relative_path,identity)).ok_or(PackageSemanticError::Capacity{lane:"coverage source extent"})).collect::<Result<BTreeMap<_,_>,_>>()?;
+            let source_count=remaining.len();let mut gaps=coverage_gaps.iter().collect::<Vec<_>>();gaps.sort_by(|a,b|a.relative_path().cmp(b.relative_path()));
+            for gap in &gaps {
+                let identity=remaining.remove(gap.relative_path()).ok_or(PackageSemanticError::Capacity{lane:"coverage gap source partition"})?;
+                if identity.identity!=gap.source().identity || identity.byte_len!=gap.source().byte_len || !gap.cause().is_typescript(){return Err(PackageSemanticError::Capacity{lane:"coverage gap source identity or cause"});}
             }
-            // Source text may legitimately be identical at two different paths.
-            // Compare the complete identity/extent multiset after removing each exact gap path.
-            let source_key = |source: SourceIdentity| (*source.identity.as_ref(), source.byte_len);
-            let mut expected = remaining.into_values().map(source_key).collect::<Vec<_>>();
-            let mut observed = artifacts
-                .iter()
-                .map(|artifact| source_key(artifact.source))
-                .collect::<Vec<_>>();
-            expected.sort();
-            observed.sort();
-            if expected != observed {
-                return Err(PackageSemanticError::Capacity {
-                    lane: "coverage artifact source partition",
-                });
-            }
-            let program = native_program_sources
-                .as_ref()
-                .ok_or(PackageSemanticError::Capacity {
-                    lane: "coverage native program identity",
-                })?
-                .membership_identity();
-            Some(
-                SourceCoverageManifest::new(
-                    *input.input_root(),
-                    <[u8; 2]>::from(target.profile),
-                    program,
-                    u32::try_from(source_count).map_err(|_| PackageSemanticError::Capacity {
-                        lane: "coverage source count",
-                    })?,
-                    u32::try_from(artifacts.len()).map_err(|_| PackageSemanticError::Capacity {
-                        lane: "coverage artifact count",
-                    })?,
-                    coverage_configurations,
-                )
-                .map_err(|_| PackageSemanticError::Capacity {
-                    lane: "coverage catalog admission",
-                })?,
-            )
-        } else {
-            None
-        };
+            let source_key=|source:SourceIdentity|(*source.identity.as_ref(),source.byte_len);
+            let mut expected=remaining.into_values().map(source_key).collect::<Vec<_>>();let mut observed=artifacts.iter().map(|artifact|source_key(artifact.source)).collect::<Vec<_>>();expected.sort();observed.sort();
+            if expected!=observed{return Err(PackageSemanticError::Capacity{lane:"coverage artifact source partition"});}
+            let program=native_program_sources.as_ref().ok_or(PackageSemanticError::Capacity{lane:"coverage native program identity"})?;
+            let configs=program.nodes().map_or(&[][..],|(_,nodes)|nodes);
+            let source_count=u32::try_from(source_count).map_err(|_|PackageSemanticError::Capacity{lane:"coverage source count"})?;
+            let completed=u32::try_from(artifacts.len()).map_err(|_|PackageSemanticError::Capacity{lane:"coverage artifact count"})?;
+            // Forecast the entire explanation before copying any path. A volume
+            // refusal is an authenticated availability fact, never a new semantic failure.
+            let capacity=SourceCoverageObservation::forecast(configs.iter().map(|node|node.config_path.as_str()),gaps.iter().map(|gap|gap.relative_path())).map_err(|_|PackageSemanticError::Capacity{lane:"coverage path consistency"})?;
+            let recording=if let Some(reason)=capacity {
+                SourceCoverageObservation::not_recorded_capacity(*input.input_root(),<[u8;2]>::from(target.profile),program.membership_identity(),source_count,completed,reason)
+            }else{
+                let mut rows=configs.iter().map(|node|SourceCoverageRow::Configuration{path:node.config_path.clone(),source:*node.config.as_ref(),environment:node.environment}).collect::<Vec<_>>();
+                rows.extend(gaps.into_iter().map(|gap|SourceCoverageRow::Gap{path:gap.relative_path().to_owned(),source:*gap.source().identity.as_ref(),byte_len:gap.source().byte_len,cause:gap.cause()}));
+                SourceCoverageManifest::new(*input.input_root(),<[u8;2]>::from(target.profile),program.membership_identity(),source_count,completed,rows).and_then(SourceCoverageObservation::from_catalog)
+            }.map_err(|_|PackageSemanticError::Capacity{lane:"coverage recording admission"})?;
+            Some(recording)
+        }else{None};
 
         let staged = StagedPackageCompilation {
             compilation_attempt_id,

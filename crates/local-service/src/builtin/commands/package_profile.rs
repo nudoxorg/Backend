@@ -220,6 +220,32 @@ pub(super) fn read(
                             "compiler coverage differs from selected capture".to_owned(),
                         ));
                     }
+                    if let Some(reason) = observations.capacity_reason() {
+                        coverage.push(Availability::NotRecordedCapacity {
+                            profile: profile.profile,
+                            reason,
+                        });
+                        if let Some(requested) =
+                            coverage_read.filter(|read| read.outcome.profile == profile.profile)
+                        {
+                            if requested.generation != *claim.binding().identity.as_ref()
+                                || requested.input_digest != *capture.input_digest()
+                                || requested.catalog != observations.identity()
+                            {
+                                return Ok(Some(Outcomes::Stale {
+                                    package: package.clone(),
+                                }));
+                            }
+                            coverage_page = Some(Err(Unavailable::CoverageNotRecordedCapacity));
+                        }
+                        profiles.push(profile);
+                        continue;
+                    }
+                    let catalog = observations.catalog().ok_or_else(|| {
+                        BuiltinModelError(
+                            "coverage recording has no catalog or capacity reason".to_owned(),
+                        )
+                    })?;
                     let first = Selector {
                         outcome: PackageCompilerOutcomeSelector {
                             basis: basis.identity(),
@@ -246,12 +272,12 @@ pub(super) fn read(
                             }));
                         }
                         let offset = requested.offset as usize;
-                        if offset > observations.rows().len() {
+                        if offset > catalog.rows().len() {
                             return Err(BuiltinModelError(
                                 "compiler coverage offset is outside catalog".to_owned(),
                             ));
                         }
-                        let row = coverage_row(&observations, offset, |path, identity| {
+                        let row = coverage_row(catalog, offset, |path, identity| {
                             let file_key =
                                 backend_engine::product_source_file_key(project_key, path);
                             let row = source
@@ -286,9 +312,9 @@ pub(super) fn read(
                             input_digest: *capture.input_digest(),
                             source_count: observations.source_count(),
                             completed: observations.completed(),
-                            row_count: observations.rows().len() as u32,
+                            row_count: catalog.rows().len() as u32,
                             rows,
-                            next: (end < observations.rows().len()).then_some(
+                            next: (end < catalog.rows().len()).then_some(
                                 PackageCompilerOutcomeRead::Coverage(Selector {
                                     offset: end as u32,
                                     ..requested

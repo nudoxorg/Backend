@@ -63,6 +63,13 @@ pub enum PackageCompilerCoverage {
         /// Exact published profile; no reason is inferred from its aggregate count.
         profile: SemanticLanguageProfile,
     },
+    /// Authenticated producer basis retained, but the complete explanation exceeded its budget.
+    NotRecordedCapacity {
+        /// Exact published profile; semantic Partial/Complete is unchanged.
+        profile: SemanticLanguageProfile,
+        /// Exact independent explanation recording bound.
+        reason: backend_semantic::ir::SourceCoverageCapacityReason,
+    },
     /// Complete immutable observation catalog is retained, including selected config identities.
     Retained {
         /// Exact bounded follow-up; copy rather than reconstruct it.
@@ -213,6 +220,8 @@ pub enum PackageCompilerOutcomesUnavailable {
     DiagnosticNotRecorded,
     /// This published generation has no persisted coverage catalog.
     CoverageNotRecorded,
+    /// Explanation recording exceeded its independent budget; no cause pages exist.
+    CoverageNotRecordedCapacity,
     /// This profile has not published a generation for the current capture.
     ProfileNotPublished,
     /// One exact row cannot fit the bounded coverage response; no row was truncated.
@@ -319,6 +328,7 @@ impl PackageCompilerOutcomes {
                         !matches!(read, Some(PackageCompilerOutcomeRead::Diagnostic(_)))
                     }
                     PackageCompilerOutcomesUnavailable::CoverageNotRecorded
+                    | PackageCompilerOutcomesUnavailable::CoverageNotRecordedCapacity
                     | PackageCompilerOutcomesUnavailable::ProfileNotPublished
                     | PackageCompilerOutcomesUnavailable::CoverageRowTooLarge => {
                         !matches!(read, Some(PackageCompilerOutcomeRead::Coverage(_)))
@@ -359,10 +369,11 @@ impl PackageCompilerOutcomes {
                 || page.generation == [0; 32]
                 || page.input_digest == [0; 32]
                 || page.source_count == 0
-                || page.source_count > 16_384
+                || page.source_count > 100_000
                 || page.completed > page.source_count
                 || page.row_count as usize > backend_semantic::ir::MAX_SOURCE_COVERAGE_ROWS
                 || page.row_count < page.source_count - page.completed
+                || page.row_count > (page.source_count - page.completed).saturating_add(256)
                 || selector.offset > page.row_count
                 || page.rows.len() != usize::from(selector.offset < page.row_count)
                 || page
@@ -435,7 +446,8 @@ impl PackageCompilerOutcomes {
                     let observed = coverage
                         .iter()
                         .map(|entry| match entry {
-                            PackageCompilerCoverage::LegacyNotRecorded { profile } => {
+                            PackageCompilerCoverage::LegacyNotRecorded { profile }
+                            | PackageCompilerCoverage::NotRecordedCapacity { profile, .. } => {
                                 Some(*profile)
                             }
                             PackageCompilerCoverage::Retained {
@@ -450,8 +462,17 @@ impl PackageCompilerOutcomes {
                     }
                 }
                 for observed in coverage.iter().flat_map(|rows| rows.iter()) {
+                    if let PackageCompilerCoverage::NotRecordedCapacity { profile, .. } = observed
+                        && !matches!(
+                            profile.profile(),
+                            Ok(backend_semantic::vocabulary::LanguageProfile::TypeScript(_))
+                        )
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
                     let profile = match observed {
-                        PackageCompilerCoverage::LegacyNotRecorded { profile } => *profile,
+                        PackageCompilerCoverage::LegacyNotRecorded { profile }
+                        | PackageCompilerCoverage::NotRecordedCapacity { profile, .. } => *profile,
                         PackageCompilerCoverage::Retained { read } => {
                             let PackageCompilerOutcomeRead::Coverage(read) = read else {
                                 return Err(ProductAdmissionError::IndexOperationShape);

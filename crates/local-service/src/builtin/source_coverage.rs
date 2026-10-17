@@ -5,7 +5,7 @@
 //! loses reuse only and can never authorize a different source frontier.
 use super::BuiltinModelError;
 use backend_extension_turso::SelectedGeneration;
-use backend_semantic::ir::SourceCoverageManifest;
+use backend_semantic::ir::SourceCoverageObservation;
 use std::sync::{Arc, Mutex};
 
 const MAX_ENTRIES: usize = 16;
@@ -35,7 +35,7 @@ impl CoverageSelection {
     }
 }
 struct Resident {
-    value: Option<Arc<SourceCoverageManifest>>,
+    value: Option<Arc<SourceCoverageObservation>>,
     bytes: usize,
 }
 struct State {
@@ -60,8 +60,8 @@ impl CoverageResidence {
     pub(super) fn get_or_load(
         &self,
         key: CoverageSelection,
-        load: impl FnOnce() -> Result<Option<SourceCoverageManifest>, BuiltinModelError>,
-    ) -> Result<Option<Arc<SourceCoverageManifest>>, BuiltinModelError> {
+        load: impl FnOnce() -> Result<Option<SourceCoverageObservation>, BuiltinModelError>,
+    ) -> Result<Option<Arc<SourceCoverageObservation>>, BuiltinModelError> {
         let mut state = self
             .state
             .lock()
@@ -103,7 +103,7 @@ impl CoverageResidence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageRow};
+    use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow};
     use std::cell::Cell;
     fn key(profile: u8) -> CoverageSelection {
         CoverageSelection {
@@ -140,6 +140,7 @@ mod tests {
                     })
                     .collect(),
             )
+            .and_then(SourceCoverageObservation::from_catalog)
             .map(Some)
             .map_err(|e| BuiltinModelError(e.into()))
         };
@@ -154,7 +155,7 @@ mod tests {
                 })
                 .unwrap()
                 .unwrap();
-            let row = &value.rows()[offset];
+            let row = &value.catalog().unwrap().rows()[offset];
             source_checks.set(source_checks.get() + 1);
             assert_eq!(row.path(), format!("src/{offset:05}.spec.ts"));
         }
@@ -195,6 +196,7 @@ mod tests {
                     })
                     .collect(),
             )
+            .and_then(SourceCoverageObservation::from_catalog)
             .map(Some)
             .map_err(|e| BuiltinModelError(e.into()))
         };

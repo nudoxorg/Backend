@@ -367,4 +367,8 @@ pub use native_program_sources::{
 pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};
 
 mod source_coverage;
-pub use source_coverage::{SourceCoverageGapCause, SourceCoverageRow, SourceCoverageManifest, SourceCoverageSchema, MAX_SOURCE_COVERAGE_BYTES, MAX_SOURCE_COVERAGE_ROWS};
+pub use source_coverage::{
+    MAX_SOURCE_COVERAGE_BYTES, MAX_SOURCE_COVERAGE_ROWS, SOURCE_COVERAGE_OBSERVATION_OVERHEAD,
+    SourceCoverageCapacityReason, SourceCoverageGapCause, SourceCoverageManifest,
+    SourceCoverageObservation, SourceCoverageRow, SourceCoverageSchema,
+};

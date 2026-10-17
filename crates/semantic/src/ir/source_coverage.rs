@@ -2,7 +2,7 @@
 use backend_version::{ContentId, Schema, SourceFactDomain};
 use serde::{Deserialize, Serialize};
 
-/// Same finite source universe as the native TypeScript program bridge.
+/// Independent finite observation-row recording allowance; never a semantic source limit.
 pub const MAX_SOURCE_COVERAGE_ROWS: usize = 16_384 + 256;
 /// Bound independently of transport paging; the catalog lives once in CAS.
 pub const MAX_SOURCE_COVERAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -18,6 +18,20 @@ impl Schema for SourceCoverageSchema {
     fn encode(value: &[u8], out: &mut Vec<u8>) {
         out.extend_from_slice(value);
     }
+}
+
+fn validate_path_syntax(path: &str) -> Result<(), &'static str> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+        || path
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+    {
+        return Err("invalid coverage source path");
+    }
+    Ok(())
 }
 
 /// A selected native configuration or one compiler-observed source omission.
@@ -103,6 +117,7 @@ impl SourceCoverageRow {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceCoverageManifest {
     identity: [u8; 32],
+    encoded_len: usize,
     input_root: [u8; 32],
     profile: [u8; 2],
     program: [u8; 32],
@@ -127,7 +142,7 @@ impl SourceCoverageManifest {
                 Ok(crate::vocabulary::LanguageProfile::TypeScript(_))
             )
             || source_count == 0
-            || source_count > 16_384
+            || source_count > 100_000
             || completed > source_count
             || rows.len() > MAX_SOURCE_COVERAGE_ROWS
         {
@@ -148,6 +163,7 @@ impl SourceCoverageManifest {
         }
         let mut value = Self {
             identity: [0; 32],
+            encoded_len: 0,
             input_root,
             profile,
             program,
@@ -170,6 +186,7 @@ impl SourceCoverageManifest {
         if length > MAX_SOURCE_COVERAGE_BYTES {
             return Err("coverage catalog capacity exceeded");
         }
+        value.encoded_len = length;
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"nudox.compiler-source-coverage.v1\0");
         hasher.update(&value.encode());
@@ -204,6 +221,10 @@ impl SourceCoverageManifest {
     pub const fn identity(&self) -> [u8; 32] {
         self.identity
     }
+    /// Exact payload length, computed before allocating canonical bytes.
+    pub const fn encoded_len(&self) -> usize {
+        self.encoded_len
+    }
     /// Exact owned row/vector/path storage charged by immutable residence.
     pub fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -219,7 +240,7 @@ impl SourceCoverageManifest {
     }
     /// Exact canonical typed-object payload.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.encoded_len);
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.input_root);
         out.extend_from_slice(&self.profile);
@@ -304,6 +325,263 @@ impl SourceCoverageManifest {
         Self::new(root, profile, program, count, completed, facts)
     }
 }
+
+/// The complete explanation could not fit its independent recording budget.
+/// This never changes the semantic compiler's source or publication outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceCoverageCapacityReason {
+    /// Too many complete observation rows for this catalog representation.
+    RowCount,
+    /// An otherwise admitted source/config path exceeds the explanation row bound.
+    PathBytes,
+    /// The complete canonical explanation exceeds its recording byte allowance.
+    EncodedBytes,
+}
+impl SourceCoverageCapacityReason {
+    fn tag(self) -> u8 {
+        match self {
+            Self::RowCount => 1,
+            Self::PathBytes => 2,
+            Self::EncodedBytes => 3,
+        }
+    }
+    fn from_tag(tag: u8) -> Result<Self, &'static str> {
+        match tag {
+            1 => Ok(Self::RowCount),
+            2 => Ok(Self::PathBytes),
+            3 => Ok(Self::EncodedBytes),
+            _ => Err("invalid coverage capacity reason"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Observation {
+    Catalog(SourceCoverageManifest),
+    NotRecordedCapacity {
+        input: [u8; 32],
+        profile: [u8; 2],
+        program: [u8; 32],
+        source_count: u32,
+        completed: u32,
+        reason: SourceCoverageCapacityReason,
+    },
+}
+
+/// Authenticated all-or-unavailable coverage recording. Capacity is explicit,
+/// never an incomplete catalog or a compiler failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceCoverageObservation {
+    observation: Observation,
+}
+const OBSERVATION_MAGIC: &[u8; 8] = b"BKSCOB01";
+/// Exact wrapper cost used by producer forecasting before copying any rows.
+pub const SOURCE_COVERAGE_OBSERVATION_OVERHEAD: usize = 9;
+impl SourceCoverageObservation {
+    /// Exact all-row capacity forecast over borrowed paths. Syntax faults are
+    /// errors even when volume is also excessive; they never become capacity.
+    pub fn forecast<'a>(
+        configs: impl IntoIterator<Item = &'a str>,
+        gaps: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Option<SourceCoverageCapacityReason>, &'static str> {
+        let mut rows = 0usize;
+        let mut bytes = Some(86usize + SOURCE_COVERAGE_OBSERVATION_OVERHEAD);
+        let mut long_path = false;
+        for (path, cost) in configs
+            .into_iter()
+            .map(|path| (path, 69usize))
+            .chain(gaps.into_iter().map(|path| (path, 42usize)))
+        {
+            validate_path_syntax(path)?;
+            rows = rows.checked_add(1).ok_or("coverage row count overflow")?;
+            long_path |= path.len() > 4096;
+            bytes = bytes
+                .and_then(|bytes| bytes.checked_add(cost))
+                .and_then(|bytes| bytes.checked_add(path.len()));
+        }
+        Ok(if rows > MAX_SOURCE_COVERAGE_ROWS {
+            Some(SourceCoverageCapacityReason::RowCount)
+        } else if long_path {
+            Some(SourceCoverageCapacityReason::PathBytes)
+        } else if bytes.is_none_or(|bytes| bytes > MAX_SOURCE_COVERAGE_BYTES) {
+            Some(SourceCoverageCapacityReason::EncodedBytes)
+        } else {
+            None
+        })
+    }
+    /// Wraps a complete admitted catalog; never drops rows to meet a bound.
+    pub fn from_catalog(catalog: SourceCoverageManifest) -> Result<Self, &'static str> {
+        if catalog
+            .encoded_len()
+            .checked_add(SOURCE_COVERAGE_OBSERVATION_OVERHEAD)
+            .is_none_or(|len| len > MAX_SOURCE_COVERAGE_BYTES)
+        {
+            return Err("coverage recording capacity exceeded");
+        }
+        Ok(Self {
+            observation: Observation::Catalog(catalog),
+        })
+    }
+    /// Records capacity unavailability bound to the actual successful compiler basis.
+    pub fn not_recorded_capacity(
+        input: [u8; 32],
+        profile: [u8; 2],
+        program: [u8; 32],
+        source_count: u32,
+        completed: u32,
+        reason: SourceCoverageCapacityReason,
+    ) -> Result<Self, &'static str> {
+        if input == [0; 32]
+            || program == [0; 32]
+            || !matches!(
+                crate::vocabulary::LanguageProfile::try_from(profile),
+                Ok(crate::vocabulary::LanguageProfile::TypeScript(_))
+            )
+            || source_count == 0
+            || source_count > 100_000
+            || completed > source_count
+        {
+            return Err("invalid coverage capacity basis");
+        }
+        Ok(Self {
+            observation: Observation::NotRecordedCapacity {
+                input,
+                profile,
+                program,
+                source_count,
+                completed,
+                reason,
+            },
+        })
+    }
+    /// Whole catalog, absent when no cause rows were recorded.
+    pub fn catalog(&self) -> Option<&SourceCoverageManifest> {
+        match &self.observation {
+            Observation::Catalog(catalog) => Some(catalog),
+            _ => None,
+        }
+    }
+    /// Exact typed reason the catalog was not recorded.
+    pub const fn capacity_reason(&self) -> Option<SourceCoverageCapacityReason> {
+        match &self.observation {
+            Observation::NotRecordedCapacity { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
+    /// Exact compiler input; not a completeness capability.
+    pub const fn input_root(&self) -> &[u8; 32] {
+        match &self.observation {
+            Observation::Catalog(catalog) => catalog.input_root(),
+            Observation::NotRecordedCapacity { input, .. } => input,
+        }
+    }
+    /// Exact compiler language profile.
+    pub const fn profile(&self) -> [u8; 2] {
+        match &self.observation {
+            Observation::Catalog(catalog) => catalog.profile(),
+            Observation::NotRecordedCapacity { profile, .. } => *profile,
+        }
+    }
+    /// Exact final native program/forest identity.
+    pub const fn program(&self) -> &[u8; 32] {
+        match &self.observation {
+            Observation::Catalog(catalog) => catalog.program(),
+            Observation::NotRecordedCapacity { program, .. } => program,
+        }
+    }
+    /// Complete captured source count.
+    pub const fn source_count(&self) -> u32 {
+        match &self.observation {
+            Observation::Catalog(catalog) => catalog.source_count(),
+            Observation::NotRecordedCapacity { source_count, .. } => *source_count,
+        }
+    }
+    /// Exact semantic artifact count, unaffected by explanation capacity.
+    pub const fn completed(&self) -> u32 {
+        match &self.observation {
+            Observation::Catalog(catalog) => catalog.completed(),
+            Observation::NotRecordedCapacity { completed, .. } => *completed,
+        }
+    }
+    /// Stable recording identity, distinct from the outer CAS envelope identity.
+    pub fn identity(&self) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"nudox.compiler-coverage-observation.v1\0");
+        match &self.observation {
+            Observation::Catalog(catalog) => {
+                hash.update(&[0]);
+                hash.update(&catalog.identity());
+            }
+            Observation::NotRecordedCapacity { .. } => {
+                hash.update(&self.encode());
+            }
+        }
+        *hash.finalize().as_bytes()
+    }
+    /// Owned immutable data charged by bounded residence.
+    pub fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .catalog()
+                .map_or(0, SourceCoverageManifest::retained_bytes)
+    }
+    /// Exact canonical all-or-unavailable payload.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(OBSERVATION_MAGIC);
+        match &self.observation {
+            Observation::Catalog(catalog) => {
+                out.push(0);
+                out.extend_from_slice(&catalog.encode());
+            }
+            Observation::NotRecordedCapacity {
+                input,
+                profile,
+                program,
+                source_count,
+                completed,
+                reason,
+            } => {
+                out.push(1);
+                out.extend_from_slice(input);
+                out.extend_from_slice(profile);
+                out.extend_from_slice(program);
+                out.extend_from_slice(&source_count.to_le_bytes());
+                out.extend_from_slice(&completed.to_le_bytes());
+                out.push(reason.tag());
+            }
+        }
+        out
+    }
+    /// Admits capacity explicitly; missing/trailing cause rows never become a catalog.
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.len() > MAX_SOURCE_COVERAGE_BYTES {
+            return Err("coverage recording capacity exceeded");
+        }
+        let mut d = Decoder(bytes);
+        if d.take(8)? != OBSERVATION_MAGIC {
+            return Err("invalid coverage observation magic");
+        }
+        match d.take(1)?[0] {
+            0 => Self::from_catalog(SourceCoverageManifest::decode(d.0)?),
+            1 => {
+                let input = d.array()?;
+                let profile = d.array()?;
+                let program = d.array()?;
+                let count = d.u32()?;
+                let completed = d.u32()?;
+                let reason = SourceCoverageCapacityReason::from_tag(d.take(1)?[0])?;
+                if !d.0.is_empty() {
+                    return Err("trailing capacity observation bytes");
+                }
+                Self::not_recorded_capacity(input, profile, program, count, completed, reason)
+            }
+            _ => Err("invalid coverage observation tag"),
+        }
+    }
+}
+
 struct Decoder<'a>(&'a [u8]);
 impl<'a> Decoder<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], &'static str> {
@@ -374,6 +652,16 @@ impl std::fmt::Display for SourceCoverageGapCause {
 }
 
 impl SourceCoverageGapCause {
+    /// Rejects causes that cannot be produced by a TypeScript-language attempt.
+    pub const fn is_typescript(self) -> bool {
+        !matches!(
+            self,
+            Self::RustSourceOutsideActiveCargoTarget
+                | Self::PythonSourceSyntaxUnavailable
+                | Self::PythonSourceEncodingUnavailable
+                | Self::PythonSourceDependencyUnavailable
+        )
+    }
     fn tag(self) -> u8 {
         match self {
             Self::RustSourceOutsideActiveCargoTarget => 1,
@@ -432,6 +720,82 @@ mod tests {
             },
         ]
     }
+    #[test]
+    fn coverage_capacity_forecast_is_borrowed_complete_and_not_a_truncated_catalog() {
+        use SourceCoverageCapacityReason as Reason;
+        let config = ["tsconfig.app.json"];
+        assert_eq!(
+            SourceCoverageObservation::forecast(config, ["src/main.ts"]),
+            Ok(None)
+        );
+        assert_eq!(
+            SourceCoverageObservation::forecast(
+                config,
+                std::iter::repeat_n("src/outside.ts", 20_000)
+            ),
+            Ok(Some(Reason::RowCount))
+        );
+        let long = format!("{}.ts", "x".repeat(4096));
+        assert_eq!(
+            SourceCoverageObservation::forecast(config, [long.as_str()]),
+            Ok(Some(Reason::PathBytes))
+        );
+        let path = format!("{}.ts", "x".repeat(4000));
+        assert_eq!(
+            SourceCoverageObservation::forecast(config, std::iter::repeat_n(path.as_str(), 2200)),
+            Ok(Some(Reason::EncodedBytes))
+        );
+        // Structural failure has priority even after the row budget was exceeded.
+        assert!(
+            SourceCoverageObservation::forecast(
+                config,
+                std::iter::repeat_n("src/outside.ts", 20_000).chain(["../foreign.ts"])
+            )
+            .is_err()
+        );
+        for reason in [Reason::RowCount, Reason::PathBytes, Reason::EncodedBytes] {
+            let observation = SourceCoverageObservation::not_recorded_capacity(
+                [3; 32],
+                [1, 0],
+                [7; 32],
+                20_001,
+                1,
+                reason,
+            )
+            .unwrap();
+            let bytes = observation.encode();
+            assert_eq!(bytes.len(), 84);
+            let cold = SourceCoverageObservation::decode(&bytes).unwrap();
+            assert_eq!(cold, observation);
+            assert_eq!(cold.source_count(), 20_001);
+            assert_eq!(cold.completed(), 1);
+            assert_eq!(cold.capacity_reason(), Some(reason));
+            assert!(
+                cold.catalog().is_none(),
+                "no invented rows or next selector"
+            );
+            let other = SourceCoverageObservation::not_recorded_capacity(
+                [4; 32],
+                [1, 0],
+                [7; 32],
+                20_001,
+                1,
+                reason,
+            )
+            .unwrap();
+            assert_ne!(cold.identity(), other.identity());
+            let mut trailing = bytes;
+            trailing.push(0);
+            assert!(SourceCoverageObservation::decode(&trailing).is_err());
+        }
+        let catalog =
+            SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows()).unwrap();
+        let recording = SourceCoverageObservation::from_catalog(catalog.clone()).unwrap();
+        let cold = SourceCoverageObservation::decode(&recording.encode()).unwrap();
+        assert_eq!(cold.catalog(), Some(&catalog));
+        assert_eq!(cold.capacity_reason(), None);
+    }
+
     #[test]
     fn coverage_codec_retains_config_source_identity_and_distinct_observed_causes() {
         let value = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows()).unwrap();
