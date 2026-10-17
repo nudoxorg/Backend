@@ -467,10 +467,12 @@ impl<'work> ParserStateCore<'work> {
         type_annotation: NodeIndex,
         name: NodeIndex,
         initializer: NodeIndex,
+        exclamation_end: Option<u32>,
     ) -> u32 {
-        let mut end_pos = self.token_end();
-        // Calculate end position from the last component present (child node, not token)
-        if initializer.is_some() {
+        // The current token is lookahead, not part of this declarator. Its
+        // end may include a comma, semicolon, closing delimiter or the next
+        // ASI statement. Preserve the last consumed child (or `!`) instead.
+        let end_pos = if initializer.is_some() {
             self.arena
                 .get(initializer)
                 .map_or_else(|| self.token_pos(), |n| n.end)
@@ -479,12 +481,11 @@ impl<'work> ParserStateCore<'work> {
                 .get(type_annotation)
                 .map_or_else(|| self.token_pos(), |n| n.end)
         } else {
-            self.arena
-                .get(name)
-                .map_or_else(|| self.token_pos(), |n| n.end)
+            exclamation_end
+                .or_else(|| self.arena.get(name).map(|node| node.end))
+                .unwrap_or_else(|| self.token_pos())
         };
-        end_pos = end_pos.max(self.token_end()).max(start_pos);
-        end_pos
+        end_pos.max(start_pos)
     }
 
     /// Parse function declaration (optionally async)
