@@ -3545,7 +3545,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_program_member_retains_its_own_path_instead_of_the_first_js_or_tsx() {
+    fn refused_program_member_retains_its_own_path_instead_of_the_first_js_or_tsx() -> Result<(), TestFailure> {
         for (path, expected) in [
             ("assets/view.vue", TszSourceError::UnsupportedExtension),
             ("src//invalid.ts", TszSourceError::InvalidPath),
@@ -3556,10 +3556,11 @@ mod tests {
                 input(".prettierrc.js", "module.exports = {};"),
                 input("fetchApi.test.tsx", "export const view = <section />;"),
                 input(path, "{}"),
-            ], options(), &[]).unwrap_err();
+            ], options(), &[]).err().test_value()?;
             assert!(matches!(&error, TszAuthorityError::SourceAt { path: observed, source } if observed == path && *source == expected));
             assert!(error.to_string().contains(path));
         }
+        Ok(())
     }
 
     #[test]
