@@ -6,7 +6,7 @@ use super::MAX_SEMANTIC_DOCUMENT_BYTES;
 use super::MAX_SEMANTIC_QUERY_ROWS;
 use super::call_join::{
     ProjectCallableIndex, foreign_display_name, join_project_call, join_project_field,
-    join_project_mention, join_project_value, project_paths_for_package,
+    join_native_typescript_target, join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::compiled_source_path;
 use super::identity::{
@@ -309,6 +309,15 @@ fn append_compiler_query_facts(
                             }
                         }
                         LinkTarget::External(external) => {
+                            // `published` is the same selected entity inventory
+                            // this loop emits in full below. A successful corpus
+                            // cannot omit the joined declaration's fact.
+                            if let Some(index) = callable_index
+                                && let Some(target) = join_native_typescript_target(image, external, index, &published)?
+                            {
+                                related.push(query_semantic_id(package, target));
+                                continue;
+                            }
                             // The view gives every external link target its
                             // own row (`project_image_rows`), joined to a
                             // project declaration or not; the corpus covers
@@ -381,6 +390,11 @@ fn append_compiler_query_facts(
                 // link names its own row (`project_image_rows`); the corpus
                 // covers the view exactly, so each gets its external fact.
                 for (identity, external) in &content.documentation_targets {
+                    if let Some(index) = callable_index
+                        && join_native_typescript_target(image, *external, index, &published)?.is_some()
+                    {
+                        continue;
+                    }
                     external_targets
                         .entry(query_external_id(package, image_digest, *identity))
                         .or_insert((*identity, *external));
