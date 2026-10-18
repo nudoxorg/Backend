@@ -348,7 +348,9 @@ fn accepted_index_cancel_rechecks_exact_ticket_sends_once_and_never_restarts_wor
                 SurfaceReply::IndexCancellation(IndexCancelReceipt { ticket: expected_ticket, status: IndexCancelStatus::Requested }))?;
             let terminal = crate::model::index_operation::tests::observation(&expected_operation,
                 IndexOperationState::Failed { reason: IndexOperationFailureReason::Cancelled,
-                    detail: ProductText::new("Cancelled by the GUI.")?, compiler_failure: None });
+                    detail: ProductText::new("Cancelled by the GUI.")
+                        .map_err(|error| anyhow::anyhow!("cancelled terminal detail: {error:?}"))?,
+                    compiler_failure: None });
             exchange(&mut stream, SurfaceCommand::IndexOperationStatus { operation_key: expected_operation.key },
                 SurfaceReply::IndexOperationStatus(terminal))?;
             Ok(listener)

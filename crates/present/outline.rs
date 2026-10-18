@@ -474,12 +474,22 @@ mod page_scope_tests {
         let unscoped_root = ViewRoot::new_incomplete(first.snapshot.root.recipe(),
             first.snapshot.root.basis(), first.snapshot.root.frontier(), unscoped_rows,
             first.snapshot.root.coverage().to_vec()).expect("same IDs but unproved membership");
-        let unscoped_snapshot = backend_library::ViewSnapshot {
-            root: unscoped_root.clone(), freshness: first.snapshot.freshness, next: None,
-        };
+        // Keep every other scope field from the complete native producer.
+        let mut unscoped_snapshot = first.snapshot.clone();
+        unscoped_snapshot.root = unscoped_root.clone();
+        unscoped_snapshot.next = None;
         assert!(page_tree(path, &unscoped_snapshot, 1, first.outline_order.as_ref().expect("order")).is_err(),
             "a presenter cannot infer singleton membership from a bounded page");
-        let forged = Cursor::for_view_root(&unscoped_root).with_query_offset(1);
+        // Public query admission accepts only positions against an existing
+        // typed owner. The producer must still reject this wrong predecessor.
+        let forged_owner = Cursor::for_view_root(&unscoped_root);
+        let mut forged_bytes = forged_owner.encode_control().to_vec();
+        forged_bytes.extend_from_slice(&continuation.query_offset().to_be_bytes());
+        let forged = Cursor::decode_query_against(&forged_bytes, forged_owner)
+            .expect("public admission of the adversarial query position");
+        assert_eq!(forged.query_offset(), continuation.query_offset());
+        assert_eq!(forged.recipe(), continuation.recipe());
+        assert_ne!(forged.root(), continuation.root());
         assert!(matches!(library.outline_page(package, request.with_continuation(
             backend_library::PageContinuation::from_cursor(forged))),
             Err(backend_library::LibraryError::CursorMismatch)),
