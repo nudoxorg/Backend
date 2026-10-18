@@ -573,7 +573,8 @@ pub struct RecordDto {
     /// A one-line summary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// The reported score.
+    /// The owner's descending order key. Published names/search use
+    /// `u32::MAX - zero_based_absolute_rank`, not a relevance probability.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<u32>,
 }

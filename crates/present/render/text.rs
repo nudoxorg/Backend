@@ -218,7 +218,12 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>, 
     if let Some(kind) = record.kind() {
         tags.push(format!("{} {}", KindGlyph::new(kind), kind.name()));
     }
-    tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    if record.is_external_reference() {
+        tags.push("external reference".to_owned());
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }

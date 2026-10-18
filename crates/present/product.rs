@@ -1936,7 +1936,14 @@ fn local_declaration_search_row(record: &LocalDeclarationSearchRecord) -> Produc
     ProductRecord::new(
         record.name.as_str(),
         Some(record.coordinate.as_str().to_owned()),
-        vec!["local declaration".to_owned(), source],
+        vec![
+            if crate::Identity::parse(record.coordinate.as_str()).shape() == crate::IdentityShape::External {
+                "external reference".to_owned()
+            } else {
+                "local declaration".to_owned()
+            },
+            source,
+        ],
     )
     .with_local_declaration(record.clone())
 }
@@ -3859,6 +3866,51 @@ mod tests {
             RegistrySearchHit::LocalDeclaration(invalid),
         ]));
         assert!(invalid.admit(invalid.id()).is_err());
+    }
+
+    #[test]
+    fn index_search_external_references_keep_identity_and_do_not_claim_local_declarations() {
+        let records: Vec<_> = ["11", "22"].into_iter().map(|key| LocalDeclarationSearchRecord {
+            coordinate: backend_library::ProductText::new(format!(
+                "/abs/app::external::symbol:{}::React", key.repeat(32))).expect("coordinate"),
+            name: backend_library::ProductText::new("React").expect("spelling"),
+            source: LocalDeclarationSource::NotCaptured,
+        }).collect();
+        for reply in [
+            SurfaceReply::IndexSearchWithDiscovery(records.iter().cloned()
+                .map(RegistrySearchHit::LocalDeclaration).collect()),
+            SurfaceReply::ExploredDeclarations(records.clone().into_boxed_slice()),
+        ] {
+            reply.admit(reply.id()).expect("selected external rows are valid view references");
+            let view = product_view(&reply);
+            assert_eq!(view.records().len(), 2, "same name does not collapse distinct endpoints");
+            for (shown, original) in view.records().iter().zip(&records) {
+                assert_eq!(shown.operand(), Some(original.coordinate.as_str()));
+                assert!(shown.tags().iter().any(|tag| tag == "external reference"));
+                assert!(shown.tags().iter().any(|tag| tag == "source not captured"));
+                assert!(!shown.tags().iter().any(|tag| tag == "local declaration"));
+            }
+            let dto = crate::dto::ProductDto::new(&view);
+            for (shown, original) in dto.records.iter().zip(&records) {
+                assert_eq!(shown.local_declaration.as_ref(), Some(original), "existing wire evidence stays exact");
+            }
+            for rendered in [crate::markdown::product(&view), crate::text::product(&view, crate::Theme::plain())] {
+                assert_eq!(rendered.matches("external reference").count(), 2);
+                assert!(!rendered.contains("local declaration"));
+                for original in &records { assert!(rendered.contains(original.coordinate.as_str())); }
+            }
+        }
+        for coordinate in ["/abs/app::src/external.ts:3::React",
+            "/abs/app::semantic::3333333333333333333333333333333333333333333333333333333333333333::React"] {
+            let record = LocalDeclarationSearchRecord {
+                coordinate: backend_library::ProductText::new(coordinate).expect("owned coordinate"),
+                name: backend_library::ProductText::new("React").expect("name"),
+                source: LocalDeclarationSource::NotCaptured,
+            };
+            let shown = local_declaration_search_row(&record);
+            assert!(shown.tags().iter().any(|tag| tag == "local declaration"));
+            assert!(!shown.tags().iter().any(|tag| tag == "external reference"), "missing source is not external authority");
+        }
     }
 
     #[test]

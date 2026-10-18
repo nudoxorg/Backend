@@ -344,7 +344,12 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     if let Some(kind) = record.kind() {
         tags.push(kind.name());
     }
-    tags.push(record.language().name());
+    if record.is_external_reference() {
+        tags.push("external reference");
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(record.language().name());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name());
     }
@@ -694,7 +699,12 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>) 
     if let Some(kind) = record.kind() {
         tags.push(kind.name().to_owned());
     }
-    tags.push(record.language().name().to_owned());
+    if record.is_external_reference() {
+        tags.push("external reference".to_owned());
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(record.language().name().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
