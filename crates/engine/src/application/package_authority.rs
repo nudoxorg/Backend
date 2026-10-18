@@ -14,8 +14,8 @@ use std::{
 
 use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
-    CompileControl, ExternalToolchain, NotExternalToolchain, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, ExternalToolchain, NotExternalToolchain, SemanticAuthorityInput,
+    ToolchainSelection,
 };
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
@@ -1423,6 +1423,7 @@ mod tests {
         }
     }
 
+    use crate::driver::ResolvedToolchain;
     use crate::test_support::host_path;
     use std::{
         path::Path,

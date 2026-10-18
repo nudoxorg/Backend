@@ -1045,7 +1045,7 @@ mod tests {
     use super::*;
     use crate::acquisition::{
         AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, LeaseStore,
-        ManifestEntry, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
+        ManifestEntry, MetadataRecord, ReleaseClaim, Resolve, TreeManifest,
     };
     use std::process::{Command, Stdio};
 

@@ -1496,7 +1496,6 @@ mod tests {
     #[test]
     fn go_oracle_binary_is_a_typed_unsupported_closure() {
         use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
-        use std::path::PathBuf;
 
         let configuration = GoOracleConfiguration::oracle_binary(
             crate::test_support::host_absolute("/opt/compiler/go-oracle"),
