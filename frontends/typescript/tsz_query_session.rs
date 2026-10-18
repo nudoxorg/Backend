@@ -260,6 +260,31 @@ impl<'project> TszProjectQuerySession<'project> {
             .map(|source| source.digest)
     }
 
+    /// Returns the cached identity for this exact immutable program file.
+    ///
+    /// Native declaration coordinates already borrow their target directly from
+    /// this session's checked program. Pointer identity authenticates that owner
+    /// without rehashing or comparing its full source text for every occurrence.
+    /// A file cloned from another program, even with identical text and path,
+    /// cannot borrow this session's source identity.
+    #[must_use]
+    pub fn native_source_identity_for_bound_file(
+        &self,
+        file_index: usize,
+        file: &tsz::parallel::BoundFile,
+    ) -> Option<[u8; 32]> {
+        let expected = self.project.program().files.get(file_index)?;
+        if !std::ptr::eq(expected, file) {
+            return None;
+        }
+        self.native_sources
+            .files
+            .get(file_index)
+            .copied()
+            .flatten()
+            .map(|source| source.digest)
+    }
+
     /// Authenticates and adopts the compiler's already captured leaf manifest.
     /// Every native path, content digest and byte length must match this
     /// session; a forest envelope or another revision cannot supply its ID.

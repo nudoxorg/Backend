@@ -4868,9 +4868,10 @@ fn hash_callable_anchor_step(hash: &mut Sha256, step: CallableAnchorStep<'_>) {
 fn native_tsz_declaration_coordinate(
     binder: &backend_frontend_typescript::TszBinderState,
     symbol_id: TszSymbolId,
-    program_files: &[TszBoundFile],
+    session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
     callable: bool,
 ) -> Option<NativeTszDeclarationCoordinate> {
+    let program_files = &session.project().program().files;
     let symbol_id = binder.resolve_import_symbol(symbol_id).unwrap_or(symbol_id);
     let symbol = binder.symbols.get(symbol_id)?;
     if symbol.declarations.is_empty()
@@ -4936,11 +4937,12 @@ fn native_tsz_declaration_coordinate(
         {
             continue;
         }
-        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes());
+        let identity = session
+            .native_source_identity_for_bound_file(stable.file_idx as usize, file)?;
         let coordinate = NativeTszDeclarationCoordinate {
             file_index: stable.file_idx,
             path: file.file_name.clone(),
-            source_identity: *identity,
+            source_identity: identity,
             declaration_start: stable.pos,
             declaration_end: stable.end,
             name_start,
@@ -4983,8 +4985,9 @@ fn native_tsz_declaration_coordinate(
 fn native_tsz_import_declaration_coordinate(
     binder: &TszBinderState,
     symbol: TszSymbolId,
-    program_files: &[TszBoundFile],
+    session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
 ) -> Option<NativeTszDeclarationCoordinate> {
+    let program_files = &session.project().program().files;
     let declaration_symbol = binder.symbols.get(symbol)?;
     if declaration_symbol.declarations.len() != declaration_symbol.stable_declarations.len() {
         return None;
@@ -5006,7 +5009,7 @@ fn native_tsz_import_declaration_coordinate(
     {
         return None;
     }
-    if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, program_files, false) {
+    if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, session, false) {
         return Some(target);
     }
     let symbol = binder.symbols.get(symbol)?;
@@ -5057,7 +5060,8 @@ fn native_tsz_import_declaration_coordinate(
     Some(NativeTszDeclarationCoordinate {
         file_index: stable.file_idx,
         path: file.file_name.clone(),
-        source_identity: *ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes()),
+        source_identity: session
+            .native_source_identity_for_bound_file(stable.file_idx as usize, file)?,
         declaration_start: stable.pos,
         declaration_end: stable.end,
         name_start,
@@ -5092,7 +5096,6 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
     let declaration_file = source_path.ends_with(".d.ts")
         || source_path.ends_with(".d.mts")
         || source_path.ends_with(".d.cts");
-    let program_files = &project.program().files;
     let program_identity = session.native_program_identity();
     let source_identity = session
         .native_source_identity(file_index, source.as_bytes())
@@ -5154,7 +5157,7 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     &mut *$checker,
                     $binder,
                     $bound_file,
-                    program_files,
+                    session,
                     file_index,
                     program_identity,
                 )?;
@@ -6751,10 +6754,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         checker: &mut TszCheckerState<'_>,
         binder: &backend_frontend_typescript::TszBinderState,
         bound_file: &TszBoundFile,
-        program_files: &[TszBoundFile],
+        session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
         current_file_index: usize,
         program_identity: Option<[u8; 32]>,
     ) -> Result<(), TypeScriptCollectError> {
+        let program_files = &session.project().program().files;
         let current_file_index = u32::try_from(current_file_index).map_err(|_| lane_rejection())?;
         if program_files
             .get(current_file_index as usize)
@@ -6806,7 +6810,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 continue;
             };
             let Some(target) = native_tsz_import_declaration_coordinate(
-                target_binder, resolved.symbol_id, program_files,
+                target_binder, resolved.symbol_id, session,
             ) else { continue; };
             self.commit_native_tsz_occurrence(
                 owner, Span::new(start, end), occurrence.kind, target,
@@ -6883,7 +6887,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(target) = native_tsz_declaration_coordinate(
                 target_binder,
                 target_symbol,
-                program_files,
+                session,
                 true,
             ) else {
                 continue;
@@ -6933,7 +6937,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 continue;
             };
             let Some(target) =
-                native_tsz_declaration_coordinate(binder, target_symbol, program_files, false)
+                native_tsz_declaration_coordinate(binder, target_symbol, session, false)
             else {
                 continue;
             };
@@ -13034,6 +13038,152 @@ describe('suite', () => {\n\
             2,
             "each call site has one exact target, without a global name-only guess"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_occurrence_targets_reuse_only_their_exact_session_source() -> Result<(), LaneError> {
+        let models = format!(
+            "/* {} */\nexport const version = 1;\nexport function alpha(value: number): number {{ return value; }}\nexport class Box {{ value = 1; getValue(): number {{ return this.value; }} }}\n",
+            "target source padding ".repeat(256)
+        );
+        let mut caller = String::from(
+            "import { alpha as run, version, Box } from './models';\nconst box = new Box();\nfunction local(value: number): number { return value; }\nexport function repeated() { let total = version;\n",
+        );
+        for value in 0..8 {
+            caller.push_str(&format!(
+                    "total += run({value}); total += box.getValue(); total += box.value; total += local({value});\n"
+                ));
+        }
+        caller.push_str("return total; }\n");
+        let resolutions = [module_resolution(
+            "caller.ts",
+            "./models",
+            TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File {
+                path: "models.ts".to_owned(),
+            },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("models.ts", models.as_str()),
+                ("caller.ts", caller.as_str()),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("target cache project"))?;
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("target cache session"))?;
+        let model_index = session
+            .file_index("models.ts")
+            .map_err(|_| LaneError::Missing("exact model index"))?;
+        let caller_index = session
+            .file_index("caller.ts")
+            .map_err(|_| LaneError::Missing("exact caller index"))?;
+        let model_file = &project.program().files[model_index];
+        let expected = *ContentId::<SourceFactDomain>::from_canonical_bytes(models.as_bytes());
+        assert_eq!(
+            session.native_source_identity_for_bound_file(model_index, model_file),
+            Some(expected)
+        );
+        assert_eq!(
+            session.native_source_identity_for_bound_file(
+                model_index,
+                &project.program().files[caller_index]
+            ),
+            None,
+            "another file at an admitted index cannot acquire the target digest"
+        );
+        assert_eq!(
+            session.native_source_identity_for_bound_file(usize::MAX, model_file),
+            None
+        );
+        let initial_work = session.native_identity_hash_work_for_test();
+        assert_eq!(initial_work, (2, (models.len() + caller.len()) as u64));
+
+        // Same paths/text in a separately checked program are still another owner.
+        let other_authority = native_tsz_project_with_resolutions(
+            &[
+                ("caller.ts", caller.as_str()),
+                ("models.ts", models.as_str()),
+            ],
+            &resolutions,
+        )?;
+        let other = other_authority
+            .project()
+            .ok_or(LaneError::Missing("other target cache project"))?;
+        let other_session = other
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("other target cache session"))?;
+        let other_model = &other.program().files[other_session
+            .file_index("models.ts")
+            .map_err(|_| LaneError::Missing("exact model index"))?];
+        assert_eq!(
+            session.native_source_identity_for_bound_file(model_index, other_model),
+            None
+        );
+
+        for _ in 0..2 {
+            let mut facts = FactSet::new();
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                caller.as_bytes(),
+                project,
+                "caller.ts",
+                &session,
+                &mut facts,
+            )?;
+            let mut calls = 0;
+            let mut methods = 0;
+            let mut fields = 0;
+            let mut local_calls = 0;
+            for index in 0..facts.occurrence_len {
+                let occurrence = facts.occurrences[index];
+                if matches!(occurrence.target, OccurrenceTarget::Local(_))
+                    && occurrence.kind == ReferenceKind::FunctionCall
+                    && occurrence.confidence == OccurrenceConfidence::Oracle
+                {
+                    local_calls += 1;
+                }
+                let Some(slot) = facts.occurrence_source_coordinate_slot[index] else {
+                    continue;
+                };
+                let coordinate = TypeScriptSourceCoordinate::decode(
+                    &facts.foreign_source_coordinate_text[slot as usize],
+                )
+                .ok_or(LaneError::Missing("cached native target coordinate"))?;
+                assert_eq!(coordinate.path, "models.ts");
+                assert_eq!(coordinate.source, expected);
+                assert_eq!(Some(coordinate.program), session.native_program_identity());
+                assert_eq!(occurrence.confidence, OccurrenceConfidence::Oracle);
+                match occurrence.kind {
+                    ReferenceKind::FunctionCall => calls += 1,
+                    ReferenceKind::MethodCall => methods += 1,
+                    ReferenceKind::FieldAccess => fields += 1,
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                calls, 8,
+                "every imported call retains its exact authored target"
+            );
+            assert_eq!(
+                methods, 8,
+                "repeated receiver-owned methods retain their target"
+            );
+            assert!(
+                fields >= 8,
+                "each receiver-owned field read retains a native target"
+            );
+            assert_eq!(
+                local_calls, 8,
+                "same-file calls remain local rather than foreign"
+            );
+            assert_eq!(session.native_identity_hash_work_for_test(), initial_work);
+        }
         Ok(())
     }
 
