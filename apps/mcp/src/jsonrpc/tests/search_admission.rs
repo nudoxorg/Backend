@@ -99,7 +99,7 @@ fn physical_crlf_search_previews_match_lf_on_direct_and_registered_mcp_routes() 
     let windows = unix.replace('\n', "\r\n");
     let expected = unix.replace('\n', "\\n");
     for signature in [unix, windows.as_str()] {
-        for detail in ["summary", "full"] {
+        for detail in ["summary", "standard", "full"] {
             for forwarded in [false, true] {
                 let row = declaration_row().with_signature(signature).with_excerpt(
                     backend_library::SourceExcerpt::captured(
@@ -130,7 +130,14 @@ fn physical_crlf_search_previews_match_lf_on_direct_and_registered_mcp_routes() 
                     .as_array().expect("real native search rows");
                 assert_eq!(records.len(), 1, "{result}");
                 assert_eq!(records[0]["identity"]["coordinate"], DECLARATION);
-                assert_eq!(records[0]["signature"], expected);
+                if detail == "summary" {
+                    assert!(
+                        records[0].get("signature").is_none(),
+                        "summary intentionally omits signature payloads: {result}",
+                    );
+                } else {
+                    assert_eq!(records[0]["signature"], expected);
+                }
                 assert!(expected.contains(r"\r\n"), "authored escapes remain literal");
                 assert_eq!(
                     server.product.page_catalog.as_ref().expect("same catalog")
