@@ -1946,7 +1946,7 @@ impl TypeScriptProjectWitness {
     ) -> Result<Self, TypeScriptProjectHostError> {
         control()?;
         let project_root = canonical_directory(project_root)?;
-        let workspace = discover_workspace_boundary(&project_root, home_root)?;
+        let workspace = discover_workspace_boundary_controlled(&project_root, home_root, control)?;
         let workspace_root = workspace.as_ref().map_or_else(
             || project_root.clone(),
             |workspace| workspace.root.to_path_buf(),
@@ -2871,6 +2871,15 @@ fn read_regular_file(
     path: &Path,
     maximum_bytes: u64,
 ) -> Result<(FileSnapshot, Vec<u8>), TypeScriptProjectHostError> {
+    read_regular_file_controlled(path, maximum_bytes, &mut || Ok(()))
+}
+
+fn read_regular_file_controlled(
+    path: &Path,
+    maximum_bytes: u64,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<(FileSnapshot, Vec<u8>), TypeScriptProjectHostError> {
+    control()?;
     #[cfg(unix)]
     let mut file = {
         use rustix::fs::{Mode, OFlags, open};
@@ -2900,12 +2909,14 @@ fn read_regular_file(
                 path: path.to_path_buf().into_boxed_path(),
             });
         }
+        control()?;
         File::open(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
             source,
         })?
     };
 
+    control()?;
     let before = file
         .metadata()
         .map_err(|source| TypeScriptProjectHostError::PackagePath {
@@ -2924,6 +2935,7 @@ fn read_regular_file(
             maximum: maximum_bytes,
         });
     }
+    control()?;
     let identity = file_identity(&before, path, Some(&file)).map_err(|source| {
         TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
@@ -2939,6 +2951,7 @@ fn read_regular_file(
         }
     })?;
     let mut limited = (&mut file).take(maximum_bytes.saturating_add(1));
+    control()?;
     limited
         .read_to_end(&mut bytes)
         .map_err(|source| TypeScriptProjectHostError::PackagePath {
@@ -2952,12 +2965,14 @@ fn read_regular_file(
             maximum: maximum_bytes,
         });
     }
+    control()?;
     let after = file
         .metadata()
         .map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
             source,
         })?;
+    control()?;
     if identity
         != file_identity(&after, path, Some(&file)).map_err(|source| {
             TypeScriptProjectHostError::PackagePath {
@@ -2978,6 +2993,7 @@ fn read_regular_file(
         digest: *blake3::hash(&bytes).as_bytes(),
         content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
     };
+    control()?;
     Ok((snapshot, bytes))
 }
 
@@ -5010,11 +5026,21 @@ fn discover_workspace_boundary(
     root: &Path,
     home_root: Option<&Path>,
 ) -> Result<Option<WorkspaceBoundary>, TypeScriptProjectHostError> {
+    discover_workspace_boundary_controlled(root, home_root, &mut || Ok(()))
+}
+
+fn discover_workspace_boundary_controlled(
+    root: &Path,
+    home_root: Option<&Path>,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<Option<WorkspaceBoundary>, TypeScriptProjectHostError> {
+    control()?;
     let canonical_root =
         fs::canonicalize(root).map_err(|source| TypeScriptProjectHostError::PackageRoot {
             package_root: root.to_path_buf().into_boxed_path(),
             source,
         })?;
+    control()?;
     let canonical_home = home_root
         .map(|home| {
             fs::canonicalize(home).map_err(|source| TypeScriptProjectHostError::HomePath {
@@ -5038,30 +5064,45 @@ fn discover_workspace_boundary(
         if index > 0 && home_root.is_none() {
             break;
         }
+        control()?;
         let mut files = Vec::new();
         let manifest = ancestor.join("package.json");
         if path_exists(&manifest)? {
-            let (snapshot, bytes) = read_regular_file(
+            control()?;
+            let (snapshot, bytes) = read_regular_file_controlled(
                 &manifest,
                 u64::try_from(MAX_PACKAGE_MANIFEST_BYTES).unwrap_or(u64::MAX),
+                control,
             )?;
-            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
-                TypeScriptProjectHostError::WorkspaceConfigInvalid {
-                    path: manifest.clone().into_boxed_path(),
-                    message: source.to_string().into_boxed_str(),
-                }
-            })?;
-            if has_valid_workspaces_field(&value, &manifest)? {
+            control()?;
+            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes);
+            control()?;
+            let value =
+                parsed.map_err(
+                    |source| TypeScriptProjectHostError::WorkspaceConfigInvalid {
+                        path: manifest.clone().into_boxed_path(),
+                        message: source.to_string().into_boxed_str(),
+                    },
+                )?;
+            let workspace = has_valid_workspaces_field(&value, &manifest);
+            control()?;
+            if workspace? {
                 files.push(snapshot);
             }
         }
+        control()?;
         let pnpm = ancestor.join("pnpm-workspace.yaml");
         if path_exists(&pnpm)? {
-            let (snapshot, bytes) = read_regular_file(
+            control()?;
+            let (snapshot, bytes) = read_regular_file_controlled(
                 &pnpm,
                 u64::try_from(MAX_PNPM_WORKSPACE_BYTES).unwrap_or(u64::MAX),
+                control,
             )?;
-            if !valid_pnpm_workspace(&bytes) {
+            control()?;
+            let valid = valid_pnpm_workspace(&bytes);
+            control()?;
+            if !valid {
                 return Err(TypeScriptProjectHostError::WorkspaceConfigInvalid {
                     path: pnpm.into_boxed_path(),
                     message: "pnpm workspace file must contain a bounded non-empty packages list"
@@ -5070,6 +5111,7 @@ fn discover_workspace_boundary(
             }
             files.push(snapshot);
         }
+        control()?;
         if !files.is_empty() {
             return Ok(Some(WorkspaceBoundary {
                 root: ancestor.to_path_buf().into_boxed_path(),
@@ -5077,6 +5119,7 @@ fn discover_workspace_boundary(
             }));
         }
     }
+    control()?;
     Ok(None)
 }
 
@@ -5784,6 +5827,177 @@ mod tests {
             witness.validated_controlled(&mut || Ok(())).is_err(),
             "controlled discovery still refuses changed configuration bytes"
         );
+    }
+
+    #[test]
+    fn native_workspace_ancestor_discovery_and_replay_cancel_before_later_invalid_manifest() {
+        use std::sync::atomic::AtomicBool;
+        let fixture = Fixture::new();
+        let home = fixture.0.join("home");
+        let workspace = home.join("repo");
+        let app = workspace.join("apps/web/a/b/c/d/e/f");
+        fs::create_dir_all(&app).unwrap();
+        let manifest = workspace.join("package.json");
+        let original = r#"{"name":"workspace","workspaces":["apps/*"]}"#;
+        fs::write(&manifest, original).unwrap();
+        // HOME is an excluded boundary even when its manifest is malformed.
+        fs::write(home.join("package.json"), "not JSON").unwrap();
+        let host = TypeScriptProjectHost::direct(Some(home.clone()), Fixture::limits());
+        let baseline = host.admit(&app).unwrap().unwrap();
+        let mut healthy_checks = 0;
+        let current = host
+            .admit_controlled(&app, &mut || {
+                healthy_checks += 1;
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.fingerprint(), baseline.fingerprint());
+        assert_eq!(
+            current.witness().workspace.as_ref().unwrap().root.as_ref(),
+            workspace
+        );
+        assert!(
+            healthy_checks > 18,
+            "real ancestor and project discovery is controlled"
+        );
+        fs::write(&manifest, "not JSON").unwrap();
+        assert!(matches!(
+            host.admit(&app),
+            Err(TypeScriptProjectHostError::WorkspaceConfigInvalid { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut checks = 0;
+        let stopped = host.admit_controlled(&app, &mut || {
+            checks += 1;
+            if checks == 18 {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "stop in ancestor discovery before the later invalid workspace is read"
+        );
+        assert_eq!(checks, 18, "no later ancestor I/O after cancellation");
+
+        let witness = baseline.witness();
+        let cancelled = AtomicBool::new(false);
+        let mut checks = 0;
+        let stopped = witness.validated_controlled(&mut || {
+            checks += 1;
+            if checks == 18 {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "retained native proof uses the same controlled ancestor discovery"
+        );
+        assert_eq!(checks, 18);
+        fs::write(&manifest, original).unwrap();
+        witness
+            .validate_current()
+            .expect("cancellation leaves original witness reusable");
+        fs::write(&manifest, r#"{"name":"changed","workspaces":["apps/*"]}"#).unwrap();
+        assert!(
+            matches!(
+                witness.validated_controlled(&mut || Ok(())),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "ancestor metadata is still byte-authoritative after successful discovery"
+        );
+    }
+
+    #[test]
+    fn controlled_workspace_marker_read_stops_before_later_metadata_refusal() {
+        use std::sync::atomic::AtomicBool;
+        let fixture = Fixture::new();
+        let path = fixture.0.join("package.json");
+        fs::write(&path, br#"{"workspaces":["apps/*"]}"#).unwrap();
+        let baseline = read_regular_file(&path, 64 * 1024).unwrap();
+        let controlled = read_regular_file_controlled(&path, 64 * 1024, &mut || Ok(())).unwrap();
+        assert_eq!(
+            controlled, baseline,
+            "no-op control preserves full snapshot and bytes"
+        );
+        fs::write(&path, vec![b' '; 64 * 1024 + 1]).unwrap();
+        assert!(matches!(
+            read_regular_file(&path, 64 * 1024),
+            Err(TypeScriptProjectHostError::FileTooLarge { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut checks = 0;
+        let stopped = read_regular_file_controlled(&path, 64 * 1024, &mut || {
+            checks += 1;
+            if checks == 2 {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "cancellation after opening wins before later file metadata refusal"
+        );
+        assert_eq!(checks, 2);
+    }
+
+    #[test]
+    fn workspace_marker_post_parse_control_precedes_malformed_refusal() {
+        use std::sync::atomic::AtomicBool;
+        // Exact post-parse checkpoints in the real Unix read/validation path:
+        // package JSON is poll13; its workspace-field validation and pnpm
+        // validation after an absent package are each poll14.
+        // The previous implementation returns ConfigInvalid before either poll.
+        for (name, bytes, post_parse_poll) in [
+            ("package.json", b"not JSON".as_slice(), 13),
+            ("package.json", br#"{"workspaces":false}"#.as_slice(), 14),
+            (
+                "pnpm-workspace.yaml",
+                b"packages:\n  - ../outside\n".as_slice(),
+                14,
+            ),
+        ] {
+            let fixture = Fixture::new();
+            fs::write(fixture.0.join(name), bytes).unwrap();
+            assert!(matches!(
+                discover_workspace_boundary(&fixture.0, None),
+                Err(TypeScriptProjectHostError::WorkspaceConfigInvalid { .. })
+            ));
+            let cancelled = AtomicBool::new(false);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut polls = 0;
+            let stopped = discover_workspace_boundary_controlled(&fixture.0, None, &mut || {
+                polls += 1;
+                if polls == post_parse_poll {
+                    cancelled.store(true, Ordering::Release);
+                }
+                super::super::typescript_program::check_admission_control(deadline, &cancelled)
+            });
+            assert!(
+                matches!(
+                    stopped,
+                    Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+                ),
+                "post-parse cancellation takes precedence over malformed {name}"
+            );
+            assert_eq!(
+                polls, post_parse_poll,
+                "no later marker I/O after post-parse stop"
+            );
+        }
     }
 
     #[test]
