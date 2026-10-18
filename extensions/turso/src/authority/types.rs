@@ -1,6 +1,8 @@
 //! Typed package-index selection identities and verification capabilities.
 
 use super::AuthorityError;
+#[cfg(test)]
+use backend_store::{ArtifactBudget, ArtifactClosureClaim, FileStore};
 use std::fmt;
 
 /// Fixed-width logical digest used for exact inputs, candidates, roots, and packs.

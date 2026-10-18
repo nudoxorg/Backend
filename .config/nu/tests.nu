@@ -4,6 +4,7 @@
 
 use std/assert
 use ../ci/emulated.nu [validate-nextest-list]
+use quality/pr_target.nu [managed-pr-target-dir]
 
 # Emulated CI must run only a complete, nonempty nextest selection. A failed
 # listing's partial stdout is never treated as an admitted selection.
@@ -33,6 +34,35 @@ let empty_emulated_listing = validate-nextest-list {
 }
 assert equal $empty_emulated_listing.tests [] "empty and whitespace-only output contains no tests"
 assert equal $empty_emulated_listing.failure "empty-selection" "a successful empty selection must reject the lane"
+
+# CI's persistent Cargo target must be a child of the lane cache paired with
+# its physical Cargo home; accepting another cache would mix mutable graphs.
+let target_test_root = (mktemp --directory --tmpdir backend-pr-target.XXXXXX)
+let source_root = $target_test_root | path join "worktree"
+let cache_parent = $target_test_root | path join "lane-cache"
+let managed_root = $cache_parent | path join "managed"
+let cargo_home = $cache_parent | path join "cargo-home"
+let cache_alias = $target_test_root | path join "cache-alias"
+mkdir $source_root $managed_root $cargo_home
+^ln -s $managed_root $cache_alias
+let managed_target = managed-pr-target-dir $source_root $cache_alias $cargo_home
+let physical_managed_root = (^realpath $managed_root | str trim)
+assert equal $managed_target ($physical_managed_root | path join "target") "PR target must live under its exact managed cache root"
+let wrong_cargo_home = $target_test_root | path join "other" "cargo-home"
+mkdir ($wrong_cargo_home | path dirname) $wrong_cargo_home
+let wrong_cache = try {
+    managed-pr-target-dir $source_root $cache_alias $wrong_cargo_home
+    null
+} catch { "rejected" }
+assert equal $wrong_cache "rejected" "a cache unpaired with the lane Cargo home must be refused"
+let escaped_target = $target_test_root | path join "outside-target"
+^ln -s $escaped_target $managed_target
+let symlink_target = try {
+    managed-pr-target-dir $source_root $cache_alias $cargo_home
+    null
+} catch { "rejected" }
+assert equal $symlink_target "rejected" "a symlinked managed target must be refused"
+rm --recursive --force $target_test_root
 
 let config = $env.BACKEND_CONFIG_SNAPSHOT | path expand
 let control = (open $env.BACKEND_CONTROL_PLANE)

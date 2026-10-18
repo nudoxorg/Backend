@@ -8,6 +8,7 @@
   tools,
   toolchains,
   corpus,
+  captureNativeCompilerShellEnv ? true,
 }:
 let
   inherit (tools) compilers;
@@ -162,6 +163,21 @@ in
   NUDOX_PYREFLY = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYREFLY_BIN = "${compilers.pyrefly}/bin/pyrefly";
   NUDOX_PYTHON = "${compilers.python}/bin/python3";
+  # These closed host roles accompany the explicit NUDOX_PYTHON pin in Nix
+  # shells. LocalHost selects that explicit path first, so the bounded fallback
+  # slots remain one real pinned interpreter rather than ambient PATH guesses.
+  BACKEND_LOCALD_DEFAULT_PYTHON = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_1 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_2 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_3 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_4 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_5 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_6 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_7 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_8 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_9 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_10 = "${compilers.python}/bin/python3";
+  BACKEND_LOCALD_PYTHON_CANDIDATE_11 = "${compilers.python}/bin/python3";
   NUDOX_CARGO = toolchains.stableCargo;
   NUDOX_RUSTC = "${toolchains.stable}/bin/rustc";
   NUDOX_TSC = "${compilers.typescript}/bin/tsc";
@@ -179,4 +195,4 @@ in
 // optionalOracleEnv
 // optionalRoslynEnv
 // optionalCorpusEnv
-// nativeCompilerShellEnvVars
+// (if captureNativeCompilerShellEnv then nativeCompilerShellEnvVars else { })

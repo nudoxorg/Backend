@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "reviewer_scope": "Independent pinned-source review of the C rxi-map and C++ pugixml T2 query targets and source-backed semantics. No product output, snapshot, performance, baseline, or runtime acceptance was reviewed.",
+  "review_status": "source-review-only",
+  "runtime_status": "native-pending",
+  "candidate": {
+    "source_commit": "cb82621bfad08821dac9706074a560367de610b9",
+    "branch": "rework/w2-c-cpp-source-review"
+  },
+  "pins": [
+    {
+      "coordinate": "rxi-map",
+      "url": "https://github.com/rxi/map/archive/d6c355fcfb35e5bf71905c0c28ccee34694b4a95.tar.gz",
+      "kind": "tarball",
+      "expected_nix_hash": "sha256-zJ+gFr9hXF2ebA5cN6ppja7WTjnOORAWf5zMoe86Qlk=",
+      "observed_sha256_hex": "cc9fa016bf615c5d9e6c0e5c37aa698daed64e39ce3910167f9ccca1ef3a4259",
+      "observed_nix_hash": "sha256-zJ+gFr9hXF2ebA5cN6ppja7WTjnOORAWf5zMoe86Qlk=",
+      "pin_matches": true
+    },
+    {
+      "coordinate": "pugixml",
+      "url": "https://github.com/zeux/pugixml/archive/v1.14.tar.gz",
+      "kind": "tarball",
+      "expected_nix_hash": "sha256-YQ+YN1QktWFHVKbzSkka292q7AdOkERXfZZRYOwQPS4=",
+      "observed_sha256_hex": "610f98375424b5614754a6f34a491adbddaaec074e9044577d965160ec103d2e",
+      "observed_nix_hash": "sha256-YQ+YN1QktWFHVKbzSkka292q7AdOkERXfZZRYOwQPS4=",
+      "pin_matches": true
+    }
+  ],
+  "cases": [
+    {
+      "case": "c-rxi-map",
+      "queries_from_catalog": ["map_deinit_", "map_get_"],
+      "language": "c",
+      "reviewed_source": {
+        "path": "src/map.c",
+        "sha256": "b1b4ab54c68d8c24775a1d2c1bafc99afd5704803cb5a3c8cdeaa3130e01a2a8"
+      },
+      "source_review": [
+        {
+          "query": "map_deinit_",
+          "path": "src/map.c",
+          "line": 111,
+          "declaration": "void map_deinit_(map_base_t *m) {",
+          "meaning": "Releases each allocated map node, then the bucket array; it is the map cleanup routine."
+        },
+        {
+          "query": "map_get_",
+          "path": "src/map.c",
+          "line": 127,
+          "declaration": "void *map_get_(map_base_t *m, const char *key) {",
+          "meaning": "Looks up a key via map_getref and returns the stored value, or NULL when the key is absent."
+        }
+      ],
+      "expected_source_semantics": "Both exact authored identifiers are defined in the catalogued C source path. Search should expose source-backed C records for those declarations when the pinned project is indexed; this review makes no claim about observed product results."
+    },
+    {
+      "case": "cpp-pugixml",
+      "queries_from_catalog": ["xml_document", "xml_parse_result"],
+      "languages": ["cpp", "python"],
+      "reviewed_source": {
+        "path": "src/pugixml.hpp",
+        "sha256": "68ca7eac371875363257c85eea74e8e3d0a2d16e478d6685e140a9217bee36b4"
+      },
+      "source_review": [
+        {
+          "query": "xml_parse_result",
+          "path": "src/pugixml.hpp",
+          "line": 1017,
+          "declaration": "struct PUGIXML_CLASS xml_parse_result",
+          "meaning": "Public parse outcome record, with status, input offset, source encoding, boolean conversion, and error description."
+        },
+        {
+          "query": "xml_document",
+          "path": "src/pugixml.hpp",
+          "line": 1039,
+          "declaration": "class PUGIXML_CLASS xml_document: public xml_node",
+          "meaning": "DOM document root type; owns its buffer and provides document construction, loading, and lifetime operations."
+        }
+      ],
+      "expected_source_semantics": "Both catalogued identifiers are C++ type declarations in the same pinned header. Search should expose those source-backed declarations with the header path; this review does not infer exact result ordering, count, or observed CLI/MCP output."
+    }
+  ],
+  "product_change_review": {
+    "scope": "The small semantic-row optimization present in the candidate avoids writing a prepared canonical semantic document into a throwaway buffer during search-row construction.",
+    "source_basis": "prepare_semantic_document still validates selected facts with the configured type-depth limit; the candidate still rejects encoded_len above MAX_SEMANTIC_DOCUMENT_BYTES. Readable signatures and declaration documentation remain the row content.",
+    "assessment": "Source inspection supports the stated optimization while retaining preparation-time validation and the encoded-size bound. No large Clang schema change was reviewed or proposed.",
+    "runtime_or_performance_claim": false
+  },
+  "acceptance_limits": [
+    "No snapshot was generated or reviewed.",
+    "No actual CLI, MCP, outline, package, or GUI output was observed.",
+    "No performance sample or calibration was performed.",
+    "Native C/C++ execution and current exact-head T2 acceptance remain pending."
+  ]
+}

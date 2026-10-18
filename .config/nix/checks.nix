@@ -32,6 +32,14 @@ let
   nativeCompilerFlags = pkgs.lib.filterAttrs (
     name: _: pkgs.lib.hasPrefix "NIX_" name
   ) nativeCompilerEnv;
+  surfaceCorpus = import ./surface-corpus.nix { inherit pkgs; };
+  surfaceCargoLockContract = pkgs.runCommand "nudox-surface-cargo-lock-contract" { } ''
+    set -e
+    cmp ${surfaceCorpus.rust-itoa}/Cargo.lock ${../../tests/surface/cargo-locks/rust-itoa.lock}
+    cmp ${surfaceCorpus.rust-ryu}/Cargo.lock ${../../tests/surface/cargo-locks/rust-ryu.lock}
+    mkdir -p "$out/share"
+    printf '%s\n' validated > "$out/share/surface-cargo-lock-contract"
+  '';
   localHostRuntimeContract =
     if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
       pkgs.runCommand "nudox-local-host-runtime-contract"
@@ -144,6 +152,9 @@ in
         cp ${../ci/quarantine.py} quarantine.py
         cp ${../ci/test_quarantine.py} test_quarantine.py
         python3 test_quarantine.py
+        cp ${../ci/fast_cache.py} fast_cache.py
+        cp ${../ci/test_fast_cache.py} test_fast_cache.py
+        python3 test_fast_cache.py
         cp ${../ci/source_ignores.py} source_ignores.py
         cp ${../ci/test_source_ignores.py} test_source_ignores.py
         python3 test_source_ignores.py
@@ -162,9 +173,13 @@ in
         cp ${../ci/test_perf_context.py} .config/ci/test_perf_context.py
         python3 .config/ci/test_perf_context.py
         cp ${../ci/surface.py} .config/ci/surface.py
+        cp ${../ci/process_custody.py} .config/ci/process_custody.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
         cp ${../ci/smoke.py} .config/ci/smoke.py
+        cp ${../ci/gui_contract.py} .config/ci/gui_contract.py
+        cp ${../ci/test_gui_contract.py} .config/ci/test_gui_contract.py
+        python3 .config/ci/test_gui_contract.py
         cp ${../ci/cli_contract.py} .config/ci/cli_contract.py
         cp ${../ci/test_cli_contract.py} .config/ci/test_cli_contract.py
         python3 .config/ci/test_cli_contract.py
@@ -186,9 +201,19 @@ in
         touch "$out"
       '';
 
+  linux-flake-runner-contract =
+    pkgs.runCommand "nudox-linux-flake-runner-contract" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        cp ${../ci/linux-flake-check.py} linux-flake-check.py
+        cp ${../ci/test_linux_flake_check.py} test_linux_flake_check.py
+        python3 test_linux_flake_check.py
+        touch "$out"
+      '';
+
   nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
+  surface-cargo-lock-contract = surfaceCargoLockContract;
 
   # These files are compile-time byte authorities in local-service. Check the
   # actual filtered product source without compiling the product first.
@@ -216,15 +241,23 @@ in
           # Lease recovery compares an owner's process start time via `ps`.
           pkgs.ps
           pkgs.python3
+          pkgs.nushell
         ];
       }
       ''
         # The test finds its sibling scripts (cargo-in.sh, the rustc cache
         # wrapper, the provenance helper) from its own location, so run it
         # from a tree with the repository's layout rather than the store.
-        mkdir -p repo/.config repo/tests
-        cp -r ${../scripts} repo/.config/scripts
+        mkdir -p repo/.config/scripts repo/.config/ci repo/tests \
+          repo/frontends/rust/fixtures/toml_pin \
+          repo/apps/desktop/tests/fixtures/browse_tree
+        cp -r ${../scripts}/. repo/.config/scripts/
+        cp ${../ci/linux.nu} repo/.config/ci/linux.nu
+        cp ${../ci/lib.nu} repo/.config/ci/lib.nu
+        cp ${../../frontends/rust/fixtures/toml_pin/Cargo.lock} repo/frontends/rust/fixtures/toml_pin/Cargo.lock
+        cp ${../../apps/desktop/tests/fixtures/browse_tree/Cargo.lock} repo/apps/desktop/tests/fixtures/browse_tree/Cargo.lock
         cp ${../../tests/cargo-shared-cache.sh} repo/tests/cargo-shared-cache.sh
+        NUDOX_LINUX_CI_REPO="$PWD/repo" \
         NUDOX_CARGO_CACHE_SCRIPT="$PWD/repo/.config/scripts/cargo-shared-cache.sh" \
           ${pkgs.bash}/bin/bash repo/tests/cargo-shared-cache.sh
         mkdir -p $out/share

@@ -1,11 +1,121 @@
 """The snapshot admission contract must reject failed product setup."""
 import importlib.util
+from concurrent.futures import Future
 from pathlib import Path
 import unittest
 
 spec = importlib.util.spec_from_file_location("surface", Path(__file__).with_name("surface.py"))
 surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
+
+
+class ProjectCopyLifecycleTests(unittest.TestCase):
+    def test_readonly_pinned_source_stays_unchanged_and_copied_case_can_be_removed(self):
+        import tempfile, shutil, stat
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pin"
+            source.mkdir()
+            (source / "src").mkdir()
+            (source / "src/lib.py").write_text("class Example: pass\n")
+            (source / "src").chmod(0o555)
+            source.chmod(0o555)
+            copied = root / "case"
+            try:
+                shutil.copytree(source, copied)
+                surface.make_case_directories_writable(copied)
+                self.assertTrue(copied.stat().st_mode & stat.S_IWUSR)
+                self.assertTrue((copied / "src").stat().st_mode & stat.S_IWUSR)
+                self.assertEqual((copied / "src/lib.py").read_text(), "class Example: pass\n")
+                shutil.rmtree(copied)
+                self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o555)
+                self.assertEqual(stat.S_IMODE((source / "src").stat().st_mode), 0o555)
+            finally:
+                source.chmod(0o700)
+                (source / "src").chmod(0o700)
+
+    def test_directory_links_cannot_change_permissions_outside_owned_case(self):
+        import tempfile, stat
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = root / "external"
+            external.mkdir(mode=0o500)
+            case = root / "case"
+            case.mkdir()
+            (case / "link").symlink_to(external, target_is_directory=True)
+            surface.make_case_directories_writable(case)
+            self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o500)
+            with self.assertRaisesRegex(RuntimeError, "owned directories"):
+                surface.make_case_directories_writable(case / "link")
+            external.chmod(0o700)
+
+
+class OwnerLifecycleTests(unittest.TestCase):
+    def exercise(self, startup_failure=False):
+        import tempfile
+        from unittest.mock import Mock, patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "fixed-project-case"
+            case.mkdir()
+            process = Mock()
+            process.poll.return_value = 0 if startup_failure else None
+            process.returncode = 7 if startup_failure else 0
+            observed = {}
+            def launch(command, **kwargs):
+                workspace = Path(command[command.index("--workspace") + 1])
+                observed.update(workspace=workspace, log=kwargs["stdout"])
+                self.assertEqual(workspace.parent.parent, root / ".local")
+                self.assertEqual(workspace.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(command[command.index("--endpoint") + 1], str(case / "locald.sock"))
+                self.assertEqual(command[command.index("--timeout-ms") + 1], "180000")
+                self.assertEqual(command[command.index("--idle-timeout-ms") + 1], "5000")
+                self.assertNotIn(str(workspace), str(case / "project"))
+                if startup_failure:
+                    kwargs["stdout"].write("authority startup refused\n")
+                else:
+                    (case / "locald.sock").touch()
+                return process
+            with patch.object(surface, "ROOT", root), patch.object(surface.process_custody, "popen", side_effect=launch):
+                if startup_failure:
+                    with self.assertRaisesRegex(RuntimeError, "did not open its endpoint") as failure:
+                        surface.Owner(root / "bin", case)
+                    self.assertIn("authority startup refused", str(failure.exception))
+                    self.assertIn("exited 7", str(failure.exception))
+                else:
+                    owner = surface.Owner(root / "bin", case)
+                    self.assertTrue(owner.workspace.is_dir())
+                    process.poll.return_value = 0
+                    owner.stop()
+            self.assertFalse(observed["workspace"].parent.exists())
+            self.assertTrue(observed["log"].closed)
+
+    def test_owner_state_uses_private_task_volume_without_changing_public_project_paths(self):
+        self.exercise()
+
+    def test_failed_startup_releases_log_and_private_state(self):
+        self.exercise(startup_failure=True)
+
+    def test_owner_retirement_failure_keeps_original_case_failure(self):
+        import tempfile
+        from unittest.mock import Mock, patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source").mkdir()
+            owner = Mock()
+            owner.stop.side_effect = RuntimeError("owner idle retirement failed")
+            original = RuntimeError("index refused authored source")
+            case = {"name": "failed-index", "project": "source", "languages": ["c"], "index_mode": "wait"}
+            with patch.object(surface, "ROOT", root), patch.object(surface, "SCRATCH", root / "scratch"), \
+                 patch.object(surface, "Owner", return_value=owner), \
+                 patch.object(surface, "run_cli", side_effect=original), \
+                 patch.object(surface, "_record_owner_threads"):
+                with self.assertRaises(RuntimeError) as failure:
+                    surface.run_case(case, root / "bin")
+            self.assertIn("index refused authored source", str(failure.exception))
+            self.assertIn("owner idle retirement failed", str(failure.exception))
+            self.assertIs(failure.exception.__cause__, original)
+            owner.stop.assert_called_once()
 
 
 class AdmissionTests(unittest.TestCase):
@@ -212,6 +322,18 @@ class AuthoredCorpusAdmissionTests(unittest.TestCase):
                 surface.require_authored_symbols(wrong, expected, "go")
 
 
+        expected = {"Nonnull": {"name": "javax.annotation.Nonnull", "path": "javax/annotation/Nonnull.java"}}
+        row = {"identity": {"name": "javax.annotation.Nonnull", "path": "javax/annotation/Nonnull.java"}, "language": "java", "state": "ready"}
+        surface.require_authored_symbols({"records": [row]}, expected, "java")
+        for wrong in (
+            dict(row, identity=dict(row["identity"], name="Nonnull")),
+            dict(row, identity=dict(row["identity"], path="elsewhere/Nonnull.java")),
+            dict(row, language="unknown"), dict(row, state="unverified"),
+        ):
+            with self.subTest(qualified_identity=wrong), self.assertRaises(RuntimeError):
+                surface.require_authored_symbols({"records": [wrong]}, expected, "java")
+
+
 class SnapshotContinuationTests(unittest.TestCase):
     def page(self, token="pc4-one", coordinate="first"):
         size = 100 + len(token)
@@ -234,6 +356,35 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.normalize_continuations(invalid, {invalid["nextCursor"]})
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
+
+    def test_executable_only_cursor_is_consumed_before_normalization(self):
+        import copy
+        first = self.page("mcp2-long-portable-proof")
+        token = first.pop("nextCursor")
+        first["continuation_call"] = {"name": "backend.search", "arguments": {
+            "query": "Digest", "limit": 3, "cursor": token}}
+        call = {"tool": "backend.search", "arguments": {"query": "Digest", "limit": 9}}
+        self.assertEqual(surface.mcp_continuation_call(call, first), {
+            "tool": "backend.search", "arguments": first["continuation_call"]["arguments"]})
+        with self.assertRaisesRegex(RuntimeError, "unconsumed"):
+            surface.normalize_continuations(first, set())
+        actual = surface.normalize_continuations(first, {token})
+        self.assertNotIn("nextCursor", actual)
+        self.assertEqual(actual["continuation_call"]["arguments"]["cursor"], "mcp2-<live-validated>")
+        self.assertEqual(actual["budget"]["bytesExcludingCursor"], 100)
+        other = copy.deepcopy(first)
+        other["continuation_call"]["arguments"]["cursor"] = "mcp2-other-proof-length"
+        size = 100 + len(other["continuation_call"]["arguments"]["cursor"])
+        other["budget"].update(bytes=size, estimatedTokens=(size + 3) // 4)
+        self.assertEqual(actual, surface.normalize_continuations(other, {other["continuation_call"]["arguments"]["cursor"]}))
+        wrong = copy.deepcopy(first)
+        wrong["continuation_call"]["name"] = "backend.outline"
+        with self.assertRaisesRegex(RuntimeError, "changed tool"):
+            surface.mcp_continuation_call(call, wrong)
+        wrong = copy.deepcopy(first)
+        wrong["nextCursor"] = "mcp2-different-proof"
+        with self.assertRaisesRegex(RuntimeError, "contradictory"):
+            surface.normalize_continuations(wrong, {token, wrong["nextCursor"]})
 
     def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
         import copy
@@ -346,7 +497,7 @@ for line in sys.stdin:
 
 
 class ParallelCaseTests(unittest.TestCase):
-    def invoke(self, failure=None, duplicate=False):
+    def invoke(self, failure=None, duplicate=False, wait_for_fast_verdict=False):
         import contextlib
         import io
         import json
@@ -365,26 +516,35 @@ class ParallelCaseTests(unittest.TestCase):
                 (snapshots / (name + ".json")).write_text(json.dumps({"answers": {"case": name}, "performance": {"seconds": {}}}))
             report = root / "report.json"
             rendezvous = threading.Barrier(2)
+            fast_verdict = threading.Event()
             reached = []
 
             def run(case, binaries):
                 reached.append(case["name"])
                 self.assertEqual(surface.CURRENT_CASE.get(), case["name"])
                 rendezvous.wait(timeout=3)  # A serial executor cannot satisfy this.
+                if wait_for_fast_verdict and case["name"] == "alpha":
+                    if not fast_verdict.wait(timeout=3):
+                        raise RuntimeError("completed peer verdict was blocked by this unfinished case")
                 if case["name"] == failure:
                     raise RuntimeError("intentional setup failure")
                 return {"answers": {"case": case["name"]}, "performance": {"seconds": {"query": 0.01}}}
 
             stdout, stderr = io.StringIO(), io.StringIO()
-            argv = ["surface.py", "--bin-dir", str(root), "--jobs", "2", "--report", str(report)]
-            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            original_log = surface.log
+            def log(message):
+                if message.startswith("case beta matches"):
+                    fast_verdict.set()
+                original_log(message)
+            argv = ["surface.py", "--bin-dir", str(root), "--report", str(report)]
+            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(surface, "log", side_effect=log), patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 try:
                     result = surface.main()
                 except SystemExit as error:
                     result = error.code
             return result, reached, json.loads(report.read_text()) if report.exists() else {}, stdout.getvalue(), stderr.getvalue()
 
-    def test_distinct_cases_overlap_and_preserve_both_results(self):
+    def test_default_workers_overlap_distinct_cases_and_preserve_both_results(self):
         import json
         result, reached, report, output, error = self.invoke()
         self.assertEqual(result, 0, error + output)
@@ -392,6 +552,12 @@ class ParallelCaseTests(unittest.TestCase):
         self.assertEqual(set(report), {"alpha", "beta"})
         metrics = [json.loads(line.split(" ", 1)[1]) for line in output.splitlines() if line.startswith("SURFACE-PERFORMANCE ")]
         self.assertEqual({row["case"] for row in metrics}, {"alpha", "beta"})
+
+    def test_completed_peer_verdict_is_reported_before_slow_first_case_finishes(self):
+        result, reached, report, output, error = self.invoke(wait_for_fast_verdict=True)
+        self.assertEqual(result, 0, error + output)
+        self.assertEqual(set(reached), {"alpha", "beta"})
+        self.assertEqual(set(report), {"alpha", "beta"})
 
     def test_failed_case_cannot_be_hidden_by_successful_peer(self):
         result, reached, report, output, error = self.invoke(failure="beta")
@@ -787,6 +953,743 @@ class CIEvidenceTests(unittest.TestCase):
         value = surface.bounded_text("α" * 10000, 8192)
         self.assertLessEqual(len(value.encode("utf-8")), 8192)
         self.assertIn("full detail retained", value)
+
+
+class IncrementalCaseVerdictTests(unittest.TestCase):
+    def test_completed_case_is_visible_before_later_case_aborts_without_final_packet(self):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        import time
+        from unittest.mock import patch
+
+        stdout = io.StringIO()
+        class InterruptedExecutor:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def shutdown(self, **kwargs): pass
+            def submit(self, function, case, *args):
+                future = Future()
+                if case["name"] == "first":
+                    future.set_result(({"performance": {"seconds": {}}}, 0.1, None))
+                return future
+
+        wait_calls = 0
+        def interrupted_wait(futures, **kwargs):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                first = next(future for future in futures if future.done())
+                return {first}, set(futures) - {first}
+            records = [json.loads(line.removeprefix("SURFACE-CASE-EVIDENCE "))
+                       for line in stdout.getvalue().splitlines()
+                       if line.startswith("SURFACE-CASE-EVIDENCE ")]
+            self_test.assertEqual(records[0]["case"], "first")
+            self_test.assertEqual(records[0]["verdict"]["state"], "passed")
+            raise RuntimeError("later case interrupted")
+
+        self_test = self
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [
+                {"name": "first", "kind": "cli-contract"},
+                {"name": "later", "kind": "cli-contract"},
+            ]}))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", InterruptedExecutor), \
+                    patch.object(surface, "wait", interrupted_wait), \
+                    contextlib.redirect_stdout(stdout):
+                with self.assertRaisesRegex(RuntimeError, "later case interrupted"):
+                    surface.compare_cases(args, argparse.ArgumentParser())
+            self.assertFalse(packet.exists(), "partial verdicts cannot stand in for full acceptance")
+
+
+class SigtermEvidenceTests(unittest.TestCase):
+    def test_started_case_error_after_signal_is_interrupted_not_product_failure(self):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        import time
+        from unittest.mock import patch
+
+        class StopAfterEvidence(BaseException):
+            pass
+
+        class ImmediateExecutor:
+            def __init__(self, **kwargs): pass
+            def submit(self, function, case, *args):
+                future = Future()
+                try:
+                    future.set_result(function(case, *args))
+                except BaseException as error:
+                    future.set_exception(error)
+                return future
+            def shutdown(self, **kwargs): pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [{"name": "late"}]}))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+
+            def late_error(*_args):
+                surface.CI_SIGTERM_AT = time.monotonic()
+                surface.CI_SIGTERM.set()
+                return None, 0.0, "case raised after the signal"
+
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", ImmediateExecutor), \
+                    patch.object(surface, "_invoke_case", side_effect=late_error), \
+                    patch.object(surface.os, "_exit", side_effect=StopAfterEvidence), \
+                    patch.object(surface.process_custody, "stop_before_exit", return_value={"roots_reaped": True}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(StopAfterEvidence):
+                    surface.compare_cases(args, argparse.ArgumentParser())
+            verdict = json.loads(packet.read_text())["cases"]["late"]
+            self.assertEqual(verdict["state"], "failed")
+            self.assertEqual(verdict["failure_kind"], "sigterm-interrupted")
+            self.assertIn("after the CI runner received SIGTERM", verdict["detail"])
+
+    def test_sigterm_emits_completed_and_started_vs_queued_verdicts_before_nonzero_exit(self):
+        import json
+        import os
+        import selectors
+        import signal
+        import subprocess
+        import sys
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = r'''\
+import json, os, sys, time
+from pathlib import Path
+sys.path.insert(0, os.environ["CI_DIR"])
+import surface
+import cpu_placement
+from contextlib import contextmanager
+
+root = Path(os.environ["CASE_ROOT"])
+corpus = root / "surface"
+(corpus / "snapshots").mkdir(parents=True)
+cases = ["completed", "started", "queued"]
+(corpus / "cases.json").write_text(json.dumps({"cases": [{"name": name} for name in cases]}))
+for name in cases:
+    (corpus / "snapshots" / (name + ".json")).write_text(json.dumps({
+        "answers": {"value": name}, "performance": {"seconds": {"cli add": 1}}
+    }))
+surface.SURFACE = corpus
+surface.SCRATCH = root / "scratch"
+surface.evidence_artifact = lambda _bin_dir, _sha: "b" * 64
+
+def run_case(case, _bin_dir):
+    name = case["name"]
+    if name == "started":
+        (root / "started").write_text("yes")
+        while True:
+            time.sleep(1)
+    return {"answers": {"value": name},
+            "performance": {"seconds": {"cli add": 1}, "cpu_seconds": 0.1}}
+
+surface.run_case = run_case
+@contextmanager
+def placement():
+    yield {"fixture": True}
+cpu_placement.measurement_placement = placement
+sys.argv = ["surface.py", "--bin-dir", str(root / "bin"), "--ci-report", str(root / "evidence.json"),
+            "--source-sha", "a" * 40, "--report", str(root / "performance.json"), "--jobs", "1"]
+sys.exit(surface.main())
+'''
+            env = dict(os.environ, CASE_ROOT=str(root), CI_DIR=str(Path(__file__).parent))
+            child = subprocess.Popen(
+                [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=env,
+            )
+            captured = bytearray()
+            deadline = time.monotonic() + 5
+            selector = selectors.DefaultSelector()
+            selector.register(child.stdout, selectors.EVENT_READ)
+            try:
+                while time.monotonic() < deadline:
+                    for _key, _mask in selector.select(timeout=0.02):
+                        captured.extend(os.read(child.stdout.fileno(), 4096))
+                    output = captured.decode("utf-8", errors="replace")
+                    if (root / "started").exists() and any(
+                        line.startswith("SURFACE-CASE-EVIDENCE ") and '"case":"completed"' in line
+                        for line in output.splitlines()
+                    ):
+                        break
+                    if child.poll() is not None:
+                        stdout, stderr = child.communicate(timeout=1)
+                        self.fail("evidence runner exited before the test could signal its owned child: " +
+                                  (bytes(captured) + stdout).decode("utf-8", errors="replace") +
+                                  stderr.decode("utf-8", errors="replace"))
+                else:
+                    self.fail("owned evidence runner did not start and complete the expected cases")
+                os.kill(child.pid, signal.SIGTERM)
+                stdout_tail, stderr = child.communicate(timeout=3)
+                complete_output = (bytes(captured) + stdout_tail).decode("utf-8", errors="replace")
+                self.assertNotEqual(child.returncode, 0, stderr.decode("utf-8", errors="replace") + complete_output)
+                output_lines = complete_output.splitlines()
+                self.assertTrue(any(line.startswith("SURFACE-CASE-EVIDENCE ") and '"case":"completed"' in line
+                                    for line in output_lines))
+                final_lines = [line.removeprefix("SURFACE-CI-EVIDENCE ") for line in output_lines
+                               if line.startswith("SURFACE-CI-EVIDENCE ")]
+                self.assertEqual(len(final_lines), 1)
+                final_packet = json.loads(final_lines[0])
+                self.assertEqual(final_packet["packet_kind"], "harness-interruption-summary")
+                self.assertIn("not reread or adapter-reverified", final_packet["verification"])
+                self.assertEqual(final_packet["source_sha"], "a" * 40)
+                self.assertEqual(final_packet["artifact_manifest_sha256"], "b" * 64)
+                packet = json.loads((root / "evidence.json").read_text())
+                self.assertEqual(packet["source_sha"], "a" * 40)
+                self.assertEqual(packet["artifact_manifest_sha256"], "b" * 64)
+                self.assertEqual(packet["selection"], "All catalog cases; no product-path narrowing.")
+                cases = packet["cases"]
+                self.assertEqual(cases["completed"]["state"], "passed")
+                self.assertEqual(cases["started"]["state"], "failed")
+                self.assertEqual(cases["started"]["failure_kind"], "sigterm-interrupted")
+                self.assertIn("received SIGTERM", cases["started"]["detail"])
+                self.assertEqual(cases["queued"]["state"], "failed")
+                self.assertEqual(cases["queued"]["failure_kind"], "infrastructure-not-run")
+                self.assertIn("not run", cases["queued"]["detail"])
+                self.assertIn("no product verdict", cases["queued"]["detail"])
+                self.assertEqual(set(json.loads((root / "performance.json").read_text())), {"completed"})
+            finally:
+                selector.close()
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=3)
+                if child.stdout:
+                    child.stdout.close()
+                if child.stderr:
+                    child.stderr.close()
+
+
+
+
+class PlatformPopenCompatibilityTests(unittest.TestCase):
+    def test_non_linux_popen_run_and_forced_owner_cleanup_preserve_original_paths(self):
+        """Real ordinary children exercise the Darwin-selected API path."""
+        import os, select, signal, subprocess, sys, tempfile, time
+        from unittest.mock import patch
+        c=surface.process_custody
+        children=[]
+        sentinel=None
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                                _fallback_children=set(),_stopping=False), \
+                    patch.object(c.sys,'platform','darwin'), \
+                    patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')):
+                c.activate()
+                self.assertFalse(c._active)
+                try:
+                    sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True)
+                    def spawn():
+                        child=c.popen([sys.executable,'-u','-c',
+                            'import time;print("ready",flush=True);time.sleep(60)'],
+                            stdout=subprocess.PIPE,start_new_session=True)
+                        children.append(child)
+                        self.assertIs(type(child),subprocess.Popen)
+                        self.assertFalse(hasattr(child,'retire'))
+                        self.assertTrue(select.select([child.stdout],[],[],5)[0],'ordinary child not ready')
+                        self.assertEqual(child.stdout.readline(),b'ready\n')
+                        return child
+                    child=spawn()
+                    c.stop(child)
+                    self.assertEqual(child.returncode,-signal.SIGTERM)
+                    child.stdout.close()
+                    result=c.run([sys.executable,'-c','print("ordinary-run")'],
+                                 capture_output=True,text=True,timeout=5,check=True)
+                    self.assertEqual(result.stdout,'ordinary-run\n')
+                    self.assertEqual(result.returncode,0)
+
+                    child=spawn()
+                    original_wait=child.wait
+                    first=True
+                    def idle_timeout(timeout=None):
+                        nonlocal first
+                        if first:
+                            first=False
+                            self.assertEqual(timeout,20)
+                            raise subprocess.TimeoutExpired(child.args,timeout)
+                        return original_wait(timeout=timeout)
+                    owner=surface.Owner.__new__(surface.Owner)
+                    owner.process=child
+                    owner.state_directory=tempfile.TemporaryDirectory(dir=root)
+                    state=Path(owner.state_directory.name)
+                    owner.log=(root/'owner.log').open('w')
+                    with patch.object(child,'wait',side_effect=idle_timeout):
+                        with self.assertRaisesRegex(RuntimeError,'failed to retire through its idle timeout'):
+                            owner.stop()
+                    self.assertEqual(child.returncode,-signal.SIGKILL)
+                    self.assertTrue(owner.log.closed)
+                    self.assertFalse(state.exists())
+                    child.stdout.close()
+                    # Root cleanup cannot masquerade as Linux descendant proof.
+                    with self.assertRaisesRegex(RuntimeError,'descendant custody remains unproved'):
+                        c.stop_before_exit()
+                    self.assertIsNone(sentinel.poll())
+                    with patch.object(c.subprocess,'Popen',side_effect=AssertionError('spawn after interruption')):
+                        with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                            c.popen([sys.executable,'-c','pass'])
+                finally:
+                    for child in children:
+                        if child.poll() is None:child.kill()
+                        child.wait(timeout=5)
+                        if child.stdout and not child.stdout.closed:child.stdout.close()
+                    if sentinel is not None:
+                        if sentinel.poll() is None:sentinel.terminate()
+                        sentinel.wait(timeout=5)
+
+
+    def test_non_linux_admitted_constructor_is_registered_before_stop_snapshot(self):
+        """Gate a real constructor while interruption competes for admission."""
+        import signal, subprocess, sys, threading
+        from unittest.mock import patch
+        c=surface.process_custody
+        original_popen=subprocess.Popen
+        constructor_entered=threading.Event()
+        release_constructor=threading.Event()
+        stop_entered=threading.Event()
+        stop_done=threading.Event()
+        children=[]
+        errors=[]
+        refused=[]
+        constructors=[]
+        def gated_constructor(*args,**kwargs):
+            constructors.append(True)
+            constructor_entered.set()
+            if not release_constructor.wait(5):
+                raise RuntimeError('constructor regression gate expired')
+            child=original_popen(*args,**kwargs)
+            children.append(child)
+            return child
+        def spawn():
+            try:
+                c.popen([sys.executable,'-c','import time;time.sleep(60)'],
+                        start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            except BaseException as error:errors.append(error)
+        def interrupt():
+            stop_entered.set()
+            try:c.stop_before_exit()
+            except RuntimeError as error:refused.append(str(error))
+            except BaseException as error:errors.append(error)
+            finally:stop_done.set()
+        with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                            _fallback_children=set(),_stopping=False), \
+                patch.object(c.sys,'platform','darwin'), \
+                patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')), \
+                patch.object(c.subprocess,'Popen',side_effect=gated_constructor):
+            c.activate()
+            spawning=threading.Thread(target=spawn)
+            stopping=threading.Thread(target=interrupt)
+            try:
+                spawning.start()
+                self.assertTrue(constructor_entered.wait(5),'constructor was not reached')
+                stopping.start()
+                self.assertTrue(stop_entered.wait(5),'interruption was not attempted')
+                self.assertFalse(stop_done.wait(.1),'stop snapshot escaped an admitted constructor')
+                self.assertFalse(c._stopping)
+                release_constructor.set()
+                spawning.join(10)
+                stopping.join(15)
+                self.assertFalse(spawning.is_alive())
+                self.assertFalse(stopping.is_alive())
+                self.assertEqual(errors,[])
+                self.assertEqual(len(children),1)
+                self.assertIs(type(children[0]),original_popen)
+                self.assertEqual(children[0].returncode,-signal.SIGTERM)
+                self.assertEqual(children[0].wait(timeout=0),-signal.SIGTERM)
+                self.assertEqual(len(refused),1)
+                self.assertIn('descendant custody remains unproved',refused[0])
+                self.assertIn(children[0],c._fallback_children)
+                # The opposing order refuses before entering the constructor.
+                with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                    c.popen([sys.executable,'-c','pass'])
+                self.assertEqual(len(constructors),1)
+            finally:
+                release_constructor.set()
+                if spawning.ident is not None:spawning.join(10)
+                if stopping.ident is not None:stopping.join(15)
+                for child in children:
+                    if child.poll() is None:child.kill()
+                    child.wait(timeout=5)
+
+
+    def test_non_linux_run_preserves_communication_and_stops_registered_worker(self):
+        """Real ordinary run workers stay registered through interruption."""
+        import signal, subprocess, sys, tempfile, threading, time
+        from unittest.mock import patch
+        c=surface.process_custody
+        children=[]
+        worker_errors=[]
+        worker_results=[]
+        stop_errors=[]
+        stop_entered=threading.Event()
+        stop_done=threading.Event()
+        worker=None
+        stopping=None
+        sentinel=None
+        with tempfile.TemporaryDirectory() as directory:
+            ready=Path(directory)/'ready'
+            halt=Path(directory)/'halt'
+            with patch.multiple(c,_active=False,_fallback_enabled=False,_fallback_seen=False,
+                                _fallback_children=set(),_stopping=False), \
+                    patch.object(c.sys,'platform','darwin'), \
+                    patch.object(c,'_prepare',side_effect=AssertionError('Linux custody used on Darwin')):
+                try:
+                    sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+                    c.activate()
+                    payload='héllo'*32768
+                    answer=c.run([sys.executable,'-c',
+                        'import sys,time;time.sleep(.2);data=sys.stdin.read();sys.stdout.write(data);sys.stderr.write("err")'],
+                        input=payload,capture_output=True,text=True,encoding='utf-8',timeout=5,check=True)
+                    self.assertEqual((answer.returncode,answer.stdout,answer.stderr),(0,payload,'err'))
+                    with self.assertRaises(subprocess.CalledProcessError) as failed:
+                        c.run([sys.executable,'-c',
+                            'import sys;print("out");print("err",file=sys.stderr);sys.exit(7)'],
+                            capture_output=True,text=True,timeout=5,check=True)
+                    self.assertEqual((failed.exception.returncode,failed.exception.output,failed.exception.stderr),
+                                     (7,'out\n','err\n'))
+                    with self.assertRaises(subprocess.TimeoutExpired) as timed:
+                        c.run([sys.executable,'-u','-c',
+                            'import sys,time;print("partial");print("error",file=sys.stderr);time.sleep(60)'],
+                            capture_output=True,text=True,timeout=1)
+                    self.assertEqual(timed.exception.timeout,1)
+                    # Like CPython POSIX run, partial TimeoutExpired streams are bytes even in text mode.
+                    self.assertEqual((timed.exception.output,timed.exception.stderr),(b'partial\n',b'error\n'))
+                    before=len(c._fallback_children)
+                    with self.assertRaises(ValueError):
+                        c.run([sys.executable,'-c','pass'],input=b'x',stdin=subprocess.PIPE)
+                    with self.assertRaises(ValueError):
+                        c.run([sys.executable,'-c','pass'],capture_output=True,stdout=subprocess.PIPE)
+                    self.assertEqual(len(c._fallback_children),before)
+                    with self.assertRaises(TypeError):
+                        c.run([sys.executable,'-c','import time;time.sleep(60)'],timeout='invalid')
+                    self.assertTrue(all(child.returncode is not None for child in c._fallback_children))
+                    code=('import pathlib,sys,time;data=sys.stdin.read();print(data,flush=True);'
+                          'print("worker-error",file=sys.stderr,flush=True);'
+                          'pathlib.Path(sys.argv[1]).write_text("ready");'
+                          'end=time.monotonic()+60;'
+                          'exec("while time.monotonic()<end and not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)")')
+                    def run_worker():
+                        try:worker_results.append(c.run([sys.executable,'-u','-c',code,str(ready),str(halt)],
+                            input='once',capture_output=True,text=True))
+                        except BaseException as error:worker_errors.append(error)
+                    worker=threading.Thread(target=run_worker)
+                    worker.start()
+                    deadline=time.monotonic()+5
+                    while not ready.exists() and time.monotonic()<deadline and worker.is_alive():time.sleep(.01)
+                    self.assertTrue(ready.exists(),'real run worker never reached ready marker')
+                    with c._lock:
+                        children=list(c._fallback_children)
+                    active=[child for child in children if child.poll() is None]
+                    self.assertEqual(len(active),1)
+                    child=active[0]
+                    self.assertIs(type(child),subprocess.Popen)
+                    def interrupt():
+                        stop_entered.set()
+                        try:c.stop_before_exit()
+                        except BaseException as error:stop_errors.append(error)
+                        finally:stop_done.set()
+                    # Actual opposing CPython lock ownership must be retried,
+                    # rather than reported as a successfully drained root.
+                    with child._waitpid_lock:
+                        stopping=threading.Thread(target=interrupt)
+                        stopping.start()
+                        self.assertTrue(stop_entered.wait(5))
+                        self.assertFalse(stop_done.wait(.1),'stop ignored the occupied waitpid lock')
+                    stopping.join(15)
+                    worker.join(10)
+                    self.assertFalse(stopping.is_alive())
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(worker_errors,[])
+                    self.assertEqual(len(worker_results),1)
+                    self.assertEqual((worker_results[0].returncode,worker_results[0].stdout,worker_results[0].stderr),
+                                     (-signal.SIGTERM,'once\n','worker-error\n'))
+                    self.assertEqual(child.wait(timeout=0),-signal.SIGTERM)
+                    self.assertEqual(len(stop_errors),1)
+                    self.assertIsInstance(stop_errors[0],RuntimeError)
+                    self.assertIn('descendant custody remains unproved',str(stop_errors[0]))
+                    self.assertIsNone(sentinel.poll())
+                    with self.assertRaisesRegex(RuntimeError,'new child admission is closed'):
+                        c.run([sys.executable,'-c','pass'])
+                finally:
+                    # Cooperative private teardown also drains the old, unregistered
+                    # implementation if this regression fails before finding its child.
+                    halt.write_text('stop')
+                    # No global Popen replacement: retain only exact admitted objects.
+                    with c._lock:children=list(c._fallback_children)
+                    for child in children:
+                        if child.poll() is None:c.signal_session(child,signal.SIGKILL,time.monotonic()+5)
+                        child.wait(timeout=5)
+                    if stopping is not None:stopping.join(15)
+                    if worker is not None:worker.join(10)
+                    if sentinel is not None:
+                        if sentinel.poll() is None:sentinel.kill()
+                        sentinel.wait(timeout=5)
+
+
+class InterruptedChildCustodyTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(__import__('os'), 'waitid') and hasattr(__import__('os'), 'pidfd_open'), 'Linux waitid/pidfd session control')
+    def test_exited_leader_retains_grandchild_custody_on_wait_timeout_sigterm_and_interrupt(self):
+        """Actual root exits first; grandchild creates its own compiler-like PGID."""
+        import json, os, signal, subprocess, sys, tempfile
+        code = r'''import json, os, signal, subprocess, sys, threading, time
+from pathlib import Path
+import process_custody as c
+mode, pidfile = sys.argv[1:]
+def publish(role,pid):
+    fields=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+    row={'role':role,'pid':pid,'start':int(fields[19]),'sid':int(fields[3]),'pgrp':int(fields[2]),'parent':int(fields[1])}
+    path=Path(pidfile).with_name(role+'.json')
+    temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(row));temporary.replace(path)
+    return row
+# This unrelated session is present before custody starts and must survive.
+sentinel = None
+root_code = """import json,os,subprocess,sys
+from pathlib import Path
+def publish(role,pid):
+    stat=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+    row={'role':role,'pid':pid,'start':int(stat[19]),'sid':int(stat[3]),'pgrp':int(stat[2]),'parent':int(stat[1])}
+    path=Path(sys.argv[1]).with_name(role+'.json')
+    temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(row));temporary.replace(path)
+    return row
+publish('root',os.getpid())
+p=subprocess.Popen([sys.executable,'-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'],process_group=0,stdout=None if sys.argv[2] in ('timeout','communicate-interrupt') else subprocess.DEVNULL)
+try:
+    identity=publish('grandchild',p.pid)
+    Path(sys.argv[1]+'.tmp').write_text(json.dumps(identity));Path(sys.argv[1]+'.tmp').replace(sys.argv[1])
+except BaseException:
+    p.kill();p.wait();raise
+sys.exit(0)
+"""
+cancelled = threading.Event()
+def terminate(*_args):
+    if mode=='sigterm':cancelled.set()
+    else:raise SystemExit(143)
+signal.signal(signal.SIGTERM,terminate)
+errors=[]
+def timed_run():
+    try:
+        c.run([sys.executable,'-c',root_code,pidfile,mode],capture_output=True,timeout=2)
+    except subprocess.TimeoutExpired:
+        return
+    except BaseException as error:
+        errors.append(repr(error))
+    else:
+        errors.append('timeout was not preserved')
+try:
+    sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'], start_new_session=True)
+    publish('sentinel',sentinel.pid)
+    c.activate()
+    if mode == 'timeout':
+        worker=threading.Thread(target=timed_run);worker.start()
+    else:
+        child=c.popen([sys.executable,'-c',root_code,pidfile,mode],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    until=time.monotonic()+5
+    while not Path(pidfile).exists():
+        assert time.monotonic()<until
+        time.sleep(.01)
+    identity=json.loads(Path(pidfile).read_text())
+    if not mode.endswith('-interrupt'):
+        print(json.dumps(identity),flush=True)
+    if mode != 'timeout':
+        # For interrupts, observe without setting Popen.returncode: inherited
+        # CPython _wait would otherwise short-circuit instead of exposing the
+        # leader-first private-reap regression this control must detect.
+        while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
+            assert time.monotonic()<until
+            time.sleep(.01)
+        if not mode.endswith('-interrupt'):
+            assert child.poll()==0
+            assert os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+        if mode.endswith('-interrupt'):
+            assert child.returncode is None
+            interrupted=False
+            try:
+                if mode == 'communicate-interrupt':
+                    communicate=child._communicate
+                    def announced_communicate(*args):
+                        print(json.dumps(dict(identity,interrupt_ready=mode)),flush=True)
+                        return communicate(*args)
+                    child._communicate=announced_communicate
+                    child.communicate(timeout=8)
+                else:
+                    # Exercise CPython's exhausted short Ctrl-C grace. It
+                    # must preserve KeyboardInterrupt AND the unreaped anchor.
+                    child._sigint_wait_secs=1e-9
+                    with child:
+                        print(json.dumps(dict(identity,interrupt_ready=mode)),flush=True)
+                        signal.pause()
+            except KeyboardInterrupt:
+                interrupted=True
+            assert interrupted, 'KeyboardInterrupt was replaced or swallowed'
+            if mode == 'context-interrupt':
+                assert not child.retired, 'expired grace claimed retirement'
+            if not child.retired:
+                assert os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+                child.retire(time.monotonic()+5)
+        elif mode == 'normal':
+            assert child.wait(timeout=5)==0
+        else:
+            assert cancelled.wait(10)
+            result=c.stop_before_exit()
+            assert result['owned_sessions_retired'] and result['anchors_reaped_last']
+    else:
+        worker.join(8);assert not worker.is_alive() and not errors,errors
+    assert all(child.retired for child in c._children)
+    for pid in [identity['pid'],*[child.pid for child in c._children]]:
+        try:
+            os.waitpid(pid,os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError('root or adopted grandchild was not reaped')
+    assert sentinel.poll() is None
+    print(json.dumps({'sessions_retired':True,'adopted_grandchild_reaped':True,'sentinel_alive':True}),flush=True)
+finally:
+    # Failure cleanup retains the same exact recorded custody, never a host scan.
+    try:
+        c.stop_before_exit()
+    finally:
+        if sentinel is not None:
+            sentinel.terminate();sentinel.wait()
+'''
+        for mode in ('normal', 'timeout', 'sigterm', 'communicate-interrupt', 'context-interrupt'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                identity_path=Path(tmp)/'owned-grandchild.json'
+                env=dict(os.environ,PYTHONPATH=str(Path(surface.__file__).parent))
+                runner=subprocess.Popen([sys.executable,'-u','-c',code,mode,str(identity_path)],
+                    env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+                runner_fd=os.pidfd_open(runner.pid)
+                owned_fds={}
+                def pin_published():
+                    # Exact literal private files, including records written
+                    # before stdout announcement. Never infer a PID from argv.
+                    records={}
+                    for role in ('sentinel','root','grandchild'):
+                        path=Path(tmp)/(role+'.json')
+                        try:
+                            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+                        except FileNotFoundError:
+                            continue
+                        try:
+                            with os.fdopen(fd,'rb') as stream:raw=stream.read(1025)
+                            self.assertLessEqual(len(raw),1024)
+                            row=json.loads(raw)
+                        except BaseException:
+                            raise
+                        self.assertEqual(row['role'],role)
+                        self.assertGreater(row['pid'],0)
+                        self.assertGreater(row['start'],0)
+                        records[role]=row
+                    if 'root' in records:
+                        self.assertEqual(records['root']['sid'],records['root']['pid'])
+                        self.assertEqual(records['root']['pgrp'],records['root']['pid'])
+                        self.assertEqual(records['root']['parent'],runner.pid)
+                    if 'sentinel' in records:
+                        self.assertEqual(records['sentinel']['sid'],records['sentinel']['pid'])
+                        self.assertEqual(records['sentinel']['pgrp'],records['sentinel']['pid'])
+                        self.assertEqual(records['sentinel']['parent'],runner.pid)
+                    if 'grandchild' in records:
+                        self.assertIn('root',records)
+                        self.assertEqual(records['grandchild']['sid'],records['root']['pid'])
+                        self.assertEqual(records['grandchild']['pgrp'],records['grandchild']['pid'])
+                        self.assertNotEqual(records['grandchild']['pgrp'],records['root']['pgrp'])
+                        self.assertEqual(records['grandchild']['parent'],records['root']['pid'])
+                    for role,row in records.items():
+                        if role in owned_fds:continue
+                        pid=row['pid']
+                        def matches():
+                            stat=Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()
+                            return int(stat[19])==row['start'] and int(stat[3])==row['sid'] and int(stat[2])==row['pgrp']
+                        try:
+                            if not matches():continue
+                            fd=os.pidfd_open(pid)
+                            try:
+                                if not matches():continue
+                                owned_fds[role]=fd;fd=None
+                            finally:
+                                if fd is not None:os.close(fd)
+                        except (FileNotFoundError,ProcessLookupError):
+                            pass
+                    return records
+                try:
+                    import select
+                    self.assertTrue(select.select([runner.stdout],[],[],6)[0], 'owned grandchild not announced')
+                    identity=json.loads(runner.stdout.readline())
+                    published=pin_published()
+                    self.assertEqual(set(published),{'sentinel','root','grandchild'})
+                    if mode.endswith('-interrupt'):
+                        self.assertEqual(identity['interrupt_ready'],mode)
+                        signal.pidfd_send_signal(runner_fd,signal.SIGINT)
+                    elif mode=='sigterm':
+                        signal.pidfd_send_signal(runner_fd,signal.SIGTERM)
+                    stdout,stderr=runner.communicate(timeout=15)
+                    self.assertEqual(runner.returncode,0,stderr)
+                    result=json.loads(stdout)
+                    self.assertTrue(result['sessions_retired'] and result['adopted_grandchild_reaped'] and result['sentinel_alive'])
+                    print(json.dumps({'event':'owned-lifecycle-mode','mode':mode,'runner_pid':runner.pid,
+                        'identities':published,'result':result}),flush=True)
+                finally:
+                    # Failure may precede announcement. Read the already-known
+                    # private records BEFORE stopping the runner, and preserve
+                    # exact pidfds while its cooperative finally still reaps.
+                    cleanup_errors=[]
+                    def try_pin():
+                        try:return pin_published()
+                        except BaseException as error:
+                            cleanup_errors.append(repr(error));return {}
+                    try:
+                        try_pin()
+                        if runner.poll() is None:
+                            try:signal.pidfd_send_signal(runner_fd,signal.SIGTERM)
+                            except ProcessLookupError:pass
+                            try:runner.communicate(timeout=10)
+                            except subprocess.TimeoutExpired:pass
+                        try_pin()
+                        if runner.poll() is None:
+                            # Descendants/sentinel first; runner LAST. Numeric
+                            # PID reuse cannot redirect these identity-joined fds.
+                            for role in ('grandchild','root','sentinel'):
+                                if role in owned_fds:
+                                    try:signal.pidfd_send_signal(owned_fds[role],signal.SIGKILL)
+                                    except ProcessLookupError:pass
+                            try:runner.communicate(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                try:signal.pidfd_send_signal(runner_fd,signal.SIGKILL)
+                                except ProcessLookupError:pass
+                                runner.communicate(timeout=3)
+                        # A runner may already have died while its recorded
+                        # children survive. Their same pidfds still own cleanup.
+                        for fd in owned_fds.values():
+                            try:signal.pidfd_send_signal(fd,signal.SIGKILL)
+                            except ProcessLookupError:pass
+                        runner.wait(timeout=3)
+                        import select
+                        for role,fd in owned_fds.items():
+                            poller=select.poll();poller.register(fd,select.POLLIN)
+                            if not poller.poll(2000):cleanup_errors.append(role+' did not exit after exact pidfd cleanup')
+                        if cleanup_errors:self.fail('owned cleanup unresolved: '+repr(cleanup_errors))
+                    finally:
+                        for fd in owned_fds.values():os.close(fd)
+                        os.close(runner_fd)
 
 
 if __name__ == "__main__":

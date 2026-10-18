@@ -8,6 +8,15 @@
 
 use lib.nu *
 
+# CI mounts this path as a persistent task cache. Keep that mount point while
+# evicting its regenerable contents; removing the mount itself fails EBUSY.
+def clear-fast-cache [cache: string]: nothing -> nothing {
+    ^python3 ($env.FILE_PWD | path join "fast_cache.py") $cache
+    if $env.LAST_EXIT_CODE != 0 {
+        error make {msg: "fast cache eviction failed; compilation refused"}
+    }
+}
+
 # Flake checks that build no workspace crate, so they cost seconds once their
 # tools are in the host store. The heavy ones (control-plane, semantic-lints,
 # the gui contracts) stay in the Linux lane's full `nix flake check`.
@@ -46,8 +55,7 @@ def main []: nothing -> nothing {
             | into int
         )
         if $used > $limit {
-            rm --recursive --force $cache
-            mkdir $cache
+            clear-fast-cache $cache
             print $"fast cache: reclaimed ($used) GiB; limit ($limit) GiB"
         }
         let free = (
@@ -60,8 +68,7 @@ def main []: nothing -> nothing {
         if $free < 40 {
             # Reclaim only this serial worker's accelerator, never sources or
             # another job's artifacts. Cache loss is a normal cold-build case.
-            rm --recursive --force $cache
-            mkdir $cache
+            clear-fast-cache $cache
             let recovered = (
                 ^df --output=avail -B1G $cache
                 | lines
@@ -118,7 +125,7 @@ def main []: nothing -> nothing {
             | into int
         )
         if $used > $limit {
-            rm --recursive --force $cache
+            clear-fast-cache $cache
             print $"fast cache: evicted ($used) GiB after build; limit ($limit) GiB"
         }
     } else { reclaim-build-output }

@@ -23,6 +23,21 @@ let
       corpus
       ;
   };
+  # The artifact-driven T2 shell runs the pinned native compilers as packages,
+  # so their setup hooks populate NIX_* flags when the shell starts. Avoid
+  # building and reading a duplicate captured setup environment for this shell;
+  # command wrappers and checks retain the default captured environment.
+  surfaceBaseEnv =
+    (import ./corpus-env.nix {
+      inherit
+        pkgs
+        tools
+        toolchains
+        corpus
+        ;
+      captureNativeCompilerShellEnv = false;
+    })
+    // tools.linuxGraphicsEnvironment;
   # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
   baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
   common = baseEnv // {
@@ -63,33 +78,42 @@ let
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"
       export BACKEND_WORKSPACE_SNAPSHOT="$PWD"
-      # LocalHost fingerprints these runtime paths explicitly. Resolve each
-      # through the pinned toolchain or selected Cargo environment and export
-      # it only when the exact target exists on this process host.
-      if [ -z "''${NUDOX_RUST_SYSROOT:-}" ]; then
-        rust_sysroot="$("${toolchains.stable}/bin/rustc" --print sysroot 2>/dev/null || true)"
-        case "$rust_sysroot" in
-          /*) if [ -d "$rust_sysroot" ]; then export NUDOX_RUST_SYSROOT="$rust_sysroot"; fi ;;
-        esac
-      fi
-      if [ -z "''${NUDOX_CARGO_HOME:-}" ]; then
-        cargo_home="''${CARGO_HOME:-''${HOME:-}/.cargo}"
-        case "$cargo_home" in
-          /*) if [ -d "$cargo_home" ]; then export NUDOX_CARGO_HOME="$cargo_home"; fi ;;
-        esac
-      fi
-      # LocalHost accepts the Go module cache only as an explicit absolute
-      # authority. Resolve it through the pinned Go executable at shell entry
-      # so an existing workspace cache is admitted without guessing from PATH;
-      # leave the variable absent when the cache directory is not present.
-      if [ -z "''${NUDOX_GO_ROOT:-}" ]; then
-        go_module_cache="''${GOMODCACHE:-$(${tools.compilers.go}/bin/go env GOMODCACHE 2>/dev/null || true)}"
-        case "$go_module_cache" in
-          /*) if [ -d "$go_module_cache" ]; then export NUDOX_GO_ROOT="$go_module_cache"; fi ;;
-        esac
-      fi
-    '';
+    ''
+    + pinnedToolchainShellHook;
   };
+  # Shells that run product binaries still need the pinned compiler discovery
+  # and Cargo locations. Build-only shells add their own metadata before this.
+  runtimeToolchainShellHook = ''
+    export CARGO_TARGET_DIR="$PWD/.local/target"
+  ''
+  + pinnedToolchainShellHook;
+  pinnedToolchainShellHook = ''
+    # LocalHost fingerprints these runtime paths explicitly. Resolve each
+    # through the pinned toolchain or selected Cargo environment and export
+    # it only when the exact target exists on this process host.
+    if [ -z "''${NUDOX_RUST_SYSROOT:-}" ]; then
+      rust_sysroot="$("${toolchains.stable}/bin/rustc" --print sysroot 2>/dev/null || true)"
+      case "$rust_sysroot" in
+        /*) if [ -d "$rust_sysroot" ]; then export NUDOX_RUST_SYSROOT="$rust_sysroot"; fi ;;
+      esac
+    fi
+    if [ -z "''${NUDOX_CARGO_HOME:-}" ]; then
+      cargo_home="''${CARGO_HOME:-''${HOME:-}/.cargo}"
+      case "$cargo_home" in
+        /*) if [ -d "$cargo_home" ]; then export NUDOX_CARGO_HOME="$cargo_home"; fi ;;
+      esac
+    fi
+    # LocalHost accepts the Go module cache only as an explicit absolute
+    # authority. Resolve it through the pinned Go executable at shell entry
+    # so an existing workspace cache is admitted without guessing from PATH;
+    # leave the variable absent when the cache directory is not present.
+    if [ -z "''${NUDOX_GO_ROOT:-}" ]; then
+      go_module_cache="''${GOMODCACHE:-$(${tools.compilers.go}/bin/go env GOMODCACHE 2>/dev/null || true)}"
+      case "$go_module_cache" in
+        /*) if [ -d "$go_module_cache" ]; then export NUDOX_GO_ROOT="$go_module_cache"; fi ;;
+      esac
+    fi
+  '';
   development = pkgs.mkShell (
     common
     // {
@@ -307,7 +331,7 @@ let
   # T2 runtime only: reuse T1 binaries, with native compiler authorities.
   # Corpus selection is the harness's job; do not fetch the legacy deep corpus.
   surface = pkgs.mkShell (
-    builtins.removeAttrs common [
+    builtins.removeAttrs surfaceBaseEnv [
       "NUDOX_RUST_CORPUS_DIR"
       "NUDOX_TYPESCRIPT_CORPUS_DIR"
       "NUDOX_PYTHON_CORPUS_DIR"
@@ -321,11 +345,31 @@ let
       "NUDOX_GO_ORACLE_BIN"
     ]
     // {
-      packages = tools.nativeCompilers ++ [
-        pkgs.python3
-        pkgs.coreutils
-        pkgs.jdk25
-      ];
+      # T2 now launches the published desktop as well as CLI/MCP. Keep its
+      # font lookup hermetic, as the smoke shell does for the same binary.
+      FONTCONFIG_FILE = gui.fontConfig;
+      LD_LIBRARY_PATH = tools.linuxDesktopRuntimePath;
+      # These are the actual software-rendering controls consumed by the
+      # published desktop. GUI policy/source/tool-closure metadata belongs to
+      # wrapper and build shells; the artifact-driven T2 launches raw binaries.
+      WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
+      LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
+      MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
+      hardeningDisable = crossAttrs.hardeningDisable;
+      shellHook = runtimeToolchainShellHook;
+      packages =
+        tools.nativeCompilers
+        ++ [
+          pkgs.python3
+          pkgs.coreutils
+          pkgs.jdk25
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.xorg.xorgserver
+          pkgs.xdotool
+          pkgs.imagemagick
+          (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
+        ];
       NUDOX_SURFACE_RUST_PERCENT_ENCODING =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;
@@ -333,6 +377,29 @@ let
       NUDOX_SURFACE_PYTHON_BLINKER =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).python-blinker;
+      NUDOX_SURFACE_PYTHON_CACHETOOLS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-cachetools;
+      NUDOX_SURFACE_PYTHON_TOMLI = toString (import ./surface-corpus.nix { inherit pkgs; }).python-tomli;
+      NUDOX_SURFACE_PYTHON_ITSDANGEROUS =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).python-itsdangerous;
+      NUDOX_SURFACE_RUST_ITOA = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa;
+      NUDOX_SURFACE_RUST_RYU = toString (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu;
+      NUDOX_SURFACE_RUST_ITOA_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-itoa-vendor;
+      NUDOX_SURFACE_RUST_RYU_VENDOR =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-ryu-vendor;
+      NUDOX_SURFACE_GO_UUID = toString (import ./surface-corpus.nix { inherit pkgs; }).go-uuid;
+      NUDOX_SURFACE_GO_SYNC = toString (import ./surface-corpus.nix { inherit pkgs; }).go-sync;
+      NUDOX_SURFACE_C_RXI_MAP = toString (import ./surface-corpus.nix { inherit pkgs; }).c-rxi-map;
+      NUDOX_SURFACE_CPP_PUGIXML = toString (import ./surface-corpus.nix { inherit pkgs; }).cpp-pugixml;
+      NUDOX_SURFACE_JAVA_JSR305 = toString (import ./surface-corpus.nix { inherit pkgs; }).java-jsr305;
+      NUDOX_SURFACE_CSHARP_TINYIOC =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).csharp-tinyioc;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
       COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
       NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";

@@ -378,6 +378,17 @@
       "expires": "2026-11-13"
     },
     {
+      "filter": "source:crates/engine/src/application/typescript_program/direct/tests/pocketbase_captured45_diagnostic.rs::pocketbase_exact_captured45_reports_native_program_and_checker_phases",
+      "attribute": "#[ignore = \"requires exact retained PocketBase corpus, fresh fleet guard and held native permit\"]",
+      "line": 87,
+      "category": "managed-native-prerequisites",
+      "reason": "Already ignored in canonical aa2cb7730 (2026-10-16). #[ignore = \"requires exact retained PocketBase corpus, fresh fleet guard and held native permit\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
+      "owner": "NuDox Backend maintainers",
+      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
+      "reviewed": "2026-10-17",
+      "expires": "2026-10-31"
+    },
+    {
       "filter": "source:crates/engine/src/application/typescript_program/membership_tests.rs::actual_compiler_node_formats_follow_package_type_with_identical_source_membership",
       "attribute": "#[ignore = \"requires pinned TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API\"]",
       "line": 997,

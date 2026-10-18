@@ -28,6 +28,7 @@ let
     ../nu/create/crate.nu
     ../nu/quality/format.nu
     ../nu/quality/lint.nu
+    ../nu/quality/pr_target.nu
     ../nu/quality/test.nu
     ../nu/quality/observe.nu
     ../nu/quality/commit.nu
