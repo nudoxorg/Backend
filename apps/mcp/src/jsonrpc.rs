@@ -1854,59 +1854,106 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Value, RpcError> {
-        let mut view = backend_present::product_view_for_command(command, reply)
-            .with_index_profile_progress(profile_progress)
-            .map_err(|error| {
-                RpcError::from_fault(&Fault::from_client_error(
-                    &error,
-                    surface_error_operand(command),
-                ))
-            })?;
-        view.expose_mcp_advice(exposure);
-        let view = view
-            .with_cli_context(self.product.cli_context())
-            .with_bounded_index_poll()
-            .map_err(|error| {
-                RpcError::from_fault(&Fault::from_client_error(
-                    &error,
-                    surface_error_operand(command),
-                ))
-            })?;
-        let view = match view.cursor_family().cloned() {
-            Some(cursor) => {
-                let token = self.issue_cursor(cursor, context)?;
-                view.project_cursor(token, CursorTarget::SurfaceCommand)
-            }
-            None => view,
-        };
-        let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
-        let payload = match encode_serializable(
-            "surface",
-            detail,
-            None,
-            SurfaceBody {
-                fault: view.fault().map(backend_present::FaultDto::new),
-                continuation_call: None,
-                index_poll: backend_present::IndexPollDto::for_detail(&view, detail),
-                surface: SurfaceProjection {
-                    reply,
-                    next_cursor,
-                    index_job: view.index_job(),
+        let mut reply = std::borrow::Cow::Borrowed(reply);
+        let mut profile_progress = profile_progress;
+        let fit_progress_window = profile_progress
+            .as_ref()
+            .or_else(|| match reply.as_ref() {
+                SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(
+                    page,
+                )) => Some(page),
+                _ => None,
+            })
+            .is_some_and(|page| {
+                page.events.iter().any(|event| {
+                    matches!(
+                        &event.kind,
+                        backend_library::IndexJobProgressKind::ProfileRefused { .. }
+                    )
+                })
+            });
+        loop {
+            let reply_ref = reply.as_ref();
+            let mut view = backend_present::product_view_for_command(command, reply_ref)
+                .with_index_profile_progress(profile_progress.clone())
+                .map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        surface_error_operand(command),
+                    ))
+                })?;
+            view.expose_mcp_advice(exposure);
+            let view = view
+                .with_cli_context(self.product.cli_context())
+                .with_bounded_index_poll()
+                .map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        surface_error_operand(command),
+                    ))
+                })?;
+            let view = match view.cursor_family().cloned() {
+                Some(cursor) => {
+                    let token = self.issue_cursor(cursor, context)?;
+                    view.project_cursor(token, CursorTarget::SurfaceCommand)
+                }
+                None => view,
+            };
+            let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
+            let payload = match encode_serializable(
+                "surface",
+                detail,
+                None,
+                SurfaceBody {
+                    fault: view.fault().map(backend_present::FaultDto::new),
+                    continuation_call: None,
+                    index_poll: backend_present::IndexPollDto::for_detail(&view, detail),
+                    surface: SurfaceProjection {
+                        reply: reply_ref,
+                        next_cursor,
+                        index_job: view.index_job(),
+                    },
                 },
-            },
-            DEFAULT_RESPONSE_BUDGET_BYTES,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => return Ok(refused(&oversized_fault(error))),
-        };
-        let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
-            RpcError::tool(format!("typed surface projection decode failed: {error}"))
-        })?;
-        Ok(tool_result(
-            &bounded_text(&markdown::product_with_detail(&view, detail)),
-            structured,
-            view.fault().is_some(),
-        ))
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            ) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    if fit_progress_window
+                        && narrow_progress_window(reply.to_mut(), &mut profile_progress)
+                    {
+                        continue;
+                    }
+                    return Ok(refused(&oversized_fault(error)));
+                }
+            };
+            let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
+                RpcError::tool(format!("typed surface projection decode failed: {error}"))
+            })?;
+            let result = tool_result(
+                &bounded_text(&markdown::product_with_detail(&view, detail)),
+                structured,
+                view.fault().is_some(),
+            );
+            if !fit_progress_window {
+                return Ok(result);
+            }
+            // Include the real full-envelope byte/token admission, with room for
+            // ordinary caller IDs. The final encoder still checks the actual ID.
+            let framed = bound_rpc_envelope(
+                success(Value::String("0".repeat(256)), result.clone()),
+                ResponseTransport::StdioLine,
+            );
+            if framed
+                .value()
+                .get("result")
+                .and_then(|value| value.get("structuredContent"))
+                != result.get("structuredContent")
+                && narrow_progress_window(reply.to_mut(), &mut profile_progress)
+            {
+                continue;
+            }
+            return Ok(result);
+        }
     }
     fn get_prompt(&mut self, params: &Value) -> Result<Value, RpcError> {
         let params = object(params)?;
@@ -2777,6 +2824,37 @@ pub(super) fn token_budget_rpc_response_with_observed(
         bound_rpc_reply(response, ResponseTransport::StdioLine),
         observed,
     )
+}
+
+/// Lossless window of an already admitted owner's ordered event page.
+/// Every omitted event remains addressable through the original ticket and
+/// `after_sequence`; no compiler cause or source/coverage fact is shortened.
+fn narrow_progress_window(
+    reply: &mut SurfaceReply,
+    profile_progress: &mut Option<backend_library::IndexProgressPage>,
+) -> bool {
+    let page = match reply {
+        SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(page)) => page,
+        SurfaceReply::IndexOperationStatus(_) => {
+            let Some(page) = profile_progress.as_mut() else {
+                return false;
+            };
+            page
+        }
+        _ => return false,
+    };
+    if page.events.len() <= 1 {
+        return false;
+    }
+    let keep = page.events.len().div_ceil(2);
+    let events = page.events[..keep].to_vec().into_boxed_slice();
+    let Some(last) = events.last() else {
+        return false;
+    };
+    page.next_sequence = last.sequence;
+    page.events = events;
+    page.has_more = true;
+    true
 }
 
 fn complete_tool_result(text: &str, structured: Value, is_error: bool) -> Value {

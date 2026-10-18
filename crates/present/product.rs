@@ -717,6 +717,13 @@ impl ProductView {
     /// only legacy job results use an issued ticket and event sequence.
     #[must_use]
     pub fn index_poll_affordance(&self) -> Option<crate::Affordance> {
+        if matches!(&self.index_job,
+            Some(IndexJobProjection::Progress(IndexJobObservation::Pending(page))) if page.has_more)
+        {
+            return self
+                .index_job()
+                .and_then(IndexJobProjection::poll_affordance);
+        }
         if let Some(reference) = &self.index_progress_poll {
             return Some(crate::Affordance::ObserveIndexChanges {
                 reference: reference.clone(),
@@ -760,6 +767,15 @@ impl ProductView {
     /// # Errors
     /// Returns a typed error if the retained active status cannot be committed.
     pub fn with_bounded_index_poll(mut self) -> Result<Self, backend_client::ClientError> {
+        if matches!(&self.index_job,
+            Some(IndexJobProjection::Progress(IndexJobObservation::Pending(page))) if page.has_more)
+        {
+            // Do not long-poll an operation while an exact owner-event window
+            // remains unread. The ordinary ticket affordance resumes that
+            // window immediately at its last included sequence.
+            self.index_progress_poll = None;
+            return Ok(self);
+        }
         if let Some(backend_library::IndexOperationObservation::Known(status)) =
             &self.index_operation
         {
@@ -1533,8 +1549,8 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
     })
 }
 
-/// Plain words for the latest admitted compiler milestone, never a percentage
-/// or a claim that a private candidate has already been published.
+/// Plain words for current compiler work and refusals in this page, never a
+/// percentage or a claim that a private candidate has already been published.
 /// # Errors
 /// Refuses progress belonging to another ticket, stage or malformed receipt.
 pub fn index_profile_progress_text(
@@ -1545,10 +1561,11 @@ pub fn index_profile_progress_text(
     if page.stage != backend_library::IndexJobStage::Compiling {
         return Ok(None);
     }
-    Ok(page
+    let latest = page
         .events
         .iter()
         .rev()
+        .take_while(|event| !matches!(&event.kind, IndexJobProgressKind::ProfileRefused { .. }))
         .find_map(|event| match &event.kind {
             IndexJobProgressKind::ProfileStarted {
                 profile,
@@ -1566,8 +1583,36 @@ pub fn index_profile_progress_text(
                 "{} profile {ordinal}/{total} staged; publication pending",
                 profile.name().unwrap_or("unknown")
             )),
-            IndexJobProgressKind::StageChanged { .. } => None,
-        }))
+            IndexJobProgressKind::ProfileRefused { .. }
+            | IndexJobProgressKind::StageChanged { .. } => None,
+        });
+    let refusals = page
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            IndexJobProgressKind::ProfileRefused {
+                profile,
+                ordinal,
+                total,
+                failure,
+            } => Some(format!(
+                "{} profile {ordinal}/{total} refused ({}): {}",
+                profile.name().unwrap_or("unknown"),
+                failure.kind_tag(),
+                failure.detail(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if refusals.is_empty() {
+        return Ok(latest);
+    }
+    let mut words = refusals.join("; ");
+    if let Some(latest) = latest {
+        words.push_str("; ");
+        words.push_str(&latest);
+    }
+    Ok(Some(words))
 }
 
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
@@ -1796,6 +1841,20 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
                     } => {
                         tags.push(format!("profile {ordinal}/{total}"));
                         format!("{} profile admitted", profile.name().unwrap_or("unknown"))
+                    }
+                    IndexJobProgressKind::ProfileRefused {
+                        profile,
+                        ordinal,
+                        total,
+                        failure,
+                    } => {
+                        tags.push(format!("profile {ordinal}/{total}"));
+                        tags.push(format!("cause {}", failure.kind_tag()));
+                        format!(
+                            "{} profile refused: {}",
+                            profile.name().unwrap_or("unknown"),
+                            failure.detail(),
+                        )
                     }
                 };
                 ProductRecord::new(title, None, tags)
@@ -5348,6 +5407,143 @@ mod compiler_progress_projection_tests {
             product_view(&SurfaceReply::IndexOperationStatus(observation))
                 .with_index_profile_progress(Some(foreign))
                 .is_err()
+        );
+    }
+    fn refused_profile_fixture() -> backend_library::PackageCompilerFailure {
+        use backend_library::interface::{
+            CompilerAttempt, CompilerFragmentFailure, SourceAuthority,
+        };
+        use backend_semantic::ir::{BuildError, EntityId};
+        backend_library::PackageCompilerFailure::from_fragment_failure(
+            "ui/main.ts",
+            CompilerAttempt {
+                source: SourceAuthority {
+                    identity: backend_version::ContentId::<
+                        backend_version::SourceFactDomain,
+                    >::from_canonical_bytes(b"source bytes"),
+                    byte_len: 12,
+                },
+                recipe: backend_version::ContentId::<
+                    backend_version::CompileRecipeDomain,
+                >::from_canonical_bytes(b"recipe bytes"),
+            },
+            &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+                owner: EntityId::new(7),
+                start: 18,
+                end: 24,
+            }),
+        )
+        .expect("exact bounded typed refusal fixture")
+    }
+
+    #[test]
+    fn refused_typescript_cause_remains_visible_while_go_compiles() {
+        let package =
+            PackageReference::parse("/workspace/profile-refusal".to_owned()).expect("package");
+        let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [1; 16], package.clone());
+        let status = IndexOperationStatus::new(
+            IndexOperationKey::from_bytes([2; 32]).expect("operation key"),
+            package,
+            CompileExecutionIntent::Interactive,
+            IndexOperationState::Active {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+            },
+        );
+        let failure = refused_profile_fixture();
+        let page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+            events: vec![
+                IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence: 4,
+                    kind: IndexJobProgressKind::ProfileRefused {
+                        profile: serde_json::from_value(serde_json::json!([1, 0]))
+                            .expect("typescript"),
+                        ordinal: 1,
+                        total: 2,
+                        failure: Box::new(failure.clone()),
+                    },
+                },
+                IndexJobProgressEvent {
+                    ticket,
+                    sequence: 5,
+                    kind: IndexJobProgressKind::ProfileStarted {
+                        profile: serde_json::from_value(serde_json::json!([3, 2])).expect("go1.24"),
+                        ordinal: 2,
+                        total: 2,
+                    },
+                },
+            ]
+            .into_boxed_slice(),
+            next_sequence: 5,
+            truncated: false,
+            has_more: false,
+        };
+        let words = index_profile_progress_text(&status, &page)
+            .expect("admitted active progress")
+            .expect("progress words");
+        assert!(words.contains("typescript profile 1/2 refused"));
+        assert!(words.contains(failure.kind_tag()));
+        assert!(words.contains(failure.detail()));
+        assert!(words.contains("Compiling go profile 2/2"));
+        let mut refused_only = page.clone();
+        refused_only.events = vec![page.events[0].clone()].into_boxed_slice();
+        refused_only.next_sequence = 4;
+        let refusal_words = index_profile_progress_text(&status, &refused_only)
+            .expect("refusal at the page boundary")
+            .expect("refusal words");
+        assert!(refusal_words.contains(failure.detail()));
+        assert!(
+            !refusal_words.contains("Compiling"),
+            "a refused profile is no longer compiling"
+        );
+        let observation = IndexOperationObservation::Known(status);
+        let mut window = page.clone();
+        window.events = vec![window.events[0].clone()].into_boxed_slice();
+        window.next_sequence = window.events[0].sequence;
+        window.has_more = true;
+        let window_view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_profile_progress(Some(window.clone()))
+            .expect("same exact prefix")
+            .with_bounded_index_poll()
+            .expect("immediate window continuation");
+        let action = serde_json::to_value(
+            crate::IndexPollDto::new(&window_view).expect("read remaining original events"),
+        )
+        .expect("continuation DTO");
+        assert_eq!(
+            action["call"]["arguments"]["ticket"],
+            serde_json::to_value(&window.ticket).expect("ticket")
+        );
+        assert_eq!(
+            action["call"]["arguments"]["after_sequence"],
+            window.next_sequence
+        );
+        assert!(action["call"]["arguments"].get("wait_millis").is_none());
+        let view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_profile_progress(Some(page.clone()))
+            .expect("same exact active ticket")
+            .with_bounded_index_poll()
+            .expect("same durable key continuation");
+        let dto = serde_json::to_value(crate::dto::ProductDto::new(&view))
+            .expect("MCP structured content");
+        assert!(
+            serde_json::to_string(&dto)
+                .expect("wire")
+                .contains("profile-refused")
+        );
+        assert_eq!(
+            view.index_operation(),
+            Some(&observation),
+            "active source/coverage authority is unchanged"
+        );
+        let plain = crate::text::product(&view, crate::Theme::plain());
+        let markdown = crate::markdown::product(&view);
+        assert!(plain.contains(failure.detail()) && markdown.contains(failure.detail()));
+        assert!(
+            matches!(view.index_job(), Some(IndexJobProjection::Progress(IndexJobObservation::Pending(actual))) if actual == &page)
         );
     }
 }

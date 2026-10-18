@@ -1810,7 +1810,7 @@ fn dto_versions_and_outer_fields_are_strict() {
         assert!(error.contains(&format!("reply DTO version {unsupported}")));
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
         assert!(error.contains("same build"));
-        assert!(error.contains("rebuild your CLI/MCP client"));
+        assert!(error.contains("Install matching Nudox CLI/MCP/GUI and owner components"));
     }
     let mut reply_json = serde_json::to_value(&reply).expect("reply JSON");
     reply_json["extra"] = serde_json::json!(true);
@@ -1838,7 +1838,7 @@ fn dto_versions_and_outer_fields_are_strict() {
 
 #[test]
 fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
-    assert_eq!(DTO_VERSION, 35);
+    assert_eq!(DTO_VERSION, 36);
     let command = CommandDto::new(
         1,
         Command::Surface(crate::SurfaceCommand::PackageProfile {
@@ -1856,7 +1856,7 @@ fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
     assert!(
         super::codec::check_version_header_against(&bytes, "command", 32)
             .expect_err("old peer rejects before decoding new field")
-            .contains("command DTO version 35")
+            .contains("command DTO version 36")
     );
     value["version"] = serde_json::json!(32);
     let error = crate::decode_command_body(&serde_json::to_vec(&value).expect("old envelope"))
@@ -2795,7 +2795,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 35,
+        DTO_VERSION, 36,
         "current matched cohort retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
@@ -2942,7 +2942,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
 
 #[test]
 fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar() {
-    assert_eq!(DTO_VERSION, 35);
+    assert_eq!(DTO_VERSION, 36);
     let issued = QueryLimit::new(4).expect("issued");
     let fixed = CommandDto::new(
         1,
@@ -3298,7 +3298,7 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
 
 #[test]
 fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matched_cohort() {
-    assert_eq!(DTO_VERSION, 35);
+    assert_eq!(DTO_VERSION, 36);
     // Use the real strict coverage projection, rather than a hand-written field.
     let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
         lane: crate::Lane::Semantic,
@@ -3311,14 +3311,14 @@ fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matche
     .expect("cohort envelope");
     let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
         .expect_err("old peer stops before decoding a gapped variant");
-    assert!(old_peer.contains("reply DTO version 35"));
+    assert!(old_peer.contains("reply DTO version 36"));
     assert!(old_peer.contains("same build"));
     assert!(!old_peer.contains("unknown variant"));
     // A mutation under the previous cohort is refused before its nested shape.
     let old_mutation = br#"{"version":30,"request_id":1,"command":{"index_operation_start":{"unknown_future_field":true}}}"#;
     let error = crate::decode_command_body(old_mutation).expect_err("old live mutation refused");
     assert!(error.contains("command DTO version 30"));
-    assert!(error.contains("this build supports 35"));
+    assert!(error.contains("this build supports 36"));
     assert!(!error.contains("unknown field"));
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
     for version in 21..=33 {
@@ -3376,18 +3376,22 @@ fn settled_gap_snapshot_rechecks_its_actual_root_and_certificate_in_the_same_jou
     );
     // DTO32 changes live refusals only. This synthetic historical envelope
     // retains the exact Gapped root/certificate; it is not an old-build capture.
-    let mut historical: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
-    historical["version"] = serde_json::json!(31);
-    let historical = serde_json::to_vec(&historical).expect("historical envelope");
-    assert!(ViewDto::decode_with_certificate(&historical, Some(capability(basis.object))).is_err());
-    assert_eq!(
-        grammar
-            .decode_snapshot(&historical, capability(basis.object))
-            .expect("DTO31 Gapped snapshot keeps strict proof admission")
-            .snapshot
-            .root,
-        root
-    );
+    for version in [31, 35] {
+        let mut historical: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
+        historical["version"] = serde_json::json!(version);
+        let historical = serde_json::to_vec(&historical).expect("historical envelope");
+        assert!(
+            ViewDto::decode_with_certificate(&historical, Some(capability(basis.object))).is_err()
+        );
+        assert_eq!(
+            grammar
+                .decode_snapshot(&historical, capability(basis.object))
+                .expect("historical snapshot keeps strict proof admission")
+                .snapshot
+                .root,
+            root
+        );
+    }
     let mut forged: serde_json::Value = serde_json::from_slice(&bytes).expect("wire");
     forged["snapshot"]["root"]["coverage"] = serde_json::json!([]);
     assert!(

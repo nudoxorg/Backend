@@ -72,7 +72,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current matched-client transport cohort. Version 35 adds separate source-selection
+/// Current matched-client transport cohort. Version 36 adds typed per-profile
+/// compiler-refusal progress. Version 35 adds separate source-selection
 /// observations to live health replies. Version 34 adds the bounded, recipe-bound
 /// outline page order witness. Owners and clients must upgrade together.
 /// Version 33 adds typed current
@@ -81,4 +82,4 @@ pub(crate) use reply_coverage::{
 /// `Gapped` coverage and compiler details, and version 30 catalog windows and
 /// predecessor spans remain strict; live peers must upgrade together.
 /// The view journal container stays version 3 and retains historical bytes.
-pub const DTO_VERSION: u16 = 35;
+pub const DTO_VERSION: u16 = 36;

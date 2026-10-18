@@ -1198,6 +1198,44 @@ fn native_dispatch_receipt_control(partial: bool) {
             }))
         ));
     }
+    let refusal_progress = if partial {
+        let (adapter, daemon) = fixture.parts();
+        let Executed::Reply(bytes) = adapter
+            .read_index_progress(daemon, ticket.clone(), 0, 0xb93)
+            .expect("actual public progress before coherent publication")
+        else {
+            panic!("progress is a read");
+        };
+        let reply = backend_engine::decode_reply_dto(&bytes).expect("actual progress wire");
+        let CommandReply::Surface(backend_library::SurfaceReply::IndexProgress(
+            backend_library::IndexJobObservation::Pending(page),
+        )) = reply.reply
+        else {
+            panic!("blocked publication remains pending");
+        };
+        assert_eq!(page.ticket, ticket);
+        let failures = page
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                backend_library::IndexJobProgressKind::ProfileRefused {
+                    profile, failure, ..
+                } => {
+                    assert_eq!(profile.name().expect("profile"), "c");
+                    Some(failure.as_ref().clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            failures.len(),
+            1,
+            "the native refusal is visible before terminal publication"
+        );
+        Some(failures[0].clone())
+    } else {
+        None
+    };
     assert_eq!(graph_page(&mut fixture, request), first);
     assert_eq!(graph_page(&mut fixture, next), second);
     assert!(
@@ -1220,16 +1258,18 @@ fn native_dispatch_receipt_control(partial: bool) {
             panic!("actual Python+missing Clang is partial: {terminal:?}");
         };
         assert_eq!(refused_profiles.len(), 1);
-        assert_eq!(
-            refused_profiles[0].profile.name().expect("profile"),
-            "c"
-        );
+        assert_eq!(refused_profiles[0].profile.name().expect("profile"), "c");
         assert!(
             refused_profiles[0]
                 .compiler_failure
                 .as_ref()
                 .expect("actual SDK refusal")
                 .requires_tool_configuration()
+        );
+        assert_eq!(
+            refusal_progress.as_ref(),
+            refused_profiles[0].compiler_failure.as_ref(),
+            "early progress retains the exact eventual source-bound native failure"
         );
         receipt
     } else {

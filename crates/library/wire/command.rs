@@ -560,7 +560,7 @@ pub(super) fn ensure_version_against(
         Ok(())
     } else {
         Err(format!(
-            "unsupported {kind} DTO version {version}; this build supports {supported}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
+            "unsupported {kind} DTO version {version}; this build supports {supported}. Install matching Nudox CLI/MCP/GUI and owner components from the same build, then restart the owner. For source builds, rebuild the components together."
         ))
     }
 }

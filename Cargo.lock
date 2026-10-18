@@ -953,6 +953,7 @@ dependencies = [
  "backend-replication",
  "backend-runtime",
  "backend-semantic",
+ "backend-version",
  "base64 0.22.1",
  "blake3",
  "flate2",
