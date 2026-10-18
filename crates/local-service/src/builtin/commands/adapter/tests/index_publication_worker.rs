@@ -593,6 +593,19 @@ fn index_publication_worker_selected_unwind_retains_writer_until_explicit_retry(
             })
         )
     });
+    let diagnostic_bytes = std::fs::read(
+        fixture.root.0.join("workspace/index-publication-pending-v1.json"),
+    )
+    .expect("selected failure retains a bounded private diagnostic");
+    assert!(diagnostic_bytes.len() <= 8192);
+    let diagnostic: serde_json::Value =
+        serde_json::from_slice(&diagnostic_bytes).expect("diagnostic JSON");
+    assert_eq!(diagnostic["phase"], "post-head-projection");
+    assert_eq!(diagnostic["workspace_selected"], true);
+    assert_eq!(diagnostic["terminal_receipt"], false);
+    assert_eq!(diagnostic["readiness_authority"], false);
+    assert_eq!(diagnostic["operation_key"], serde_json::to_value(operation).expect("key"));
+    assert!(diagnostic["detail"].as_str().expect("error detail").contains("unwound"));
     assert_old_read(&mut fixture, &old, &view, cursor, package);
     // This selected failure precedes SQL/receipt writes. Remove every native
     // journal wake so only the caller's explicit keyed status can retry it.
@@ -1987,4 +2000,52 @@ fn publication_worker_removes_native_selection_after_staging() -> Result<(), Str
     published(&mut fixture, &ticket);
     assert_selection_removed(&mut fixture, &keys)?;
     Ok(())
+}
+
+#[test]
+fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal() {
+    let mut fixture = AdapterFixture::new();
+    let (old, view, cursor) = {
+        let (_, daemon) = fixture.parts();
+        (
+            daemon.engine().daemon().owner().snapshot(),
+            daemon.engine().daemon().library().view().clone(),
+            owner_cursor(daemon),
+        )
+    };
+    let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
+    let (package, ticket, operation, journal_path) = start(&mut fixture, true, false);
+    until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    // The real selected view sink will get an I/O refusal. This is not a
+    // compiler oracle, a forged selected head, or a synthetic terminal result.
+    std::fs::create_dir(&journal_path).expect("block only the owned test view sink");
+    release.now();
+    until(&mut fixture, |adapter, _| {
+        matches!(
+            adapter.indexing.as_ref().map(|job| &job.work),
+            Some(IndexJobWork::PublicationWorker {
+                completion: Some(Completion {
+                    disposition: Disposition::Pending(_),
+                    ..
+                }),
+                ..
+            })
+        )
+    });
+    let bytes = std::fs::read(
+        fixture.root.0.join("workspace/index-publication-pending-v1.json"),
+    ).expect("actual sink failure diagnostic");
+    assert!(bytes.len() <= 8192);
+    let diagnostic: serde_json::Value = serde_json::from_slice(&bytes).expect("diagnostic");
+    assert_eq!(diagnostic["phase"], "selected-view-persistence");
+    assert_eq!(diagnostic["workspace_selected"], true);
+    assert_eq!(diagnostic["operation_key"], serde_json::to_value(operation).expect("key"));
+    assert_eq!(diagnostic["terminal_receipt"], false);
+    assert_eq!(diagnostic["readiness_authority"], false);
+    assert!(!diagnostic["detail"].as_str().expect("retained actual sink error").is_empty());
+    assert_old_read(&mut fixture, &old, &view, cursor, package);
+    assert!(fixture.adapter.as_ref().expect("adapter").index_terminals.iter()
+        .all(|terminal| terminal.ticket != ticket));
+    std::fs::remove_dir(&journal_path).expect("restore the owned test sink");
+    published(&mut fixture, &ticket);
 }
