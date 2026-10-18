@@ -375,6 +375,19 @@ mod signature_preview_tests {
             assert_eq!(dto.records[0].identity.coordinate, coordinate);
             assert_eq!(row.signature.as_deref(), Some(signature.as_str()));
             assert_eq!(row.excerpt.text(), Some(signature.as_str()));
+            let unix = signature.replace("\r\n", "\n");
+            let unix_row = row.clone().with_signature(&unix);
+            let unix_list = crate::assemble::record_list_from_rows(
+                name,
+                std::slice::from_ref(&unix_row),
+                &[Coverage::Complete],
+                false,
+            );
+            assert_eq!(
+                dto,
+                crate::dto::RecordListDto::new(&unix_list),
+                "CLI/MCP result DTOs must give equivalent source line endings identical previews"
+            );
             let text = crate::render::text::records(&list, None, crate::Theme::plain());
             let markdown = crate::render::markdown::records(&list, None);
             assert!(text.contains(preview));
