@@ -671,6 +671,8 @@ struct Fake {
     catalog_frontiers: Vec<Option<PageContinuation>>,
     /// Injected transport control; real native selection runs after delivery fits.
     catalog_delivery_ceiling: Option<u16>,
+    /// A changed failed-read revision must not be forgotten before a successful retry.
+    outline_refusal_basis: Option<backend_library::ViewRevision>,
     /// Exact document coordinates passed back by a text-preview consumer.
     document_coordinates: Vec<String>,
     /// Bind the default document fixture to the requested display coordinate.
@@ -741,8 +743,17 @@ impl Fake {
         let Some(catalog) = &self.page_catalog else {
             if let Probe::OutlinePage { path, limit } = probe {
                 self.probe_calls += 1;
-                return self.fixture_outline_page(path, limit, continuation)
-                    .map(|page| ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+                let catalog = self.fixture_catalog(path)?;
+                let credit = backend_library::QueryLimit::new(limit).expect("outline credit");
+                let window = window.unwrap_or(backend_library::QueryWindow::fixed(credit));
+                self.page_windows.push(window);
+                let request = backend_library::PageRequest::new(catalog.revision_root(), credit)
+                    .with_window(window).expect("outline unchanged credit");
+                let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+                let page = catalog.outline_page(package_key(path), request)
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                self.next_continuation = page.snapshot.next.map(PageContinuation::from_cursor);
+                return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
             }
             if continuation.is_some() {
                 return Err(ClientError::StaleCursor);
@@ -755,6 +766,15 @@ impl Fake {
                 catalog.revision_root(),
                 backend_library::QueryLimit::new(limit).expect("bounded outline"),
             );
+            let window = window.unwrap_or(backend_library::QueryWindow::fixed(request.limit()));
+            self.page_windows.push(window);
+            self.catalog_frontiers.push(continuation);
+            if continuation.is_some() && self.catalog_delivery_ceiling.is_some_and(|ceiling| window.delivery().get() > ceiling) {
+                return Err(ClientError::ResponseTooLarge {
+                    basis: Some(self.outline_refusal_basis.unwrap_or_else(|| catalog.revision_root().into())),
+                });
+            }
+            let request = request.with_window(window).expect("outline unchanged credit");
             let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
             let page = catalog
                 .outline_page(package_key(path), request)
@@ -1852,21 +1872,27 @@ fn semantic_versions_default_discovers_real_42_image_capture_without_embedding_s
         let dto: backend_present::ProductDto =
             serde_json::from_value(result["structuredContent"].clone())
                 .expect("real typed public decode");
-        assert_eq!(
-            dto.semantic_data,
-            Some(backend_present::ProductSemanticData::VersionsPage(
-                page.clone()
-            ))
-        );
+        if detail == Detail::Summary {
+            assert!(dto.semantic_data.is_none());
+            let summary = dto.semantic_versions_summary.as_ref().expect("display discovery");
+            assert_eq!(summary.entries[0].coordinate, source.coordinate.as_str());
+            assert_eq!(summary.entries[0].history_images, Some(42));
+            assert_eq!(summary.full_detail.scope, "fresh-discovery");
+        } else {
+            assert_eq!(dto.semantic_data,
+                Some(backend_present::ProductSemanticData::VersionsPage(page.clone())));
+        }
         assert!(text_of(result).contains(source.coordinate.version()));
         assert!(text_of(result).contains("42 image(s)"));
-        let exposed =
-            &result["structuredContent"]["semantic_data"]["value"]["entries"][0]["reference"];
-        assert_eq!(exposed["metadata"]["generation"], json!(source.generation));
-        assert_eq!(exposed["metadata"]["coordinate"], json!(source.coordinate));
-        assert_eq!(exposed["source"], json!(reference.source));
-        assert!(exposed["history"]["proof"].get("images").is_none());
-        assert_eq!(exposed["history"]["proof"]["image_count"], 42);
+        if detail != Detail::Summary {
+            let exposed =
+                &result["structuredContent"]["semantic_data"]["value"]["entries"][0]["reference"];
+            assert_eq!(exposed["metadata"]["generation"], json!(source.generation));
+            assert_eq!(exposed["metadata"]["coordinate"], json!(source.coordinate));
+            assert_eq!(exposed["source"], json!(reference.source));
+            assert!(exposed["history"]["proof"].get("images").is_none());
+            assert_eq!(exposed["history"]["proof"]["image_count"], 42);
+        }
         let cli =
             backend_present::encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
                 .expect("same shared CLI projection");

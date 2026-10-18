@@ -427,11 +427,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
     }
 }
 
-/// Projects an already admitted native search/name reply without another read.
+/// Projects an already admitted native search/name/outline reply without another read.
 /// Surfaces can retain typed response-ceiling errors before this projection.
 ///
 /// # Errors
-/// Returns the existing search/name projection fault for a changed reply shape or failed command.
+/// Returns the existing catalog projection fault for a changed reply shape or failed command.
 pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
     match request {
         Request::Search { text, .. } => {
@@ -461,6 +461,29 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 return Err(shape("resolve"));
             };
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        Request::OutlinePage { path, limit } => {
+            let CommandReply::ProjectionPage(page) = reply.reply else {
+                return Err(shape("outline-page"));
+            };
+            if page.terminal
+                != page
+                    .snapshot
+                    .next
+                    .map_or(backend_library::PageTerminal::Complete, |cursor| {
+                        backend_library::PageTerminal::More(PageContinuation::from_cursor(cursor))
+                    })
+            {
+                return Err(shape("outline-page terminal"));
+            }
+            let order = page
+                .outline_order
+                .as_ref()
+                .ok_or_else(|| shape("outline-page order"))?;
+            crate::outline::page_tree(path, &page.snapshot, *limit, order)
+                .map(Box::new)
+                .map(Answer::Outline)
+                .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
         }
         _ => Err(shape("catalog window request")),
     }
@@ -521,35 +544,8 @@ pub fn answer_paged(
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
         }
         Request::OutlinePage { path, limit } => {
-            let reply = read_page(
-                engine,
-                Probe::OutlinePage {
-                    path,
-                    limit: *limit,
-                },
-                continuation,
-            )?;
-            let CommandReply::ProjectionPage(page) = reply.reply else {
-                return Err(shape("outline-page"));
-            };
-            if page.terminal
-                != page
-                    .snapshot
-                    .next
-                    .map_or(backend_library::PageTerminal::Complete, |cursor| {
-                        backend_library::PageTerminal::More(PageContinuation::from_cursor(cursor))
-                    })
-            {
-                return Err(shape("outline-page terminal"));
-            }
-            let order = page
-                .outline_order
-                .as_ref()
-                .ok_or_else(|| shape("outline-page order"))?;
-            crate::outline::page_tree(path, &page.snapshot, *limit, order)
-                .map(Box::new)
-                .map(Answer::Outline)
-                .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
+            let reply = read_page(engine, Probe::OutlinePage { path, limit: *limit }, continuation)?;
+            catalog_page_answer(request, reply)
         }
         _ if continuation.is_some() => Err(Fault::usage(
             "cursor",

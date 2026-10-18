@@ -350,6 +350,7 @@ pub fn encode_answer_with_call(
                         compiler_outcomes: product.compiler_outcomes,
                         package_graph_page: product.package_graph_page,
                         semantic_data: product.semantic_data,
+                        semantic_versions_summary: product.semantic_versions_summary,
                         package_discovery: product.package_discovery,
                     },
                     budget,
@@ -828,6 +829,8 @@ struct SummaryProductDto {
     compiler_outcomes: Option<backend_library::PackageCompilerOutcomes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_data: Option<crate::product::ProductSemanticData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_versions_summary: Option<crate::dto::SemanticVersionsSummaryDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]

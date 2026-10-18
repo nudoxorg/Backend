@@ -153,7 +153,7 @@ fn semantic_selection_receipt_preserves_large_native_record_and_admits_every_mcp
         assert!(wire_tokens(&response).expect("expert receipt tokens") <= MCP_CL100K_TOKEN_LIMIT);
         assert_eq!(
             response["result"]["structuredContent"]["metadata_call"],
-            json!({"name":SURFACE_TOOL,"arguments":{"command":SurfaceCommand::SemanticVersions {package:source.package.clone(),limit:1,cursor:None}}}),
+            json!({"name":SURFACE_TOOL,"arguments":{"command":SurfaceCommand::SemanticVersions {package:source.package.clone(),limit:1,cursor:None},"detail":"full"}}),
             "expert reads preserve the exact tagged package namespace"
         );
         assert_eq!(server.product.surface_commands, vec![selection(&source)]);
@@ -174,7 +174,7 @@ fn semantic_selection_receipt_metadata_call_recovers_the_complete_captured_histo
             &invocation(exposure, &source, Detail::Full),
         );
         let next = response["result"]["structuredContent"]["metadata_call"].clone();
-        let expected=exposure.expose_call(json!({"name":"backend.semantic_versions","arguments":{"package":source.package.as_str(),"limit":1}}));
+        let expected=exposure.expose_call(json!({"name":"backend.semantic_versions","arguments":{"package":source.package.as_str(),"limit":1,"detail":"full"}}));
         assert_eq!(
             next, expected,
             "the exposed read is copyable, not a cursor on the mutation"

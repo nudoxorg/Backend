@@ -3137,11 +3137,27 @@ impl LocalDeclarationSearchIndex {
     }
 
     fn rebuild(&mut self, view: &ViewRoot) -> Result<(), String> {
+        *self = Self::build_controlled(view, None)?;
+        Ok(())
+    }
+
+    /// Builds only on an exclusive preparation worker in the production owner.
+    /// Native commit is not preemptible; sample cancellation on both sides so
+    /// neither a superseded nor a shutdown selection can be installed.
+    pub(crate) fn build_controlled(
+        view: &ViewRoot,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        let check = |point| {
+            super::check_search_preparation(cancelled, point).map_err(|error| error.to_string())
+        };
+        check("local-declaration-start")?;
         let mut inner = TextSearchIndex::new()?;
-        for row in view
-            .row_refs()
-            .filter(|row| matches!(row.id, RowId::Symbol(_)))
-        {
+        for row in view.row_refs() {
+            check("local-declaration-row")?;
+            if !matches!(row.id, RowId::Symbol(_)) {
+                continue;
+            }
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
             let content = local_search_content(row);
             inner.add_document(
@@ -3152,10 +3168,13 @@ impl LocalDeclarationSearchIndex {
                 local_sort_key(row.id, row.label.as_str()),
             )?;
         }
+        check("local-declaration-before-commit")?;
         inner.commit()?;
-        self.root = Some(view.root());
-        self.inner = Some(inner);
-        Ok(())
+        check("local-declaration-after-commit")?;
+        Ok(Self {
+            root: Some(view.root()),
+            inner: Some(inner),
+        })
     }
 
     fn invalidate(&mut self) {

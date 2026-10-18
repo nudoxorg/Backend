@@ -55,7 +55,8 @@ impl RecordState {
     }
 }
 
-/// A bounded relevance score.
+/// The owner's descending order key, not a calibrated relevance measurement.
+/// Published names/search encode zero-based absolute rank as `u32::MAX - rank`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Score(u32);
 
@@ -135,6 +136,14 @@ impl Record {
     #[must_use]
     pub const fn language(&self) -> Language {
         self.language
+    }
+
+    /// Whether the selected coordinate names an external endpoint. This is
+    /// presentation classification, never a claim of local source ownership.
+    #[must_use]
+    pub(crate) fn is_external_reference(&self) -> bool {
+        self.identity.shape() == crate::IdentityShape::External
+            && !matches!(self.identity.key(), crate::IdentityKey::Package(_))
     }
 
     /// Returns the row lifecycle.
@@ -384,5 +393,87 @@ mod signature_preview_tests {
             assert!(!text.contains("\r\n"));
             assert!(!markdown.contains("\r\n"));
         }
+    }
+}
+
+#[cfg(test)]
+mod search_provenance_tests {
+    use super::*;
+    use backend_library::{Basis, Coverage, RowId, SourceLocation, object_version, symbol_key, view_state_root};
+
+    #[test]
+    fn external_search_rows_keep_distinct_operands_without_claiming_local_source() {
+        let basis = Basis::new(view_state_root(&[]), object_version(&[]));
+        let external = [
+            format!("/abs/app::external::symbol:{}::React", "11".repeat(32)),
+            format!("/abs/app::external::symbol:{}::React", "22".repeat(32)),
+        ];
+        let coordinates = [
+            "/abs/app::src/react.tsx:3::React".to_owned(),
+            "/abs/app::src/external.ts:7::React".to_owned(),
+            format!("/abs/app::semantic::{}::React", "33".repeat(32)),
+            external[0].clone(), external[1].clone(),
+        ];
+        let mut rows: Vec<_> = coordinates.iter().enumerate().map(|(rank, coordinate)| {
+            let mut row = Row::new(RowId::Symbol(symbol_key(coordinate)), basis, coordinate);
+            row.score = Some(u32::MAX - u32::try_from(rank).expect("bounded fixture"));
+            row
+        }).collect();
+        rows[0] = rows[0].clone().with_source(SourceLocation::new("src/react.tsx", 3).expect("captured import"));
+        let original = rows.clone();
+        let list = crate::assemble::record_list_from_rows("React", &rows, &[Coverage::Complete], false);
+        let dto = crate::dto::RecordListDto::new(&list);
+        assert_eq!(dto.records.len(), coordinates.len(), "no spelling-based deduplication");
+        for (rank, record) in dto.records.iter().enumerate() {
+            assert_eq!(record.identity.coordinate, coordinates[rank]);
+            assert_eq!(record.score, Some(u32::MAX - u32::try_from(rank).expect("rank")));
+            assert_eq!(list.records()[rank].is_external_reference(), rank >= 3);
+        }
+        assert_eq!(dto.records[0].identity.path.as_deref(), Some("src/react.tsx"));
+        assert!(dto.records[2].identity.path.is_none(), "unsourced owned semantic row stays owned");
+        assert!(dto.records[3..].iter().all(|record|
+            record.identity.shape == "external" && record.identity.path.is_none()
+                && record.identity.line.is_none()));
+        let answer = crate::Answer::Records(Box::new(list.clone()));
+        for rendered in [
+            crate::text::records(&list, None, crate::Theme::plain()),
+            crate::markdown::records(&list, None),
+            crate::markdown::summary_with_cursor(&answer, None,
+                crate::ContinuationTarget::McpTool("backend.search")),
+        ] {
+            assert_eq!(rendered.matches("external reference").count(), 2);
+            for coordinate in &coordinates { assert!(rendered.contains(coordinate)); }
+        }
+        assert_eq!(rows, original, "presentation never mutates selected source/rank evidence");
+    }
+
+    #[test]
+    fn package_row_keys_cannot_be_relabelled_external_by_root_spelling() {
+        let basis = Basis::new(view_state_root(&[]), object_version(&[]));
+        for root in ["/abs/app".to_owned(), format!(
+            "/abs/app::external::symbol:{}::React", "11".repeat(32))] {
+            let row = Row::new(RowId::Package(backend_library::package_key(&root)), basis, &root);
+            let record = Record::from_row(&row);
+            assert!(matches!(record.identity().key(), crate::IdentityKey::Package(_)));
+            assert!(!record.is_external_reference(), "a package key outranks display spelling");
+            let list = crate::assemble::record_list_from_rows("app", &[row], &[Coverage::Complete], false);
+            for rendered in [crate::text::records(&list, None, crate::Theme::plain()),
+                crate::markdown::records(&list, None)] {
+                assert!(!rendered.contains("external reference"));
+                assert!(rendered.contains(&root), "the exact root operand stays available");
+            }
+        }
+    }
+
+    #[test]
+    fn search_and_resolve_help_explain_reported_order_key_without_rewriting_it() {
+        for command in ["search", "resolve"] {
+            let grammar = crate::grammar_for(command).expect("registered command");
+            assert!(grammar.when().contains("u32::MAX - rank"));
+            assert!(grammar.when().contains("zero-based"));
+            assert!(grammar.when().contains("not a relevance probability"));
+        }
+        assert_eq!(Score::new(u32::MAX).get(), u32::MAX);
+        assert_eq!(Score::new(0).get(), 0, "no invented probability or rank conversion");
     }
 }
