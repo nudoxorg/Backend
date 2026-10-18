@@ -13204,6 +13204,11 @@ describe('suite', () => {\n\
                 &session,
                 &mut facts,
             )?;
+            let alpha_name = models.find("alpha(value").ok_or(LaneError::Missing("authored alpha name"))?;
+            let box_name = models.find("Box {").ok_or(LaneError::Missing("authored Box name"))?;
+            let constructor_site = caller.find("new Box()").ok_or(LaneError::Missing("authored constructor"))? + 4;
+            let mut alpha_sites = std::collections::BTreeSet::new();
+            let mut constructors = 0;
             let mut calls = 0;
             let mut methods = 0;
             let mut fields = 0;
@@ -13228,7 +13233,25 @@ describe('suite', () => {\n\
                 assert_eq!(Some(coordinate.program), session.native_program_identity());
                 assert_eq!(occurrence.confidence, OccurrenceConfidence::Oracle);
                 match occurrence.kind {
-                    ReferenceKind::FunctionCall => calls += 1,
+                    ReferenceKind::FunctionCall => {
+                        let owner = facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                            .ok_or(LaneError::Missing("authored occurrence owner span"))?;
+                        let start = owner.start + occurrence.span.start;
+                        let end = owner.start + occurrence.span.end;
+                        if coordinate.name_start as usize == alpha_name {
+                            assert_eq!(caller.get(start as usize..end as usize), Some("run"));
+                            assert!(alpha_sites.insert((start, end)), "one occurrence per authored alpha call");
+                            calls += 1;
+                        } else {
+                            assert_eq!(coordinate.name_start as usize, box_name,
+                                "only the authored Box construction is an additional foreign call");
+                            assert_eq!((start as usize, end as usize), (constructor_site, constructor_site + 3));
+                            assert_eq!(caller.get(start as usize..end as usize), Some("Box"));
+                            constructors += 1;
+                        }
+                        assert!(coordinate.declaration_start <= coordinate.name_start
+                            && coordinate.name_start < coordinate.declaration_end);
+                    },
                     ReferenceKind::MethodCall => methods += 1,
                     ReferenceKind::FieldAccess => fields += 1,
                     _ => {}
@@ -13238,6 +13261,10 @@ describe('suite', () => {\n\
                 calls, 8,
                 "every imported call retains its exact authored target"
             );
+            assert_eq!(constructors, 1, "the actual new Box() site retains its exact class target");
+            let expected_alpha_sites = caller.match_indices("run(").map(|(start, _)|
+                (start as u32, start as u32 + 3)).collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(alpha_sites, expected_alpha_sites, "all eight authored imported sites, with no extras");
             assert_eq!(
                 methods, 8,
                 "repeated receiver-owned methods retain their target"

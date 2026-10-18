@@ -170,6 +170,93 @@ fn schema_worked_referenced_by_joins_exact_typescript_imports() -> Result<(), St
             "missing exact imported caller {row:?}: {rows:?}"
         );
     }
+    // Exercise grammar-owned parameter scope through the same actual query
+    // projection. Types, property keys and default expressions are not binders.
+    for (case, caller_source, expected_callers) in [
+        ("namespace", "import * as repo from './repo'; function use(repo: any) { return repo.getTeachersByClass(); }", 0),
+        ("destructure", "import { getTeachersByClass as load } from './repo'; function use({token: load}: {token: () => number}) { return load(); }", 0),
+        ("rest", "import { getTeachersByClass as load } from './repo'; function use(...load: any[]) { return load(); }", 0),
+        ("nested", "import { getTeachersByClass as load } from './repo'; function use(load: () => number) { function nested() { return load(); } return nested(); }", 0),
+        ("method", "import { getTeachersByClass as load } from './repo'; class Caller { use(load: () => number) { return load(); } }", 0),
+        ("method-positive", "import { getTeachersByClass as load } from './repo'; class Caller { use() { return load(); } }", 1),
+        ("type-property", "import { getTeachersByClass as load } from './repo'; function use(arg: {load: () => number}) { return load(); }", 1),
+        ("destructure-key", "import { getTeachersByClass as load } from './repo'; function use({load: other}: {load: () => number}) { return load(); }", 1),
+        ("default-expression", "import { getTeachersByClass as load } from './repo'; function use(arg = load) { return load(); }", 1),
+        ("default-string", "import { getTeachersByClass as load } from './repo'; function use(arg = 'load') { return load(); }", 1),
+        ("sibling", "import { getTeachersByClass as load } from './repo'; function hidden(load: () => number) {} function use() { return load(); }", 1),
+    ] {
+        let files = [
+            ("repo.ts", SourceLanguage::TypeScript, analyze_source(SourceLanguage::TypeScript,
+                "repo.ts", "export function getTeachersByClass() { return 1; }")?),
+            ("caller.ts", SourceLanguage::TypeScript, analyze_source(SourceLanguage::TypeScript,
+                "caller.ts", caller_source)?),
+        ];
+        let (sources, package) = cross_file_sources(&files)?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let mut facts = vec![package_fact(package)];
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        let rows = referenced_by(facts, "getTeachersByClass")?;
+        assert_eq!(rows.iter().filter(|row| row.get("caller") != Some(&FieldValue::Null)).count(),
+            expected_callers, "parameter scope {case}: {rows:?}");
+    }
+    // Historical TS declarations lack an exact callable scope. Neither bare
+    // nor namespace imports may acquire a caller from that missing evidence.
+    for (caller_source, legacy_import_only) in [
+        ("import { getTeachersByClass as load } from './repo'; function use(load: () => number) { return load(); }", false),
+        ("import { getTeachersByClass as load } from './repo'; function use() { return load(); }", false),
+        ("import * as repo from './repo'; function use(repo: any) { return repo.getTeachersByClass(); }", false),
+        ("import { getTeachersByClass as load } from './repo'; function use() { return load(); }", true),
+        ("import * as repo from './repo'; function use() { return repo.getTeachersByClass(); }", true),
+    ] {
+        let legacy = analyze_source(SourceLanguage::TypeScript, "caller.ts", caller_source)?
+            .iter().cloned().map(|declaration| {
+                if !legacy_import_only || declaration.kind() == backend_compile::DeclarationKind::Import {
+                    declaration.with_binding_identity(backend_compile::SourceBindingIdentity::Legacy)
+                } else { declaration }
+            }).collect::<Vec<_>>();
+        let files = [
+            ("repo.ts", SourceLanguage::TypeScript, analyze_source(SourceLanguage::TypeScript,
+                "repo.ts", "export function getTeachersByClass() { return 1; }")?),
+            ("caller.ts", SourceLanguage::TypeScript, std::sync::Arc::from(legacy)),
+        ];
+        let (sources, package) = cross_file_sources(&files)?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let mut facts = vec![package_fact(package)];
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        assert!(referenced_by(facts, "getTeachersByClass")?.iter()
+            .all(|row| row.get("caller") == Some(&FieldValue::Null)),
+            "legacy TS caller cannot prove import ownership: {caller_source}");
+    }
+    for (caller_source, legacy_import, expected_callers) in [
+        ("import { Repo } from './repo'; function use() { return Repo.getTeachersByClass(); }", false, 1),
+        ("import { Repo } from './repo'; function use(Repo: any) { return Repo.getTeachersByClass(); }", false, 0),
+        ("import { Repo } from './repo'; function use() { return Repo.getTeachersByClass(); }", true, 0),
+    ] {
+        let caller = analyze_source(SourceLanguage::TypeScript, "caller.ts", caller_source)?
+            .iter().cloned().map(|declaration| {
+                if legacy_import && declaration.kind() == backend_compile::DeclarationKind::Import {
+                    declaration.with_binding_identity(backend_compile::SourceBindingIdentity::Legacy)
+                } else { declaration }
+            }).collect::<Vec<_>>();
+        let files = [
+            ("repo.ts", SourceLanguage::TypeScript, analyze_source(SourceLanguage::TypeScript,
+                "repo.ts", "export class Repo { static getTeachersByClass() { return 1; } }")?),
+            ("caller.ts", SourceLanguage::TypeScript, std::sync::Arc::from(caller)),
+        ];
+        let (sources, package) = cross_file_sources(&files)?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let mut facts = vec![package_fact(package)];
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        let rows = referenced_by(facts, "getTeachersByClass")?;
+        assert_eq!(rows.iter().filter(|row| row.get("caller") != Some(&FieldValue::Null)).count(),
+            expected_callers, "exact imported-class binding: {caller_source}: {rows:?}");
+    }
     Ok(())
 }
 
@@ -213,10 +300,11 @@ fn query_call_edges_follow_exact_binding_rows_and_omit_absent_targets() -> Resul
         } else {
             "caller"
         };
-        let declaration = declarations
-            .iter()
-            .find(|declaration| declaration.name() == name)
-            .ok_or("exact source declaration")?;
+        let mut matching = declarations.iter().filter(|declaration|
+            declaration.name() == name
+                && declaration.kind() == backend_compile::DeclarationKind::Function);
+        let declaration = matching.next().ok_or("exact callable source declaration")?;
+        assert!(matching.next().is_none(), "fixture callable binding must be unique");
         let SourceBindingIdentity::Exact(capture) = declaration.binding_identity() else {
             return Err("fixture lost its exact source binding".to_owned());
         };
