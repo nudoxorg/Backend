@@ -4707,3 +4707,60 @@ fn cancelled_oversized_ordinal_count_scan_is_interrupted_before_corruption_rebui
     drop(reopened);
     std::fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn cold_membership_reader_reuse_preserves_exact_results_and_complete_posting_cover() {
+    let state = state_for(
+        (0..64)
+            .map(|n| {
+                (
+                    document(8000 + n),
+                    vec![
+                        (
+                            "documentation".into(),
+                            "Shared Alpha alpha É é Shared".into(),
+                        ),
+                        ("name".into(), "Alpha alpha Shared".into()),
+                        ("signature".into(), "ALPHA Shared".into()),
+                    ],
+                )
+            })
+            .collect(),
+        [0xc7; 32],
+    );
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-membership-reuse-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("directory");
+    let built = TantivySource::build_in_dir(&state, Limits::default(), &directory).expect("build");
+    let terms = ["Shared", "Alpha", "alpha", "É", "é", "absent"];
+    let expected = terms
+        .iter()
+        .map(|term| term_hits(&built, term))
+        .collect::<Vec<_>>();
+    let fresh_checks = engine::test_support::binding_work(&built).1;
+    assert!(
+        engine::test_support::posting_readers_opened(&built) < fresh_checks,
+        "source token membership remains complete while repeated readers are reused"
+    );
+    drop(built);
+    let cold = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("exact cold admission");
+    for (term, expected) in terms.iter().zip(expected) {
+        assert_eq!(term_hits(&cold, term), expected, "term {term}");
+    }
+    let checks = engine::test_support::binding_work(&cold).1;
+    assert_eq!(
+        engine::test_support::posting_cover_edges_scanned(&cold),
+        checks as u64,
+        "every distinct live source edge still receives exact surplus-cover validation"
+    );
+    assert!(engine::test_support::posting_readers_opened(&cold) < checks);
+    drop(cold);
+    std::fs::remove_dir_all(directory).expect("cleanup");
+}
