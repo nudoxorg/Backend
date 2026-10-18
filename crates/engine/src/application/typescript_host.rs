@@ -1905,10 +1905,20 @@ impl TypeScriptProjectWitness {
         })
     }
 
+    #[cfg(test)]
     fn capture_native(
         project_root: &Path,
         home_root: Option<&Path>,
     ) -> Result<Self, TypeScriptProjectHostError> {
+        Self::capture_native_controlled(project_root, home_root, &mut || Ok(()))
+    }
+
+    fn capture_native_controlled(
+        project_root: &Path,
+        home_root: Option<&Path>,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<Self, TypeScriptProjectHostError> {
+        control()?;
         let project_root = canonical_directory(project_root)?;
         let workspace = discover_workspace_boundary(&project_root, home_root)?;
         let workspace_root = workspace.as_ref().map_or_else(
@@ -1917,15 +1927,17 @@ impl TypeScriptProjectWitness {
         );
         // Native TSZ resolves dependencies, including hoisted node_modules, within this
         // captured workspace. No TypeScript compiler package is selected or executed.
+        control()?;
         let module_root = workspace_root.clone();
         let (selected_build_config_paths, angular_snapshot) =
-            angular_build_config_paths(&workspace_root, &module_root)?;
-        let config_candidates = collect_project_configs_inner(
+            angular_build_config_paths_controlled(&workspace_root, &module_root, control)?;
+        let config_candidates = collect_project_configs_inner_controlled(
             &project_root,
             &workspace_root,
             &module_root,
             &selected_build_config_paths,
             false,
+            control,
         )?;
         let mut files = config_candidates
             .iter()
@@ -1944,6 +1956,7 @@ impl TypeScriptProjectWitness {
         hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
         hash.update(&witness_fingerprint(&files));
         let fingerprint = *hash.finalize().as_bytes();
+        control()?;
         Ok(Self {
             authority: TypeScriptWitnessAuthority::Native,
             project_root: project_root.into_boxed_path(),
@@ -2077,9 +2090,11 @@ impl TypeScriptProjectWitness {
         }
 
         let current = match &self.authority {
-            TypeScriptWitnessAuthority::Native => {
-                Self::capture_native(&self.project_root, self.home_root.as_deref())?
-            }
+            TypeScriptWitnessAuthority::Native => Self::capture_native_controlled(
+                &self.project_root,
+                self.home_root.as_deref(),
+                control,
+            )?,
             TypeScriptWitnessAuthority::CompilerApi(selected) => {
                 let current_project = match find_project_typescript_with_home(
                     &self.project_root,
@@ -3042,11 +3057,30 @@ fn collect_project_configs_inner(
     selected_build_configs: &[PathBuf],
     follow_extends: bool,
 ) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    collect_project_configs_inner_controlled(
+        project_root,
+        workspace_root,
+        module_root,
+        selected_build_configs,
+        follow_extends,
+        &mut || Ok(()),
+    )
+}
+
+fn collect_project_configs_inner_controlled(
+    project_root: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+    selected_build_configs: &[PathBuf],
+    follow_extends: bool,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    control()?;
     let project_root = canonical_directory(project_root)?;
     let workspace_root = canonical_directory(workspace_root)?;
     let module_root = canonical_directory(module_root)?;
     let mut paths = Vec::new();
-    collect_tsconfig_paths(&workspace_root, &mut paths, 0)?;
+    collect_tsconfig_paths_controlled(&workspace_root, &mut paths, 0, control)?;
     paths.extend(selected_build_configs.iter().cloned());
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -3062,6 +3096,7 @@ fn collect_project_configs_inner(
 
     let mut candidate_paths = std::collections::BTreeSet::new();
     for path in &paths {
+        control()?;
         candidate_paths.insert(canonical_regular_config(
             path,
             &workspace_root,
@@ -3070,6 +3105,7 @@ fn collect_project_configs_inner(
     }
     let mut selected_paths = std::collections::BTreeSet::new();
     for path in selected_build_configs {
+        control()?;
         selected_paths.insert(canonical_regular_config(
             path,
             &workspace_root,
@@ -3081,6 +3117,7 @@ fn collect_project_configs_inner(
     let mut captured = std::collections::BTreeMap::<PathBuf, TypeScriptConfigInput>::new();
     let mut total_bytes = 0_u64;
     for path in &candidate_paths {
+        control()?;
         capture_project_config(
             path,
             &candidate_paths,
@@ -3102,6 +3139,7 @@ fn collect_project_configs_inner(
         .map(|path| (path, TypeScriptConfigDependencyAuthority::Program))
         .collect::<Vec<_>>();
     while let Some((path, authority)) = pending.pop() {
+        control()?;
         let canonical = canonical_regular_config(&path, &workspace_root, &module_root)?;
         capture_project_config(
             &canonical,
@@ -3118,25 +3156,27 @@ fn collect_project_configs_inner(
         }
         let value = parse_typescript_config(&canonical, &config.bytes)?;
         let extends = if follow_extends {
-            config_paths_from_field(
+            config_paths_from_field_controlled(
                 &value,
                 &canonical,
                 &project_root,
                 &workspace_root,
                 &module_root,
                 ConfigDependencyKind::Extends,
+                control,
             )?
         } else {
             Vec::new()
         };
         let references = if authority == TypeScriptConfigDependencyAuthority::Program {
-            config_paths_from_field(
+            config_paths_from_field_controlled(
                 &value,
                 &canonical,
                 &project_root,
                 &workspace_root,
                 &module_root,
                 ConfigDependencyKind::References,
+                control,
             )?
         } else {
             Vec::new()
@@ -3165,7 +3205,9 @@ fn collect_project_configs_inner(
             .collect::<Vec<_>>()
             .into_boxed_slice();
     }
+    control()?;
     validate_config_graph_acyclic(&captured)?;
+    control()?;
     Ok(captured.into_values().collect())
 }
 
@@ -3397,6 +3439,15 @@ fn angular_build_config_paths(
     workspace_root: &Path,
     module_root: &Path,
 ) -> Result<(Vec<PathBuf>, Option<FileSnapshot>), TypeScriptProjectHostError> {
+    angular_build_config_paths_controlled(workspace_root, module_root, &mut || Ok(()))
+}
+
+fn angular_build_config_paths_controlled(
+    workspace_root: &Path,
+    module_root: &Path,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<(Vec<PathBuf>, Option<FileSnapshot>), TypeScriptProjectHostError> {
+    control()?;
     let workspace_root = canonical_directory(workspace_root)?;
     let module_root = canonical_directory(module_root)?;
     let path = workspace_root.join("angular.json");
@@ -3431,18 +3482,21 @@ fn angular_build_config_paths(
     };
     let mut selected = Vec::new();
     for project in projects.values() {
+        control()?;
         for targets_key in ["architect", "targets"] {
+            control()?;
             if let Some(targets) = project
                 .get(targets_key)
                 .and_then(serde_json::Value::as_object)
                 && let Some(build) = targets.get("build")
             {
-                collect_angular_tsconfig(build, &mut selected, &path)?;
+                collect_angular_tsconfig_controlled(build, &mut selected, &path, control)?;
             }
         }
     }
     let mut resolved = Vec::new();
     for raw in selected {
+        control()?;
         let candidate = workspace_root.join(raw);
         resolved.push(resolve_relative_config(
             &candidate,
@@ -3452,14 +3506,17 @@ fn angular_build_config_paths(
     }
     resolved.sort_unstable();
     resolved.dedup();
+    control()?;
     Ok((resolved, Some(snapshot)))
 }
 
-fn collect_angular_tsconfig(
+fn collect_angular_tsconfig_controlled(
     target: &serde_json::Value,
     output: &mut Vec<String>,
     workspace: &Path,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    control()?;
     if let Some(options) = target.get("options") {
         if !options.is_object() {
             return Err(TypeScriptProjectHostError::ConfigInvalid {
@@ -3483,6 +3540,7 @@ fn collect_angular_tsconfig(
         .and_then(serde_json::Value::as_object)
     {
         for configuration in configurations.values() {
+            control()?;
             if let Some(value) = configuration.get("tsConfig") {
                 let value =
                     value
@@ -3498,11 +3556,13 @@ fn collect_angular_tsconfig(
     Ok(())
 }
 
-fn collect_tsconfig_paths(
+fn collect_tsconfig_paths_controlled(
     directory: &Path,
     output: &mut Vec<PathBuf>,
     depth: usize,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    control()?;
     if depth > MAX_PROJECT_ANCESTORS * 2 {
         return Err(TypeScriptProjectHostError::ConfigDirectoryDepth {
             directory: directory.to_path_buf().into_boxed_path(),
@@ -3514,6 +3574,7 @@ fn collect_tsconfig_paths(
             source,
         })?
     {
+        control()?;
         let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: directory.to_path_buf().into_boxed_path(),
             source,
@@ -3539,7 +3600,7 @@ fn collect_tsconfig_paths(
             continue;
         }
         if metadata.is_dir() {
-            collect_tsconfig_paths(&path, output, depth + 1)?;
+            collect_tsconfig_paths_controlled(&path, output, depth + 1, control)?;
         } else if metadata.is_file() {
             let file_name = name.to_string_lossy();
             if file_name == "tsconfig.json"
@@ -3555,6 +3616,7 @@ fn collect_tsconfig_paths(
             }
         }
     }
+    control()?;
     Ok(())
 }
 
@@ -3725,6 +3787,7 @@ fn strip_jsonc(text: &str) -> Option<String> {
     String::from_utf8(compact).ok()
 }
 
+#[cfg(test)]
 fn config_paths_from_field(
     value: &serde_json::Value,
     source: &Path,
@@ -3733,6 +3796,27 @@ fn config_paths_from_field(
     module_root: &Path,
     kind: ConfigDependencyKind,
 ) -> Result<Vec<PathBuf>, TypeScriptProjectHostError> {
+    config_paths_from_field_controlled(
+        value,
+        source,
+        project_root,
+        workspace_root,
+        module_root,
+        kind,
+        &mut || Ok(()),
+    )
+}
+
+fn config_paths_from_field_controlled(
+    value: &serde_json::Value,
+    source: &Path,
+    project_root: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+    kind: ConfigDependencyKind,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<Vec<PathBuf>, TypeScriptProjectHostError> {
+    control()?;
     let field = match kind {
         ConfigDependencyKind::Extends => "extends",
         ConfigDependencyKind::References => "references",
@@ -3751,6 +3835,7 @@ fn config_paths_from_field(
             entries
                 .iter()
                 .map(|entry| {
+                    control()?;
                     entry
                         .get("path")
                         .and_then(serde_json::Value::as_str)
@@ -3766,6 +3851,7 @@ fn config_paths_from_field(
             serde_json::Value::Array(values) => values
                 .iter()
                 .map(|entry| {
+                    control()?;
                     entry
                         .as_str()
                         .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
@@ -3784,6 +3870,7 @@ fn config_paths_from_field(
     };
     let mut resolved = Vec::new();
     for raw in strings {
+        control()?;
         if kind == ConfigDependencyKind::References
             || raw.starts_with('.')
             || Path::new(raw).is_absolute()
@@ -3806,6 +3893,7 @@ fn config_paths_from_field(
             resolved.push(config);
         }
     }
+    control()?;
     Ok(resolved)
 }
 
@@ -4155,10 +4243,20 @@ impl TypeScriptProjectHost {
     /// `Ok(None)` means no project-local installation exists, allowing the caller to preserve an
     /// already configured host-wide checker. Every present-but-invalid installation is a typed
     /// refusal and must not silently fall back to another project's or the host's compiler.
+    #[cfg(test)]
     pub(crate) fn admit(
         &self,
         package_root: &Path,
     ) -> Result<Option<AdmittedTypeScriptProject>, TypeScriptProjectHostError> {
+        self.admit_controlled(package_root, &mut || Ok(()))
+    }
+
+    pub(crate) fn admit_controlled(
+        &self,
+        package_root: &Path,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<Option<AdmittedTypeScriptProject>, TypeScriptProjectHostError> {
+        control()?;
         if !package_root.is_absolute() {
             return Err(TypeScriptProjectHostError::RelativePackageRoot {
                 package_root: package_root.to_path_buf().into_boxed_path(),
@@ -4182,9 +4280,12 @@ impl TypeScriptProjectHost {
             })
             .transpose()?;
         if matches!(self.authority, TypeScriptProjectHostAuthority::Native) {
-            let witness =
-                TypeScriptProjectWitness::capture_native(&project_root, home_root.as_deref())?;
-            witness.validate_current()?;
+            let witness = TypeScriptProjectWitness::capture_native_controlled(
+                &project_root,
+                home_root.as_deref(),
+                control,
+            )?;
+            let _ = witness.validated_controlled(control)?;
             return Ok(Some(AdmittedTypeScriptProject::Native {
                 fingerprint: witness.fingerprint,
                 witness: std::sync::Arc::new(witness),
@@ -5527,6 +5628,353 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn native_admission_and_retained_config_replay_observe_cancellation_inside_discovery() {
+        use std::sync::atomic::AtomicBool;
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"include":["src/**/*.ts"]}"#,
+        )
+        .unwrap();
+        for directory in 0..8 {
+            let path = fixture.0.join(format!("src/feature-{directory}"));
+            fs::create_dir_all(&path).unwrap();
+            for file in 0..4 {
+                fs::write(
+                    path.join(format!("file-{file}.ts")),
+                    "export const value = 1;",
+                )
+                .unwrap();
+            }
+        }
+        // Existing discovery exclusions must remain exclusions, including an
+        // unrelated malformed package config. No Node or compiler is invoked.
+        fs::create_dir_all(fixture.0.join("node_modules/irrelevant")).unwrap();
+        fs::write(
+            fixture.0.join("node_modules/irrelevant/tsconfig.json"),
+            "not JSON",
+        )
+        .unwrap();
+        let host = TypeScriptProjectHost::direct(None, Fixture::limits());
+        let baseline = host.admit(&fixture.0).unwrap().unwrap();
+        let mut full_steps = 0usize;
+        let controlled = host
+            .admit_controlled(&fixture.0, &mut || {
+                full_steps += 1;
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(controlled.fingerprint(), baseline.fingerprint());
+        assert!(
+            full_steps > 32,
+            "actual native discovery visits the nested filesystem frontier"
+        );
+        for stop_at in [full_steps / 4, full_steps * 3 / 4] {
+            let cancelled = AtomicBool::new(false);
+            let mut steps = 0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let result = host.admit_controlled(&fixture.0, &mut || {
+                steps += 1;
+                if steps == stop_at {
+                    cancelled.store(true, Ordering::Release);
+                }
+                super::super::typescript_program::check_admission_control(deadline, &cancelled)
+            });
+            assert!(matches!(
+                result,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ));
+            assert_eq!(
+                steps, stop_at,
+                "no subsequent filesystem callback after cancellation"
+            );
+        }
+        let witness = baseline.witness();
+        let mut replay_steps = 0;
+        witness
+            .validated_controlled(&mut || {
+                replay_steps += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            replay_steps > 32,
+            "retained native proof recaptures the same actual config frontier"
+        );
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let stop_at = replay_steps / 2;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let result = witness.validated_controlled(&mut || {
+            steps += 1;
+            if steps == stop_at {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(matches!(
+            result,
+            Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+        ));
+        assert_eq!(steps, stop_at);
+        witness
+            .validate_current()
+            .expect("cancellation cannot mutate the retained source proof");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"include":["different/**/*.ts"]}"#,
+        )
+        .unwrap();
+        assert!(
+            witness.validated_controlled(&mut || Ok(())).is_err(),
+            "controlled discovery still refuses changed configuration bytes"
+        );
+    }
+
+    #[test]
+    fn native_config_reference_and_angular_resolution_cancel_before_later_missing_paths() {
+        use std::sync::atomic::AtomicBool;
+        let fixture = Fixture::new();
+        let mut paths = Vec::new();
+        for i in 0..8 {
+            let relative = format!("configs/config-{i}.json");
+            let path = fixture.0.join(&relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "{}").unwrap();
+            paths.push(relative);
+        }
+        let source = fixture.0.join("tsconfig.json");
+        let value = serde_json::json!({"references":paths.iter().map(|path|
+            serde_json::json!({"path":path})).collect::<Vec<_>>()});
+        let expected = paths
+            .iter()
+            .map(|path| fixture.0.join(path).canonicalize().unwrap())
+            .collect::<Vec<_>>();
+        let baseline = config_paths_from_field(
+            &value,
+            &source,
+            &fixture.0,
+            &fixture.0,
+            &fixture.0,
+            ConfigDependencyKind::References,
+        )
+        .unwrap();
+        assert_eq!(baseline, expected, "reference order is retained");
+        let mut healthy_steps = 0;
+        let healthy = config_paths_from_field_controlled(
+            &value,
+            &source,
+            &fixture.0,
+            &fixture.0,
+            &fixture.0,
+            ConfigDependencyKind::References,
+            &mut || {
+                healthy_steps += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(healthy, expected);
+        let mut invalid = value.clone();
+        invalid["references"][7] = serde_json::json!(7);
+        assert!(matches!(
+            config_paths_from_field(
+                &invalid,
+                &source,
+                &fixture.0,
+                &fixture.0,
+                &fixture.0,
+                ConfigDependencyKind::References
+            ),
+            Err(TypeScriptProjectHostError::ConfigInvalid { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stopped = config_paths_from_field_controlled(
+            &invalid,
+            &source,
+            &fixture.0,
+            &fixture.0,
+            &fixture.0,
+            ConfigDependencyKind::References,
+            &mut || {
+                steps += 1;
+                if steps == paths.len() {
+                    cancelled.store(true, Ordering::Release);
+                }
+                super::super::typescript_program::check_admission_control(deadline, &cancelled)
+            },
+        );
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "each reference is controlled before a later malformed entry is validated"
+        );
+        assert_eq!(steps, paths.len());
+        let mut bad = value.clone();
+        bad["references"][7]["path"] = serde_json::json!("does-not-exist.json");
+        assert!(matches!(
+            config_paths_from_field(
+                &bad,
+                &source,
+                &fixture.0,
+                &fixture.0,
+                &fixture.0,
+                ConfigDependencyKind::References
+            ),
+            Err(TypeScriptProjectHostError::ConfigMissing { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let stop_at = healthy_steps - 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stopped = config_paths_from_field_controlled(
+            &bad,
+            &source,
+            &fixture.0,
+            &fixture.0,
+            &fixture.0,
+            ConfigDependencyKind::References,
+            &mut || {
+                steps += 1;
+                if steps == stop_at {
+                    cancelled.store(true, Ordering::Release);
+                }
+                super::super::typescript_program::check_admission_control(deadline, &cancelled)
+            },
+        );
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "cancellation at the last resolution boundary wins over the later missing path"
+        );
+        assert_eq!(
+            steps, stop_at,
+            "no subsequent reference resolution is admitted"
+        );
+
+        let configurations = paths
+            .iter()
+            .enumerate()
+            .map(|(i, path)| (format!("config-{i}"), serde_json::json!({"tsConfig":path})))
+            .collect::<serde_json::Map<_, _>>();
+        let angular = serde_json::json!({"projects":{"app":{"architect":{
+            "build":{"configurations":configurations}}}}});
+        fs::write(
+            fixture.0.join("angular.json"),
+            serde_json::to_vec(&angular).unwrap(),
+        )
+        .unwrap();
+        let baseline = angular_build_config_paths(&fixture.0, &fixture.0)
+            .unwrap()
+            .0;
+        let mut healthy_steps = 0;
+        let controlled = angular_build_config_paths_controlled(&fixture.0, &fixture.0, &mut || {
+            healthy_steps += 1;
+            Ok(())
+        })
+        .unwrap()
+        .0;
+        assert_eq!(controlled, baseline);
+        assert_eq!(
+            controlled, expected,
+            "Angular path sorting and selection are unchanged"
+        );
+        let mut invalid = angular.clone();
+        invalid["projects"]["app"]["architect"]["build"]["configurations"]["config-7"]["tsConfig"] =
+            serde_json::json!(7);
+        fs::write(
+            fixture.0.join("angular.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            angular_build_config_paths(&fixture.0, &fixture.0),
+            Err(TypeScriptProjectHostError::ConfigInvalid { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stopped = angular_build_config_paths_controlled(&fixture.0, &fixture.0, &mut || {
+            steps += 1;
+            if steps == paths.len() {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "Angular configurations are controlled before a later malformed tsConfig"
+        );
+        assert_eq!(steps, paths.len());
+        let mut bad = angular.clone();
+        bad["projects"]["app"]["architect"]["build"]["configurations"]["config-7"]["tsConfig"] =
+            serde_json::json!("does-not-exist.json");
+        fs::write(
+            fixture.0.join("angular.json"),
+            serde_json::to_vec(&bad).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            angular_build_config_paths(&fixture.0, &fixture.0),
+            Err(TypeScriptProjectHostError::ConfigMissing { .. })
+        ));
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let stop_at = healthy_steps - 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stopped = angular_build_config_paths_controlled(&fixture.0, &fixture.0, &mut || {
+            steps += 1;
+            if steps == stop_at {
+                cancelled.store(true, Ordering::Release);
+            }
+            super::super::typescript_program::check_admission_control(deadline, &cancelled)
+        });
+        assert!(
+            matches!(
+                stopped,
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "cancellation interrupts Angular selected-path resolutions before the missing path"
+        );
+        assert_eq!(steps, stop_at);
+    }
+
+    #[test]
+    fn native_admission_uses_original_deadline_and_cancellation_precedence() {
+        use std::sync::atomic::AtomicBool;
+        let fixture = Fixture::new();
+        let host = TypeScriptProjectHost::direct(None, Fixture::limits());
+        let deadline = std::time::Instant::now();
+        for cancelled in [false, true] {
+            let flag = AtomicBool::new(cancelled);
+            let result = host.admit_controlled(&fixture.0, &mut || {
+                super::super::typescript_program::check_admission_control(deadline, &flag)
+            });
+            assert!(if cancelled {
+                matches!(
+                    result,
+                    Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+                )
+            } else {
+                matches!(
+                    result,
+                    Err(TypeScriptProjectHostError::CompilerProgramDeadline)
+                )
+            });
         }
     }
 
