@@ -73,6 +73,10 @@ impl Session {
             .flatten()
             .unwrap_or(Duration::from_secs(5));
         let deadline = started + initial;
+        #[cfg(target_os = "linux")]
+        let mut intended_image: Option<
+            backend_replication::local_peer::DefaultLocaldImage,
+        > = None;
         for attempt in 0..2 {
             if let Some(context) = context {
                 context.check()?;
@@ -101,6 +105,13 @@ impl Session {
             #[cfg(not(target_os = "linux"))]
             let probe = true;
             if !probe {
+                #[cfg(target_os = "linux")]
+                if intended_image.is_some() {
+                    return Err(update_error(
+                        backend_library::DTO_VERSION,
+                        "the replacement owner image could not be proven; no command was submitted",
+                    ));
+                }
                 return Self::finish_owner_connection(paths, transport, context, deadline);
             }
             let remaining = probe_budget(deadline, context)?;
@@ -112,14 +123,54 @@ impl Session {
             )?;
             probe_budget(deadline, context)?;
             let found = version(&bytes)?;
-            if found == backend_library::DTO_VERSION {
+            let same_version = found == backend_library::DTO_VERSION;
+            if same_version {
                 admit_reply(&request, transport.decode(&bytes)?)?;
+                #[cfg(target_os = "linux")]
+                {
+                    let peer = transport.peer.as_ref().ok_or_else(|| {
+                        update_error(found, "the local owner image could not be authenticated; no command was submitted")
+                    })?;
+                    if intended_image.is_none() {
+                        let candidate = backend_runtime::installed_default_locald_executable()
+                            .map_err(|e| update_error(found, format!("the installed default owner image is unavailable: {e}; no command was submitted")))?;
+                        let Some(candidate) = candidate else {
+                            // BACKEND_LOCALD_BIN is an intentional helper pin, not
+                            // authority to replace its owner with this install's default.
+                            return Self::finish_owner_connection(
+                                paths, transport, context, deadline,
+                            );
+                        };
+                        intended_image = Some(peer.observe_default_locald_image(&candidate)
+                            .map_err(|e| update_error(found, format!("the installed default owner image could not be proven: {e}; no command was submitted")))?);
+                    }
+                    let Some(image) = intended_image.as_ref() else {
+                        return Err(update_error(
+                            found,
+                            "the intended owner image was not retained; no command was submitted",
+                        ));
+                    };
+                    let matches = image.matches_peer(peer, &transport.stream)
+                        .map_err(|e| update_error(found, format!("the running/default owner image comparison could not be proven: {e}; no command was submitted")))?;
+                    probe_budget(deadline, context)?;
+                    if matches {
+                        return Self::finish_owner_connection(paths, transport, context, deadline);
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
                 return Self::finish_owner_connection(paths, transport, context, deadline);
             }
-            if passive || attempt != 0 || (found, backend_library::DTO_VERSION) != (35, 36) {
+            if passive
+                || attempt != 0
+                || (!same_version && (found, backend_library::DTO_VERSION) != (35, 36))
+            {
                 return Err(update_error(
                     found,
-                    "restart the previous NuDox owner, then retry the original command; no command was submitted",
+                    if same_version {
+                        "the running owner differs from the installed default image; restart the previous owner, then retry; no command was submitted"
+                    } else {
+                        "restart the previous NuDox owner, then retry the original command; no command was submitted"
+                    },
                 ));
             }
             #[cfg(target_os = "linux")]
@@ -130,25 +181,49 @@ impl Session {
                         "the local owner could not be authenticated; restart it manually",
                     )
                 })?;
-                let retired = peer.retire_automatic_owner(
-                    &transport.stream,
-                    paths.project(),
-                    paths.data(),
-                    paths.authority_secret(),
-                    deadline.min(Instant::now() + Duration::from_secs(15)),
-                    || context.is_none_or(|c| c.check().is_ok()),
-                );
+                let retirement_deadline = deadline.min(Instant::now() + Duration::from_secs(15));
+                let retired = match intended_image.as_ref() {
+                    Some(image) => peer.retire_automatic_owner_for_image(
+                        &transport.stream,
+                        (paths.project(), paths.data(), paths.authority_secret()),
+                        image,
+                        retirement_deadline,
+                        || context.is_none_or(|c| c.check().is_ok()) && image.is_current(),
+                    ),
+                    None => peer.retire_automatic_owner(
+                        &transport.stream,
+                        paths.project(),
+                        paths.data(),
+                        paths.authority_secret(),
+                        retirement_deadline,
+                        || context.is_none_or(|c| c.check().is_ok()),
+                    ),
+                };
                 if let Some(context) = context {
                     context.check()?;
                 }
                 retired.map_err(|e| update_error(found, e.to_string()))?;
+                if intended_image
+                    .as_ref()
+                    .is_some_and(|image| !image.is_current())
+                {
+                    return Err(update_error(
+                        found,
+                        "the intended default owner image changed during handoff; no command was submitted",
+                    ));
+                }
                 drop(transport);
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 match backend_runtime::start_locald_cancellable(
                     paths,
                     remaining,
                     |_| {},
-                    || context.is_none_or(|c| c.check().is_ok()),
+                    || {
+                        context.is_none_or(|c| c.check().is_ok())
+                            && intended_image
+                                .as_ref()
+                                .is_none_or(|image| image.is_current())
+                    },
                 )
                 .map_err(|e| ClientError::Startup(e.into()))?
                 {
@@ -184,6 +259,20 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owner_build_update_keeps_wire_upgrade_diagnostics_distinct() {
+        let build = update_error(
+            backend_library::DTO_VERSION,
+            "installed default image changed",
+        )
+        .to_string();
+        assert!(build.contains("owner build update"));
+        assert!(!build.contains("version 36 → 36"));
+        let wire = update_error(35, "old protocol").to_string();
+        assert!(wire.contains("version 35 → 36"));
+        assert!(!wire.contains("build update"));
+    }
+
     #[test]
     fn version_probe_requires_exact_correlation_and_rejects_duplicate_fields() {
         let good = format!(

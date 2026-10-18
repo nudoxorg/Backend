@@ -1036,6 +1036,20 @@ const fn validate_endpoint_length(_endpoint: &Path) -> Result<(), RuntimeError> 
     Ok(())
 }
 
+/// Observes only the current installed default companion for owner image convergence.
+/// Explicit helper selections remain pins and never authorize default-image retirement.
+/// This function performs no state creation, endpoint access or process launch.
+///
+/// # Errors
+/// Returns the existing executable-discovery error when an unpinned default is absent.
+pub fn installed_default_locald_executable() -> Result<Option<PathBuf>, RuntimeError> {
+    if std::env::var_os(LOCALD_BIN_ENV).is_some() {
+        return Ok(None);
+    }
+    let current = std::env::current_exe().map_err(RuntimeError::Io)?;
+    locald_sibling(&current).map(Some)
+}
+
 fn locald_executable() -> Result<PathBuf, RuntimeError> {
     if let Some(path) = std::env::var_os(LOCALD_BIN_ENV).map(PathBuf::from) {
         if path.is_file() {

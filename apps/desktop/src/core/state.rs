@@ -76,12 +76,20 @@ impl ErrorValue {
         }
     }
 
-    /// Preserves the observed version mismatch and required manual action.
+    /// Preserves the observed wire or installed-image mismatch and required action.
     #[must_use]
     pub fn owner_update(found: u16, supported: u16, detail: &str) -> Self {
         Self::new(
             FaultCode::OwnerUpdate,
-            format!("NuDox owner update (version {found} → {supported}). Restart the previous NuDox owner, then retry. No command was submitted. {detail}"),
+            if found == supported {
+                format!(
+                    "NuDox owner build update. Restart the previous NuDox owner, then retry. No command was submitted. {detail}"
+                )
+            } else {
+                format!(
+                    "NuDox owner update (version {found} → {supported}). Restart the previous NuDox owner, then retry. No command was submitted. {detail}"
+                )
+            },
         )
     }
 
@@ -325,6 +333,19 @@ mod tests {
             backend_library::view_state_root(&[("state".to_owned(), "one".to_owned())]),
             1,
         )
+    }
+
+    #[test]
+    fn owner_image_update_stays_typed_and_does_not_claim_same_version_wire_change() {
+        let build = ErrorValue::owner_update(36, 36, "installed owner image changed");
+        assert_eq!(build.code(), FaultCode::OwnerUpdate);
+        assert!(build.message().contains("owner build update"));
+        assert!(!build.message().contains("version 36 → 36"));
+        let wire = ErrorValue::owner_update(35, 36, "old wire owner");
+        assert!(wire.message().contains("version 35 → 36"));
+        assert!(!wire.message().contains("build update"));
+        let bounded = ErrorValue::owner_update(36, 36, &"\n証明".repeat(1000));
+        assert!(bounded.message().len() <= 512);
     }
 
     #[test]
