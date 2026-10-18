@@ -548,16 +548,16 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
 }
 
 #[test]
-fn absent_outline_repair_uses_the_real_command_on_each_surface() {
+fn absent_outline_advice_inspects_the_shelf_without_guessing_an_index_target() {
     let fault = Fault::unpublished_outline("/abs/source folder");
     assert_eq!(
         fault.affordance().shell().as_deref(),
-        Some("nudox add '/abs/source folder'")
+        Some("nudox packages")
     );
     assert_eq!(
         fault.affordance().tool_call(),
         Some(serde_json::json!({
-            "name": "backend.index", "arguments": {"path": "/abs/source folder"}
+            "name": "backend.packages", "arguments": {}
         }))
     );
     assert!(fault.cause().sentence().contains("no outline is published"));
