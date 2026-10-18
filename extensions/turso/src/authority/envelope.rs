@@ -62,11 +62,14 @@ pub const COMPILER_PUBLICATION_METADATA_SCHEMA: SchemaIdentity =
 pub const COMPILER_SEMANTIC_IMAGE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc003, 1);
 
 /// Schema of witness-bearing metadata. Legacy metadata remains byte-identical v4.
-pub const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 5);
+pub(super) const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc002, 5);
 /// Metadata with an authenticated compiler-observed coverage member.
-pub const COMPILER_COVERAGE_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 6);
+pub(super) const COMPILER_COVERAGE_METADATA_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc002, 6);
 /// Schema of the canonical immutable coverage catalog.
-pub const COMPILER_SOURCE_COVERAGE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00a, 1);
+pub(super) const COMPILER_SOURCE_COVERAGE_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc00a, 1);
 
 /// A bounded pointer to compiler-observed coverage, stored once in the selected closure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,11 +114,12 @@ impl CompilerSourceCoverageMember {
 }
 
 /// Exact schema of one full native program source-membership object.
-pub const NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA: SchemaIdentity =
+pub(super) const NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc009, 1);
 
 /// Exact schema of a reference forest containing independently verified leaves.
-pub const NATIVE_PROGRAM_FOREST_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc009, 2);
+pub(super) const NATIVE_PROGRAM_FOREST_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc009, 2);
 
 /// A small immutable CAS reference, never a repeated source list in metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
