@@ -56,7 +56,7 @@ use backend_semantic::ir::{
     SemanticTypedPlaneVerificationTierV2,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
-use backend_semantic::vocabulary::{AuthorityDiagnosticClass, NativeTool};
+use backend_semantic::vocabulary::{AuthorityDiagnosticClass, LanguageProfile, NativeTool};
 use backend_store::FileStore;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
