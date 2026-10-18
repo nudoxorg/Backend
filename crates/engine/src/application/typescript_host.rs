@@ -1318,15 +1318,17 @@ impl TypeScriptResolverCapability<'_> {
     }
 
     fn observe_directory(&mut self, path: &Path) -> Result<(), TypeScriptProjectHostError> {
-        let snapshot = capture_directory_snapshot(path, self.witness)?;
-        if let Some(previous) = self.observations.directories.get(path) {
-            if previous != &snapshot {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: path.to_path_buf().into_boxed_path(),
-                });
-            }
+        // This capability serves one captured program, just as loaded_sources
+        // serves retained source bytes. Repeated module probes must reuse its
+        // exact first directory view rather than enumerating every sibling
+        // again for each missing extension. seal_with_host freshly replays
+        // every captured directory and negative edge before native admission;
+        // later publication also revalidates that same sealed witness.
+        // Callers still perform their current lexical/realpath admission first.
+        if self.observations.directories.contains_key(path) {
             return Ok(());
         }
+        let snapshot = capture_directory_snapshot(path, self.witness)?;
         if self.observations.directories.len() >= MAX_RESOLVER_DIRECTORIES {
             return Err(TypeScriptProjectHostError::ResolverObservationLimit {
                 observed: self.observations.directories.len().saturating_add(1),
@@ -7252,6 +7254,164 @@ printf 'Version 5.9.3\n'
         );
     }
 
+    #[test]
+    fn native_directory_capture_reuses_one_view_for_repeated_resolution_probes() {
+        let fixture = Fixture::new();
+        let directory = fixture.0.join("modules");
+        fs::create_dir(&directory).unwrap();
+        for index in 0..32 {
+            fs::write(directory.join(format!("sibling-{index}.ts")), "export {};").unwrap();
+        }
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.set(0));
+        for index in 0..24 {
+            assert!(
+                capability
+                    .try_load_source(&directory.join(format!("missing-{index}.ts")))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(capability.directory_exists(&directory).unwrap());
+            assert_eq!(
+                capability.observe_program_directory(&directory).unwrap(),
+                Some(directory.clone())
+            );
+            assert_eq!(
+                capability
+                    .observed_program_directory_entries(&directory)
+                    .unwrap()
+                    .len(),
+                32
+            );
+        }
+        assert_eq!(
+            DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.replace(0)),
+            1,
+            "24 distinct misses and48 repeated positive directory probes share one captured view"
+        );
+        assert_eq!(capability.observations.missing_paths.len(), 24);
+        let digest = capability.resolver_witness().unwrap();
+        let sealed = capability.seal().unwrap();
+        assert_eq!(
+            DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.replace(0)),
+            1,
+            "the complete current directory is still replayed at the admission seal"
+        );
+        assert_eq!(*sealed.digest(), digest, "same exact observation recipe");
+        sealed.validate_current(&witness).unwrap();
+    }
+
+    #[test]
+    fn native_cached_directory_rejects_new_child_before_admission_seal() {
+        let fixture = Fixture::new();
+        let directory = fixture.0.join("modules");
+        fs::create_dir(&directory).unwrap();
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        capability.observe_program_directory(&directory).unwrap();
+        fs::write(directory.join("new.ts"), "export const newValue = 1;").unwrap();
+        capability.observe_program_directory(&directory).unwrap();
+        assert!(
+            capability
+                .observed_program_directory_entries(&directory)
+                .unwrap()
+                .is_empty(),
+            "one program continues to read its immutable first capture"
+        );
+        assert!(
+            matches!(
+                capability.seal(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a new child cannot cross the fresh native admission seal"
+        );
+    }
+
+    #[test]
+    fn native_cached_directory_rejects_materialized_negative_before_admission_seal() {
+        let fixture = Fixture::new();
+        let directory = fixture.0.join("modules");
+        fs::create_dir(&directory).unwrap();
+        let missing = directory.join("missing.ts");
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        assert!(capability.try_load_source(&missing).unwrap().is_none());
+        fs::write(&missing, "export const appeared = 1;").unwrap();
+        assert!(capability.directory_exists(&directory).unwrap());
+        assert!(
+            matches!(
+                capability.seal(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a formerly missing module must still refuse independently of the cached directory"
+        );
+    }
+
+    #[test]
+    fn native_cached_directory_keeps_current_alias_capability_check() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let directory = fixture.0.join("modules");
+        fs::create_dir(&directory).unwrap();
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        capability.observe_program_directory(&directory).unwrap();
+        fs::rename(&directory, fixture.0.join("original-modules")).unwrap();
+        symlink(&outside.0, &directory).unwrap();
+        assert!(
+            matches!(
+                capability.observe_program_directory(&directory),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "per-request current realpath admission precedes the captured-directory lookup"
+        );
+        assert!(capability.seal().is_err());
+    }
+
+    #[test]
+    fn native_cached_directory_rejects_atomic_child_symlink_replacement_at_seal() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let directory = fixture.0.join("modules");
+        fs::create_dir(&directory).unwrap();
+        let child = directory.join("value.ts");
+        fs::write(&child, "export const value = 1;").unwrap();
+        fs::write(outside.0.join("other.ts"), "export const other = 1;").unwrap();
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        capability.observe_program_directory(&directory).unwrap();
+        let replacement = directory.join("replacement");
+        symlink(outside.0.join("other.ts"), &replacement).unwrap();
+        fs::rename(&replacement, &child).unwrap();
+        capability.observe_program_directory(&directory).unwrap();
+        assert!(
+            matches!(
+                capability.try_load_source(&child),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "cached entries cannot grant an outside source after atomic replacement"
+        );
+        assert!(
+            capability.seal().is_err(),
+            "unchanged full child snapshots still detect replacement"
+        );
+    }
     #[test]
     fn resolver_capability_records_positive_negative_and_directory_witnesses() {
         let fixture = Fixture::new();
