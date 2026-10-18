@@ -858,6 +858,7 @@ impl Fault {
 
     /// Explains a typed absent outline without claiming that the package has
     /// never been indexed: an indexed package may contain no declarations.
+    /// Catalog absence does not establish that the supplied directory exists.
     #[must_use]
     pub fn unpublished_outline(path: &str) -> Self {
         Self::new(
@@ -867,8 +868,9 @@ impl Fault {
                 CauseSlug::Absent,
                 "no outline is published for this package at this revision",
             ),
-            Affordance::Reindex {
-                path: path.to_owned(),
+            Affordance::UseCommand {
+                name: "packages",
+                args: Box::new([]),
             },
         )
     }

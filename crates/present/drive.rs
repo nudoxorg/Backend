@@ -1409,37 +1409,46 @@ mod readiness_controls {
     }
 
     #[test]
-    fn an_actual_absent_outline_retains_not_found_and_an_exact_reindex_action() {
+    fn an_actual_absent_outline_keeps_catalog_absence_without_guessing_path_admission() {
         let library = Library::new();
-        let path = "/workspace/not-yet-published";
-        let query = OutlineQuery::new(package_key(path), library.revision_root());
-        let error = library
-            .execute(Command::Outline(query))
-            .expect_err("package is absent in the actual catalog");
-        let failure = CommandFailure::from(error);
-        assert_eq!(failure, CommandFailure::NotFound);
-        let fault = next_step(
-            Fault::from_client_error(
-                &ClientError::CommandFailed(failure),
-                Operand::Path(path.to_owned()),
-            ),
-            Probe::Outline(path),
-        );
-        assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
-        assert_eq!(fault.cause().slug(), crate::CauseSlug::Absent);
-        assert_eq!(fault.operand().render(), path);
-        assert_eq!(
-            fault.affordance().tool_call().expect("index action"),
-            serde_json::json!({"name":"backend.index", "arguments":{"path":path}})
-        );
-        assert!(fault.cause().sentence().contains("no outline is published"));
-        let page_error = library
-            .outline_page(
-                package_key(path),
-                PageRequest::new(library.revision_root(), QueryLimit::default()),
-            )
-            .expect_err("flat page has the same real absence");
-        assert_eq!(CommandFailure::from(page_error), CommandFailure::NotFound);
+        let existing_directory = std::env::temp_dir();
+        assert!(existing_directory.is_dir(), "positive directory control");
+        let existing_path = existing_directory.to_string_lossy();
+        // The presenter has only catalog absence for each spelling. Even the
+        // existing directory is not proof that indexing this operand is intended.
+        for path in ["/workspace/not-yet-published", "relative/missing", existing_path.as_ref()] {
+            let query = OutlineQuery::new(package_key(path), library.revision_root());
+            let error = library
+                .execute(Command::Outline(query))
+                .expect_err("package is absent in the actual catalog");
+            let failure = CommandFailure::from(error);
+            assert_eq!(failure, CommandFailure::NotFound);
+            let page_error = library
+                .outline_page(
+                    package_key(path),
+                    PageRequest::new(library.revision_root(), QueryLimit::default()),
+                )
+                .expect_err("flat page has the same real absence");
+            assert_eq!(CommandFailure::from(page_error), CommandFailure::NotFound);
+            for probe in [Probe::Outline(path), Probe::OutlinePage { path, limit: 200 }] {
+                let fault = next_step(
+                    Fault::from_client_error(
+                        &ClientError::CommandFailed(failure.clone()),
+                        Operand::Path(path.to_owned()),
+                    ),
+                    probe,
+                );
+                assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
+                assert_eq!(fault.cause().slug(), crate::CauseSlug::Absent);
+                assert_eq!(fault.operand().render(), path);
+                assert_eq!(
+                    fault.affordance().tool_call(),
+                    Some(serde_json::json!({"name":"backend.packages", "arguments":{}}))
+                );
+                assert_eq!(fault.affordance().shell().as_deref(), Some("nudox packages"));
+                assert!(fault.cause().sentence().contains("no outline is published"));
+            }
+        }
     }
 
     #[test]
