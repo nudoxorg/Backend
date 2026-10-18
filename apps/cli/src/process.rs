@@ -481,7 +481,7 @@ fn execute_plan_with_recovery(
         recovery.as_deref_mut(),
         plan.output.detail(),
         cli_context.as_ref(),
-        |answer| render::admit_graph_answer(answer, &plan.output),
+        |answer, cursor| render::admit_answer_with_cursor(answer, &plan.output, cursor),
     )?;
     if let Some(recovery) = recovery.as_deref() {
         recovery.detach(session).map_err(|error| {
@@ -611,7 +611,7 @@ pub fn answer_with_session(
         None,
         options.detail(),
         None,
-        |answer| render::admit_graph_answer(answer, options),
+        |answer, cursor| render::admit_answer_with_cursor(answer, options, cursor),
     )
 }
 
