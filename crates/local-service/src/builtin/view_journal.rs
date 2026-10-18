@@ -11,6 +11,7 @@ use backend_engine::{
     Boundary, CoverageCapability, Cursor, CursorEvent, Faults, Freshness, MAX_SUBSCRIPTION_EVENTS,
     ViewDto, ViewPersistence, ViewRoot, ViewSnapshot, WorkspaceRoot,
 };
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -21,11 +22,17 @@ const MAGIC: &[u8; 8] = b"BVIEWJ01";
 const VERSION: u8 = backend_library::JournalViewGrammarV3::CONTAINER_VERSION;
 const SNAPSHOT: u8 = 1;
 const EVENT: u8 = 2;
+// Local framing only: the decoded certificate/envelope grammar is unchanged.
+// Older readers refuse this kind rather than treating compressed data as JSON.
+const GZIP_SNAPSHOT: u8 = 3;
 const HEADER_BYTES: usize = 8 + 1 + 1 + 8 + 32;
 // A complete view snapshot is the durable recovery unit. The wire protocol
 // pages this same root into 4 MiB responses, while the private local journal
 // retains one bounded snapshot so restart never reparses the workspace.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+// Large real views can exceed the old JSON frame limit. Keep the disk frame
+// limit and bound expansion separately; no row or certificate is omitted.
+const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// How far recovery has got for the selected workspace root.
@@ -329,7 +336,7 @@ impl ViewJournal {
         view: &ViewRoot,
     ) -> Result<(), String> {
         let payload = encode_envelope(workspace_root, cursor, view, None)?;
-        if self.would_cross_file_bound(payload.len())? {
+        if payload.len() > MAX_RECORD_BYTES || self.would_cross_file_bound(payload.len())? {
             return self.replace_with_snapshot(&payload);
         }
         self.append(SNAPSHOT, &payload)?;
@@ -350,14 +357,21 @@ impl ViewJournal {
         // appending the event would make the recovered cursor start after the
         // snapshot and fail closed as an invalid chain.
         let snapshot = encode_envelope(workspace_root, cursor, view, None)?;
-        if self.tail_matches(SNAPSHOT, &snapshot)? {
+        let (snapshot_kind, snapshot_frame) = snapshot_frame(&snapshot)?;
+        if self.tail_matches(snapshot_kind, &snapshot_frame)? {
+            // A lost acknowledgement can follow rename but precede its
+            // directory sync. Exact bytes alone do not make that rename durable.
+            self.sync_parent_dir()?;
+            self.faults
+                .trip(Boundary::DirSync)
+                .map_err(|error| error.to_string())?;
             return Ok(());
         }
         // Compact before the append crosses the scan bound. A crash after a
         // successful append must leave a file that `scan_frames` can accept;
         // appending first would create a valid frame in an oversized file
         // that recovery rejects before it can compact.
-        if self.would_cross_file_bound(payload.len())? {
+        if payload.len() > MAX_RECORD_BYTES || self.would_cross_file_bound(payload.len())? {
             return self.replace_with_snapshot(&snapshot);
         }
         self.append(EVENT, &payload)?;
@@ -432,9 +446,7 @@ impl ViewJournal {
     }
 
     fn replace_with_snapshot(&self, payload: &[u8]) -> Result<(), String> {
-        if payload.len() > MAX_RECORD_BYTES {
-            return Err("view journal snapshot exceeds record bound".to_owned());
-        }
+        let (kind, payload) = snapshot_frame(payload)?;
         let frame_length = u64::try_from(HEADER_BYTES)
             .ok()
             .and_then(|header| {
@@ -451,7 +463,7 @@ impl ViewJournal {
         self.faults
             .trip(Boundary::TempCreate)
             .map_err(|error| error.to_string())?;
-        write_frame(&mut file, SNAPSHOT, payload)?;
+        write_frame(&mut file, kind, &payload)?;
         self.faults
             .trip(Boundary::TempWrite)
             .map_err(|error| error.to_string())?;
@@ -602,6 +614,16 @@ impl ViewJournal {
                 }
                 return Err("view journal checksum mismatch".to_owned());
             }
+            // Checksum the exact on-disk frame before bounded expansion. Feed
+            // the existing envelope/certificate admission the complete JSON.
+            let (kind, payload) = if kind == GZIP_SNAPSHOT {
+                (
+                    SNAPSHOT,
+                    decode_snapshot_frame(&payload, MAX_SNAPSHOT_BYTES)?,
+                )
+            } else {
+                (kind, payload)
+            };
             visit(kind, payload)?;
             offset = end;
         }
@@ -983,6 +1005,66 @@ fn apply_event(
         events.remove(0);
     }
     Ok(())
+}
+
+/// A bounded compressed frame, with the same checksum/atomic replacement as
+/// ordinary snapshots. Gzip's mtime defaults to zero, so exact retries retain
+/// deterministic tail identity.
+fn snapshot_frame(payload: &[u8]) -> Result<(u8, Cow<'_, [u8]>), String> {
+    if payload.len() > MAX_SNAPSHOT_BYTES {
+        return Err("view journal snapshot exceeds decoded bound".to_owned());
+    }
+    if payload.len() <= MAX_RECORD_BYTES {
+        return Ok((SNAPSHOT, Cow::Borrowed(payload)));
+    }
+    struct BoundedFrame(Vec<u8>);
+    impl Write for BoundedFrame {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self
+                .0
+                .len()
+                .checked_add(bytes.len())
+                .is_none_or(|size| size > MAX_RECORD_BYTES)
+            {
+                return Err(io::Error::other(
+                    "view journal compressed snapshot exceeds record bound",
+                ));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut encoder =
+        flate2::write::GzEncoder::new(BoundedFrame(Vec::new()), flate2::Compression::fast());
+    encoder.write_all(payload).map_err(io_error)?;
+    Ok((
+        GZIP_SNAPSHOT,
+        Cow::Owned(encoder.finish().map_err(io_error)?.0),
+    ))
+}
+
+fn decode_snapshot_frame(payload: &[u8], maximum: usize) -> Result<Vec<u8>, String> {
+    let mut decoder = flate2::bufread::GzDecoder::new(payload);
+    let limit = u64::try_from(maximum)
+        .ok()
+        .and_then(|size| size.checked_add(1))
+        .ok_or_else(|| "view journal decoded limit overflow".to_owned())?;
+    let mut decoded = Vec::new();
+    decoder
+        .by_ref()
+        .take(limit)
+        .read_to_end(&mut decoded)
+        .map_err(io_error)?;
+    if decoded.len() > maximum {
+        return Err("view journal snapshot exceeds decoded bound".to_owned());
+    }
+    if !decoder.get_ref().is_empty() {
+        return Err("view journal compressed snapshot has trailing data".to_owned());
+    }
+    Ok(decoded)
 }
 
 fn write_frame(file: &mut File, kind: u8, payload: &[u8]) -> Result<(), String> {
