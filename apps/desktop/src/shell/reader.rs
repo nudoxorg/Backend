@@ -1125,7 +1125,7 @@ impl Reader {
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
     }
 
-    pub(crate) fn request_native_return(&mut self, route: Route, visit: crate::navigation::presentation::VisitId, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
+    pub(super) fn request_native_return(&mut self, route: Route, visit: crate::navigation::presentation::VisitId, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
         if self.route == route && self.overlay.is_none() {
             if let Some(place) = self.places.last() {
                 let snapshot = self.links.snapshot(cx);
