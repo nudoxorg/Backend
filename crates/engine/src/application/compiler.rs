@@ -549,6 +549,8 @@ pub struct PackageSourceSet<'source> {
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
+    go_compile_deadline: Option<std::time::Instant>,
+    go_witness_deadline_phase: Option<&'static str>,
     python_environment:
         Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 }
@@ -621,6 +623,8 @@ impl<'source> PackageSourceSet<'source> {
             input_claim: None,
             embedding_provisioning_failure: None,
             go_authority_witness: None,
+            go_compile_deadline: None,
+            go_witness_deadline_phase: None,
             python_environment: None,
         })
     }
@@ -682,6 +686,16 @@ impl<'source> PackageSourceSet<'source> {
     #[must_use]
     pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
         self.input_claim = Some(input);
+        self
+    }
+
+    pub(super) fn with_go_compile_control(
+        mut self,
+        deadline: Option<std::time::Instant>,
+        witness_deadline_phase: Option<&'static str>,
+    ) -> Self {
+        self.go_compile_deadline = deadline;
+        self.go_witness_deadline_phase = witness_deadline_phase;
         self
     }
 
@@ -2846,9 +2860,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 path: first_source.relative_path.into(),
                 terminal: Box::new(terminal),
             })?;
-        let mut control =
-            self.compile_control(cancelled)
-                .map_err(|timeout| PackageSemanticError::Compile {
+        let mut control = match package.go_compile_deadline {
+            Some(deadline) => CompileControl {
+                deadline,
+                cancelled,
+            },
+            None => self.compile_control(cancelled).map_err(|timeout| {
+                PackageSemanticError::Compile {
                     path: first_source.relative_path.into(),
                     terminal: Box::new(CompilerTerminal::DeadlineConstruction {
                         source: first_authority,
@@ -2856,8 +2874,41 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         stage: target.stage,
                         timeout: *timeout,
                     }),
-                })?;
-        control.deadline = *typescript_work_gaps.deadline.get_or_insert(control.deadline);
+                }
+            })?,
+        };
+        if target.profile.language() == backend_semantic::vocabulary::Language::Go {
+            let stop = backend_frontend_go::legacy::GoOracleControl::new(
+                Some(cancelled),
+                control.deadline,
+            )
+            .check(
+                package
+                    .go_witness_deadline_phase
+                    .unwrap_or("compiler_lane_wait"),
+            )
+            .err();
+            if let Some(stop) = stop {
+                let toolchain = self.toolchain(first_application_request).unwrap_or(
+                    ToolchainSelection::ExplicitlyUnavailable {
+                        tool: NativeTool::GoCompiler,
+                    },
+                );
+                return Err(PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::GoOracle(stop),
+                    )),
+                });
+            }
+        }
+        control.deadline = *typescript_work_gaps
+            .deadline
+            .get_or_insert(control.deadline);
         let use_report_program = self.package_authority.typescript.is_some_and(|checker| {
             checker.portable_invocation_mode() == TypeScriptInvocationModeV1::ReportProgram
         });
@@ -5773,6 +5824,22 @@ fn package_authority_terminal(
             phase: PackageCompilePhase::Authority,
         };
     }
+    if let PackageAuthorityError::GoOracle(error) = &cause
+        && let Some(phase) = backend_frontend_go::legacy::GoOracleControl::deadline_phase(error)
+    {
+        return compiler_attempt_terminal(
+            request,
+            source,
+            toolchain,
+            CompilerCause::DeadlineExceeded {
+                diagnostic: backend_library::interface::CompilerDiagnostic::from_native(
+                    phase.as_bytes(),
+                    phase.len(),
+                    false,
+                ),
+            },
+        );
+    }
     match cause {
         PackageAuthorityError::Cancelled { .. } => CompilerTerminal::PackageCancelled {
             target,
@@ -6611,6 +6678,194 @@ mod tests {
         let file_detail = bounded_error_chain(&file_error);
         assert!(file_detail.text.contains("/tmp/nudox-go-oracle/main.go"));
         assert!(file_detail.text.contains("private source write denied"));
+    }
+
+    #[test]
+    fn go_package_queue_keeps_capture_deadline_and_cancellation_precedence() {
+        use crate::application::{
+            LocalCompilerConfig, LocalCompilerControl, LocalCompilerTimeout, LocalPackageRootSet,
+        };
+        use backend_library::interface::GenerateTarget;
+        let cancelled = AtomicBool::new(false);
+        // A metadata tuple is sufficient to classify this pre-execution stop.
+        // No oracle, executable, package files or native authority are supplied.
+        let selected = [ToolchainSelection::ResolvedNative(
+            ResolvedToolchain::from_version(
+                NativeTool::GoCompiler,
+                host_path("/unopened/queue-test/go"),
+                b"go version go1.25.0 linux/amd64",
+            )
+            .unwrap(),
+        )];
+        let execution = super::LocalCompilerExecution {
+            config: LocalCompilerConfig {
+                toolchains: LocalToolchainSet::validate(&selected).unwrap(),
+                artifact_directory: Path::new("/unopened/queue-test"),
+                journal_directory: Path::new("/unopened/queue-test"),
+                native_work_directory: Path::new("/unopened/queue-test"),
+                control: LocalCompilerControl {
+                    timeout: LocalCompilerTimeout::new(std::time::Duration::from_secs(600))
+                        .unwrap(),
+                    cancelled: &cancelled,
+                },
+            },
+            package_roots: LocalPackageRootSet::EMPTY,
+            package_authority: super::PackageAuthorityConfiguration::UNAVAILABLE,
+            native_work_directory: Path::new("/unopened/queue-test").into(),
+        };
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(0xd1),
+                profile: LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse("pkg:golang/deadline.test/app@1.0.0".to_owned()).unwrap(),
+        )
+        .unwrap();
+        let sources =
+            [super::PackageSource::new("main.go", "package app\nfunc Main() {}\n").unwrap()];
+        let expired = std::time::Instant::now() - std::time::Duration::from_millis(1);
+        for (phase, expected) in [
+            (Some("witness_capture"), "witness_capture"),
+            (None, "compiler_lane_wait"),
+        ] {
+            let package =
+                super::PackageSourceSet::new(&request, Path::new("/unopened/queue-test"), &sources)
+                    .unwrap()
+                    .with_go_compile_control(Some(expired), phase);
+            assert_eq!(package.go_compile_deadline, Some(expired));
+            let mut scratch =
+                super::LocalCompilerScratch::with_fragment_capacity(std::num::NonZeroUsize::MIN)
+                    .unwrap();
+            let run = |scratch: &mut super::LocalCompilerScratch| {
+                execution.stage_package_sources(
+                    package.clone(),
+                    super::PackageExecutionAuthority::Fixed {
+                        execution: None,
+                        plane: None,
+                    },
+                    None,
+                    None,
+                    super::EmbeddingRequirement::Optional,
+                    scratch,
+                    &cancelled,
+                    &mut |_| {},
+                )
+            };
+            let Err(error) = run(&mut scratch) else {
+                panic!("queueing cannot grant a new 600 seconds")
+            };
+            let PackageSemanticError::Compile { terminal, .. } = error else {
+                panic!("typed compiler terminal required")
+            };
+            assert!(matches!(
+                terminal.as_ref(),
+                CompilerTerminal::Compile {
+                    cause: backend_library::interface::CompilerCause::DeadlineExceeded {
+                        diagnostic: Some(_)
+                    },
+                    ..
+                }
+            ));
+            let text = format!(
+                "{}",
+                super::super::compiler_terminal_text::TerminalText::new("main.go", &terminal)
+            );
+            assert!(text.contains(expected), "{text}");
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            let Err(error) = run(&mut scratch) else {
+                panic!("external cancellation remains distinct")
+            };
+            assert!(
+                matches!(error, PackageSemanticError::Compile { terminal, .. }
+                if matches!(terminal.as_ref(), CompilerTerminal::PackageCancelled { .. }))
+            );
+            cancelled.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn go_absolute_deadline_keeps_typed_deadline_and_phase_not_external_cancel() {
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+            stage: Stage::LowerIr,
+            source: "package app\nfunc Main() {}\n",
+        };
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(
+            b"go-absolute-deadline",
+        );
+        let toolchain = || {
+            ToolchainSelection::ResolvedNative(
+                ResolvedToolchain::from_version(
+                    NativeTool::GoCompiler,
+                    host_path("/toolchain/bin/go"),
+                    b"go version go1.25.0 linux/amd64",
+                )
+                .unwrap(),
+            )
+        };
+        let deadline = package_authority_terminal(
+            target,
+            request,
+            request_source(request).unwrap(),
+            toolchain(),
+            PackageAuthorityError::GoOracle(
+                backend_frontend_go::legacy::GoOracleControl::new(None, std::time::Instant::now())
+                    .check("witness_reproof")
+                    .unwrap_err(),
+            ),
+        );
+        assert!(matches!(
+            &deadline,
+            CompilerTerminal::Compile {
+                cause: backend_library::interface::CompilerCause::DeadlineExceeded {
+                    diagnostic: Some(_)
+                },
+                ..
+            }
+        ));
+        let text = format!(
+            "{}",
+            super::super::compiler_terminal_text::TerminalText::new("main.go", &deadline)
+        );
+        assert!(text.contains("deadline") && text.contains("witness_reproof"));
+        let cancelled = package_authority_terminal(
+            target,
+            request,
+            request_source(request).unwrap(),
+            toolchain(),
+            PackageAuthorityError::GoOracle(OracleError::Cancelled),
+        );
+        assert!(matches!(
+            cancelled,
+            CompilerTerminal::PackageCancelled { .. }
+        ));
+        for (phase, milliseconds) in [
+            ("collect", 10),
+            ("absolute_package/arbitrary", 0),
+            ("absolute_package/witness_capture", 600_000),
+        ] {
+            let ordinary = package_authority_terminal(
+                target,
+                request,
+                request_source(request).unwrap(),
+                toolchain(),
+                PackageAuthorityError::GoOracle(OracleError::Timeout {
+                    phase,
+                    milliseconds,
+                }),
+            );
+            assert!(
+                matches!(
+                    ordinary,
+                    CompilerTerminal::Compile {
+                        cause: backend_library::interface::CompilerCause::Authority { .. },
+                        ..
+                    }
+                ),
+                "only the exact reserved absolute-package carrier may become DeadlineExceeded"
+            );
+        }
     }
 
     #[test]

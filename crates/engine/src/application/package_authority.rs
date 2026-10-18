@@ -372,9 +372,12 @@ impl<'run> GoPackageAuthority<'run> {
         };
         let witness = match captured {
             Some(witness) => std::borrow::Cow::Borrowed(witness),
-            None => std::borrow::Cow::Owned(oracle.package_authority_witness_cancellable(
+            None => std::borrow::Cow::Owned(oracle.package_authority_witness_controlled(
                 first.package_root,
-                Some(first.control.cancelled),
+                backend_frontend_go::legacy::GoOracleControl::new(
+                    Some(first.control.cancelled),
+                    first.control.deadline,
+                ),
             )?),
         };
         checkpoint(
@@ -383,11 +386,14 @@ impl<'run> GoPackageAuthority<'run> {
             PackageAuthorityStage::GoOracle,
         )?;
         let session = oracle
-            .begin_package_authority(
+            .begin_package_authority_controlled(
                 first.package_root,
                 witness,
                 sources,
-                Some(first.control.cancelled),
+                backend_frontend_go::legacy::GoOracleControl::new(
+                    Some(first.control.cancelled),
+                    first.control.deadline,
+                ),
             )
             .map_err(PackageAuthorityError::GoOracle)?;
         Ok(Self {
@@ -896,9 +902,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 let go_authority = match captured_go_authority {
                     Some(witness) => witness,
                     None => {
-                        owned_witness = oracle.package_authority_witness_cancellable(
+                        owned_witness = oracle.package_authority_witness_controlled(
                             request.package_root,
-                            Some(request.control.cancelled),
+                            backend_frontend_go::legacy::GoOracleControl::new(
+                                Some(request.control.cancelled),
+                                request.control.deadline,
+                            ),
                         )?;
                         &owned_witness
                     }
@@ -916,11 +925,14 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 // a coordinate-free `DuplicateDeclarationIdentity` collision
                 // into the selected package's image.
                 let image = oracle
-                    .authority_image_for_package_with_authority_witness_cancellable(
+                    .authority_image_for_package_with_authority_witness_controlled(
                         request.source_path,
                         request.package_root,
                         go_authority,
-                        Some(request.control.cancelled),
+                        backend_frontend_go::legacy::GoOracleControl::new(
+                            Some(request.control.cancelled),
+                            request.control.deadline,
+                        ),
                     )
                     .map_err(PackageAuthorityError::GoOracle)?;
                 let image = retain_image(

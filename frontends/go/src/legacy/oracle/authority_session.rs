@@ -17,8 +17,8 @@ use std::{
 };
 
 use super::{
-    ConfiguredGoOracle, GoCgoPolicy, GoOracle, GoOracleConfiguration, GoPackageAuthorityWitness,
-    OracleError, UNSUPPORTED_CGO_SENTINEL, check_go_cancellation, tail, transcript_prefix,
+    ConfiguredGoOracle, GoCgoPolicy, GoOracle, GoOracleConfiguration, GoOracleControl,
+    GoPackageAuthorityWitness, OracleError, UNSUPPORTED_CGO_SENTINEL, tail, transcript_prefix,
 };
 
 /// Same-directory sources loaded by one child. A smaller batch bounds the
@@ -46,7 +46,7 @@ pub struct GoPackageAuthoritySession<'run> {
     oracle: &'run ConfiguredGoOracle,
     package_root: PathBuf,
     witness: Cow<'run, GoPackageAuthorityWitness>,
-    cancelled: Option<&'run AtomicBool>,
+    control: GoOracleControl<'run>,
     helper: PathBuf,
     /// Not-yet-run batches, each holding sources of exactly one directory.
     pending: Vec<Vec<PathBuf>>,
@@ -74,7 +74,23 @@ impl ConfiguredGoOracle {
         sources: &[PathBuf],
         cancelled: Option<&'run AtomicBool>,
     ) -> Result<GoPackageAuthoritySession<'run>, OracleError> {
-        check_go_cancellation(cancelled)?;
+        self.begin_package_authority_controlled(
+            package_root,
+            witness,
+            sources,
+            GoOracleControl::cancellation_only(cancelled),
+        )
+    }
+
+    /// Shares the caller's absolute deadline across witness, helper and every batch.
+    pub fn begin_package_authority_controlled<'run>(
+        &'run self,
+        package_root: &Path,
+        witness: Cow<'run, GoPackageAuthorityWitness>,
+        sources: &[PathBuf],
+        control: GoOracleControl<'run>,
+    ) -> Result<GoPackageAuthoritySession<'run>, OracleError> {
+        control.check("authority_admission")?;
         if sources.is_empty()
             || sources.len() > MAX_PLANNED_SOURCES
             || sources.iter().collect::<BTreeSet<_>>().len() != sources.len()
@@ -100,18 +116,18 @@ impl ConfiguredGoOracle {
         if let Some(failure) = witness.dependency_closure_failure() {
             return Err(OracleError::DependencyClosureUnavailable { failure });
         }
-        Self::prove_inputs(environment, &witness, package_root, cancelled)?;
+        Self::prove_inputs(environment, &witness, package_root, control)?;
         // The helper is built (and the toolchain re-proved) only when the
         // content-addressed cache has no entry for this toolchain and source.
-        let (helper, _) = self.cached_helper_binary_cancellable(cancelled)?;
+        let (helper, _) = self.cached_helper_binary_controlled(control)?;
         let helper = helper.ok_or(OracleError::MissingChildEnvironment)?;
         Ok(GoPackageAuthoritySession {
             oracle: self,
             package_root: package_root.to_path_buf(),
             witness,
-            cancelled,
+            control,
             helper,
-            pending: plan_batches(sources, MAX_BATCH_SOURCES),
+            pending: plan_batches_controlled(sources, MAX_BATCH_SOURCES, control)?,
             ready: BTreeMap::new(),
         })
     }
@@ -121,19 +137,19 @@ impl ConfiguredGoOracle {
         environment: &super::GoOracleChildEnvironment,
         witness: &GoPackageAuthorityWitness,
         package_root: &Path,
-        cancelled: Option<&AtomicBool>,
+        control: GoOracleControl<'_>,
     ) -> Result<(), OracleError> {
-        let current = witness.matches_current_cancellable(package_root, cancelled)?;
-        check_go_cancellation(cancelled)?;
+        let current = witness.matches_current_controlled(package_root, control)?;
+        control.check("witness_reproof")?;
         if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
         // A recapture that lists the dependency closure already re-proved the
         // toolchain; only a witness without one needs its own proof.
         if !witness.recapture_proves_toolchain() {
-            environment.revalidate_toolchain()?;
+            environment.revalidate_toolchain_controlled(control)?;
         }
-        check_go_cancellation(cancelled)
+        control.check("witness_reproof")
     }
 }
 
@@ -150,7 +166,7 @@ impl GoPackageAuthoritySession<'_> {
     /// Returns the oracle's typed refusal for exactly this source, or
     /// [`OracleError::Cancelled`] once the request is cancelled.
     pub fn image(&mut self, source: &Path) -> Result<Vec<u8>, OracleError> {
-        check_go_cancellation(self.cancelled)?;
+        self.control.check("batch_image")?;
         if !self.ready.contains_key(source) {
             let batch = match self.pending.iter().position(|batch| batch.iter().any(|path| path == source)) {
                 Some(index) => self.pending.remove(index),
@@ -161,6 +177,7 @@ impl GoPackageAuthoritySession<'_> {
             };
             self.run(batch)?;
         }
+        self.control.check("batch_image")?;
         self.ready.remove(source).unwrap_or_else(|| {
             Err(OracleError::Exit {
                 status: "missing batch frame".to_owned(),
@@ -181,19 +198,30 @@ impl GoPackageAuthoritySession<'_> {
             .child_environment
             .as_ref()
             .ok_or(OracleError::MissingChildEnvironment)?;
-        ConfiguredGoOracle::prove_inputs(environment, &self.witness, &self.package_root, self.cancelled)
+        ConfiguredGoOracle::prove_inputs(
+            environment,
+            &self.witness,
+            &self.package_root,
+            self.control,
+        )
     }
 
     /// Runs one batch, splitting it when its transcript outgrows the bound.
     fn run(&mut self, batch: Vec<PathBuf>) -> Result<(), OracleError> {
+        self.control.check("package_batch")?;
         let outcome = self.spawn(&batch);
         let results = match outcome {
-            Err(OracleError::Cancelled) => return Err(OracleError::Cancelled),
+            Err(stopped)
+                if matches!(stopped, OracleError::Cancelled)
+                    || GoOracleControl::deadline_phase(&stopped).is_some() =>
+            {
+                return Err(stopped);
+            }
             Err(OracleError::OutputLimit { .. }) if batch.len() > 1 => {
                 // These images are large: later batches start at the size that fits.
                 let half = batch.len() / 2;
                 let remaining = self.pending.drain(..).flatten().collect::<Vec<_>>();
-                self.pending = plan_batches(&remaining, half);
+                self.pending = plan_batches_controlled(&remaining, half, self.control)?;
                 let (first, second) = batch.split_at(half);
                 self.run(first.to_vec())?;
                 return self.run(second.to_vec());
@@ -227,7 +255,12 @@ impl GoPackageAuthoritySession<'_> {
             output_limit: BATCH_OUTPUT_LIMIT.max(image_limit),
             ..self.oracle.oracle
         }
-        .execute_with_origin(&mut command, true, self.cancelled)?;
+        .execute_with_origin_controlled(
+            &mut command,
+            true,
+            self.control,
+            "package_batch_child",
+        )?;
         tracing::info!(
             target: "compiler::go_authority_session",
             sources = batch.len(),
@@ -235,37 +268,61 @@ impl GoPackageAuthoritySession<'_> {
             elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             "Go authority batch produced"
         );
-        decode_frames(&transcript, batch.len(), image_limit)
+        let result = decode_frames_controlled(&transcript, batch.len(), image_limit, self.control);
+        self.control.check("batch_decode")?;
+        result
     }
 }
 
 /// Groups `sources` by directory, keeping first-appearance order, and cuts each
 /// group into batches of at most `limit` sources.
+#[cfg(test)]
 fn plan_batches(sources: &[PathBuf], limit: usize) -> Vec<Vec<PathBuf>> {
+    plan_batches_controlled(sources, limit, GoOracleControl::default())
+        .expect("unbounded planning has no deadline or cancellation")
+}
+
+fn plan_batches_controlled(
+    sources: &[PathBuf],
+    limit: usize,
+    control: GoOracleControl<'_>,
+) -> Result<Vec<Vec<PathBuf>>, OracleError> {
+    control.check("batch_plan")?;
     let mut groups: Vec<(Option<&Path>, Vec<PathBuf>)> = Vec::new();
     for source in sources {
+        control.check("batch_plan")?;
         let directory = source.parent();
         match groups.iter_mut().find(|(owner, _)| *owner == directory) {
             Some((_, group)) => group.push(source.clone()),
             None => groups.push((directory, vec![source.clone()])),
         }
     }
-    groups
-        .into_iter()
-        .flat_map(|(_, group)| {
-            group
-                .chunks(limit.max(1))
-                .map(<[PathBuf]>::to_vec)
-                .collect::<Vec<_>>()
-        })
-        .collect()
+    let mut batches = Vec::new();
+    for (_, group) in groups {
+        control.check("batch_plan")?;
+        for chunk in group.chunks(limit.max(1)) {
+            control.check("batch_plan")?;
+            batches.push(chunk.to_vec());
+        }
+    }
+    Ok(batches)
 }
 
 /// Parses one `status || u64-be length || payload` frame per requested source.
+#[cfg(test)]
 fn decode_frames(
     transcript: &[u8],
     count: usize,
     image_limit: usize,
+) -> Result<Vec<SourceImage>, OracleError> {
+    decode_frames_controlled(transcript, count, image_limit, GoOracleControl::default())
+}
+
+fn decode_frames_controlled(
+    transcript: &[u8],
+    count: usize,
+    image_limit: usize,
+    control: GoOracleControl<'_>,
 ) -> Result<Vec<SourceImage>, OracleError> {
     let truncated = |what: &str| OracleError::Decode {
         message: format!("authority image batch transcript is {what}"),
@@ -274,6 +331,7 @@ fn decode_frames(
     let mut rest = transcript;
     let mut results = Vec::with_capacity(count);
     for _ in 0..count {
+        control.check("batch_decode")?;
         let (header, after) = rest
             .split_first_chunk::<FRAME_HEADER_BYTES>()
             .ok_or_else(|| truncated("missing a frame header"))?;
@@ -296,6 +354,7 @@ fn decode_frames(
             _ => return Err(truncated("using an unknown frame status")),
         });
     }
+    control.check("batch_decode")?;
     if rest.is_empty() {
         Ok(results)
     } else {
@@ -357,6 +416,22 @@ mod tests {
         bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    #[test]
+    fn expired_package_batch_plan_and_decode_never_return_partial_images() {
+        let deadline = std::time::Instant::now() - std::time::Duration::from_millis(1);
+        let control = GoOracleControl::new(None, deadline);
+        let sources = [PathBuf::from("a/one.go"), PathBuf::from("a/two.go")];
+        assert!(
+            matches!(plan_batches_controlled(&sources, 16, control), Err(error) if GoOracleControl::deadline_phase(&error) == Some("batch_plan"))
+        );
+        let mut transcript = frame(FRAME_IMAGE, b"first");
+        transcript.extend(frame(FRAME_IMAGE, b"second"));
+        assert!(
+            matches!(decode_frames_controlled(&transcript, 2, 1024, control), Err(error) if GoOracleControl::deadline_phase(&error) == Some("batch_decode"))
+        );
+        assert_eq!(control.deadline, Some(deadline));
     }
 
     #[test]
