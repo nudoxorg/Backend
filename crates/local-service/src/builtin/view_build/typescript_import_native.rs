@@ -105,7 +105,8 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             concat!(
                 "import { generateSchedule as schedule, scheduleVersion } from './scheduler';\n",
                 "import { remote } from 'vendor';\n",
-                "export function POST(value: number): number { return schedule(value) + scheduleVersion + remote(); }\n",
+                "import * as api from './scheduler';\n",
+                "export function POST(value: number): number { return schedule(value) + scheduleVersion + remote() + api.scheduleArrow(value); }\n",
                 "export function shadow(schedule: number): number { return schedule; }\n",
             ),
         ),
@@ -114,6 +115,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             concat!(
                 "export function generateSchedule(value: number): number { return value; }\n",
                 "export const scheduleVersion = 1;\n",
+                "export const scheduleArrow = (value: number): number => value;\n",
             ),
         ),
     ];
@@ -349,7 +351,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         row_ids, fact_ids,
         "row/query authored and external identities agree"
     );
-    for name in ["schedule", "scheduleVersion", "remote"] {
+    for name in ["schedule", "scheduleVersion", "remote", "api"] {
         let imports = corpus
             .facts()
             .iter()
@@ -368,7 +370,16 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         assert_eq!(rows.len(), 1, "one row for the query import identity");
         let location = rows[0].source.captured().expect("authored import location");
         assert_eq!(location.path(), "src/route.ts");
-        assert_eq!(location.start_line(), if name == "remote" { 2 } else { 1 });
+        assert_eq!(
+            location.start_line(),
+            if name == "remote" {
+                2
+            } else if name == "api" {
+                3
+            } else {
+                1
+            }
+        );
     }
     assert!(
         corpus
@@ -379,12 +390,14 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         "a real unselected vendor remains external"
     );
     assert!(
-        !corpus
-            .facts()
-            .iter()
-            .any(|fact| ["generateSchedule", "schedule", "scheduleVersion"]
-                .contains(&fact.presentation().name.as_str())
-                && fact.presentation().kind == "external"),
+        !corpus.facts().iter().any(|fact| [
+            "generateSchedule",
+            "schedule",
+            "scheduleVersion",
+            "scheduleArrow"
+        ]
+        .contains(&fact.presentation().name.as_str())
+            && fact.presentation().kind == "external"),
         "selected local targets add no external twin"
     );
     let target = corpus
@@ -405,6 +418,24 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
     assert!(
         post.presentation().related.contains(&target),
         "aliased call reaches its real definition"
+    );
+    let arrow = corpus
+        .facts()
+        .iter()
+        .find(|f| f.presentation().name == "scheduleArrow" && f.presentation().kind == "constant")
+        .expect("selected authored function-value binding");
+    assert!(
+        post.presentation()
+            .related
+            .contains(&arrow.presentation().id),
+        "called namespace value reaches the same selected binding, not a per-importer external"
+    );
+    assert!(
+        corpus
+            .facts()
+            .iter()
+            .any(|f| f.presentation().name == "api" && f.presentation().kind == "external"),
+        "a whole module namespace remains honestly external; no blanket external filtering"
     );
     let shadow = corpus
         .facts()
@@ -447,6 +478,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             "scheduleVersion",
             "structuralOnly",
             "remote",
+            "scheduleArrow",
         ]
         .map(|name| search_ids(selected, name));
         // Full search can also match another import's shared statement or
@@ -455,6 +487,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             (0, "generateSchedule", 1),
             (1, "scheduleVersion", 2),
             (2, "structuralOnly", 1),
+            (4, "scheduleArrow", 1),
         ] {
             let ids = corpus
                 .facts()
@@ -486,6 +519,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         "scheduleVersion",
         "structuralOnly",
         "remote",
+        "scheduleArrow",
     ]
     .map(|name| search_ids(selected, name));
     assert_eq!(
