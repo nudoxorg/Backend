@@ -1128,8 +1128,7 @@ mod tests {
         use std::os::unix::net::UnixStream;
 
         struct CancelAtWake {
-            _stream: UnixStream,
-            interrupt: TransportInterrupt,
+            transport: backend_client::UnixCommandTransport,
             cancel: CancellationToken,
             cancel_at_lookup: bool,
         }
@@ -1141,19 +1140,23 @@ mod tests {
             }
             fn interrupt_handle(&self) -> Option<TransportInterrupt> {
                 if self.cancel_at_lookup { self.cancel.cancel(); }
-                Some(self.interrupt.clone())
+                backend_client::CommandTransport::interrupt_handle(&self.transport)
             }
         }
         for cancel_at_lookup in [true, false] {
             let (stream, _owner) = UnixStream::pair().expect("cached owned socket");
-            let interrupt = TransportInterrupt::new(&stream).expect("owned interrupt");
+            let transport = backend_client::UnixCommandTransport::from_stream(stream);
+            assert!(
+                backend_client::CommandTransport::interrupt_handle(&transport).is_some(),
+                "real cached transport owns its public interrupt handle"
+            );
             let cancel = CancellationToken::new();
             let mut client = LocalEngineClient::new(
                 "unused-index-wake-endpoint", LocalProjectId::new("index-wake").expect("project"),
             );
             client.active_cancel = Some(cancel.clone());
             client.session = Some(Session::from_transport("unused-index-wake-endpoint", CancelAtWake {
-                _stream: stream, interrupt, cancel, cancel_at_lookup,
+                transport, cancel, cancel_at_lookup,
             }));
             let context = backend_client::RequestContext::new();
             context.read_deadline(Duration::from_secs(2)).expect("original scope");

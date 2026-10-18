@@ -422,6 +422,100 @@ mod page_scope_tests {
         assert_eq!(decoded, dto);
     }
     #[test]
+    fn legacy_single_package_pages_certify_membership_without_admitting_ambiguous_unscoped_rows() {
+        let path = "/legacy-outline";
+        let package = package_key(path);
+        let foreign = package_key("/foreign-outline");
+        let basis = Basis::new(view_state_root(&[]), object_version(b"legacy-outline"));
+        let parent = symbol_key("legacy-parent");
+        let child = symbol_key("legacy-child");
+        let sibling = symbol_key("legacy-sibling");
+        let mut rows = vec![
+            Row::new(RowId::Package(package), basis, path),
+            Row::new(RowId::Symbol(parent), basis, "/legacy-outline::Parent")
+                .with_kind(DeclarationKind::Class),
+            Row::new(RowId::Symbol(child), basis, "/legacy-outline::Child").with_parent(parent),
+            Row::new(RowId::Symbol(sibling), basis, "/legacy-outline::Sibling").with_parent(parent),
+        ];
+        let catalog = |rows: Vec<Row>| {
+            let root = ViewRoot::new_incomplete(
+                view_key(b"legacy-outline"), basis,
+                Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0), rows,
+                vec![Coverage::Unavailable { lane: Lane::Exact, reason: Reason::NoIndex }],
+            ).expect("legacy source root");
+            let cursor = Cursor::for_view_root(&root);
+            Library::from_view(root, cursor).expect("actual immutable catalog")
+        };
+        let library = catalog(rows.clone());
+        let full = library.outline_page(package, PageRequest::new(
+            library.revision_root(), QueryLimit::new(200).expect("full credit"),
+        )).expect("legacy singleton producer");
+        assert_eq!(full.snapshot.root.row_count(), 3);
+        assert!(full.snapshot.root.rows().iter().all(|row| row.package == Some(package)));
+        assert!(library.view().rows().iter().filter(|row| matches!(row.id, RowId::Symbol(_)))
+            .all(|row| row.package.is_none()), "projection must preserve the legacy source facts");
+        let expected = full.outline_order.as_ref().expect("native order").symbols().to_vec();
+        assert_eq!(page_tree(path, &full.snapshot, 200, full.outline_order.as_ref().expect("order"))
+            .expect("same strict presenter").count(), 3);
+        let credit = QueryLimit::new(1).expect("bounded credit");
+        let request = PageRequest::new(library.revision_root(), credit);
+        let first = library.outline_page(package, request).expect("first bounded legacy page");
+        assert_eq!(page_tree(path, &first.snapshot, 1, first.outline_order.as_ref().expect("order"))
+            .expect("bounded legacy presenter").count(), 1);
+        assert!(page_tree("/foreign-outline", &first.snapshot, 1,
+            first.outline_order.as_ref().expect("order")).is_err());
+        let continuation = first.snapshot.next.expect("actual native predecessor");
+        assert!(matches!(library.outline_page(package, PageRequest::new(library.revision_root(),
+            QueryLimit::new(2).expect("changed credit")).with_continuation(
+                backend_library::PageContinuation::from_cursor(continuation))),
+            Err(backend_library::LibraryError::CursorMismatch)));
+        let mut unscoped_rows = first.snapshot.root.rows().to_vec();
+        unscoped_rows[0].package = None;
+        let unscoped_root = ViewRoot::new_incomplete(first.snapshot.root.recipe(),
+            first.snapshot.root.basis(), first.snapshot.root.frontier(), unscoped_rows,
+            first.snapshot.root.coverage().to_vec()).expect("same IDs but unproved membership");
+        let unscoped_snapshot = backend_library::ViewSnapshot {
+            root: unscoped_root.clone(), freshness: first.snapshot.freshness, next: None,
+        };
+        assert!(page_tree(path, &unscoped_snapshot, 1, first.outline_order.as_ref().expect("order")).is_err(),
+            "a presenter cannot infer singleton membership from a bounded page");
+        let forged = Cursor::for_view_root(&unscoped_root).with_query_offset(1);
+        assert!(matches!(library.outline_page(package, request.with_continuation(
+            backend_library::PageContinuation::from_cursor(forged))),
+            Err(backend_library::LibraryError::CursorMismatch)),
+            "rehashed unscoped predecessor cannot replace the certified membership");
+        let mut actual = Vec::new();
+        let mut page_request = request;
+        loop {
+            let cold = Library::from_view(library.view().clone(), Cursor::for_view_root(library.view()))
+                .expect("cold source catalog");
+            let page = cold.outline_page(package, page_request).expect("exact legacy continuation");
+            let order = page.outline_order.as_ref().expect("actual native witness");
+            assert_eq!(page_tree(path, &page.snapshot, 1, order).expect("strict page tree").count(), 1);
+            actual.extend_from_slice(order.symbols());
+            assert!(actual.len() <= expected.len(), "bounded continuation must progress");
+            match page.terminal {
+                backend_library::PageTerminal::More(next) => page_request = request.with_continuation(next),
+                backend_library::PageTerminal::Complete => break,
+                other => panic!("unexpected terminal: {other:?}"),
+            }
+        }
+        assert_eq!(actual, expected);
+        assert!(matches!(library.outline_page(foreign, request), Err(backend_library::LibraryError::NotFound)));
+        rows.push(Row::new(RowId::Package(foreign), basis, "/foreign-outline"));
+        let foreign_symbol = symbol_key("foreign-scoped");
+        rows.push(Row::in_package(RowId::Symbol(foreign_symbol), basis, foreign, "/foreign-outline::Scoped"));
+        let ambiguous = catalog(rows);
+        let request = PageRequest::new(ambiguous.revision_root(), QueryLimit::new(200).expect("credit"));
+        let empty = ambiguous.outline_page(package, request).expect("multi-package outline");
+        assert_eq!(empty.snapshot.root.row_count(), 0, "ambiguous unscoped symbols stay outside every package");
+        let foreign_page = ambiguous.outline_page(foreign, request).expect("exact foreign package");
+        assert_eq!(foreign_page.outline_order.as_ref().expect("order").symbols(), &[foreign_symbol]);
+        assert!(foreign_page.snapshot.root.rows().iter().all(|row| row.package == Some(foreign)));
+        assert!(page_tree(path, &foreign_page.snapshot, 200, foreign_page.outline_order.as_ref().expect("order")).is_err());
+    }
+
+    #[test]
     fn small_and_large_outline_pages_share_one_exact_preorder_after_cold_reopen() {
         let path = "/paging";
         let package = package_key(path);

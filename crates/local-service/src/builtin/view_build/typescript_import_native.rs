@@ -424,6 +424,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             &snapshot,
             &projected.activated,
             super::super::coverage::SemanticDeployment::Unconfigured,
+            &generations,
         )
         .expect("production partial semantic and unconfigured vector coverage"),
         base.capability().expect("view capability"),

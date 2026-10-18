@@ -399,6 +399,16 @@ impl Library {
         let fetch = |offset, count| {
             self.arrangement.outline_page(package, offset, count, |id| self.view.row_ref(id), &self.work)
         };
+        // The native arrangement alone can prove the historical singleton
+        // package fallback. Materialize that inferred membership in the page's
+        // certified rows; consumers must never infer it from a bounded page.
+        let single_package = self.arrangement.package_count() == 1;
+        let page_row = |id| self.view.row(id).map(|mut row| {
+            if single_package && row.package.is_none() {
+                row.package = Some(package);
+            }
+            row
+        });
         let symbols = |ids: &[RowId]| ids.iter().filter_map(|id| match id {
             RowId::Symbol(symbol) => Some(*symbol), _ => None,
         }).collect::<Vec<_>>();
@@ -409,17 +419,17 @@ impl Library {
             let order = crate::OutlinePageOrder::new(previous as u64, symbols(&predecessor.ids))
                 .map_err(LibraryError::InvalidQuery)?;
             let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
-            self.check_query_cursor(Some(cursor), recipe.identity(), limit, |at, count| {
+            self.check_query_cursor_with_rows(Some(cursor), recipe.identity(), limit, |at, count| {
                 if at == previous && count == limit {
                     ArrangementPage { ids: predecessor.ids.clone(), has_more: predecessor.has_more }
                 } else { fetch(at, count) }
-            })?
+            }, |id, _| page_row(id))?
         } else { 0 };
         let result = fetch(start, limit);
         let order = crate::OutlinePageOrder::new(start as u64, symbols(&result.ids))
             .map_err(LibraryError::InvalidQuery)?;
         let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
-        let rows = result.ids.iter().filter_map(|&id| self.view.row(id)).collect();
+        let rows = result.ids.iter().filter_map(|&id| page_row(id)).collect();
         let snapshot = self.snapshot_with_recipe(
             recipe.identity(), rows, result.has_more.then_some(self.cursor),
             result.has_more.then_some(start.saturating_add(limit)),
