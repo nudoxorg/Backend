@@ -7899,7 +7899,7 @@ mod tests {
         }
 
         fn publish_rows(&mut self, additional: Vec<backend_library::Row>) {
-            let (_, daemon) = self.parts();
+            let (adapter, daemon) = self.parts();
             let snapshot = daemon.engine().daemon().owner().snapshot();
             let current = daemon.engine().daemon().library().view().clone();
             let mut rows = current.row_refs().cloned().collect::<Vec<_>>();
@@ -7924,6 +7924,17 @@ mod tests {
                 .daemon_mut()
                 .publish_view(view, cursor, &admission, None)
                 .expect("publish checked test declarations");
+            // This fixture publishes a checked view directly, bypassing the
+            // production publisher's SQL delta projection. Complete that same
+            // derived projection before exercising exact-current graph reads.
+            super::super::super::sql_projection::synchronize_current(
+                adapter
+                    .sql_projection
+                    .writer_mut()
+                    .expect("fixture SQL writer"),
+                daemon,
+            )
+            .expect("align checked fixture declarations with their exact SQL revision");
         }
     }
 
@@ -7938,6 +7949,54 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root.0);
         }
+    }
+
+    #[test]
+    fn fixture_published_rows_align_sql_without_admitting_a_prior_revision() {
+        let mut fixture = AdapterFixture::new();
+        let (prior_revision, basis) = {
+            let (adapter, daemon) = fixture.parts();
+            (
+                adapter
+                    .sql_projection
+                    .revision()
+                    .expect("original SQL revision"),
+                daemon.engine().daemon().library().view().basis(),
+            )
+        };
+        let row = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("fixture-projection-row")),
+            basis,
+            fixture.package,
+            format!("{}::src/added.rs:1::fixture_projection_row", fixture.label),
+        )
+        .with_source(backend_library::SourceLocation::new("src/added.rs", 1).expect("source"));
+        fixture.publish_rows(vec![row]);
+        let (adapter, daemon) = fixture.parts();
+        let current_revision = adapter
+            .sql_projection
+            .revision()
+            .expect("aligned fixture revision");
+        let view = daemon.engine().daemon().library().view();
+        assert_ne!(prior_revision.view_root(), current_revision.view_root());
+        assert_eq!(current_revision.view_root(), *view.root().as_bytes());
+        assert_eq!(current_revision.view_version(), *view.version().as_bytes());
+        assert!(
+            matches!(
+                super::super::super::sql_projection::GraphBase::capture_revision(
+                    prior_revision,
+                    daemon
+                ),
+                Err(backend_extension_turso::ProjectionError::StaleTransition)
+            ),
+            "an earlier SQL base must not be silently rebased to the new selected view"
+        );
+        let current = super::super::super::sql_projection::GraphBase::capture_revision(
+            current_revision,
+            daemon,
+        )
+        .expect("exact current projection/view pair");
+        assert_eq!(current.view().root(), view.root());
     }
 
     #[test]
