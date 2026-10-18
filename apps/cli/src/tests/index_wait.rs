@@ -15,6 +15,8 @@ enum Script {
     Disconnected,
     Active,
     ImmediateFailure,
+    WaitDeadline,
+    Cancelled,
 }
 struct Owner {
     script: Script,
@@ -70,6 +72,14 @@ impl CommandTransport for Owner {
                 if matches!(self.script, Script::Disconnected) {
                     return Err(ClientError::Disconnected(
                         std::io::ErrorKind::ConnectionReset,
+                    ));
+                }
+                if matches!(self.script, Script::WaitDeadline) {
+                    return Err(ClientError::RemoteDeadlineExceeded);
+                }
+                if matches!(self.script, Script::Cancelled) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
                     ));
                 }
                 status.state = match status.state {
@@ -306,14 +316,15 @@ fn cli_async_default_and_zero_wait_keep_the_saved_identity_for_resumption() {
             serde_json::to_value(status.operation_key).expect("same key")
         );
         if args.len() != 1 {
+            let expected_poll = format!("nudox index_progress --operation-key {}", status.operation_key);
+            assert!(product.fault().is_none(), "pending durable work is not an endpoint failure");
             assert_eq!(
                 product
-                    .fault()
-                    .expect("wait ended")
-                    .affordance()
-                    .tool_call()
-                    .expect("resume")["arguments"]["operation_key"],
-                serde_json::to_value(status.operation_key).expect("same key")
+                    .index_poll_affordance()
+                    .expect("same operation poll")
+                    .shell()
+                    .as_deref(),
+                Some(expected_poll.as_str())
             );
             let (resumed, code) = fixture.run(&[
                 "index_progress",
@@ -324,6 +335,55 @@ fn cli_async_default_and_zero_wait_keep_the_saved_identity_for_resumption() {
             assert!(resumed.fault().is_some());
             assert!(fixture.claims().is_empty());
         }
+    }
+}
+
+#[test]
+fn cli_wait_deadline_and_cancellation_report_pending_work_without_endpoint_fault() {
+    for (script, expected_reason) in [
+        (Script::WaitDeadline, "The CLI wait deadline expired"),
+        (Script::Cancelled, "The CLI wait was cancelled (request explicitly cancelled by client)"),
+    ] {
+        let mut fixture = Fixture::new(script);
+        let (answer, exit) = fixture.run(&["add", "--wait", "--wait-timeout", "900"]);
+        assert_eq!(exit, ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE));
+        let Answer::Product(product) = &answer else {
+            panic!("retained product observation");
+        };
+        let Some(IndexOperationObservation::Known(status)) = product.index_operation() else {
+            panic!("exact durable operation status");
+        };
+        assert!(matches!(status.state, IndexOperationState::Active { .. }));
+        assert!(product.fault().is_none(), "caller wait stop is not an endpoint/index failure");
+        let note = product.note().expect("reason and recovery instruction");
+        assert!(note.contains(expected_reason));
+        assert!(note.contains("last admitted owner status was active"));
+        assert!(note.contains("did not cancel owner work"));
+        assert!(note.contains("Do not resubmit `add`"));
+        let poll = format!("nudox index_progress --operation-key {}", status.operation_key);
+        assert!(note.contains(&poll));
+        assert_eq!(product.index_poll_affordance().and_then(|poll| poll.shell()), Some(poll.clone()));
+        assert_eq!(fixture.commands.lock().expect("commands").len(), 2);
+        assert_eq!(fixture.claims().len(), 1, "a nonterminal wait keeps the durable claim");
+        let rendered = render_admitted_answer(
+            &fixture.session,
+            &answer,
+            &Options::plain(options::Format::Human),
+        )
+        .expect("bounded human response");
+        assert!(rendered.contains(expected_reason));
+        assert!(rendered.contains(&poll));
+        assert!(rendered.contains("Do not resubmit `add`"));
+        let json = render_admitted_answer(
+            &fixture.session,
+            &answer,
+            &Options::plain(options::Format::Json),
+        )
+        .expect("bounded typed response");
+        let json: serde_json::Value = serde_json::from_str(&json).expect("JSON answer");
+        assert!(json["fault"].is_null());
+        assert_eq!(json["index_poll"]["shell"], poll);
+        assert!(json["note"].as_str().is_some_and(|note| note.contains(expected_reason)));
     }
 }
 

@@ -649,21 +649,58 @@ impl ProductView {
         };
         let operand = Operand::Text(key.to_hex());
         let affordance = crate::Affordance::PollIndexOperation { operation_key: key };
-        self.fault = Some(match reason {
-            backend_client::IndexOperationWaitStop::Client(error) => {
-                Fault::from_client_error(error, operand).with_affordance(affordance)
-            }
-            backend_client::IndexOperationWaitStop::Uncertain => Fault::new(
-                crate::FaultSlug::Rejected,
-                operand,
-                crate::Cause::new(
-                    crate::CauseSlug::Unproven,
-                    "the durable observation does not establish a terminal outcome; the exact operation is retained for reconciliation",
+        let wait_ended = match reason {
+            backend_client::IndexOperationWaitStop::Client(
+                backend_client::ClientError::RemoteDeadlineExceeded,
+            ) => Some("The CLI wait deadline expired".to_owned()),
+            backend_client::IndexOperationWaitStop::Client(
+                backend_client::ClientError::RequestCancelled(reason),
+            ) => Some(format!("The CLI wait was cancelled ({reason})")),
+            _ => None,
+        };
+        let last_state = match observation {
+            backend_library::IndexOperationObservation::Known(status) => match &status.state {
+                backend_library::IndexOperationState::Accepted => Some(
+                    "the last admitted owner status was accepted; no active stage was observed".to_owned(),
                 ),
-                affordance,
-            ),
+                backend_library::IndexOperationState::Active { stage, .. } => Some(format!(
+                    "the last admitted owner status was active ({})",
+                    index_stage_name(*stage)
+                )),
+                _ => None,
+            },
+            _ => None,
+        };
+        let pending_wait_note = wait_ended.zip(last_state).map(|(wait_ended, last_state)| {
+            format!(
+                "{wait_ended}; {last_state}. This ended caller-side waiting only; it did not cancel owner work. Poll this exact operation with `nudox index_progress --operation-key {key}`. Do not resubmit `add`."
+            )
         });
-        let explanation = "Waiting ended without a terminal receipt. The operation below is the last admitted observation; no cancellation or new index request was sent.";
+        // A timed-out/cancelled observation of accepted work is not an
+        // endpoint failure or an indexing failure. Keep the product's typed
+        // operation status and index_poll affordance, and let the CLI retain
+        // its distinct EX_TEMPFAIL outcome.
+        self.fault = if pending_wait_note.is_some() {
+            None
+        } else {
+            Some(match reason {
+                backend_client::IndexOperationWaitStop::Client(error) => {
+                    Fault::from_client_error(error, operand).with_affordance(affordance)
+                }
+                backend_client::IndexOperationWaitStop::Uncertain => Fault::new(
+                    crate::FaultSlug::Rejected,
+                    operand,
+                    crate::Cause::new(
+                        crate::CauseSlug::Unproven,
+                        "the durable observation does not establish a terminal outcome; the exact operation is retained for reconciliation",
+                    ),
+                    affordance,
+                ),
+            })
+        };
+        let explanation = pending_wait_note.unwrap_or_else(|| {
+            "Waiting ended without a terminal receipt. The operation below is the last admitted observation; no cancellation or new index request was sent.".to_owned()
+        });
         self.note = Some(self.note.map_or_else(
             || explanation.to_owned(),
             |note| format!("{note}\n{explanation}"),
