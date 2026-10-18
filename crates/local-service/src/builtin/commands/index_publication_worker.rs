@@ -1061,6 +1061,66 @@ impl PublicationWork {
         }
     }
 
+    // A private last observation, never a publication receipt or a capability.
+    // In particular, a selected workspace cannot be rolled back or reported as
+    // cancelled merely because its view sink or later projection is pending.
+    fn observe_pending(&self, outer: &BuiltinModelError) {
+        if !cfg!(unix) || !self.grant_accepted {
+            return;
+        }
+        let (phase, workspace_selected, detail) = match &self.head {
+            Head::Pending(ReadHeadPublicationFailure::SelectedPending { error, .. }) => {
+                ("selected-view-persistence", Some(true), error.to_string())
+            }
+            Head::Pending(ReadHeadPublicationFailure::Unsettled { error, .. }) => {
+                ("physical-selection-unsettled", None, error.to_string())
+            }
+            Head::Pending(ReadHeadPublicationFailure::Rejected { error, .. }) => {
+                ("physical-selection-rejected", Some(false), error.to_string())
+            }
+            Head::Published(_) => {
+                let phase = if !self.semantic_committed {
+                    "semantic-selection"
+                } else if !self.projected {
+                    "post-head-projection"
+                } else {
+                    "terminal-receipt"
+                };
+                (phase, Some(true), outer.to_string())
+            }
+            _ => return,
+        };
+        let mut boundary = detail.len().min(1024);
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let snapshot = self.candidate_snapshot.as_ref();
+        let receipt = serde_json::json!({
+            "schema": "nudox.index-publication-pending-observation.v1",
+            "process_id": std::process::id(),
+            "observed_unix_millis": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).ok()
+                .and_then(|value| u64::try_from(value.as_millis()).ok()),
+            "operation_key": self.operation_key,
+            "candidate_workspace_root": snapshot.map(|value| value.root().to_bytes()),
+            "candidate_workspace_sequence": snapshot.map(WorkspaceSnapshot::sequence),
+            "phase": phase,
+            "workspace_selected": workspace_selected,
+            "detail": &detail[..boundary],
+            "detail_truncated": boundary < detail.len(),
+            "terminal_receipt": false,
+            "readiness_authority": false,
+        });
+        if let Ok(bytes) = serde_json::to_vec(&receipt)
+            && bytes.len() <= 8192
+        {
+            let _ = backend_platform::durable::write_private_atomic_unflushed(
+                &self.workspace.join("index-publication-pending-v1.json"),
+                &bytes,
+            );
+        }
+    }
+
     fn step(&mut self, events: &Sender<Event>) -> Disposition {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if self.settlement_only {
@@ -1100,6 +1160,7 @@ impl PublicationWork {
             }
             Err(FinishAddError::Failed(e)) => e,
         };
+        self.observe_pending(&error);
         if self.is_cleanup() {
             // Its terminal decision is already frozen. Keep the original
             // cleanup plan/writers for explicit retry instead of dropping
