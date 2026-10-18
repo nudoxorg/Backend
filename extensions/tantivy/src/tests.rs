@@ -3772,6 +3772,190 @@ fn damaged_inactive_binding_remains_charged_without_poisoning_selected_search() 
 }
 
 #[test]
+fn preparation_cancellation_retires_a_contended_initial_fence_without_publication() {
+    use crate::publish::{NamespaceFenceKind, PrivateNamespace, observe_next_fence_contention};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{collections::BTreeMap, path::Path, sync::mpsc, time::Duration};
+
+    type NamespaceInventory =
+        BTreeMap<std::path::PathBuf, Option<(backend_platform::FileIdentity, Vec<u8>)>>;
+
+    // Compare every selected file's identity and bytes as well as the complete
+    // namespace inventory. An interrupted waiter must not recover stages,
+    // replace an owner gate, or create/commit a new generation.
+    fn inventory(root: &Path, directory: &Path, entries: &mut NamespaceInventory) {
+        for entry in std::fs::read_dir(directory).expect("namespace entries") {
+            let entry = entry.expect("entry");
+            let path = entry.path();
+            let relative = path.strip_prefix(root).expect("direct subtree").to_owned();
+            if entry.file_type().expect("entry type").is_dir() {
+                entries.insert(relative, None);
+                inventory(root, &path, entries);
+            } else {
+                let file = std::fs::File::open(&path).expect("selected file");
+                let identity =
+                    backend_platform::FileIdentity::of_file(&file).expect("file identity");
+                entries.insert(
+                    relative,
+                    Some((identity, std::fs::read(path).expect("file bytes"))),
+                );
+            }
+        }
+    }
+    let snapshot = |root: &Path| {
+        let mut entries = BTreeMap::new();
+        inventory(root, root, &mut entries);
+        entries
+    };
+
+    for revision in [false, true] {
+        let previous = state_for(
+            vec![(document(1), vec![("body".into(), "alpha".into())])],
+            [41; 32],
+        );
+        let next = state_for(
+            vec![(document(1), vec![("body".into(), "beta".into())])],
+            [42; 32],
+        );
+        let root = std::env::temp_dir().join(format!(
+            "backend-tantivy-contended-cancel-{}-{}-{revision}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let private_root = OwnedWorkspaceDirectory::open(&root).expect("private cache");
+        if revision {
+            let (old, _) = TantivySource::open_or_build_in_dir_with_budget_and_action(
+                &previous,
+                Limits::default(),
+                &root,
+                DurableCacheBudget::default(),
+            )
+            .expect("previous committed generation");
+            assert_eq!(term_hits(&old, "alpha"), vec![document(1)]);
+            drop(old);
+        }
+        let namespace = PrivateNamespace::open_child(&root, DURABLE_ROOTS_DIRECTORY)
+            .expect("private namespace");
+        let holder = namespace
+            .acquire_fence(NamespaceFenceKind::DurableCache)
+            .expect("hold the actual native fence");
+        let before = snapshot(namespace.path());
+        let cancelled = AtomicBool::new(false);
+        let (blocked_tx, blocked_rx) = mpsc::sync_channel(1);
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                observe_next_fence_contention(blocked_tx);
+                let result = if revision {
+                    TantivySource::open_or_advance_cancelable(
+                        &previous,
+                        &next,
+                        Limits::default(),
+                        OverlayLimits::default(),
+                        &root,
+                        DurableCacheBudget::default(),
+                        &cancelled,
+                    )
+                    .map(|_| ())
+                } else {
+                    TantivySource::open_or_build_cancelable(
+                        &next,
+                        Limits::default(),
+                        &root,
+                        DurableCacheBudget::default(),
+                        &cancelled,
+                    )
+                    .map(|_| ())
+                };
+                done_tx.send(result).expect("report preparation result");
+            });
+            // The handshake is emitted only after the OS reports WouldBlock.
+            // Keep the holder locked until the worker reports cancellation;
+            // the timeout is a deadlock watchdog, not a latency benchmark.
+            let observed = blocked_rx.recv_timeout(Duration::from_secs(10));
+            cancelled.store(true, Ordering::Release);
+            let result_while_held = done_rx.recv_timeout(Duration::from_secs(2));
+            let after = snapshot(namespace.path());
+            let holder_still_valid = holder.verify_for(&namespace);
+            // Always unlock and join before asserting, including a regression
+            // which waits out the ordinary five-second contention budget.
+            drop(holder);
+            worker.join().expect("preparation worker");
+            observed.expect("actual contended lock attempt");
+            let result =
+                result_while_held.expect("cancelled waiter retires while fence remains held");
+            assert!(matches!(result, Err(TantivySourceError::Io(ref error))
+                if error.kind() == std::io::ErrorKind::Interrupted));
+            holder_still_valid.expect("original owner capability remains valid");
+            assert_eq!(
+                after, before,
+                "cancelled pre-admission waiter changed namespace"
+            );
+        });
+
+        if revision {
+            let old = TantivySource::open_in_dir(
+                &previous,
+                Limits::default(),
+                namespace
+                    .path()
+                    .join(hex_fingerprint(projection_fingerprint(previous.binding()))),
+            )
+            .expect("previous committed generation remains readable");
+            assert_eq!(term_hits(&old, "alpha"), vec![document(1)]);
+            drop(old);
+        }
+        cancelled.store(false, Ordering::Release);
+        let (source, action) = if revision {
+            TantivySource::open_or_advance_cancelable(
+                &previous,
+                &next,
+                Limits::default(),
+                OverlayLimits::default(),
+                &root,
+                DurableCacheBudget::default(),
+                &cancelled,
+            )
+            .map(|(source, _, action)| (source, action))
+        } else {
+            TantivySource::open_or_build_cancelable(
+                &next,
+                Limits::default(),
+                &root,
+                DurableCacheBudget::default(),
+                &cancelled,
+            )
+        }
+        .expect("normal preparation after cancellation");
+        assert_eq!(term_hits(&source, "beta"), vec![document(1)]);
+        assert_eq!(
+            action,
+            if revision {
+                DurableProjectionAction::Revised
+            } else {
+                DurableProjectionAction::Built
+            }
+        );
+        drop(source);
+        let (reopened, action) = TantivySource::open_or_build_cancelable(
+            &next,
+            Limits::default(),
+            &root,
+            DurableCacheBudget::default(),
+            &cancelled,
+        )
+        .expect("normal cold reopen");
+        assert_eq!(action, DurableProjectionAction::Opened);
+        assert_eq!(term_hits(&reopened, "beta"), vec![document(1)]);
+        drop((reopened, namespace, private_root));
+        std::fs::remove_dir_all(root).expect("retire fixture");
+    }
+}
+
+#[test]
 fn preparation_cancellation_cold_does_not_publish_and_can_retry() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let documents = vec![(document(1), vec![("body".into(), "alpha".into())])];

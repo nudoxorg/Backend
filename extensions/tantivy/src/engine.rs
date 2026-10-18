@@ -861,7 +861,8 @@ impl TantivySource {
         let key = hex_fingerprint(projection_fingerprint(state.binding()));
         let selected = version_root.join(&key);
 
-        let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
+        let fence =
+            namespace.acquire_preparation_fence(NamespaceFenceKind::DurableCache, cancelled)?;
         retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
             Self::open_selected_root(state, limits, namespace, &key, budget, &fence, cancelled)?
@@ -1188,7 +1189,8 @@ impl TantivySource {
         let version_root = namespace.path();
         let next_key = hex_fingerprint(projection_fingerprint(next.binding()));
         let selected = version_root.join(&next_key);
-        let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
+        let fence =
+            namespace.acquire_preparation_fence(NamespaceFenceKind::DurableCache, cancelled)?;
         retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) = Self::open_selected_root(
             next,
