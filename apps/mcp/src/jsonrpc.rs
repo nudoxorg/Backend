@@ -969,6 +969,16 @@ impl<P: Product> Server<P> {
             let grammar = backend_present::grammar_for_tool(name)
                 .ok_or_else(|| RpcError::new(-32602, "Unknown tool"));
             grammar.and_then(|grammar| {
+                if arguments
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .is_some_and(|query| query.trim().is_empty())
+                {
+                    return Err(RpcError::from_fault(&Fault::usage(
+                        "query",
+                        "backend.search requires at least one non-whitespace character; pass a search term",
+                    )));
+                }
                 let mut search_arguments = arguments.clone();
                 search_arguments.remove("detail");
                 validate_registry_arguments(grammar, &search_arguments)
