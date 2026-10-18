@@ -352,7 +352,14 @@ fn cli_versions_summary_keeps_exact_continuation_and_explicit_full_discovery() -
     assert_eq!(display["full_detail"]["call"]["arguments"]["package"], package.as_str());
     let words = vec!["semantic-versions".to_owned(), package.as_str().to_owned(),
         "--detail".to_owned(), "full".to_owned()];
-    let full_invocation = fixture(crate::invoke::parse(&words, None))?;
+    assert_eq!(display["full_detail"]["cli"],
+        format!("nudox semantic-versions {} --detail full", package.as_str()),
+        "the advertised CLI action must use the same admitted argument vector");
+    // main_entry splits global projection options before the registry parser.
+    let (options, command_words) = fixture(crate::options::split(&words))?;
+    assert_eq!(options.detail(), backend_present::Detail::Full);
+    assert_eq!(command_words, vec!["semantic-versions".to_owned(), package.as_str().to_owned()]);
+    let full_invocation = fixture(crate::invoke::parse(&command_words, options.limit()))?;
     assert!(matches!(fixture(backend_present::lower(&full_invocation, "/fixture"))?,
         Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions { package: ref actual,cursor:None,.. } if actual == &package)));
     let exact: Value = fixture(serde_json::from_slice(&full.bytes))?;
