@@ -1773,7 +1773,7 @@ fn build_native_inputs_for_config(
 
 // Excluded sources do not reach TSZ's execution checkpoint, so admission itself
 // must still refuse cancellation/deadline expiry throughout the full frontier.
-fn check_admission_control(
+pub(super) fn check_admission_control(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<(), TypeScriptProjectHostError> {

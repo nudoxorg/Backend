@@ -2852,7 +2852,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             && !use_report_program
         {
             if let Some(host) = self.package_authority.typescript_project_host {
-                match host.admit(package.package_root) {
+                match host.admit_controlled(package.package_root, &mut || {
+                    super::typescript_program::check_admission_control(control.deadline, cancelled)
+                }) {
                     Ok(project) => project,
                     Err(cause) => {
                         let toolchain = self.toolchain(first_application_request).unwrap_or(
