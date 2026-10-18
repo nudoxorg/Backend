@@ -14,7 +14,9 @@ use super::identity::{
     fragment_text, query_external_id, query_package_id, query_semantic_id, semantic_coordinate,
 };
 use super::semantic::semantic_row_content;
-use super::structural::{StructuralParent, StructuralProjectionPlan};
+use super::structural::{
+    StructuralCallEndpoint, StructuralCallResidence, StructuralParent, StructuralProjectionPlan,
+};
 use backend_engine::RowId;
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
@@ -24,6 +26,10 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::AtomicBool;
+
+#[cfg(test)]
+#[path = "query_call_join.rs"]
+mod call_join_tests;
 
 pub(in crate::builtin) fn semantic_query_corpus(
     snapshot: &WorkspaceSnapshot,
@@ -93,7 +99,13 @@ pub(in crate::builtin) fn semantic_query_corpus_controlled(
         StructuralProjectionPlan::of_controlled(sources, &complete, cancelled)?;
     check_search_preparation(cancelled, "corpus-structural-unify")?;
     structural_plan.unify_exact_sites_controlled(sources, &exact_sites, cancelled)?;
-    append_structural_query_facts_controlled(sources, &structural_plan, &mut facts, cancelled)?;
+    append_structural_query_facts_controlled(
+        sources,
+        &structural_plan,
+        &exact_sites,
+        &mut facts,
+        cancelled,
+    )?;
     check_search_preparation(cancelled, "corpus-admit")?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -616,12 +628,19 @@ pub(super) fn append_structural_query_facts(
     structural_plan: &StructuralProjectionPlan,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<(), BuiltinModelError> {
-    append_structural_query_facts_controlled(sources, structural_plan, facts, None)
+    append_structural_query_facts_controlled(
+        sources,
+        structural_plan,
+        &super::exact_sites::ExactDeclarationSites::default(),
+        facts,
+        None,
+    )
 }
 
 fn append_structural_query_facts_controlled(
     sources: &IndexedSources,
     structural_plan: &StructuralProjectionPlan,
+    exact_sites: &super::exact_sites::ExactDeclarationSites,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), BuiltinModelError> {
@@ -723,6 +742,130 @@ fn append_structural_query_facts_controlled(
                 "complete source-facts count differs from its structural plan".to_owned(),
             ));
         }
+    }
+    append_source_call_edges(sources, structural_plan, exact_sites, facts, cancelled)
+}
+
+/// Share graph/references' lexical import resolution instead of inventing a
+/// second name join for Trustfall. Only endpoints emitted by this corpus may
+/// own an edge; exact compiler twins retain their compiler-owned row IDs.
+fn append_source_call_edges(
+    sources: &IndexedSources,
+    structural_plan: &StructuralProjectionPlan,
+    exact_sites: &super::exact_sites::ExactDeclarationSites,
+    facts: &mut [backend_extension_trustfall::SemanticQueryFact],
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), BuiltinModelError> {
+    use backend_extension_trustfall::SemanticQueryEvidence;
+
+    let mut updates = BTreeMap::<usize, BTreeSet<usize>>::new();
+    {
+        let mut by_id = BTreeMap::new();
+        // Legacy coordinates may identify a unique structural row, never a
+        // compiler declaration by display spelling or coincident source line.
+        let mut legacy = BTreeMap::new();
+        for (index, fact) in facts.iter().enumerate() {
+            check_search_preparation(cancelled, "query-call-index")?;
+            if by_id.insert(fact.presentation().id.as_str(), index).is_some() {
+                return Err(BuiltinModelError(
+                    "query source calls contain a duplicate row identity".to_owned(),
+                ));
+            }
+            if matches!(
+                fact.evidence(),
+                SemanticQueryEvidence::StructuralFallback(_)
+            ) && let Some(project) = fact.presentation().project.as_deref()
+            {
+                legacy
+                    .entry((project, fact.presentation().coordinate.as_str()))
+                    .and_modify(|id| *id = None)
+                    .or_insert(Some(index));
+            }
+        }
+        let mut residence = StructuralCallResidence::default();
+        let mut edges = 0usize;
+        for project in sources.projects.values() {
+            check_search_preparation(cancelled, "query-call-project")?;
+            let package_id = query_package_id(project.package);
+            let resolve =
+                |endpoint: &StructuralCallEndpoint| -> Result<Option<usize>, BuiltinModelError> {
+                    let id = match endpoint {
+                        StructuralCallEndpoint::Binding {
+                            source,
+                            row,
+                            location,
+                            ..
+                        } => {
+                            if backend_engine::product_source_file_key(
+                                project.package.to_bytes(),
+                                location.path(),
+                            ) != source.file
+                            {
+                                return Ok(None);
+                            }
+                            let row = if let Some(id) = exact_sites.get(
+                                project.package.to_bytes(),
+                                location.path(),
+                                source.binding,
+                            ) {
+                                id
+                            } else if structural_plan.file(source.file).is_some() {
+                                structural_plan.binding_parent_id(source.file, source.binding)?
+                            } else {
+                                *row
+                            };
+                            by_id.get(row.stable_key().as_str()).copied()
+                        }
+                        StructuralCallEndpoint::LegacyCoordinate(coordinate) => legacy
+                            .get(&(package_id.as_str(), coordinate.as_str()))
+                            .copied()
+                            .flatten(),
+                    };
+                    Ok(id.filter(|&index| {
+                        facts[index].presentation().project.as_deref() == Some(package_id.as_str())
+                    }))
+                };
+            for (caller, callee) in residence.endpoint_pairs(sources, project.package)? {
+                check_search_preparation(cancelled, "query-call-pair")?;
+                let (Some(caller), Some(callee)) = (resolve(caller)?, resolve(callee)?) else {
+                    continue;
+                };
+                if caller != callee && updates.entry(caller).or_default().insert(callee) {
+                    edges = edges.checked_add(1).ok_or_else(|| {
+                        BuiltinModelError("query source-call count overflow".to_owned())
+                    })?;
+                    if edges > MAX_REBUILD_PACKAGES {
+                        return Err(BuiltinModelError(
+                            "query source calls exceed the row bound".to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for (caller, targets) in updates {
+        check_search_preparation(cancelled, "query-call-append")?;
+        let mut presentation = facts[caller].presentation().clone();
+        let mut related = presentation.related.into_vec();
+        for target in targets {
+            check_search_preparation(cancelled, "query-call-target")?;
+            related.push(facts[target].presentation().id.clone());
+        }
+        if cancelled.is_some() {
+            super::super::query::controlled_sort::sort_unstable_by_in_place_checked(
+                &mut related,
+                Ord::cmp,
+                &mut || check_search_preparation(cancelled, "query-call-sort"),
+            )?;
+        } else {
+            related.sort_unstable();
+        }
+        related.dedup();
+        presentation.related = related.into_boxed_slice();
+        facts[caller] = backend_extension_trustfall::SemanticQueryFact::new(
+            facts[caller].evidence().clone(),
+            presentation,
+        );
     }
     Ok(())
 }
