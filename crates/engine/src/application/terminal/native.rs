@@ -120,13 +120,30 @@ fn authority_terminal(
     failure: &crate::driver::AuthorityFailure<'_>,
 ) -> CompilerTerminal {
     let projection = failure.projection();
+    let diagnostic = authority_diagnostic(projection.diagnostic);
+    let diagnostic = match failure {
+        crate::driver::AuthorityFailure::TypeScriptTsz { cause, .. } => {
+            let kind = crate::application::compiler_typescript_failure::native_failure(cause);
+            diagnostic
+                .or_else(|| {
+                    let detail = kind.detail().as_bytes();
+                    backend_library::interface::CompilerDiagnostic::from_native(
+                        detail,
+                        detail.len(),
+                        false,
+                    )
+                })
+                .map(|diagnostic| diagnostic.with_typescript_failure(kind))
+        }
+        _ => diagnostic,
+    };
     compile_from_driver(
         source,
         recipe,
         CompilerCause::Authority {
             phase: projection.phase,
             class: projection.class,
-            diagnostic: authority_diagnostic(projection.diagnostic),
+            diagnostic,
         },
     )
 }
@@ -589,6 +606,205 @@ mod tests {
         {
             return Err(TestError::Projection);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_tsz_query_stops_retain_typed_native_terminal_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_typescript::{
+            TszAuthorityError, TszCheckerOptions, TszEnvironmentFingerprint,
+            TszExecutionCheckpoint, TszFileInput, TszProjectAuthority, TszProjectCheckerExecution,
+            TszProjectExecutionStop, TszProjectOptions, TszProjectQuerySessionError,
+            TszProjectSemanticOptions,
+        };
+        use backend_library::interface::{
+            TypeScriptAuthorityFailureKind as F, TypeScriptStopPhase, TypeScriptStopSite,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ArmedStop {
+            armed: AtomicBool,
+            reason: TszProjectExecutionStop,
+        }
+        impl TszExecutionCheckpoint for ArmedStop {
+            fn checkpoint(&self, _: u64) -> Result<(), TszProjectExecutionStop> {
+                if self.armed.load(Ordering::Acquire) {
+                    Err(self.reason)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let text = "export const value: number = 1;";
+        let source = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes())
+            .ok_or("fixture source length")?;
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"native-query-transport"),
+        );
+        for (reason, expected) in [
+            (
+                TszProjectExecutionStop::Cancelled,
+                F::NativeSessionCancelled,
+            ),
+            (TszProjectExecutionStop::Deadline, F::NativeSessionDeadline),
+            (
+                TszProjectExecutionStop::WorkBudgetExhausted,
+                F::NativeSessionWorkBudgetExhausted,
+            ),
+        ] {
+            let checkpoint = ArmedStop {
+                armed: AtomicBool::new(false),
+                reason,
+            };
+            let mut authority = TszProjectAuthority::new();
+            authority.update_with_checker_execution(
+                vec![TszFileInput {
+                    path: "src/value.ts".into(),
+                    source: text.into(),
+                }],
+                TszProjectOptions {
+                    checker: TszCheckerOptions {
+                        no_lib: true,
+                        ..TszCheckerOptions::default()
+                    },
+                    semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                    program_diagnostics: Vec::new(),
+                    module_resolutions: Vec::new(),
+                    file_formats: Vec::new(),
+                    environment: TszEnvironmentFingerprint::from_sha256([0x61; 32]),
+                },
+                &[],
+                TszProjectCheckerExecution {
+                    checkpoint: &checkpoint,
+                    workers: std::num::NonZeroUsize::MIN,
+                },
+            )?;
+            let project = authority.project().ok_or("checked TSZ project missing")?;
+            let session = project.checked_query_session(&checkpoint)?;
+            let index = session.file_index("src/value.ts")?;
+            let entered = AtomicBool::new(false);
+            checkpoint.armed.store(true, Ordering::Release);
+            let Err(error) = session.with_file_checker_and_types(index, |_, _, _, _| {
+                entered.store(true, Ordering::Release);
+            }) else {
+                return Err("a stopped real query exposed checker authority".into());
+            };
+            assert_eq!(error, TszProjectQuerySessionError::ExecutionStopped(reason));
+            assert!(!entered.load(Ordering::Acquire));
+            let terminal = compile_terminal(CompileFailure::Authority {
+                source_identity: source,
+                recipe,
+                failure: AuthorityFailure::TypeScriptTsz {
+                    diagnostic: AuthorityDiagnostic::absent(),
+                    cause: TszAuthorityError::ProjectCheckerSession(error),
+                },
+            });
+            // Exercise the public refusal codec, not just a borrowed driver value.
+            let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+                "src/value.ts",
+                &terminal,
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .ok_or("native query refusal was not publishable")?;
+            let reply = backend_library::ReplyDto::new(
+                1,
+                backend_library::CommandReply::Failed(
+                    backend_library::CommandFailure::CompilerRefused {
+                        detail: failure.detail().to_owned(),
+                        failure,
+                    },
+                ),
+            );
+            let bytes = serde_json::to_vec(&reply)?;
+            assert_eq!(backend_library::decode_reply_body(&bytes)?, reply);
+            assert!(String::from_utf8_lossy(&bytes).contains(expected.kind_tag()));
+            let CompilerTerminal::Compile { attempted, cause } = terminal else {
+                return Err("native query refusal lost its compile terminal".into());
+            };
+            assert_eq!(attempted.source.identity, source.identity);
+            assert_eq!(attempted.source.byte_len, source.byte_len);
+            assert_eq!(attempted.recipe, recipe.identity);
+            let CompilerCause::Authority {
+                phase,
+                class,
+                diagnostic: Some(diagnostic),
+            } = cause
+            else {
+                return Err("native query refusal lost its diagnostic".into());
+            };
+            assert_eq!(phase, AuthorityPhase::Project);
+            assert_eq!(class, AuthorityDiagnosticClass::Projection);
+            assert_eq!(diagnostic.typescript_failure, Some(expected));
+            assert_eq!(
+                diagnostic.bytes.get(..diagnostic.byte_len),
+                Some(expected.detail().as_bytes())
+            );
+            let diagnostic = diagnostic.with_typescript_stop_site(TypeScriptStopSite::new(
+                Some(TypeScriptStopPhase::FileQuery),
+                Some("src/value.ts"),
+                1,
+                10,
+            ));
+            assert!(diagnostic.typescript_stop_site.is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tsz_nonstop_refusal_keeps_original_bytes_without_inventing_a_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_typescript::TszAuthorityError;
+        use backend_library::interface::{
+            TypeScriptAuthorityFailureKind as F, TypeScriptStopPhase, TypeScriptStopSite,
+        };
+        let text = "export const value: number = 1;";
+        let source = backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes())
+            .ok_or("fixture source length")?;
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"native-query-transport"),
+        );
+        let bytes = b"retained authority diagnostic";
+        let failure = AuthorityFailure::TypeScriptTsz {
+            diagnostic: AuthorityDiagnostic::new(bytes, bytes.len(), false)
+                .map_err(|_| "fixture diagnostic extent")?,
+            cause: TszAuthorityError::SourceMismatch {
+                path: "private/source.ts".into(),
+            },
+        };
+        let CompilerTerminal::Compile { cause, .. } = authority_terminal(source, recipe, &failure)
+        else {
+            return Err("TSZ refusal changed terminal family".into());
+        };
+        let CompilerCause::Authority {
+            diagnostic: Some(diagnostic),
+            ..
+        } = cause
+        else {
+            return Err("TSZ refusal lost its diagnostic".into());
+        };
+        assert_eq!(diagnostic.typescript_failure, Some(F::NativeSourceMismatch));
+        assert_eq!(
+            diagnostic.bytes.get(..diagnostic.byte_len),
+            Some(bytes.as_slice())
+        );
+        assert_eq!(diagnostic.observed, bytes.len());
+        assert!(!diagnostic.truncated);
+        let diagnostic = diagnostic.with_typescript_stop_site(TypeScriptStopSite::new(
+            Some(TypeScriptStopPhase::FileQuery),
+            Some("src/value.ts"),
+            1,
+            10,
+        ));
+        assert!(diagnostic.typescript_stop_site.is_none());
         Ok(())
     }
 }
