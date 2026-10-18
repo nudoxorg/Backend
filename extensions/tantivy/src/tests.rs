@@ -1912,6 +1912,231 @@ fn failed_final_stage_barriers_preserve_the_old_search_root_and_allow_retry() {
     }
 }
 
+#[test]
+fn durable_guaranteed_rebuilds_skip_unusable_previous_generation() {
+    let documents = |count: u64| {
+        (1..=count)
+            .map(|id| {
+                (
+                    document(id),
+                    vec![("name".into(), format!("rebuildcanary{id}"))],
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for (case, previous_count, next_count, other_workspace) in [
+        ("workspace", 1, 1, true),
+        ("growth", 1, 3, false),
+        ("shrink", 3, 1, false),
+    ] {
+        let root = std::env::temp_dir().join(format!(
+            "backend-tantivy-forced-rebuild-{}-{case}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let previous = state_for(documents(previous_count), [71; 32]);
+        let next_documents = documents(next_count);
+        let (mut next_binding, coverage) = binding(&next_documents);
+        if other_workspace {
+            next_binding.workspace = workspace_alt();
+        }
+        let next = DocumentState::new(
+            next_binding.with_frontier(Frontier::from_value(&[72; 32])),
+            coverage,
+            next_documents,
+            Limits::default(),
+        )
+        .expect("exact target document state");
+        let previous_path = root
+            .join(DURABLE_ROOTS_DIRECTORY)
+            .join(hex_fingerprint(projection_fingerprint(previous.binding())));
+        let budget = OverlayLimits {
+            max_changed_documents: 1,
+            ..OverlayLimits::default()
+        };
+        let (source, revision, action) = TantivySource::open_or_advance_in_dir_with_action(
+            &previous,
+            &next,
+            Limits::default(),
+            budget,
+            &root,
+        )
+        .expect("build the complete target without preparing its unusable predecessor");
+        assert_eq!(action, DurableProjectionAction::Built, "{case}");
+        assert_eq!(revision, None, "{case}");
+        let request = QueryRequest {
+            binding: next.binding(),
+            query: Query::new(vec!["rebuildcanary1".into()], Limits::default()).expect("query"),
+            cursor: None,
+            limit: 8,
+        };
+        assert_eq!(
+            source
+                .fetch(&request)
+                .expect("exact target request")
+                .binding,
+            next.binding()
+        );
+        assert_eq!(
+            term_hits(&source, "rebuildcanary1"),
+            vec![document(1)],
+            "{case}"
+        );
+        assert_eq!(
+            term_hits(&source, "rebuildcanary3"),
+            if next_count == 3 {
+                vec![document(3)]
+            } else {
+                Vec::new()
+            },
+            "{case}",
+        );
+        assert!(
+            !previous_path.exists(),
+            "{case}: a guaranteed rebuild must not open/build/copy an unused previous root"
+        );
+        drop(source);
+        let (cold, revision, action) = TantivySource::open_or_advance_in_dir_with_action(
+            &previous,
+            &next,
+            Limits::default(),
+            budget,
+            &root,
+        )
+        .expect("reopen exact target before considering the previous root");
+        assert_eq!(action, DurableProjectionAction::Opened, "{case}");
+        assert_eq!(revision, None, "{case}");
+        assert_eq!(
+            cold.fetch(&request).expect("exact cold request").binding,
+            next.binding()
+        );
+        assert_eq!(
+            term_hits(&cold, "rebuildcanary1"),
+            vec![document(1)],
+            "{case}"
+        );
+        assert!(
+            !previous_path.exists(),
+            "{case}: reopen must not materialize the predecessor"
+        );
+        drop(cold);
+        std::fs::remove_dir_all(root).expect("remove test roots");
+    }
+}
+
+#[test]
+fn durable_document_count_at_budget_still_revises_exact_previous_root() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-revision-boundary-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "retainedcanary".into())])],
+        [73; 32],
+    );
+    let next = state_for(
+        vec![
+            (document(1), vec![("name".into(), "retainedcanary".into())]),
+            (document(2), vec![("name".into(), "appendedcanary".into())]),
+        ],
+        [74; 32],
+    );
+    let (source, revision, action) = TantivySource::open_or_advance_in_dir_with_action(
+        &previous,
+        &next,
+        Limits::default(),
+        OverlayLimits {
+            max_changed_documents: 1,
+            ..OverlayLimits::default()
+        },
+        &root,
+    )
+    .expect("one exact addition still uses the bounded revision path");
+    assert_eq!(action, DurableProjectionAction::Revised);
+    assert_eq!(
+        revision.map(|revision| (revision.kind, revision.rewritten_documents)),
+        Some((ProjectionKind::Revised, 1))
+    );
+    let request = QueryRequest {
+        binding: next.binding(),
+        query: Query::new(vec!["appendedcanary".into()], Limits::default()).expect("query"),
+        cursor: None,
+        limit: 8,
+    };
+    assert_eq!(
+        source
+            .fetch(&request)
+            .expect("exact revised request")
+            .binding,
+        next.binding()
+    );
+    assert_eq!(term_hits(&source, "retainedcanary"), vec![document(1)]);
+    assert_eq!(term_hits(&source, "appendedcanary"), vec![document(2)]);
+    let previous_path = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(previous.binding())));
+    assert!(
+        previous_path.is_dir(),
+        "a viable revision still admits its exact predecessor"
+    );
+    drop(source);
+    std::fs::remove_dir_all(root).expect("remove test roots");
+}
+
+#[test]
+fn durable_forced_rebuild_preserves_invalid_maintenance_budget_refusal() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-rebuild-budget-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "previouscanary".into())])],
+        [75; 32],
+    );
+    let target_documents = vec![(document(2), vec![("name".into(), "targetcanary".into())])];
+    let (mut target_binding, coverage) = binding(&target_documents);
+    target_binding.workspace = workspace_alt();
+    let next = DocumentState::new(
+        target_binding,
+        coverage,
+        target_documents,
+        Limits::default(),
+    )
+    .expect("different exact target workspace");
+    assert!(matches!(
+        TantivySource::open_or_advance_in_dir_with_action(
+            &previous,
+            &next,
+            Limits::default(),
+            OverlayLimits {
+                max_changed_documents: 0,
+                ..OverlayLimits::default()
+            },
+            &root,
+        ),
+        Err(TantivySourceError::Contract(Error::InvalidLimits)),
+    ));
+    let previous_path = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(previous.binding())));
+    assert!(
+        !previous_path.exists(),
+        "invalid budget cannot start an unused predecessor build"
+    );
+    std::fs::remove_dir_all(root).expect("remove test namespace");
+}
+
 fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
     source
         .search(&Query::new(vec![term.to_owned()], Limits::default()).expect("query"))
