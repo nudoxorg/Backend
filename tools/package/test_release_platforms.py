@@ -57,14 +57,14 @@ class PlatformReleaseTests(unittest.TestCase):
             qa = qa_path.read_bytes()
             qa_path.unlink()
             github = FakeGitHub()
-            github.publish(root, "v0.2.0-rc.1-macos", False, draft_only=True)
+            github.publish_fixture(root, "v0.2.0-rc.1-macos", False, draft_only=True)
             self.assertTrue(github.release["draft"])
             self.assertEqual(len(github.uploaded), 3)
             with self.assertRaisesRegex(ValueError, "regular file"):
-                github.publish(root, "v0.2.0-rc.1-macos", False)
+                github.publish_fixture(root, "v0.2.0-rc.1-macos", False)
             self.assertTrue(github.release["draft"])
             qa_path.write_bytes(qa)
-            github.publish(root, "v0.2.0-rc.1-macos", False)
+            github.publish_fixture(root, "v0.2.0-rc.1-macos", False)
             self.assertFalse(github.release["draft"])
             self.assertEqual(len(github.uploaded), 4)
             self.assertEqual(len([call for call in github.calls if call[1] == "POST"]), 1)
@@ -112,12 +112,12 @@ class PlatformReleaseTests(unittest.TestCase):
         for platform in ("macos", "linux-x64", "linux-arm64", "windows"):
             with tempfile.TemporaryDirectory() as directory:
                 candidate(directory) if platform == "macos" else native_candidate(directory, platform)
-                github.publish(directory, "v0.2.0", True)
+                github.publish_fixture(directory, "v0.2.0", True)
                 for kind in ("release-manifest", "native-qa"):
                     path = Path(directory) / (kind + ".json")
                     path.rename(Path(directory) / f"{kind}-{platform}.json")
                 self.assertEqual(release.validate(directory, platform=platform)["platform"], platform)
-                github.publish(directory, "v0.2.0", True, platform)
+                github.publish_fixture(directory, "v0.2.0", True, platform)
         self.assertEqual(len(github.uploaded), 17)
         self.assertEqual(len({asset["name"] for asset in github.release["assets"]}), 17)
 
@@ -125,14 +125,14 @@ class PlatformReleaseTests(unittest.TestCase):
         github = FakeGitHub()
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             candidate(first)
-            github.publish(first, "v0.2.0", True)
+            github.publish_fixture(first, "v0.2.0", True)
             native_candidate(second, "windows")
             existing = next(asset for asset in github.release["assets"] if asset["name"] == "release-manifest-macos.json")
             data = json.loads(github.asset_data[existing["id"]])
             data["source_sha"] = "d" * 40
             github.asset_data[existing["id"]] = json.dumps(data).encode()
             with self.assertRaisesRegex(ValueError, "same source revision"):
-                github.publish(second, "v0.2.0", True)
+                github.publish_fixture(second, "v0.2.0", True)
             self.assertEqual(len(github.uploaded), 4)
 
     def test_mac_browser_and_cli_acceptance_cannot_be_skipped(self):

@@ -58,6 +58,16 @@ arguments or committed files. `submit` checks source/version/tree/lock, artifact
 QA, and exact-revision CI. It chooses `v<version>-rc.<number>-<platform>`, uploads a draft,
 reads every asset back, and only then makes the completed prerelease visible to Concourse.
 
+Before any GitHub release mutation, both the authoritative canonical Forgejo tag and its
+mirrored GitHub tag must already resolve to the candidate's exact source commit. Create a
+missing tag explicitly on canonical Forgejo only after verifying that source, then wait for
+the push mirror to carry it to GitHub. A GitHub-only tag can be deleted by the authoritative
+mirror, returning its release to draft. Publication refuses missing or different targets; it
+never creates, overwrites, or pushes tags. The check also runs immediately before publishing
+a completed draft. Direct Python `GitHub.publish()` callers must pass `source=` with the
+canonical checkout, just as the CLI requires `--source`. Tags remain remotely mutable, so
+operators must preserve them after publication.
+
 Changed bytes need a new RC number. Retrying the same bytes is idempotent. Build directories,
 ad-hoc signed previews, a green build without native QA, and old archive relabels are refused.
 
