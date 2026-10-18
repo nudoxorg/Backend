@@ -763,8 +763,30 @@ fn default_versions_credit_is_shared_and_two_complete_descriptors_need_one_owner
 
 #[test]
 fn versions_summary_preserves_exact_page_continuation_and_full_native_guards_on_every_mcp_route() {
-    for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
-        for raw in [false, true] {
+    // The registered adapter deliberately excludes expert, recursive and
+    // unknown targets. Their typed refusal must precede every owner call.
+    for excluded in ["backend.surface", "backend.call", "backend.no_such_tool"] {
+        let mut refused = ready(Fake {semantic_versions_total:Some(3),..Fake::default()});
+        let response = request(&mut refused,"tools/call",&json!({
+            "name":"backend.call", "arguments":{"name":excluded,"arguments":{}}
+        }));
+        assert_eq!(response["result"]["isError"],true,"{response}");
+        let fault = &response["result"]["structuredContent"];
+        assert_eq!(fault["answer"],"fault");
+        assert_eq!(fault["slug"],"usage");
+        assert_eq!(fault["operand"],"name");
+        assert_eq!(fault["cause"],"malformed");
+        assert!(fault["detail"].as_str().expect("typed refusal").contains("registered named tool"));
+        assert!(refused.product.surface_commands.is_empty(),"refused routes submit no owner work");
+        assert_eq!(refused.product.probe_calls,0);
+        assert_context_bounded(&response);
+    }
+    // All supported forms retain the same native page and exact continuation.
+    for (exposure, raw) in [
+        (McpExposure::Direct,false),
+        (McpExposure::Direct,true),
+        (McpExposure::RegisteredCall,false),
+    ] {
             let initial = if raw {
                 json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::SemanticVersions {
                     package:captured().package,limit:2,cursor:None},"detail":"summary"}})
@@ -788,7 +810,13 @@ fn versions_summary_preserves_exact_page_continuation_and_full_native_guards_on_
             assert_eq!(summary["entries"][0]["coordinate"],captured().coordinate.as_str());
             assert_eq!(summary["full_detail"]["scope"],"fresh-discovery");
             assert_eq!(summary["full_detail"]["call"]["name"],
-                if exposure == McpExposure::RegisteredCall { "backend.call" } else { "backend.surface" });
+                if exposure == McpExposure::RegisteredCall { "backend.call" } else { "backend.semantic_versions" });
+            let action = if exposure == McpExposure::RegisteredCall {
+                &summary["full_detail"]["call"]["arguments"]
+            } else { &summary["full_detail"]["call"] };
+            assert_eq!(action["name"],"backend.semantic_versions");
+            assert_eq!(action["arguments"]["package"],captured().package.as_str());
+            assert_eq!(action["arguments"]["detail"],"full");
             assert!(serde_json::from_value::<SemanticVersionsPage>(summary.clone()).is_err());
             let next = structured["continuation_call"].clone();
             let continued = request(&mut server,"tools/call",&next);
@@ -809,8 +837,8 @@ fn versions_summary_preserves_exact_page_continuation_and_full_native_guards_on_
             let full = request(&mut server,"tools/call",&summary["full_detail"]["call"]);
             assert_eq!(full["result"]["isError"],false,"{full}");
             let restored: SemanticVersionsPage = serde_json::from_value(
-                full["result"]["structuredContent"]["surface"]["data"].clone(),
-            ).expect("unchanged raw native full-detail page");
+                full["result"]["structuredContent"]["semantic_data"]["value"].clone(),
+            ).expect("unchanged named native full-detail page");
             assert_eq!(restored,page(backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,0,3,8));
             let SemanticVersionDescriptor::Available { reference } = &restored.entries[0] else { unreachable!() };
             assert_eq!(reference.metadata.generation,captured().generation);
@@ -829,6 +857,5 @@ fn versions_summary_preserves_exact_page_continuation_and_full_native_guards_on_
             eprintln!("real42-backed descriptors raw={raw} exposure={exposure:?}: summary_bytes={} summary_cl100k={} full_bytes={} full_cl100k={}",
                 serde_json::to_vec(&response).expect("admitted transport fixture").len(),wire_tokens(&response).expect("admitted transport fixture"),
                 serde_json::to_vec(&full_same_page).expect("admitted transport fixture").len(),wire_tokens(&full_same_page).expect("admitted transport fixture"));
-        }
     }
 }

@@ -348,7 +348,8 @@ fn cli_versions_summary_keeps_exact_continuation_and_explicit_full_discovery() -
     let display = &projected["semantic_versions_summary"];
     assert_eq!(display["entries"].as_array().ok_or("all summary rows")?.len(), selected.entries.len());
     assert_eq!(display["full_detail"]["scope"], "fresh-discovery");
-    assert_eq!(display["full_detail"]["call"]["arguments"]["command"]["package"], json!(package));
+    assert_eq!(display["full_detail"]["call"]["name"], "backend.semantic_versions");
+    assert_eq!(display["full_detail"]["call"]["arguments"]["package"], package.as_str());
     let words = vec!["semantic-versions".to_owned(), package.as_str().to_owned(),
         "--detail".to_owned(), "full".to_owned()];
     let full_invocation = fixture(crate::invoke::parse(&words, None))?;

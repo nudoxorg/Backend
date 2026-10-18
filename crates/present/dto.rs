@@ -1055,14 +1055,39 @@ pub struct SemanticVersionsFullDetailDto {
     pub scope: String,
     /// Copyable full-detail CLI discovery command.
     pub cli: Option<String>,
-    /// Copyable read-only MCP full-detail discovery call.
-    pub call: serde_json::Value,
+    /// Copyable read-only MCP discovery call when the exposed route can preserve the package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Value>,
+    /// Why no supported exposed route can represent this exact tagged package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 
 impl SemanticVersionsSummaryDto {
     pub(crate) fn new(page: &backend_library::SemanticVersionsPage, exposure: crate::McpExposure) -> Self {
         use backend_library::{SemanticSourceHistory as History, SemanticVersionDescriptor as Descriptor};
+        let named_package = backend_library::PackageReference::parse(page.package.as_str()).ok().as_ref()
+            == Some(&page.package);
+        // backend.call admits only registered named tools. A typed expert
+        // package is usable through direct surface only; never route it through
+        // the closed named enum or reclassify its namespace by display spelling.
+        let (call, unavailable_reason) = if named_package {
+            (Some(exposure.expose_call(serde_json::json!({
+                "name":"backend.semantic_versions",
+                "arguments":{"package":page.package.as_str(),"detail":"full"}
+            }))), None)
+        } else if exposure == crate::McpExposure::Direct {
+            (Some(serde_json::json!({
+                "name":"backend.surface",
+                "arguments":{"command":backend_library::SurfaceCommand::SemanticVersions {
+                    package:page.package.clone(), limit:backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
+                    cursor:None,
+                },"detail":"full"}
+            })), None)
+        } else {
+            (None, Some("this exact tagged package requires the direct expert surface; backend.call accepts registered named tools only".to_owned()))
+        };
         Self {
             package: page.package.clone(),
             total: page.total,
@@ -1109,14 +1134,8 @@ impl SemanticVersionsSummaryDto {
                     .then(|| crate::shell::command("semantic-versions", &[
                         page.package.as_str().to_owned(), "--detail".to_owned(), "full".to_owned(),
                     ])).flatten(),
-                call: exposure.expose_call(serde_json::json!({
-                    "name":"backend.surface",
-                    "arguments":{"command": backend_library::SurfaceCommand::SemanticVersions {
-                        package: page.package.clone(),
-                        limit: backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
-                        cursor: None,
-                    }, "detail":"full"}
-                })),
+                call,
+                unavailable_reason,
             },
         }
     }
@@ -1429,7 +1448,7 @@ mod semantic_versions_summary_tests {
         assert_eq!(data.entries[0].history, "published");
         assert_eq!(data.entries[0].history_images, Some(42), "whole native history count");
         assert_eq!(data.full_detail.scope, "fresh-discovery");
-        assert_eq!(data.full_detail.call["arguments"]["detail"], "full");
+        assert_eq!(data.full_detail.call.as_ref().expect("supported named discovery")["arguments"]["detail"], "full");
         assert!(serde_json::from_value::<backend_library::SemanticVersionsPage>(serde_json::to_value(data).expect("admitted transport fixture")).is_err());
         assert!(serde_json::to_vec(&summary).expect("admitted transport fixture").len() < serde_json::to_vec(&full).expect("admitted transport fixture").len());
     }
@@ -1455,11 +1474,17 @@ mod semantic_versions_summary_tests {
         page.package = backend_library::PackageReference::Local(backend_library::ProductText::new(captured_page().entries[0].metadata().coordinate.as_str()).expect("admitted local namespace spelling"));
         let expert = SemanticVersionsSummaryDto::new(&page, crate::McpExposure::Direct);
         let command: backend_library::SurfaceCommand = serde_json::from_value(
-            expert.full_detail.call["arguments"]["command"].clone(),
+            expert.full_detail.call.as_ref().expect("direct expert discovery")["arguments"]["command"].clone(),
         ).expect("typed read action");
         assert!(matches!(command, backend_library::SurfaceCommand::SemanticVersions { package, cursor: None, .. }
             if package == page.package), "display action must not reclassify a tagged package by spelling");
         assert_ne!(backend_library::PackageReference::parse(page.package.as_str()).ok().as_ref(), Some(&page.package));
         assert!(expert.full_detail.cli.is_none(), "do not offer a lossy string-grammar action");
+        assert_eq!(expert.full_detail.call.as_ref().expect("direct expert route")["name"], "backend.surface");
+        let registered = SemanticVersionsSummaryDto::new(&page, crate::McpExposure::RegisteredCall);
+        assert!(registered.full_detail.call.is_none(), "a private expert route cannot enter the registered enum");
+        assert!(registered.full_detail.cli.is_none(), "a lossy CLI action cannot replace the exact package");
+        assert!(registered.full_detail.unavailable_reason.as_deref().is_some_and(|reason| reason.contains("registered named tools only")));
+        assert!(serde_json::to_value(&registered.full_detail).expect("display advice").get("call").is_none());
     }
 }
