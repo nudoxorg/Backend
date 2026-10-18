@@ -389,16 +389,30 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
                 && fact.presentation().kind == "external"),
         "a real unselected vendor remains external"
     );
+    let local_external_twins = corpus
+        .facts()
+        .iter()
+        .filter(|fact| {
+            [
+                "generateSchedule",
+                "schedule",
+                "scheduleVersion",
+                "scheduleArrow",
+            ]
+            .contains(&fact.presentation().name.as_str())
+                && fact.presentation().kind == "external"
+        })
+        .map(|fact| {
+            (
+                fact.presentation().name.clone(),
+                fact.presentation().id.clone(),
+                fact.presentation().coordinate.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        !corpus.facts().iter().any(|fact| [
-            "generateSchedule",
-            "schedule",
-            "scheduleVersion",
-            "scheduleArrow"
-        ]
-        .contains(&fact.presentation().name.as_str())
-            && fact.presentation().kind == "external"),
-        "selected local targets add no external twin"
+        local_external_twins.is_empty(),
+        "selected local targets add no external twin: {local_external_twins:?}"
     );
     let target = corpus
         .facts()
