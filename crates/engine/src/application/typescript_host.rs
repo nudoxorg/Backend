@@ -414,13 +414,22 @@ impl TypeScriptResolverWitness {
         &self,
         host: &ValidatedTypeScriptHost<'_>,
     ) -> Result<(), TypeScriptProjectHostError> {
+        self.validate_with_host_controlled(host, &mut || Ok(()))
+    }
+
+    pub(crate) fn validate_with_host_controlled(
+        &self,
+        host: &ValidatedTypeScriptHost<'_>,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        control()?;
         let witness = host.witness;
         if self.project_fingerprint != witness.fingerprint {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: witness.project_root.clone(),
             });
         }
-        validate_resolver_observations_with_host(witness, &self.observations, Some(host))
+        validate_resolver_observations_with_host_controlled(witness, &self.observations, Some(host), control)
     }
 }
 
@@ -1371,12 +1380,23 @@ fn validate_resolver_observations_with_host(
     observations: &ResolverObservationLedger,
     host: Option<&ValidatedTypeScriptHost<'_>>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    validate_resolver_observations_with_host_controlled(witness, observations, host, &mut || Ok(()))
+}
+
+fn validate_resolver_observations_with_host_controlled(
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+    host: Option<&ValidatedTypeScriptHost<'_>>,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<(), TypeScriptProjectHostError> {
+    control()?;
     if host.is_some_and(|host| !std::ptr::eq(host.witness, witness)) {
         return Err(TypeScriptProjectHostError::WitnessChanged {
             path: witness.project_root.clone(),
         });
     }
     for input in observations.loaded_sources.values() {
+        control()?;
         // Common SDK/config/dynamic files were freshly checked once at this
         // boundary. New reads made after that proof still require a capture.
         let captured;
@@ -1397,6 +1417,7 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, nearest_parent) in &observations.missing_paths {
+        control()?;
         if !matches!(fs::symlink_metadata(path), Err(ref source) if matches!(source.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory))
         {
             return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -1416,6 +1437,7 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, expected) in &observations.external_negative_parents {
+        control()?;
         if !witness.external_negative_module_candidate(path)
             || &capture_external_negative_parent(path)? != expected
         {
@@ -1425,6 +1447,7 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, expected) in &observations.external_absent_directories {
+        control()?;
         if !captured_peer_directory_candidate(path, witness, observations)
             || &capture_external_negative_parent(path)? != expected
         {
@@ -1434,7 +1457,8 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, expected) in &observations.directories {
-        let observed = capture_directory_snapshot(path, witness)?;
+        control()?;
+        let observed = capture_directory_snapshot_controlled(path, witness, control)?;
         if &observed != expected {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: path.clone().into_boxed_path(),
@@ -1442,6 +1466,7 @@ fn validate_resolver_observations_with_host(
         }
     }
     for (path, expected) in &observations.realpaths {
+        control()?;
         let observed = capture_realpath_snapshot(path)?;
         let canonical = observed.as_ref().map(|(path, _)| path.as_path());
         if canonical != expected.canonical_path.as_deref()
@@ -1452,6 +1477,7 @@ fn validate_resolver_observations_with_host(
             });
         }
     }
+    control()?;
     Ok(())
 }
 
@@ -2072,6 +2098,14 @@ impl TypeScriptProjectWitness {
     pub(crate) fn validated(
         &self,
     ) -> Result<ValidatedTypeScriptHost<'_>, TypeScriptProjectHostError> {
+        self.validated_controlled(&mut || Ok(()))
+    }
+
+    pub(crate) fn validated_controlled(
+        &self,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<ValidatedTypeScriptHost<'_>, TypeScriptProjectHostError> {
+        control()?;
         if let Some(proof) = &self.resource_proof {
             proof.validate_current().map_err(bundle_admission_error)?;
         }
@@ -2171,6 +2205,7 @@ impl TypeScriptProjectWitness {
                 )?
             }
         };
+        control()?;
         if current.files != self.files || current.fingerprint != self.fingerprint {
             let changed = first_changed_snapshot(&self.files, &current.files)
                 .unwrap_or_else(|| self.project_root.to_path_buf());
@@ -2191,6 +2226,7 @@ impl TypeScriptProjectWitness {
             }
         })?;
         for (path, expected) in loaded.iter() {
+            control()?;
             let observed = capture_file_snapshot(path, MAX_SOURCE_FILE_BYTES)?;
             if &observed != expected {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -2210,6 +2246,7 @@ impl TypeScriptProjectWitness {
                 .iter()
                 .map(|(path, snapshot)| (path.clone(), snapshot.clone())),
         );
+        control()?;
         Ok(ValidatedTypeScriptHost {
             witness: self,
             sources,
@@ -2445,6 +2482,17 @@ fn capture_directory_snapshot(
     path: &Path,
     witness: &TypeScriptProjectWitness,
 ) -> Result<DirectorySnapshot, TypeScriptProjectHostError> {
+    capture_directory_snapshot_controlled(path, witness, &mut || Ok(()))
+}
+
+fn capture_directory_snapshot_controlled<F>(
+    path: &Path,
+    witness: &TypeScriptProjectWitness,
+    control: &mut F,
+) -> Result<DirectorySnapshot, TypeScriptProjectHostError>
+where F: FnMut() -> Result<(), TypeScriptProjectHostError> + ?Sized,
+{
+    control()?;
     #[cfg(all(test, unix))]
     DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.set(count.get() + 1));
     let canonical =
@@ -2480,6 +2528,7 @@ fn capture_directory_snapshot(
             source,
         })?
     {
+        control()?;
         let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: canonical.clone().into_boxed_path(),
             source,
@@ -2551,6 +2600,7 @@ fn capture_directory_snapshot(
             identity: entry_identity,
         });
     }
+    control()?;
     entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
     Ok(DirectorySnapshot {
         path: canonical.into_boxed_path(),

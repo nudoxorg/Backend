@@ -114,6 +114,15 @@ impl TypeScriptProgramClosureWitness {
         &self,
         host: &ValidatedTypeScriptHost<'_>,
     ) -> Result<(), TypeScriptProjectHostError> {
+        self.validate_with_host_controlled(host, &mut || Ok(()))
+    }
+
+    fn validate_with_host_controlled(
+        &self,
+        host: &ValidatedTypeScriptHost<'_>,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        control()?;
         if compiler_access_digest(&self.compiler_accesses, &self.directory_views, self.metrics)?
             != self.access_digest
         {
@@ -121,7 +130,8 @@ impl TypeScriptProgramClosureWitness {
                 "retained Compiler API directory transcript changed after construction",
             ));
         }
-        self.resolver.validate_with_host(host)
+        control()?;
+        self.resolver.validate_with_host_controlled(host, control)
     }
 }
 
@@ -1076,10 +1086,20 @@ impl TypeScriptForestClosureWitness {
         &self,
         witness: &super::typescript_host::TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
-        let host = witness.validated()?;
+        self.validate_current_controlled(witness, &mut || Ok(()))
+    }
+
+    pub(crate) fn validate_current_controlled(
+        &self,
+        witness: &super::typescript_host::TypeScriptProjectWitness,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let host = witness.validated_controlled(control)?;
         for program in &self.0 {
-            program.validate_with_host(&host)?;
+            control()?;
+            program.validate_with_host_controlled(&host, control)?;
         }
+        control()?;
         Ok(())
     }
 }
