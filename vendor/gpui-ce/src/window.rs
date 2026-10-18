@@ -2510,6 +2510,10 @@ impl Window {
                 },
             });
 
+            // AT-SPI Screen coordinates include the native window origin.
+            // Initialize the adapter even if the window has not moved since opening.
+            platform_window.a11y_update_window_bounds();
+
             // A11y can be activated at any time, and so we cannot compute a
             // correct `TreeUpdate` on-demand. When this happens, we return a
             // default empty `TreeUpdate`.
@@ -3710,6 +3714,7 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
+        self.platform_window.a11y_update_window_bounds();
         self.scale_factor = self.platform_window.scale_factor();
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
@@ -9658,6 +9663,29 @@ mod tests {
             }
             div().child("paced scene")
         }
+    }
+
+    #[gpui::test]
+    fn native_accessibility_bounds_follow_window_creation_move_and_resize(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, _| EmptyView);
+        let mut platform = cx.test_window(window.into());
+        let initial = platform.0.lock().a11y_bounds_updates.clone();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0], platform.0.lock().bounds);
+
+        // A move must update Screen coordinates even when the content size is unchanged.
+        let moved = Bounds::new(point(px(32.), px(10.)), size(px(1380.), px(880.)));
+        platform.0.lock().bounds = moved;
+        cx.update_window(window.into(), |_, window, cx| window.bounds_changed(cx))
+            .expect("the moved native window remains open");
+        assert_eq!(platform.0.lock().a11y_bounds_updates.last(), Some(&moved));
+
+        platform.simulate_resize(size(px(900.), px(600.)));
+        let resized = Bounds::new(moved.origin, size(px(900.), px(600.)));
+        assert_eq!(platform.0.lock().a11y_bounds_updates.last(), Some(&resized));
+        assert_eq!(platform.0.lock().a11y_bounds_updates.len(), 3);
     }
 
     #[gpui::test]

@@ -18,6 +18,7 @@ use std::{
 
 pub(crate) struct TestWindowState {
     pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) a11y_bounds_updates: Vec<Bounds<Pixels>>,
     pub(crate) handle: AnyWindowHandle,
     display: Rc<dyn PlatformDisplay>,
     pub(crate) title: Option<String>,
@@ -90,6 +91,7 @@ impl TestWindow {
         };
         Self(Rc::new(Mutex::new(TestWindowState {
             bounds: params.bounds,
+            a11y_bounds_updates: Vec::new(),
             display,
             platform,
             handle,
@@ -475,6 +477,12 @@ impl PlatformWindow for TestWindow {
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
+
+    fn a11y_update_window_bounds(&self) {
+        let mut state = self.0.lock();
+        let bounds = state.bounds;
+        state.a11y_bounds_updates.push(bounds);
+    }
 
     // NUDOX: asks its headless renderer (was `None`), like `compositing`.
     fn gpu_specs(&self) -> Option<GpuSpecs> {
