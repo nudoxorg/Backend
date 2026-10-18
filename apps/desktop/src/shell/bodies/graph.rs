@@ -885,7 +885,7 @@ impl Map {
         Some(SettingsGraphOrigin { component: cx.entity_id(), visit: frame.scope.reading.visit, frame })
     }
 
-    pub(crate) fn arm_settings_root_return(&mut self, origin: SettingsGraphOrigin, authority: ProducerAuthority, lease: crate::shell::keyboard::NativeReturnLease, cx: &mut Context<Self>) -> bool {
+    pub(in crate::shell) fn arm_settings_root_return(&mut self, origin: SettingsGraphOrigin, authority: ProducerAuthority, lease: crate::shell::keyboard::NativeReturnLease, cx: &mut Context<Self>) -> bool {
         let snapshot = self.links.snapshot(cx);
         if origin.component != cx.entity_id() || origin.visit != snapshot.session().reading.current.id
             || authority != snapshot.key().authority() || origin.frame.scope.authority != authority
