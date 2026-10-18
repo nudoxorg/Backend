@@ -431,3 +431,193 @@ fn first_mutation_starting_reply_is_unsent_and_preserves_exact_key_for_explicit_
         assert!(!fixture.paths.data().exists());
     }
 }
+
+struct IndexValidationEndpoint {
+    connects: Arc<AtomicUsize>,
+    mutations: Arc<AtomicUsize>,
+    health: Arc<AtomicUsize>,
+}
+
+impl reconnect::Endpoint for IndexValidationEndpoint {
+    type Product = Fake;
+
+    fn connect(&mut self, previous: Option<Fake>) -> Result<Fake, ClientError> {
+        assert!(
+            previous.is_none(),
+            "invalid inputs must not retire a live session"
+        );
+        self.connects.fetch_add(1, Ordering::Relaxed);
+        Ok(Fake {
+            surface_dispatches: Some(self.mutations.clone()),
+            health_calls: Some(self.health.clone()),
+            ..Fake::default()
+        })
+    }
+}
+
+#[test]
+fn invalid_index_targets_refuse_before_connect_and_same_session_reads_remain_useful() {
+    let fixture = LazyAuthorityFixture::new();
+    let file = fixture.project.join("not-a-directory");
+    std::fs::write(&file, b"not a project directory").expect("file fixture");
+    let missing = fixture.project.join("missing");
+    let targets = [
+        Value::Null,
+        json!(""),
+        json!("   "),
+        json!("relative/path"),
+        json!("."),
+        json!(missing),
+        json!(file),
+    ];
+    for registered in [false, true] {
+        for target in &targets {
+            let connects = Arc::new(AtomicUsize::new(0));
+            let mutations = Arc::new(AtomicUsize::new(0));
+            let health = Arc::new(AtomicUsize::new(0));
+            let mut server = ready_endpoint(IndexValidationEndpoint {
+                connects: connects.clone(),
+                mutations: mutations.clone(),
+                health: health.clone(),
+            });
+            let arguments = json!({"path":target});
+            let params = if registered {
+                json!({"name":"backend.call", "arguments":{"name":"backend.index", "arguments":arguments}})
+            } else {
+                json!({"name":"backend.index", "arguments":arguments})
+            };
+            let invalid = server
+                .handle_value(
+                    json!({"jsonrpc":"2.0", "id":10, "method":"tools/call", "params":params}),
+                    None,
+                )
+                .expect("invalid-path response");
+            let content = &invalid["result"]["structuredContent"];
+            assert_eq!(invalid["result"]["isError"], true, "{invalid}");
+            assert_eq!(content["slug"], "usage", "{invalid}");
+            assert_eq!(content["operand"], "path", "{invalid}");
+            assert!(content.get("index_operation").is_none());
+            assert!(content.get("index_poll").is_none());
+            assert!(content.get("surface").is_none());
+            assert_eq!(
+                connects.load(Ordering::Relaxed),
+                0,
+                "rejected path must not dial/bootstrap an owner"
+            );
+            assert_eq!(
+                mutations.load(Ordering::Relaxed),
+                0,
+                "no index admission or claim dispatch"
+            );
+            assert!(
+                !fixture.paths.data().exists(),
+                "no private owner/journal state created"
+            );
+
+            let status = server.handle_value(json!({"jsonrpc":"2.0", "id":11, "method":"tools/call", "params":{"name":"backend.status", "arguments":{}}}), None).expect("same-session status");
+            assert_eq!(status["result"]["isError"], false, "{status}");
+            assert_eq!(status["result"]["structuredContent"]["answer"], "status");
+            let search = server.handle_value(json!({"jsonrpc":"2.0", "id":12, "method":"tools/call", "params":{"name":"backend.search", "arguments":{"query":"ferris"}}}), None).expect("same-session search");
+            assert_eq!(search["result"]["isError"], false, "{search}");
+            assert!(
+                !search["result"]["structuredContent"]["records"]
+                    .as_array()
+                    .expect("useful search rows")
+                    .is_empty()
+            );
+            assert_eq!(
+                connects.load(Ordering::Relaxed),
+                1,
+                "only the following reads open their session"
+            );
+            assert!(health.load(Ordering::Relaxed) > 0);
+            assert_eq!(mutations.load(Ordering::Relaxed), 0);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_index_directory_and_directory_symlink_retain_their_spelling() {
+    let fixture = LazyAuthorityFixture::new();
+    let alias = fixture.root.join("project-link");
+    std::os::unix::fs::symlink(&fixture.project, &alias).expect("directory link");
+    let mut server = ready(Fake::default());
+    let file = fixture.root.join("file");
+    std::fs::write(&file, b"not a directory").expect("file");
+    let file_alias = fixture.root.join("file-link");
+    let dangling = fixture.root.join("dangling-link");
+    std::os::unix::fs::symlink(&file, &file_alias).expect("file link");
+    std::os::unix::fs::symlink(fixture.root.join("absent"), &dangling).expect("dangling link");
+    for path in [&file_alias, &dangling] {
+        let refused = call(&mut server, "backend.index", &json!({"path":path}));
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(server.product.surface_commands.is_empty());
+    }
+    for path in [&fixture.project, &alias] {
+        let spelling = path.to_str().expect("UTF-8 target");
+        let indexed = call(&mut server, "backend.index", &json!({"path":spelling}));
+        assert_eq!(indexed["isError"], false, "{indexed}");
+        assert_eq!(
+            server.product.index_paths.last().map(String::as_str),
+            Some(spelling)
+        );
+    }
+    assert_eq!(server.product.index_paths.len(), 2);
+}
+
+#[test]
+fn stdio_invalid_index_does_not_hold_following_status_and_search() {
+    let connects = Arc::new(AtomicUsize::new(0));
+    let mutations = Arc::new(AtomicUsize::new(0));
+    let health = Arc::new(AtomicUsize::new(0));
+    let product = reconnect::Reconnecting::disconnected(IndexValidationEndpoint {
+        connects: connects.clone(),
+        mutations: mutations.clone(),
+        health: health.clone(),
+    });
+    let server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
+    let messages = [
+        json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"invalid-path-session", "version":"1"}}}),
+        json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"backend.index", "arguments":{"path":"relative/path"}}}),
+        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"backend.status", "arguments":{}}}),
+        json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"backend.search", "arguments":{"query":"ferris"}}}),
+    ];
+    let mut input = Vec::new();
+    for message in messages {
+        write_message(&mut input, &message).expect("input frame");
+    }
+    let mut output = Vec::new();
+    serve_stdio_server(
+        server,
+        std::io::BufReader::new(std::io::Cursor::new(input)),
+        &mut output,
+    )
+    .expect("same stdio worker drains following reads");
+    let replies: Vec<Value> = std::str::from_utf8(&output)
+        .expect("UTF-8 replies")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("JSON reply"))
+        .collect();
+    assert_eq!(
+        replies
+            .iter()
+            .map(|reply| reply["id"].clone())
+            .collect::<Vec<_>>(),
+        [json!(1), json!(2), json!(3), json!(4)]
+    );
+    assert_eq!(replies[1]["result"]["isError"], true);
+    assert_eq!(replies[1]["result"]["structuredContent"]["slug"], "usage");
+    assert_eq!(replies[2]["result"]["isError"], false);
+    assert_eq!(replies[3]["result"]["isError"], false);
+    assert!(
+        !replies[3]["result"]["structuredContent"]["records"]
+            .as_array()
+            .expect("actual fixture search rows")
+            .is_empty()
+    );
+    assert_eq!(connects.load(Ordering::Relaxed), 1);
+    assert!(health.load(Ordering::Relaxed) > 0);
+    assert_eq!(mutations.load(Ordering::Relaxed), 0);
+}

@@ -792,7 +792,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         if grammar.tool() == "backend.index" && spec.name() == "path" {
             argument["minLength"] = json!(1);
             argument["description"] = json!(
-                "Required repository path. Pass the repository's absolute path; MCP never defaults this operand to its working directory."
+                "Required existing repository directory. Pass an absolute path; directory symlinks are accepted. MCP never defaults this operand to its working directory, and rejects invalid targets before owner startup or indexing."
             );
         }
         properties.insert(spec.json_name().to_owned(), argument);

@@ -989,14 +989,24 @@ impl<P: Product> Server<P> {
         // The MCP schema requires an explicit path even though the shared CLI
         // grammar permits its project default. Admit it before any owner call.
         if name == "backend.index" {
-            if !arguments
+            let Some(path) = arguments
                 .get("path")
                 .and_then(Value::as_str)
-                .is_some_and(|path| !path.trim().is_empty())
-            {
+                .filter(|path| !path.trim().is_empty())
+            else {
                 return Err(RpcError::from_fault(&Fault::usage(
                     "path",
                     "backend.index requires arguments.path: pass the repository's absolute path; use backend.index_start for a resumable operation",
+                )));
+            };
+            // This precedes opener admission, reconnect/startup and the durable
+            // caller journal. A bad local operand must not occupy this session
+            // while an owner processes a mutation it cannot admit.
+            let target = std::path::Path::new(path);
+            if !target.is_absolute() || !target.is_dir() {
+                return Err(RpcError::from_fault(&Fault::usage(
+                    "path",
+                    "backend.index requires an existing absolute directory; correct arguments.path before indexing; no index operation was submitted",
                 )));
             }
         }
