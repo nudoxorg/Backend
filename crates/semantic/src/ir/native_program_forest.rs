@@ -545,7 +545,8 @@ mod tests {
             vec![NativeProgramSource {
                 program_path: path.into(),
                 package_path: Some(path.into()),
-                source: SourceIdentity::from_bytes(b"export {};").expect("fixture source bytes are valid"),
+                source: SourceIdentity::from_bytes(b"export {};")
+                    .expect("fixture source bytes are valid"),
             }],
         )
         .expect("fixture source manifest is valid")
@@ -588,7 +589,8 @@ mod tests {
         )
         .expect("forest fixture is structurally valid");
         assert_eq!(
-            NativeProgramSources::decode(forest.as_bytes()).expect("encoded forest fixture decodes"),
+            NativeProgramSources::decode(forest.as_bytes())
+                .expect("encoded forest fixture decodes"),
             forest
         );
         let rows = forest.sources().collect::<Vec<_>>();
@@ -638,7 +640,8 @@ mod tests {
             .clone()
             .with_image_bindings([("src/app.ts".into(), image)])
             .expect("image binding fixture is valid");
-        let cold = NativeProgramSources::decode(bound.as_bytes()).expect("encoded image binding fixture decodes");
+        let cold = NativeProgramSources::decode(bound.as_bytes())
+            .expect("encoded image binding fixture decodes");
         assert_eq!(cold, bound);
         assert!(cold.image_matches("src/app.ts", &image));
         assert!(!cold.image_matches("src/app.ts", &wrong));
@@ -685,13 +688,15 @@ mod tests {
                 vec![NativeProgramSource {
                     program_path: "src/app.ts".into(),
                     package_path: None,
-                    source: SourceIdentity::from_bytes(b"export {};").expect("fixture source bytes are valid"),
+                    source: SourceIdentity::from_bytes(b"export {};")
+                        .expect("fixture source bytes are valid"),
                 }],
             )
             .expect("contradictory fixture manifest is valid"),
         );
         assert!(NativeProgramSources::from_forest(toolchain, 1, contradictory).is_err());
-        let first = NativeProgramSources::from_forest(toolchain, 1, base.clone()).expect("base forest fixture is valid");
+        let first = NativeProgramSources::from_forest(toolchain, 1, base.clone())
+            .expect("base forest fixture is valid");
         let mut options = base.clone();
         options[0].environment[0] ^= 1;
         assert_eq!(

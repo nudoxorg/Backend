@@ -765,7 +765,8 @@ mod tests {
             .expect("capacity observation fixture is valid");
             let bytes = observation.encode();
             assert_eq!(bytes.len(), 84);
-            let cold = SourceCoverageObservation::decode(&bytes).expect("encoded capacity observation decodes");
+            let cold = SourceCoverageObservation::decode(&bytes)
+                .expect("encoded capacity observation decodes");
             assert_eq!(cold, observation);
             assert_eq!(cold.source_count(), 20_001);
             assert_eq!(cold.completed(), 1);
@@ -788,22 +789,27 @@ mod tests {
             trailing.push(0);
             assert!(SourceCoverageObservation::decode(&trailing).is_err());
         }
-        let catalog =
-            SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows()).expect("catalog fixture is valid");
-        let recording = SourceCoverageObservation::from_catalog(catalog.clone()).expect("catalog observation fixture is valid");
-        let cold = SourceCoverageObservation::decode(&recording.encode()).expect("encoded catalog observation decodes");
+        let catalog = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows())
+            .expect("catalog fixture is valid");
+        let recording = SourceCoverageObservation::from_catalog(catalog.clone())
+            .expect("catalog observation fixture is valid");
+        let cold = SourceCoverageObservation::decode(&recording.encode())
+            .expect("encoded catalog observation decodes");
         assert_eq!(cold.catalog(), Some(&catalog));
         assert_eq!(cold.capacity_reason(), None);
     }
 
     #[test]
     fn coverage_codec_retains_config_source_identity_and_distinct_observed_causes() {
-        let value = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows()).expect("coverage manifest fixture is valid");
-        let tsx = SourceCoverageManifest::new([3; 32], [1, 1], [7; 32], 50, 48, rows()).expect("TSX coverage manifest fixture is valid");
+        let value = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows())
+            .expect("coverage manifest fixture is valid");
+        let tsx = SourceCoverageManifest::new([3; 32], [1, 1], [7; 32], 50, 48, rows())
+            .expect("TSX coverage manifest fixture is valid");
         assert_eq!(tsx.profile(), [1, 1]);
         assert_ne!(tsx.identity(), value.identity());
         let bytes = value.encode();
-        let cold = SourceCoverageManifest::decode(&bytes).expect("encoded coverage manifest decodes");
+        let cold =
+            SourceCoverageManifest::decode(&bytes).expect("encoded coverage manifest decodes");
         assert_eq!(cold, value);
         assert_eq!(cold.identity(), value.identity());
         for root in [[4; 32], [5; 32]] {
@@ -872,7 +878,9 @@ mod tests {
             let mut bytes = SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 50, 48, rows())
                 .expect("valid manifest fixture encodes before corruption")
                 .encode();
-            *bytes.last_mut().expect("encoded manifest has its final cause tag") = cause.tag();
+            *bytes
+                .last_mut()
+                .expect("encoded manifest has its final cause tag") = cause.tag();
             assert!(SourceCoverageManifest::decode(&bytes).is_err());
         }
     }
