@@ -2505,3 +2505,90 @@ fn selected_declaration_inputs_share_the_three_closed_states_and_refuse_bad_ids(
             .all(|spec| spec.kind() != ArgumentKind::SelectedSymbol)
     );
 }
+
+#[test]
+fn outline_projection_preserves_exact_selectors_for_colliding_coordinates() {
+    let coordinate = "/abs/polyglot::ui/prism.min.js:3::u";
+    let first = symbol_key("first-authored-minified-u");
+    let second = symbol_key("second-authored-minified-u");
+    let missing = symbol_key("unresolved-outline-node");
+    let rows = [first, second].map(|key| {
+        backend_library::Row::in_package(
+            RowId::Symbol(key),
+            basis(),
+            package_key(PROJECT),
+            coordinate,
+        )
+        .with_kind(DeclarationKind::Function)
+    });
+    let node = OutlineNode {
+        symbol: first,
+        children: vec![
+            OutlineNode {
+                symbol: second,
+                children: Box::new([]),
+            },
+            OutlineNode {
+                symbol: missing,
+                children: Box::new([]),
+            },
+        ]
+        .into_boxed_slice(),
+    };
+    let mut resolver = row_resolver(&rows);
+    let tree = OutlineTree::new(
+        Identity::parse_with_key(PROJECT, IdentityKey::Package(package_key(PROJECT))),
+        vec![OutlineEntry::resolve(&node, &mut resolver)],
+        OutlineExtent::Complete,
+    );
+    let answer = Answer::Outline(Box::new(tree));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let encoded = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect("complete outline fits its actual response budget");
+        let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
+        let root = &value["roots"][0];
+        let child = &root["children"][0];
+        assert_eq!(root["coordinate"], coordinate);
+        assert_eq!(child["coordinate"], coordinate);
+        assert_eq!(
+            root["semantic_data"],
+            serde_json::json!({
+                "kind": "selected-symbol-id", "value": first.as_bytes(),
+            })
+        );
+        assert_eq!(
+            child["semantic_data"],
+            serde_json::json!({
+                "kind": "selected-symbol-id", "value": second.as_bytes(),
+            })
+        );
+        assert_ne!(root["semantic_data"], child["semantic_data"]);
+        assert!(
+            root["children"][1].get("semantic_data").is_none(),
+            "an unresolved display tag must not become a selected operand"
+        );
+        assert!(
+            value["package"].get("semantic_data").is_none(),
+            "a package key is not a selected symbol"
+        );
+        assert_eq!(value["declarations"], 3);
+        assert_eq!(value["unnamed"], 1);
+        assert_eq!(value["extent"], "complete");
+        assert!(
+            encode_answer(&answer, detail, None, encoded.bytes.len() - 1).is_err(),
+            "the selector bytes participate in the existing hard response budget"
+        );
+    }
+}
+
+#[test]
+fn legacy_outline_node_decodes_without_inventing_a_selector() {
+    let node: crate::dto::OutlineNodeDto = serde_json::from_value(serde_json::json!({
+        "name": "u", "coordinate": "/abs/polyglot::ui/prism.min.js:3::u",
+        "kind": "function", "key": "12345678", "children": [],
+    }))
+    .expect("legacy presentation node");
+    assert!(node.semantic_data.is_none());
+    let value = serde_json::to_value(node).expect("legacy node JSON");
+    assert!(value.get("semantic_data").is_none());
+}

@@ -762,6 +762,10 @@ pub struct OutlineNodeDto {
     /// The exact coordinate, when the node resolved to a row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinate: Option<String>,
+    /// The exact selector retained by the resolved symbol row. Coordinates and
+    /// display abbreviations can be shared by distinct authored declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_data: Option<IdentitySemanticData>,
     /// The display abbreviation of the node's key.
     pub key: String,
     /// The child nodes.
@@ -779,6 +783,7 @@ impl OutlineNodeDto {
             coordinate: entry
                 .identity()
                 .map(|identity| identity.coordinate().as_str().to_owned()),
+            semantic_data: entry.identity().and_then(identity_semantic_data),
             key: entry.tag().to_string(),
             children: entry.children().iter().map(Self::new).collect(),
         }
