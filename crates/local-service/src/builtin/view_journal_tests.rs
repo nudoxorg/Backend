@@ -1698,3 +1698,288 @@ fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
     }
     fs::remove_file(path).expect("remove private test journal");
 }
+
+#[test]
+fn large_checked_view_reopens_and_compacts_oversized_event_with_exact_retry() {
+    let temp = tempfile::tempdir().expect("private test directory");
+    let head = super::super::genesis().expect("checked workspace");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, base_cursor) = super::super::initial_view().expect("checked initial view");
+    // A canonical relation leaf is bounded to 64 KiB, so each row must fit
+    // before the checked patch can reach the journal. Control text is valid
+    // document content and expands sixfold in JSON; the real complete rows
+    // and compact event exceed 64 MiB without padding the journal envelope.
+    let invalid_label = "large-journal::oversized-canonical-row";
+    let invalid_row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key(invalid_label)),
+        base.basis(),
+        invalid_label,
+    )
+    .with_document(vec![backend_engine::Fragment::Text("x".repeat(256 * 1024))]);
+    assert!(matches!(
+        base.prepare(
+            backend_engine::ViewDelta::Upsert { row: invalid_row },
+            capability.clone(),
+        ),
+        Err(backend_library::ViewError::InvalidRelationDelta)
+    ));
+    let mut changes = (0..256)
+        .map(|index| {
+            let label = format!("large-journal::{index:04}");
+            let row = backend_engine::Row::new(
+                backend_engine::RowId::Symbol(backend_engine::symbol_key(&label)),
+                base.basis(),
+                label,
+            )
+            .with_document(vec![backend_engine::Fragment::Text(
+                "\u{0001}".repeat(48 * 1024),
+            )]);
+            backend_engine::RowChange::Upsert(Box::new(row))
+        })
+        .collect::<Vec<_>>();
+    changes.sort_by_key(backend_engine::RowChange::id);
+    let prepared = base
+        .prepare(
+            backend_engine::ViewDelta::Patch {
+                changes: changes.into(),
+            },
+            capability.clone(),
+        )
+        .expect("checked full-size patch");
+    let (view, delta) = base
+        .clone()
+        .commit(prepared)
+        .expect("commit full-size view");
+    let cursor = Cursor::for_view_root(&view);
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let payload = encode_envelope(head.root(), cursor, &view, None).expect("complete snapshot");
+    assert!(payload.len() > MAX_RECORD_BYTES && payload.len() <= MAX_SNAPSHOT_BYTES);
+    let event_bytes =
+        encode_envelope(head.root(), cursor, &view, Some(&event)).expect("complete event");
+    assert!(event_bytes.len() > MAX_RECORD_BYTES);
+    drop(event_bytes);
+
+    let path = temp.path().join("snapshot.journal");
+    let mut journal = ViewJournal::open(&path).expect("journal");
+    journal
+        .persist(head.root(), &view, cursor, None)
+        .expect("large snapshot publication");
+    assert_eq!(fs::read(&path).expect("frame")[9], GZIP_SNAPSHOT);
+    let reopened = ViewJournal::open(&path).expect("cold journal");
+    let recovered = reopened
+        .load_for_workspace(head.root(), &capability)
+        .expect("exact checked admission")
+        .expect("complete selected view");
+    assert_eq!(recovered.view, view);
+    assert_eq!(recovered.cursor, cursor);
+    assert!(recovered.events.is_empty());
+    drop(recovered);
+
+    // The same oversized event selects an atomic target snapshot; lost
+    // acknowledgements must not append it after that snapshot on retry.
+    let path = temp.path().join("event.journal");
+    let mut journal = ViewJournal::open(&path).expect("event journal");
+    journal
+        .persist(head.root(), &base, base_cursor, None)
+        .expect("small old snapshot");
+    journal
+        .persist(head.root(), &view, cursor, Some(&event))
+        .expect("compact large event");
+    let before = fs::read(&path).expect("compacted bytes");
+    journal
+        .persist(head.root(), &view, cursor, Some(&event))
+        .expect("lost ack retry");
+    assert_eq!(fs::read(&path).expect("retry bytes"), before);
+    let reopened = ViewJournal::open(&path).expect("cold compact journal");
+    let recovered = reopened
+        .load_for_workspace(head.root(), &capability)
+        .expect("compacted admission")
+        .expect("compacted view");
+    assert_eq!(recovered.view, view);
+    assert_eq!(recovered.cursor, cursor);
+    assert_eq!(recovered.base_sequence, cursor.sequence());
+    assert!(recovered.events.is_empty());
+    drop(recovered);
+
+    // Every existing replacement fault retains either the complete old root
+    // or complete target root; retry installs the exact target frame.
+    for (index, boundary) in [
+        Boundary::TempCreate,
+        Boundary::TempWrite,
+        Boundary::FileSync,
+        Boundary::Rename,
+        Boundary::DirSync,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = temp.path().join(format!("fault-{index}.journal"));
+        let faults = Arc::new(Faults::default());
+        let mut journal =
+            ViewJournal::open_with_faults(&path, Arc::clone(&faults)).expect("fault journal");
+        journal
+            .persist(head.root(), &base, base_cursor, None)
+            .expect("old snapshot");
+        faults.arm(boundary);
+        assert!(
+            journal
+                .persist(head.root(), &view, cursor, Some(&event))
+                .is_err()
+        );
+        let cold = ViewJournal::open(&path).expect("cold after fault");
+        let retained = cold
+            .load_for_workspace(head.root(), &capability)
+            .expect("old or new valid frame")
+            .expect("selected frame");
+        assert!(retained.view == base || retained.view == view);
+        drop(retained);
+        if boundary == Boundary::Rename {
+            faults.arm(Boundary::DirSync);
+            assert!(
+                journal
+                    .persist(head.root(), &view, cursor, Some(&event))
+                    .is_err(),
+                "matched compressed snapshot retry must sync its renamed directory"
+            );
+        }
+        journal
+            .persist(head.root(), &view, cursor, Some(&event))
+            .expect("exact retry");
+        let retained = ViewJournal::open(&path)
+            .expect("cold retry")
+            .load_for_workspace(head.root(), &capability)
+            .expect("retry admission")
+            .expect("target");
+        assert_eq!(retained.view, view);
+        assert_eq!(retained.cursor, cursor);
+    }
+}
+
+#[test]
+fn compressed_snapshot_rejects_trailing_members_truncation_and_expansion() {
+    let raw = b"bounded complete envelope";
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(raw).expect("gzip source");
+    let gzip = encoder.finish().expect("gzip footer");
+    assert_eq!(
+        decode_snapshot_frame(&gzip, raw.len()).expect("exact expansion"),
+        raw
+    );
+    assert!(
+        decode_snapshot_frame(&gzip, raw.len() - 1)
+            .expect_err("expansion bound")
+            .contains("decoded bound")
+    );
+    let mut trailing = gzip.clone();
+    trailing.push(0);
+    assert!(
+        decode_snapshot_frame(&trailing, raw.len())
+            .expect_err("trailing garbage")
+            .contains("trailing")
+    );
+    let mut members = gzip.clone();
+    members.extend_from_slice(&gzip);
+    assert!(
+        decode_snapshot_frame(&members, raw.len() * 2)
+            .expect_err("second gzip member")
+            .contains("trailing")
+    );
+    assert!(decode_snapshot_frame(&gzip[..gzip.len() - 1], raw.len()).is_err());
+}
+
+#[test]
+fn compressed_snapshot_checks_outer_checksum_and_preserves_invalid_complete_frames() {
+    let temp = tempfile::tempdir().expect("private test directory");
+    let head = super::super::genesis().expect("workspace");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, cursor) = super::super::initial_view().expect("view");
+    let payload = encode_envelope(head.root(), cursor, &base, None).expect("snapshot");
+    let gzip = |bytes: &[u8]| {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(bytes).expect("gzip input");
+        encoder.finish().expect("gzip footer")
+    };
+    for (index, bytes) in [b"not gzip".to_vec(), gzip(b"{}"), {
+        let mut bytes = gzip(&payload);
+        bytes.push(0);
+        bytes
+    }]
+    .into_iter()
+    .enumerate()
+    {
+        let path = temp.path().join(format!("invalid-{index}.journal"));
+        let mut file = File::create(&path).expect("invalid fixture");
+        write_frame(&mut file, GZIP_SNAPSHOT, &bytes).expect("complete checksum-valid frame");
+        drop(file);
+        let before = fs::read(&path).expect("before");
+        assert!(
+            ViewJournal::open(&path)
+                .expect("journal")
+                .load_for_workspace(head.root(), &capability)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).expect("after"), before);
+    }
+    let path = temp.path().join("oversized-frame.journal");
+    let mut file = File::create(&path).expect("oversized header fixture");
+    write_frame(&mut file, GZIP_SNAPSHOT, b"").expect("header");
+    drop(file);
+    let mut bytes = fs::read(&path).expect("header bytes");
+    bytes[10..18]
+        .copy_from_slice(&(u64::try_from(MAX_RECORD_BYTES).expect("bounded") + 1).to_be_bytes());
+    fs::write(&path, &bytes).expect("claimed compressed length");
+    assert!(
+        ViewJournal::open(&path)
+            .expect("journal")
+            .load_for_workspace(head.root(), &capability)
+            .expect_err("bound before allocation")
+            .contains("record exceeds bound")
+    );
+    assert_eq!(fs::read(&path).expect("unchanged oversized header"), bytes);
+
+    let path = temp.path().join("bad-checksum.journal");
+    let mut file = File::create(&path).expect("checksum fixture");
+    write_frame(&mut file, GZIP_SNAPSHOT, &gzip(&payload)).expect("gzip frame");
+    write_frame(&mut file, EVENT, b"{}").expect("later frame prevents final-tail repair");
+    drop(file);
+    let mut bytes = fs::read(&path).expect("fixture");
+    bytes[18] ^= 1;
+    fs::write(&path, &bytes).expect("corrupt outer checksum");
+    assert!(
+        ViewJournal::open(&path)
+            .expect("journal")
+            .load_for_workspace(head.root(), &capability)
+            .expect_err("checksum precedes gzip decoding")
+            .contains("checksum")
+    );
+    assert_eq!(fs::read(&path).expect("unchanged"), bytes);
+
+    let path = temp.path().join("torn-frame.journal");
+    let mut journal = ViewJournal::open(&path).expect("torn journal");
+    journal
+        .persist(head.root(), &base, cursor, None)
+        .expect("old snapshot");
+    let before = fs::read(&path).expect("complete old bytes");
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("torn append");
+    write_frame(&mut file, GZIP_SNAPSHOT, &gzip(&payload)).expect("new frame");
+    drop(file);
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("truncate final frame");
+    file.set_len(fs::metadata(&path).expect("length").len() - 1)
+        .expect("tear frame");
+    drop(file);
+    let retained = ViewJournal::open(&path)
+        .expect("reopen torn")
+        .load_for_workspace(head.root(), &capability)
+        .expect("repair only torn outer frame")
+        .expect("old exact view");
+    assert_eq!(retained.view, base);
+    assert_eq!(fs::read(&path).expect("repaired bytes"), before);
+}
