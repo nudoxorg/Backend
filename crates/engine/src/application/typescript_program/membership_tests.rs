@@ -1596,9 +1596,7 @@ fn solution_package_stages_separate_leaf_images_without_union_membership() {
     let cold = backend_semantic::ir::NativeProgramSources::decode(forest.as_bytes()).unwrap();
     assert_eq!(cold, *forest);
     for ordinal in 0..staged.artifacts().len() {
-        use backend_semantic::ir::{
-            ImageProvenance, SemanticCoreReader, SemanticImageIdentity, SemanticReader,
-        };
+        use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticImageIdentity};
         let object = staged.output_object(2 + 2 * ordinal).unwrap();
         let identity = SemanticImageIdentity::from_encoded_bytes(object.bytes());
         staged

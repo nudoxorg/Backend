@@ -3,12 +3,15 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    fs::{self, File},
+    fs::File,
     io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+
+#[cfg(test)]
+use std::fs;
 
 use crate::{
     acquisition::{

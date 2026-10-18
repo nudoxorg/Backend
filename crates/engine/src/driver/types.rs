@@ -23,7 +23,9 @@ pub use request::{
     CompileControl, CompileRequest, CompileScratch, DeclarationScope, PackageDeclarationScopeFault,
     SemanticAuthorityInput,
 };
-pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
+#[cfg(all(test, unix))]
+pub(crate) use request::NativeRecipe;
+pub(crate) use request::{SourceLease, WorkPermit, WorkStopped};
 pub use terminal::{
     CompileFailure, CompileOutput, CompiledFragment, CompiledIr, CompiledSemantic,
     NativeDiagnostic, NativeWorkError, NativeWorkPrimary,
@@ -39,6 +41,6 @@ pub use backend_semantic::vocabulary::{
     CompileRecipeFact, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeTool, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
 };
-pub(super) use backend_semantic::vocabulary::{
-    LoweringUnsupported, NativeArtifactRole, NativeWorkPhase,
-};
+pub(super) use backend_semantic::vocabulary::LoweringUnsupported;
+#[cfg(all(test, unix))]
+pub(super) use backend_semantic::vocabulary::{NativeArtifactRole, NativeWorkPhase};

@@ -3806,7 +3806,7 @@ mod tests {
         });
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
-        let mut occurrences = view
+        let occurrences = view
             .occurrences()
             .ok_or(TestError::Missing("occurrences"))?
             .collect::<Result<Vec<_>, _>>()

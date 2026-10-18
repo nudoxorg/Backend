@@ -222,7 +222,7 @@ fn expired_guard_cannot_delete_successor_or_publish_with_its_fence() {
         .expect("first lease");
     expired.expire_for_test().expect("expire first lease");
 
-    let mut successor = reopened
+    let successor = reopened
         .acquire(test_key(), Duration::from_secs(30))
         .expect("takeover")
         .expect("expired lease is available");

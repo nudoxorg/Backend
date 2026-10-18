@@ -25,10 +25,12 @@ use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
     ProductSemanticPublicationRecord, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
     ProductSourceFileFactsUpdate, SemanticPublicationClaim, SemanticPublicationCoverage,
-    SemanticPublicationSelection, SemanticPublicationVersion, SemanticSourceCapture,
+    SemanticPublicationVersion, SemanticSourceCapture,
     product_source_file_facts_record_key, product_source_file_facts_relation,
     product_source_file_facts_row_keys, semantic_capture_relation,
 };
+#[cfg(test)]
+use backend_engine::builtin::SemanticPublicationSelection;
 use backend_extension_turso::SourceObservationReceipt;
 use backend_frontend_python::legacy::checker::{
     PythonEnvironmentCapture, PythonEnvironmentInput, PythonProjectControl,

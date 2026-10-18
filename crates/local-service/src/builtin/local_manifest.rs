@@ -1449,7 +1449,6 @@ mod tests {
     };
     use backend_semantic::vocabulary::{GoVersion, JavaRelease};
     use std::fs;
-    use std::io::Read as _;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
