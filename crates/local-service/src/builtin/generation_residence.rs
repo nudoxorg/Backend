@@ -249,6 +249,23 @@ impl SemanticGenerationResidence {
         self.selected_loader.is_some()
     }
 
+    /// Reads only the already admitted immutable native selection proof.
+    /// It neither opens image payloads nor asks the mutable compiler owner.
+    pub(super) fn selected_input_digest(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<Option<[u8; 32]>, super::BuiltinModelError> {
+        let Some(loader) = &self.selected_loader else {
+            return Ok(None);
+        };
+        Ok(match loader.selection(key, claim)? {
+            SelectedSemanticImageSelection::Admitted(selected) => Some(*selected.input_digest()),
+            #[cfg(test)]
+            SelectedSemanticImageSelection::Fixture(_) => None,
+        })
+    }
+
     /// Owner activations performed, including failures.
     #[must_use]
     pub(super) fn owner_calls(&self) -> u64 {
@@ -2461,6 +2478,96 @@ mod tests {
         assert!(versions.iter().any(|record| record.selected
             && record.freshness == SemanticVersionFreshness::Current { input_digest }));
 
+        // A new attempt over this exact input can cancel without replacing
+        // the selected native generation or making its served coverage fail.
+        let cancelled_capture =
+            SemanticSourceCapture::new(None, source_version, input_digest, 2, 2).test_value()?;
+        for (request, outcome) in [
+            (
+                4,
+                ProductSemanticCaptureOutcome::Pending { prior: Some(prior) },
+            ),
+            (
+                5,
+                ProductSemanticCaptureOutcome::Failed {
+                    prior,
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Cancelled,
+                },
+            ),
+        ] {
+            let base = daemon.engine().daemon().owner().snapshot();
+            let expected = semantic_capture_relation(&base)
+                .test_value()?
+                .test_value()?
+                .lookup(key)
+                .test_value()?;
+            let intent = BuiltinIntent::index_with_capture(
+                key.package_key(),
+                key.package().as_str(),
+                Vec::new(),
+                Vec::new(),
+                vec![BuiltinCaptureChange {
+                    key: key.clone(),
+                    expected,
+                    capture: cancelled_capture,
+                    outcome,
+                    compiler_failure: None,
+                }],
+            )
+            .test_value()?
+            .with_capture_basis(capture_basis_for_snapshot(&base).test_value()?)
+            .test_value()?;
+            super::super::commands::commit_builtin_intent(&mut daemon, request, &intent)
+                .test_value()?;
+        }
+        let cancelled = daemon.engine().daemon().owner().snapshot();
+        let mut generations = super::SemanticGenerationResidence::default();
+        authority.install_image_loader(&mut generations);
+        let active = [(key.package_key(), key.profile())].into_iter().collect();
+        assert_eq!(
+            super::super::coverage::view_coverage(
+                &cancelled,
+                &active,
+                super::super::coverage::SemanticDeployment::Configured,
+                &generations,
+            )
+            .test_value()?,
+            vec![backend_engine::ViewCoverage::Complete],
+        );
+        assert_eq!(
+            super::super::coverage::package_row_state(&cancelled, key.package(), &generations)
+                .test_value()?,
+            Some(backend_engine::RowState::Ready),
+        );
+        assert_eq!(
+            generations.owner_calls(),
+            0,
+            "freshness proof must not reopen image payloads"
+        );
+        let terminal = semantic_capture_relation(&cancelled)
+            .test_value()?
+            .test_value()?
+            .lookup(key)
+            .test_value()?
+            .test_value()?;
+        assert!(matches!(
+            terminal.outcome(),
+            ProductSemanticCaptureOutcome::Failed {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Cancelled,
+                ..
+            }
+        ));
+        assert_eq!(
+            authority
+                .freshness(
+                    &cancelled,
+                    SelectedSemanticPublicationKey::new(key).test_value()?,
+                    claim
+                )
+                .test_value()?,
+            SemanticVersionFreshness::Current { input_digest }
+        );
+
         let changed_project = backend_engine::ProductSourceRecord::project(
             key.package().as_str(),
             [0xA5; 32],
@@ -2477,7 +2584,7 @@ mod tests {
             Vec::new(),
         )
         .test_value()?;
-        super::super::commands::commit_builtin_intent(&mut daemon, 4, &source_only).test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 6, &source_only).test_value()?;
         let changed = daemon.engine().daemon().owner().snapshot();
         let unchanged_capture = semantic_capture_relation(&changed)
             .test_value()?
@@ -2504,6 +2611,27 @@ mod tests {
                 .test_value()?,
             SemanticVersionFreshness::Unverified
         );
+        assert_eq!(
+            super::super::coverage::view_coverage(
+                &changed,
+                &active,
+                super::super::coverage::SemanticDeployment::Configured,
+                &generations,
+            )
+            .test_value()?,
+            vec![
+                backend_engine::ViewCoverage::Complete,
+                backend_engine::ViewCoverage::Unavailable {
+                    lane: backend_engine::Lane::Semantic,
+                    reason: backend_engine::Reason::Incomplete,
+                }
+            ]
+        );
+        assert_eq!(
+            super::super::coverage::package_row_state(&changed, key.package(), &generations,)
+                .test_value()?,
+            Some(backend_engine::RowState::Failed)
+        );
         let versions =
             super::super::commands::semantic_versions(&daemon, key.package(), None, &mut authority)
                 .test_value()?;
@@ -2522,7 +2650,7 @@ mod tests {
             Vec::new(),
         )
         .test_value()?;
-        super::super::commands::commit_builtin_intent(&mut daemon, 5, &remove).test_value()?;
+        super::super::commands::commit_builtin_intent(&mut daemon, 7, &remove).test_value()?;
         let removed = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             authority
@@ -2540,6 +2668,8 @@ mod tests {
         drop(current);
         drop(pending_snapshot);
         drop(before);
+        drop(cancelled);
+        drop(generations);
         drop(authority);
         drop(daemon);
         let mut cold = open_owner(workspace.path())?;

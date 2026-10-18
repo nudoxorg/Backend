@@ -1,4 +1,4 @@
-//! Coverage of the indexed snapshot and its latest authenticated semantic capture.
+//! Coverage actually selected for the indexed snapshot, independent of refresh outcomes.
 //!
 //! Retained generations remain readable after a refused refresh, but cannot
 //! certify that refresh as complete. Optional embedding configuration also
@@ -107,7 +107,7 @@ impl SemanticTally {
         Ok(())
     }
 
-    /// Folds the latest capture before consulting a retained generation.
+    /// Folds a capture when no separately proved current retained selection applies.
     /// A published capture must name the exact selected publication. Pending
     /// and failed captures deliberately do not activate their prior generation.
     pub(super) fn observe_current(
@@ -167,6 +167,7 @@ impl SemanticTally {
         capture: Option<&ProductSemanticCaptureRecord>,
         source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
         activated: &ActivatedProfiles,
+        generations: &super::generation_residence::SemanticGenerationResidence,
     ) -> Result<(), BuiltinModelError> {
         if !key.is_selected() {
             return Ok(());
@@ -201,6 +202,19 @@ impl SemanticTally {
                 self.incomplete = true;
                 return Ok(());
             }
+        }
+        if let Some(capture) = capture
+            && cancelled_selection_is_current(source, key, selected, capture, generations)?
+        {
+            // The cancelled attempt selected nothing new. Its exact current
+            // retained publication is still what reads serve, with its own
+            // complete/partial coverage and activation status. Cancellation
+            // remains in the capture/operation receipt, not this served lane.
+            return self.observe(
+                key,
+                selected.expect("proved selected publication"),
+                activated,
+            );
         }
         self.observe_current(
             key,
@@ -324,12 +338,66 @@ pub(super) fn capture_matches_source(
         .is_some_and(|project| &project.source_version == capture.capture().source_version()))
 }
 
+/// Cancellation describes an attempt, not the freshness of a retained image.
+/// Both the package frontier and the native selected compiler-input proof must
+/// agree with that attempt's capture before the selected coverage can stand in
+/// for the served lane. Neither a prior claim nor process activation proves it.
+fn cancelled_selection_is_current(
+    source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
+    key: &ProductSemanticPublicationKey,
+    selected: Option<&ProductSemanticPublicationRecord>,
+    capture: &ProductSemanticCaptureRecord,
+    generations: &super::generation_residence::SemanticGenerationResidence,
+) -> Result<bool, BuiltinModelError> {
+    let ProductSemanticCaptureOutcome::Failed {
+        prior,
+        reason: SemanticUnavailableReason::Cancelled,
+    } = capture.outcome()
+    else {
+        return Ok(false);
+    };
+    let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = selected else {
+        return Ok(false);
+    };
+    cancelled_selection_matches(
+        prior,
+        *coverage,
+        *claim,
+        capture.capture(),
+        capture_matches_source(source, key, capture)?,
+        generations.selected_input_digest(key, *claim)?,
+    )
+}
+
+/// Pure comparison after the caller obtains source and native-selection proofs.
+/// Keeping it shared makes complete/partial coverage independent of the latest
+/// attempt's terminal flag; an absent selected-input proof is never current.
+fn cancelled_selection_matches(
+    prior: backend_engine::builtin::SemanticPublicationVersion,
+    coverage: SemanticPublicationCoverage,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+    capture: backend_engine::builtin::SemanticSourceCapture,
+    source_current: bool,
+    selected_input: Option<[u8; 32]>,
+) -> Result<bool, BuiltinModelError> {
+    if prior.coverage() != coverage || prior.claim() != claim {
+        return Err(BuiltinModelError(
+            "cancelled capture differs from its retained selected publication".to_owned(),
+        ));
+    }
+    Ok(source_current && selected_input == Some(*capture.input_digest()))
+}
+
 fn captured_package_state(
     source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
     key: &ProductSemanticPublicationKey,
     capture: &ProductSemanticCaptureRecord,
+    selected: Option<&ProductSemanticPublicationRecord>,
+    generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<backend_engine::RowState, BuiltinModelError> {
-    Ok(if capture_matches_source(source, key, capture)? {
+    Ok(if cancelled_selection_is_current(source, key, selected, capture, generations)? {
+        backend_engine::RowState::Ready
+    } else if capture_matches_source(source, key, capture)? {
         capture_row_state(capture.outcome())
     } else {
         backend_engine::RowState::Failed
@@ -369,12 +437,16 @@ fn merge_package_state(
 /// The merge is order independent: see [`merge_package_state`].
 fn package_states(
     snapshot: &WorkspaceSnapshot,
+    generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<
     std::collections::BTreeMap<backend_engine::PackageKey, backend_engine::RowState>,
     BuiltinModelError,
 > {
     let source = snapshot
         .relation::<super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let relation = snapshot
+        .relation::<super::BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let captures = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
@@ -391,7 +463,15 @@ fn package_states(
                     continue;
                 }
                 observed.insert(key.clone());
-                let state = captured_package_state(&source, key, capture)?;
+                let selected = relation.lookup(key)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                let state = captured_package_state(
+                    &source,
+                    key,
+                    capture,
+                    selected.as_ref(),
+                    generations,
+                )?;
                 states
                     .entry(key.package_key())
                     .and_modify(|current: &mut backend_engine::RowState| {
@@ -408,9 +488,6 @@ fn package_states(
     // Legacy selected publications have no companion. Preserve their native
     // refusal/partial scope too, while optional missing authority remains an
     // ordinary configuration gap until an actual capture requests that scope.
-    let relation = snapshot
-        .relation::<super::BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(error.to_string()))?;
     let mut after = None;
     loop {
         let page = relation
@@ -489,9 +566,13 @@ where
 pub(super) fn package_row_state(
     snapshot: &WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
+    generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<Option<backend_engine::RowState>, BuiltinModelError> {
     let source = snapshot
         .relation::<super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let relation = snapshot
+        .relation::<super::BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let captures = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
@@ -500,14 +581,19 @@ pub(super) fn package_row_state(
     if let Some(captures) = captures {
         visit_selected_package(&captures, package, |key, capture| {
             observed.insert(key.clone());
-            let current = captured_package_state(&source, key, capture)?;
+            let selected = relation.lookup(key)
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            let current = captured_package_state(
+                &source,
+                key,
+                capture,
+                selected.as_ref(),
+                generations,
+            )?;
             state = Some(state.map_or(current, |prior| merge_package_state(prior, current)));
             Ok(())
         })?;
     }
-    let relation = snapshot
-        .relation::<super::BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(error.to_string()))?;
     visit_selected_package(&relation, package, |key, record| {
         if !observed.contains(key) {
             let current = publication_row_state(record);
@@ -522,8 +608,9 @@ pub(super) fn package_row_state(
 pub(super) fn qualify_package_rows(
     snapshot: &WorkspaceSnapshot,
     rows: &mut [backend_engine::Row],
+    generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<(), BuiltinModelError> {
-    let states = package_states(snapshot)?;
+    let states = package_states(snapshot, generations)?;
     for row in rows {
         if let backend_engine::RowId::Package(package) = row.id {
             if let Some(state) = states.get(&package) {
@@ -560,6 +647,7 @@ pub(super) fn view_coverage(
     snapshot: &WorkspaceSnapshot,
     activated: &ActivatedProfiles,
     _deployment: SemanticDeployment,
+    generations: &super::generation_residence::SemanticGenerationResidence,
 ) -> Result<Vec<ViewCoverage>, BuiltinModelError> {
     let relation = snapshot
         .relation::<super::BuiltinSemanticRelation>()
@@ -585,7 +673,14 @@ pub(super) fn view_coverage(
                 .transpose()
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .flatten();
-            tally.observe_scoped(key, Some(record), capture.as_ref(), &source, activated)?;
+            tally.observe_scoped(
+                key,
+                Some(record),
+                capture.as_ref(),
+                &source,
+                activated,
+                generations,
+            )?;
         }
         let Some(next) = page.next().cloned() else {
             break;
@@ -608,7 +703,14 @@ pub(super) fn view_coverage(
                     .lookup(key)
                     .map_err(|error| BuiltinModelError(error.to_string()))?;
                 if selected.is_none() {
-                    tally.observe_scoped(key, None, Some(capture), &source, activated)?;
+                    tally.observe_scoped(
+                        key,
+                        None,
+                        Some(capture),
+                        &source,
+                        activated,
+                        generations,
+                    )?;
                 }
             }
             let Some(next) = page.next().cloned() else {
