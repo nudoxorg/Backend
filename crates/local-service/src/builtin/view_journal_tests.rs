@@ -1705,8 +1705,24 @@ fn large_checked_view_reopens_and_compacts_oversized_event_with_exact_retry() {
     let head = super::super::genesis().expect("checked workspace");
     let capability = super::super::test_builtin_view_capability().expect("coverage");
     let (base, base_cursor) = super::super::initial_view().expect("checked initial view");
-    // Real checked rows and a checked patch, not padding an otherwise small
-    // JSON envelope. The complete documentation and certificate must survive.
+    // A canonical relation leaf is bounded to 64 KiB, so each row must fit
+    // before the checked patch can reach the journal. Control text is valid
+    // document content and expands sixfold in JSON; the real complete rows
+    // and compact event exceed 64 MiB without padding the journal envelope.
+    let invalid_label = "large-journal::oversized-canonical-row";
+    let invalid_row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key(invalid_label)),
+        base.basis(),
+        invalid_label,
+    )
+    .with_document(vec![backend_engine::Fragment::Text("x".repeat(256 * 1024))]);
+    assert!(matches!(
+        base.prepare(
+            backend_engine::ViewDelta::Upsert { row: invalid_row },
+            capability.clone(),
+        ),
+        Err(backend_library::ViewError::InvalidRelationDelta)
+    ));
     let mut changes = (0..256)
         .map(|index| {
             let label = format!("large-journal::{index:04}");
@@ -1715,7 +1731,9 @@ fn large_checked_view_reopens_and_compacts_oversized_event_with_exact_retry() {
                 base.basis(),
                 label,
             )
-            .with_document(vec![backend_engine::Fragment::Text("x".repeat(256 * 1024))]);
+            .with_document(vec![backend_engine::Fragment::Text(
+                "\u{0001}".repeat(48 * 1024),
+            )]);
             backend_engine::RowChange::Upsert(Box::new(row))
         })
         .collect::<Vec<_>>();
