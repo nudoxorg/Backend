@@ -353,7 +353,7 @@ fn cli_versions_summary_keeps_exact_continuation_and_explicit_full_discovery() -
         "--detail".to_owned(), "full".to_owned()];
     let full_invocation = fixture(crate::invoke::parse(&words, None))?;
     assert!(matches!(fixture(backend_present::lower(&full_invocation, "/fixture"))?,
-        Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions { package: actual,cursor:None,.. } if actual == package)));
+        Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions { package: ref actual,cursor:None,.. } if actual == &package)));
     let exact: Value = fixture(serde_json::from_slice(&full.bytes))?;
     let restored: SemanticVersionsPage = fixture(serde_json::from_value(exact["semantic_data"]["value"].clone()))?;
     assert_eq!(&restored, selected, "full output still owns every exact native reference");
