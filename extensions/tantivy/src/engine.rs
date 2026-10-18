@@ -25,6 +25,7 @@ use std::{
     sync::atomic::Ordering as AtomicOrdering,
 };
 use tantivy::columnar::BytesColumn;
+use tantivy::postings::SegmentPostings;
 use tantivy::{
     DocAddress, DocId, DocSet, Index, IndexReader, IndexSettings, ReloadPolicy, TERMINATED,
     TantivyDocument, Term,
@@ -236,6 +237,7 @@ struct OrdinalDocument {
 struct BindingWork {
     payload_rows_scanned: usize,
     source_posting_checks: usize,
+    source_posting_readers_opened: usize,
     posting_cover_edges_scanned: u64,
 }
 
@@ -4274,6 +4276,10 @@ pub(crate) mod test_support {
         )
     }
 
+    pub(crate) fn posting_readers_opened(source: &super::TantivySource) -> usize {
+        source.last_binding_work.source_posting_readers_opened
+    }
+
     pub(crate) fn posting_cover_edges_scanned(source: &super::TantivySource) -> u64 {
         source.last_binding_work.posting_cover_edges_scanned
     }
@@ -5652,6 +5658,82 @@ fn validate_exact_live_posting_cover_controlled(
     })
 }
 
+
+// Readers are scoped to one immutable segment and one posting family. A
+// backwards request reopens the reader; a full cache only loses reuse.
+// The byte charge covers owned key capacities and inline cursor storage.
+// Basic postings share immutable segment bytes; no positions are requested.
+const MEMBERSHIP_READER_CACHE_ENTRIES: usize = 32;
+const MEMBERSHIP_READER_CACHE_BYTES: usize = 64 * 1024;
+
+struct MembershipReaderCache {
+    entries: Vec<(String, SegmentPostings)>,
+}
+
+impl MembershipReaderCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.entries.capacity() * size_of::<(String, SegmentPostings)>()
+            + self
+                .entries
+                .iter()
+                .map(|(key, _)| key.capacity())
+                .sum::<usize>()
+    }
+
+    fn contains(
+        &mut self,
+        value: &str,
+        doc: DocId,
+        open: impl FnOnce() -> Result<Option<SegmentPostings>, TantivySourceError>,
+    ) -> Result<(bool, bool), TantivySourceError> {
+        if let Some(at) = self.entries.iter().position(|(key, _)| key == value) {
+            let reader = &mut self.entries[at].1;
+            if reader.doc() <= doc {
+                return Ok((reader.seek(doc) == doc, false));
+            }
+            // Tantivy cursors cannot seek backwards. Do not reuse an advanced
+            // cursor, including one advanced beyond a missing document.
+            self.entries.swap_remove(at);
+        }
+        let Some(mut reader) = open()? else {
+            return Ok((false, true));
+        };
+        let present = reader.doc() <= doc && reader.seek(doc) == doc;
+        if !present || value.len() > MEMBERSHIP_READER_CACHE_BYTES {
+            return Ok((present, true));
+        }
+        if self.entries.len() == MEMBERSHIP_READER_CACHE_ENTRIES
+            || self
+                .retained_bytes()
+                .saturating_add(value.len())
+                .saturating_add(size_of::<(String, SegmentPostings)>())
+                > MEMBERSHIP_READER_CACHE_BYTES
+        {
+            self.entries.clear();
+        }
+        let mut key = String::new();
+        if key.try_reserve_exact(value.len()).is_err() || self.entries.try_reserve_exact(1).is_err()
+        {
+            return Ok((present, true));
+        }
+        if self.entries.capacity() > MEMBERSHIP_READER_CACHE_ENTRIES
+            || self.retained_bytes().saturating_add(key.capacity()) > MEMBERSHIP_READER_CACHE_BYTES
+        {
+            self.entries = Vec::new();
+            return Ok((present, true));
+        }
+        key.push_str(value);
+        self.entries.push((key, reader));
+        Ok((present, true))
+    }
+}
+
 fn bind_document_addresses(
     reader: &IndexReader,
     documents: &mut DocumentTable,
@@ -5695,6 +5777,10 @@ fn bind_document_addresses(
                 segment.inverted_index(fields.field_folded_token)?,
             ),
         ];
+        let mut raw_readers = MembershipReaderCache::new();
+        let mut folded_readers = MembershipReaderCache::new();
+        let mut field_raw_readers = MembershipReaderCache::new();
+        let mut field_folded_readers = MembershipReaderCache::new();
         let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
         let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?;
         let payloads = segment
@@ -5792,29 +5878,38 @@ fn bind_document_addresses(
             let [raw_index, folded_index, field_raw_index, field_folded_index] = &posting_indexes;
             let mut require_edge = |family, source: SourcePostingTerm<'_>| {
                 check_admission_cancelled(cancelled, "membership")?;
-                let ((field, inverted_index), value) = match family {
-                    PostingFamily::Raw => (raw_index, std::borrow::Cow::Borrowed(source.term)),
+                let ((field, inverted_index), value, cache) = match family {
+                    PostingFamily::Raw => (
+                        raw_index,
+                        std::borrow::Cow::Borrowed(source.term),
+                        &mut raw_readers,
+                    ),
                     PostingFamily::Folded => (
                         folded_index,
                         std::borrow::Cow::Owned(source.term.to_ascii_lowercase()),
+                        &mut folded_readers,
                     ),
                     PostingFamily::FieldRaw => (
                         field_raw_index,
                         std::borrow::Cow::Owned(field_token_value(source.field, source.term, false)),
+                        &mut field_raw_readers,
                     ),
                     PostingFamily::FieldFolded => (
                         field_folded_index,
                         std::borrow::Cow::Owned(field_token_value(source.field, source.term, true)),
+                        &mut field_folded_readers,
                     ),
                 };
-                let term = Term::from_field_text(*field, &value);
-                let Some(mut postings) = inverted_index.read_postings(&term, IndexRecordOption::Basic)?
-                else {
-                    return Err(TantivySource::corrupt(
-                        "Tantivy term dictionary omits a source-bound token",
-                    ));
-                };
-                if postings.seek(doc) != doc {
+                let (present, opened) = cache.contains(&value, doc, || {
+                    let term = Term::from_field_text(*field, &value);
+                    inverted_index.read_postings(&term, IndexRecordOption::Basic)?
+                        .map(Some).ok_or_else(|| TantivySource::corrupt(
+                            "Tantivy term dictionary omits a source-bound token",
+                        ))
+                })?;
+                work.source_posting_readers_opened = work.source_posting_readers_opened
+                    .checked_add(usize::from(opened)).ok_or(Error::SizeLimit)?;
+                if !present {
                     return Err(TantivySource::corrupt(
                         "Tantivy postings omit a source-bound document token",
                     ));
@@ -6249,4 +6344,173 @@ fn sample_test_cancel_after_commit() {
             control.store(true, Ordering::Release);
         }
     });
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "adversarial native posting-reader fixtures"
+)]
+mod membership_reader_reuse_tests {
+    use super::*;
+
+    fn index() -> (Index, ProjectionFields) {
+        let projection = projection_schema();
+        let index = Index::create_in_ram(projection.schema);
+        let mut writer = index
+            .writer_with_num_threads(1, WRITER_MEMORY_BYTES)
+            .expect("one writer");
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        for batch in 0..2 {
+            for doc in 0..3 {
+                let mut value = TantivyDocument::default();
+                let shared = (doc != 1) == (batch == 0);
+                value.add_text(
+                    projection.fields.raw_token,
+                    if shared { "Shared" } else { "other" },
+                );
+                value.add_text(
+                    projection.fields.folded_token,
+                    if shared { "other" } else { "Shared" },
+                );
+                value.add_text(
+                    projection.fields.field_raw_token,
+                    if shared { "Shared" } else { "other" },
+                );
+                value.add_text(
+                    projection.fields.field_folded_token,
+                    if shared { "other" } else { "Shared" },
+                );
+                writer.add_document(value).expect("real document");
+            }
+            writer.commit().expect("separate immutable segment");
+        }
+        writer.wait_merging_threads().expect("join writer");
+        (index, projection.fields)
+    }
+
+    #[test]
+    fn posting_reader_reuse_reopens_backwards_and_isolates_segments_and_families() {
+        let (index, fields) = index();
+        let reader = index.reader().expect("reader");
+        let searcher = reader.searcher();
+        assert_eq!(searcher.segment_readers().len(), 2);
+        let mut reused = 0;
+        let mut reopened_backwards = 0;
+        let mut segment_answers = Vec::new();
+        for segment in searcher.segment_readers() {
+            // Exactly the production lifetime: one independent cache for each
+            // family in this segment, never a cursor shared across segments.
+            let mut caches = [
+                MembershipReaderCache::new(),
+                MembershipReaderCache::new(),
+                MembershipReaderCache::new(),
+                MembershipReaderCache::new(),
+            ];
+            let mut answers = Vec::new();
+            for (family, field) in [
+                fields.raw_token,
+                fields.folded_token,
+                fields.field_raw_token,
+                fields.field_folded_token,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let inverted = segment.inverted_index(field).expect("family reader");
+                let mut previous = None;
+                for doc in [2, 0, 0, 2, 1, 0, 2] {
+                    let term = Term::from_field_text(field, "Shared");
+                    let expected = inverted
+                        .read_postings(&term, IndexRecordOption::Basic)
+                        .expect("fresh reference")
+                        .is_some_and(|mut p| p.doc() <= doc && p.seek(doc) == doc);
+                    let (actual, opened) = caches[family]
+                        .contains("Shared", doc, || {
+                            Ok(inverted.read_postings(&term, IndexRecordOption::Basic)?)
+                        })
+                        .expect("cached membership");
+                    assert_eq!(actual, expected, "family {family}, document {doc}");
+                    if !opened {
+                        reused += 1;
+                    }
+                    if previous.is_some_and(|old| old > doc) {
+                        assert!(
+                            opened,
+                            "a backwards request must obtain a fresh forward-only reader"
+                        );
+                        reopened_backwards += 1;
+                    }
+                    assert!(caches[family].entries.len() <= MEMBERSHIP_READER_CACHE_ENTRIES);
+                    assert!(caches[family].retained_bytes() <= MEMBERSHIP_READER_CACHE_BYTES);
+                    previous = Some(doc);
+                    answers.push(actual);
+                }
+            }
+            assert_ne!(
+                &answers[0..7],
+                &answers[7..14],
+                "same term bytes in different fields differ"
+            );
+            segment_answers.push(answers);
+        }
+        assert_ne!(
+            segment_answers[0], segment_answers[1],
+            "same term bytes in different segments differ"
+        );
+        assert!(reused > 0);
+        assert!(reopened_backwards > 0);
+    }
+
+    #[test]
+    fn posting_reader_cache_eviction_preserves_real_membership_with_bounded_retention() {
+        let projection = projection_schema();
+        let index = Index::create_in_ram(projection.schema);
+        let mut writer = index
+            .writer_with_num_threads(1, WRITER_MEMORY_BYTES)
+            .expect("writer");
+        let values = (0..96)
+            .map(|n| format!("{}-{n:04}", "prefix".repeat(100)))
+            .collect::<Vec<_>>();
+        let mut document = TantivyDocument::default();
+        for value in &values {
+            document.add_text(projection.fields.raw_token, value);
+        }
+        writer.add_document(document).expect("document");
+        writer.commit().expect("commit");
+        writer.wait_merging_threads().expect("join");
+        let reader = index.reader().expect("reader");
+        let searcher = reader.searcher();
+        let segment = &searcher.segment_readers()[0];
+        let inverted = segment
+            .inverted_index(projection.fields.raw_token)
+            .expect("field");
+        let mut cache = MembershipReaderCache::new();
+        let mut opened_count = 0;
+        for value in values.iter().chain(values.iter().rev()) {
+            let term = Term::from_field_text(projection.fields.raw_token, value);
+            let (present, opened) = cache
+                .contains(value, 0, || {
+                    Ok(inverted.read_postings(&term, IndexRecordOption::Basic)?)
+                })
+                .expect("membership");
+            assert!(present);
+            opened_count += usize::from(opened);
+            assert!(cache.entries.len() <= MEMBERSHIP_READER_CACHE_ENTRIES);
+            assert!(cache.retained_bytes() <= MEMBERSHIP_READER_CACHE_BYTES);
+        }
+        assert!(
+            opened_count > values.len(),
+            "evicted readers are freshly reopened without dropping checks"
+        );
+        let missing = Term::from_field_text(projection.fields.raw_token, "not indexed");
+        assert!(
+            !cache
+                .contains("not indexed", 0, || Ok(
+                    inverted.read_postings(&missing, IndexRecordOption::Basic)?
+                ))
+                .expect("missing")
+                .0
+        );
+    }
 }
