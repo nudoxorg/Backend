@@ -664,3 +664,38 @@ fn removing_an_admitted_project_retires_its_future_root_context(cx: &mut TestApp
     assert_eq!(contexts.lock().expect("contexts").last(), Some(&None));
     assert!(graph.root.read_with(cx, |root, _| root.snapshot().workspace().projects.is_empty()));
 }
+
+#[test]
+fn rendered_cancel_packet_cannot_borrow_another_operation_ticket_owner_or_root() {
+    use crate::runtime::actor::IndexMutationLease;
+    use backend_library::{IndexJobStage, IndexJobTicket, IndexOperationState};
+    let project = LocalProjectId::new("/fixture/captured-index-cancel").expect("project");
+    let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+    let mut operation = crate::model::index_operation::tests::claim(&project, 0x76);
+    let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [8; 16], operation.package.clone());
+    operation.observation = Some(crate::model::index_operation::tests::observation(&operation,
+        IndexOperationState::Active { ticket: ticket.clone(), stage: IndexJobStage::Compiling }));
+    row.operation = Some(operation.clone());
+    let gate = OwnerGate::ready(basis(), ServiceMode::Attached);
+    let owner = IndexMutationLease::capture(Some(&gate), gate.ready_epoch()).expect("actual owner lease");
+    let captured = AcceptedIndexCancellation { row, ticket: ticket.clone(), basis: basis(), owner };
+    assert!(captured.admits(&captured));
+    let mut next = captured.clone();
+    next.row.request = Some(crate::navigation::RequestId::new(9));
+    assert!(captured.admits(&next), "another read of the same exact job is not a new operation");
+    next.row.operation = Some(crate::model::index_operation::tests::claim(&project, 0x77));
+    assert!(!captured.admits(&next));
+    let replacement = OwnerGate::ready(basis(), ServiceMode::Attached);
+    next = captured.clone();
+    next.owner = IndexMutationLease::capture(Some(&replacement), replacement.ready_epoch()).expect("replacement lease");
+    assert!(!captured.admits(&next), "same root cannot alias another process owner");
+    next = captured.clone();
+    next.ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [9; 16], operation.package.clone());
+    assert!(!captured.admits(&next), "ticket ID alone cannot cross owner epochs");
+    next = captured.clone();
+    next.row.phase = ProjectPhase::Ready;
+    assert!(!captured.admits(&next));
+    next = captured.clone();
+    next.basis = VersionedRoot::synthetic(backend_library::view_state_root(&[("changed".into(), "source".into())]), 8);
+    assert!(!captured.admits(&next));
+}

@@ -1213,6 +1213,19 @@ impl TantivySource {
         }
         drop(fence);
 
+        // plan_revision cannot reuse postings across workspace identities, and
+        // the document-count difference is a lower bound on changed identities.
+        // Decide these guaranteed rebuilds before opening the previous root,
+        // copying it, and admitting that copy only to reject its revision.
+        if previous.binding().workspace != next.binding().workspace
+            || previous.iter().count().abs_diff(next.iter().count())
+                > budget.max_changed_documents
+        {
+            budget.validate()?;
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget, cancelled)
+                .map(|(source, action)| (source, None, action));
+        }
+
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(&previous_key);
         let (previous_source, _) =

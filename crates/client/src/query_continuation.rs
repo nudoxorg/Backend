@@ -434,7 +434,18 @@ impl Session {
                         "outline token changed fixed page credit".to_owned(),
                     ));
                 }
-                backend_library::QueryPageRecipe::outline(revision.root, *package, page.limit())
+                let encoded = encode_id(cursor.recipe().as_bytes());
+                let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
+                    WireClaim::KeyBytes { schema: WireSchema::ViewRecipe, id, value } if id == &encoded => Some(value.as_ref()),
+                    _ => None,
+                });
+                let preimage = preimages.next().ok_or_else(|| ClientError::Protocol("outline token omitted its order-bound recipe".to_owned()))?;
+                if preimages.next().is_some() {
+                    return Err(ClientError::Protocol("outline token duplicated its recipe".to_owned()));
+                }
+                backend_library::QueryPageRecipe::outline_predecessor(
+                    revision.root, *package, page.limit(), cursor, preimage,
+                ).ok_or_else(|| ClientError::Protocol("outline token changed its order-bound predecessor context".to_owned()))?
             }
             _ => {
                 return Err(ClientError::Protocol(

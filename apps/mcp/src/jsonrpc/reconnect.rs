@@ -636,6 +636,9 @@ mod tests {
                 Probe::OutlinePage { .. } => {
                     self.record("outline-page")?;
                     CommandReply::ProjectionPage(ProjectionPage {
+                        outline_order: Some(backend_library::OutlinePageOrder::new(
+                            0, Vec::new(),
+                        ).expect("empty reconnect outline order")),
                         snapshot: empty_snapshot(),
                         terminal: PageTerminal::Complete,
                     })
@@ -1500,14 +1503,16 @@ mod tests {
                         })
                         .expect("durable operation status is a repeatable read"),
                 ),
-                _ => drop(
-                    handle
-                        .probe(Probe::OutlinePage {
-                            path: "/abs/project",
-                            limit: 1,
-                        })
-                        .expect("outline page recovers"),
-                ),
+                _ => {
+                    let reply = handle.probe(Probe::OutlinePage {
+                        path: "/abs/project", limit: 1,
+                    }).expect("outline page recovers");
+                    let CommandReply::ProjectionPage(page) = reply.reply else { panic!("outline page"); };
+                    page.outline_order.as_ref().expect("positive empty reconnect order")
+                        .validate(&page.snapshot, package_key("/abs/project"),
+                            backend_library::QueryLimit::new(1).expect("limit"))
+                        .expect("empty positive page has an exact witness");
+                }
             }
             assert_eq!(calls(&log), expected, "{call} did not recover on a retry");
         }

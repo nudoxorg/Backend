@@ -1552,7 +1552,8 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         coverage::view_coverage(
             &pending,
             &coverage::ActivatedProfiles::new(),
-            coverage::SemanticDeployment::Unconfigured
+            coverage::SemanticDeployment::Unconfigured,
+            &Default::default(),
         )
         .test_value()?,
         vec![
@@ -1625,7 +1626,8 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         coverage::view_coverage(
             &pending,
             &coverage::ActivatedProfiles::new(),
-            coverage::SemanticDeployment::Configured
+            coverage::SemanticDeployment::Configured,
+            &Default::default(),
         )
         .test_value()?,
         vec![
@@ -1660,7 +1662,12 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         coverage::SemanticDeployment::Configured,
     ] {
         assert_eq!(
-            coverage::view_coverage(&snapshot, &coverage::ActivatedProfiles::new(), deployment)
+            coverage::view_coverage(
+                &snapshot,
+                &coverage::ActivatedProfiles::new(),
+                deployment,
+                &Default::default(),
+            )
                 .test_value()?,
             vec![
                 ViewCoverage::Complete,
@@ -1695,7 +1702,11 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         "unrelated",
     ));
     let sibling_row = rows.last().test_value()?.clone();
-    coverage::qualify_package_rows(&snapshot, &mut rows).test_value()?;
+    coverage::qualify_package_rows(
+        &snapshot,
+        &mut rows,
+        &Default::default(),
+    ).test_value()?;
     assert_eq!(
         &rows[..declaration_count],
         declarations.as_slice(),
@@ -1898,7 +1909,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
                 coverage::view_coverage(
                     snapshot,
                     &current_activated,
-                    coverage::SemanticDeployment::Configured
+                    coverage::SemanticDeployment::Configured,
+                    &Default::default(),
                 )
                 .test_value()?,
                 vec![ViewCoverage::Complete]
@@ -1910,11 +1922,20 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
                         expected: Vec<ViewCoverage>|
      -> Result<(), String> {
         assert_eq!(
-            coverage::package_row_state(snapshot, key.package()).test_value()?,
+            coverage::package_row_state(
+                snapshot,
+                key.package(),
+                &Default::default(),
+            ).test_value()?,
             Some(state)
         );
         assert_eq!(
-            coverage::view_coverage(snapshot, &active, coverage::SemanticDeployment::Configured)
+            coverage::view_coverage(
+                snapshot,
+                &active,
+                coverage::SemanticDeployment::Configured,
+                &Default::default(),
+            )
                 .test_value()?,
             expected
         );
@@ -1948,7 +1969,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         coverage::view_coverage(
             &pending,
             &coverage::ActivatedProfiles::new(),
-            coverage::SemanticDeployment::Configured
+            coverage::SemanticDeployment::Configured,
+            &Default::default(),
         )
         .test_value()?,
         partial,
@@ -2035,7 +2057,12 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         coverage::SemanticDeployment::Unconfigured,
     ] {
         assert_eq!(
-            coverage::view_coverage(&changed, &active, deployment).test_value()?,
+            coverage::view_coverage(
+                &changed,
+                &active,
+                deployment,
+                &Default::default(),
+            ).test_value()?,
             stale
         );
     }
@@ -2043,7 +2070,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     assert_eq!(
         coverage::package_row_state(
             &changed,
-            &backend_engine::PackageReference::parse(sibling_label).test_value()?
+            &backend_engine::PackageReference::parse(sibling_label).test_value()?,
+            &Default::default(),
         )
         .test_value()?,
         None,
@@ -2095,7 +2123,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         coverage::view_coverage(
             &missing_published,
             &coverage::ActivatedProfiles::new(),
-            coverage::SemanticDeployment::Configured
+            coverage::SemanticDeployment::Configured,
+            &Default::default(),
         )
         .test_value()?,
         vec![ViewCoverage::Complete],
@@ -2199,7 +2228,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         coverage::view_coverage(
             &snapshot,
             &coverage::ActivatedProfiles::new(),
-            coverage::SemanticDeployment::Configured
+            coverage::SemanticDeployment::Configured,
+            &Default::default(),
         )
         .test_value()?,
         vec![ViewCoverage::Complete]
@@ -2288,7 +2318,11 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
     let snapshot = daemon.engine().daemon().owner().snapshot();
     coverage::reset_package_state_visits();
     assert_eq!(
-        coverage::package_row_state(&snapshot, key.package()).test_value()?,
+        coverage::package_row_state(
+            &snapshot,
+            key.package(),
+            &Default::default(),
+        ).test_value()?,
         Some(RowState::Loading)
     );
     assert_eq!(
@@ -2302,7 +2336,11 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
         initial.basis(),
         target_label,
     )];
-    coverage::qualify_package_rows(&snapshot, &mut rows).test_value()?;
+    coverage::qualify_package_rows(
+        &snapshot,
+        &mut rows,
+        &Default::default(),
+    ).test_value()?;
     assert_eq!(
         rows[0].state,
         RowState::Loading,
@@ -2312,7 +2350,11 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
         backend_engine::PackageReference::parse("pkg:npm/nn-missing-state@1.0.0").test_value()?;
     coverage::reset_package_state_visits();
     assert_eq!(
-        coverage::package_row_state(&snapshot, &missing).test_value()?,
+        coverage::package_row_state(
+            &snapshot,
+            &missing,
+            &Default::default(),
+        ).test_value()?,
         None
     );
     assert_eq!(
@@ -2348,7 +2390,11 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
     let failed = daemon.engine().daemon().owner().snapshot();
     coverage::reset_package_state_visits();
     assert_eq!(
-        coverage::package_row_state(&failed, key.package()).test_value()?,
+        coverage::package_row_state(
+            &failed,
+            key.package(),
+            &Default::default(),
+        ).test_value()?,
         Some(RowState::Failed)
     );
     assert_eq!(coverage::package_state_visits(), 2);

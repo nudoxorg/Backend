@@ -88,12 +88,15 @@ pub use index_operation::{
 #[cfg(any(unix, windows))]
 pub use index_operation::{index_with_journal_recovery_wait, index_with_journal_wait};
 pub use index_progress::{
-    IndexObservationFingerprint, IndexOperationWaitResult, IndexOperationWaitStop,
-    IndexProgressRead, IndexProgressReference, IndexProgressUpdate, MAX_INDEX_OPERATION_WAIT,
-    MAX_INDEX_PROGRESS_WAIT_MILLIS,
+    IndexCompilerProgressUpdate, IndexObservationFingerprint, IndexOperationProgress,
+    IndexOperationWaitResult, IndexOperationWaitStop, IndexProgressRead, IndexProgressReference,
+    IndexProgressUpdate, MAX_INDEX_OPERATION_WAIT, MAX_INDEX_PROGRESS_WAIT_MILLIS,
 };
 #[cfg(any(unix, windows))]
-pub use index_progress::{read_index_progress, wait_index_operation};
+pub use index_progress::{
+    observe_index_operation_progress, read_index_operation_progress, read_index_progress,
+    wait_index_operation, wait_index_operation_with_progress,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};

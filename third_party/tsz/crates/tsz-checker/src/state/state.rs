@@ -1233,6 +1233,25 @@ impl<'a> CheckerState<'a> {
         })
     }
 
+    /// Resolve a member of an exactly bound `import * as ns` receiver.
+    ///
+    /// Namespace object types need not carry a declaration symbol. Resolve
+    /// their public surface through the import's original module request and
+    /// retain the terminal export's binder alongside its raw symbol id.
+    /// External/unresolved modules and shadowing local receivers supply no
+    /// project declaration witness.
+    pub fn resolve_project_namespace_member_with_owner(
+        &self,
+        receiver: NodeIndex,
+        member_name: &str,
+    ) -> Option<ProjectSymbolOwner> {
+        self.ctx.arena.get_identifier_at(receiver)?;
+        let alias_id = self.ctx.binder.resolve_identifier(self.ctx.arena, receiver)?;
+        let (symbol_id, owner_file_idx) = self.ctx
+            .resolve_namespace_import_member_with_owner(alias_id, member_name)?;
+        Some(ProjectSymbolOwner { symbol_id, owner_file_idx })
+    }
+
     /// Get the symbol by name from file locals.
     pub fn get_symbol_by_name(&self, name: &str) -> Option<SymbolId> {
         self.ctx.binder.file_locals.get(name)

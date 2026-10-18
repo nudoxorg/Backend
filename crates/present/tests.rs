@@ -17,6 +17,27 @@ const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 
 #[test]
+fn search_requires_nonempty_query_and_preserves_nonempty_literal_text() {
+    let grammar = grammar_for("search").expect("search grammar");
+    let empty = serde_json::json!({"query":""});
+    let fault = Invocation::from_json(grammar, empty.as_object().expect("arguments"))
+        .expect_err("empty search is a local usage refusal");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+    assert_eq!(fault.operand().render(), "query");
+    assert!(fault.cause().sentence().contains("nonempty literal query"));
+
+    for query in ["ferris", "ferris with spaces", " "] {
+        let arguments = serde_json::json!({"query":query});
+        let invocation = Invocation::from_json(grammar, arguments.as_object().expect("arguments"))
+            .expect("nonempty literal query remains admissible");
+        let Request::Search { text, .. } = lower(&invocation, PROJECT).expect("search lowers") else {
+            panic!("search request");
+        };
+        assert_eq!(text, query, "search query text is preserved verbatim");
+    }
+}
+
+#[test]
 fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
     let graph = grammar_for("package-graph").expect("package graph grammar");
     let mut invocation = Invocation::new(graph);

@@ -2953,9 +2953,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         first_authority,
                         toolchain,
                         PackageAuthorityError::TypeScriptProjectHost(
-                            super::compiler_typescript_failure::describe_host_error(
+                            super::compiler_typescript_failure::describe_program_admission_error(
                                 cause,
-                                &[package.package_root, inputs.workspace_root],
+                                &inputs,
                             ),
                         ),
                     )),
@@ -3156,14 +3156,23 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript forest checker budget" })?;
                 let _program_observation = budget.observe_program(program_index);
                 let file_work_units = tsz_file_work_units.get(program_index).copied().ok_or(PackageSemanticError::Capacity { lane: "TypeScript program file work allowance" })?;
-                project.checked_query_session_with_file_work(budget, file_work_units).map_err(|cause| {
+                let sources = native_program_sources.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript query source membership" })?;
+                let manifest = match sources.nodes() {
+                    Some((_, nodes)) => nodes.get(program_index).and_then(|node| node.program.as_ref()),
+                    None if program_index == 0 => sources.single_program(),
+                    None => None,
+                }.ok_or(PackageSemanticError::Capacity { lane: "TypeScript owning query source membership" })?;
+                project.checked_query_session_with_file_work(budget, file_work_units)
+                    .map_err(backend_frontend_typescript::TszAuthorityError::ProjectCheckerSession)
+                    .and_then(|session| session.authenticate_native_program_sources(manifest))
+                    .map_err(|cause| {
                     let toolchain = self.toolchain_for_package(first_application_request, typescript_toolchain)
                         .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
                     PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
                         terminal: Box::new(package_authority_terminal(
                             package.package_target.target(), first_application_request, first_authority, toolchain,
-                            PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ProjectCheckerSession(cause)),
+                            PackageAuthorityError::TypeScriptTsz(cause),
                         )),
                     }
                 })

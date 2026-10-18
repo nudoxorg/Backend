@@ -80,9 +80,9 @@ pub fn answer_with_detail(
         }
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
         Answer::Product(value) => product_projection(value, Some(detail), Some(target)),
-        Answer::Outline(value) if matches!(target, ContinuationTarget::McpInvocation(_)) => {
+        Answer::Outline(value) => {
             let mut text = outline(value);
-            if let Some(cursor) = cursor {
+            if let Some(cursor) = cursor.filter(|_| value.continuation().is_some()) {
                 text.push_str("\n\n");
                 text.push_str(&continuation_note(target, cursor));
             }
@@ -775,6 +775,9 @@ pub fn outline(tree: &OutlineTree) -> String {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
     lines.push(summary);
+    if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
+        lines.push(format!("More declarations remain beyond this bounded prefix. Continue outline with --limit {} and the next cursor.", page.limit));
+    }
     lines.finish()
 }
 
@@ -818,6 +821,13 @@ pub fn status(status: &Status) -> String {
     }
     lines.push(coverage(status.coverage()));
     lines.push(status.capabilities().render());
+    if let Some(cause) = status.compiler_refusal() {
+        lines.push("Observed failed compiler attempt (served coverage above is unchanged):");
+        lines.push(fault(cause));
+    }
+    if let Some(observation) = status.source_selection() {
+        lines.push(observation.render());
+    }
     lines.finish()
 }
 

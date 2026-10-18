@@ -353,7 +353,19 @@ impl LocalEngineClient {
     }
 
     fn request_index(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexProject { request: request_id, project, operation, basis, owner, .. } = request else {
+        let context = backend_client::RequestContext::new();
+        context
+            .read_deadline(Duration::from_secs(30))
+            .map_err(fault)?;
+        let EngineRequest::IndexProject {
+            request: request_id,
+            project,
+            operation,
+            basis,
+            owner,
+            ..
+        } = request
+        else {
             unreachable!("index adapter called with a non-index request")
         };
         let owner = owner.as_ref().filter(|owner| owner.is_gated()).ok_or_else(|| EngineFault::IndexNotSent {
@@ -364,10 +376,10 @@ impl LocalEngineClient {
             return Err(EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                 FaultCode::Protocol, "The saved index operation does not belong to this project.") });
         }
-        let mut session = Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
+        let cancel = self.current_cancel()?;
+        let mut session = self.index_session(&context, &cancel)
             .map_err(|error| EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                 FaultCode::Transport, format!("The first-send connection could not be opened: {error}. Nothing was sent.")) })?;
-        let cancel = self.current_cancel()?;
         let result = {
             let _wake = cancel_wake(&cancel, session.interrupt_handle())
                 .map_err(|error| EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
@@ -396,28 +408,121 @@ impl LocalEngineClient {
                 error: crate::core::ErrorValue::new(FaultCode::Transport, "This index request stopped before its first send. Nothing was sent.") }); }
             // Exactly one mutation send. Every interrupted answer is reconciled
             // by this persisted key; it never starts a new request implicitly.
-            session.start_index_operation(operation.key, operation.package.clone(), operation.execution_intent)
+            let result = session
+                .set_request_context(Some(context.clone()))
+                .and_then(|()| {
+                    session.start_index_operation(
+                        operation.key,
+                        operation.package.clone(),
+                        operation.execution_intent,
+                    )
+                });
+            let detached = session.set_request_context(None);
+            result.and_then(|observation| detached.map(|()| observation))
         };
         let observation = match result {
             Ok(observation) => observation,
-            Err(error) => {
-                let _ = self.client_fault(error);
+            Err(_) => {
+                // A missing index receipt is not evidence that the owner died.
+                // Publication recovery observes liveness within its own scope.
                 return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
             }
         };
         self.session = Some(session);
-        self.index_observation(*request_id, *basis, project, operation, observation)
+        self.index_observation(
+            *request_id,
+            *basis,
+            project,
+            operation,
+            observation,
+            &context,
+        )
+    }
+
+    fn request_index_cancel(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        let EngineRequest::CancelIndexOperation { owner, project, operation, ticket, basis, request: request_id, .. } = request else {
+            unreachable!("index cancel adapter called with another request")
+        };
+        let unconfirmed = || EngineFault::IndexUnconfirmed { project: project.clone() };
+        let owner = owner.as_ref().filter(|owner| owner.is_gated()).ok_or_else(unconfirmed)?;
+        if !operation.belongs_to(project) || operation.cancellation_ticket().as_ref() != Some(ticket) {
+            return Err(unconfirmed());
+        }
+        let context = backend_client::RequestContext::new();
+        context.read_deadline(Duration::from_secs(30)).map_err(|_| unconfirmed())?;
+        let before = self.with_index_read(&context, |session| {
+            session.set_request_context(Some(context.clone()))?;
+            let result = session.index_operation_status(operation.key);
+            session.set_request_context(None)?;
+            result
+        }).map_err(|_| unconfirmed())?;
+        if !admit_index_cancel_preflight(operation, ticket, &before).map_err(|_| unconfirmed())? {
+            // Publication or another terminal result won the race. Never send
+            // Cancel to a finished/replaced job, and retain its exact receipt.
+            return self.index_observation(*request_id, *basis, project, operation, before, &context);
+        }
+        let cancel = self.current_cancel()?;
+        let mut session = self.index_session(&context, &cancel).map_err(|_| unconfirmed())?;
+        let receipt = {
+            let _wake = cancel_wake(&cancel, session.interrupt_handle()).map_err(|_| unconfirmed())?;
+            owner.ready_for_send(*basis, &cancel).map_err(|_| unconfirmed())?;
+            context.check().map_err(|_| unconfirmed())?;
+            // Exactly one mutation send. A transport break never replays Cancel,
+            // declares the owner dead, or means the operation was cancelled.
+            session.cancel_index_job(ticket.clone()).map_err(|_| unconfirmed())?
+        };
+        if receipt.ticket != *ticket { return Err(unconfirmed()); }
+        self.session = Some(session);
+        let after = self.with_index_read(&context, |session| {
+            session.set_request_context(Some(context.clone()))?;
+            let result = session.index_operation_status(operation.key);
+            session.set_request_context(None)?;
+            result
+        }).map_err(|_| unconfirmed())?;
+        if !admit_index_cancel_preflight(operation, ticket, &after).map_err(|_| unconfirmed())? {
+            return self.index_observation(*request_id, *basis, project, operation, after, &context);
+        }
+        if matches!(receipt.status, backend_library::IndexCancelStatus::Unknown) { return Err(unconfirmed()); }
+        // Requested is not terminal. Mapping keeps Cancelling while subsequent
+        // exact operation observations run; only an owner terminal settles it.
+        self.index_observation(*request_id, *basis, project, operation, after, &context)
     }
 
     fn request_index_status(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexOperationStatus { request: request_id, project, operation, basis, .. } = request else {
+        let context = backend_client::RequestContext::new();
+        context
+            .read_deadline(Duration::from_secs(30))
+            .map_err(fault)?;
+        let EngineRequest::IndexOperationStatus {
+            request: request_id,
+            project,
+            operation,
+            basis,
+            ..
+        } = request
+        else {
             unreachable!("index status adapter called with a non-status request")
         };
         // Status is read-only and may reconnect once. It never calls Start,
         // even when the owner reports Unknown or Unresolved.
-        let observation = self.with_session_read(|session| session.index_operation_status(operation.key))
-            .map_err(|_| EngineFault::IndexUnconfirmed { project: project.clone() })?;
-        self.index_observation(*request_id, *basis, project, operation, observation)
+        let observation = self
+            .with_index_read(&context, |session| {
+                session.set_request_context(Some(context.clone()))?;
+                let result = session.index_operation_status(operation.key);
+                session.set_request_context(None)?;
+                result
+            })
+            .map_err(|_| EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            })?;
+        self.index_observation(
+            *request_id,
+            *basis,
+            project,
+            operation,
+            observation,
+            &context,
+        )
     }
 
     fn index_observation(
@@ -427,19 +532,121 @@ impl LocalEngineClient {
         project: &LocalProjectId,
         operation: &crate::model::IndexOperationClaim,
         observation: backend_library::IndexOperationObservation,
+        context: &backend_client::RequestContext,
     ) -> Result<EngineDto, EngineFault> {
         if !operation.belongs_to(project) || !operation.admits_observation(&observation) {
             return Err(EngineFault::IndexUnconfirmed {
                 project: project.clone(),
             });
         }
+        let observed =
+            backend_client::observe_index_operation_progress(observation, context, |command| {
+                self.with_index_read(context, |session| {
+                    session.set_request_context(Some(context.clone()))?;
+                    let result = session.surface(command.clone());
+                    session.set_request_context(None)?;
+                    result
+                })
+                .map_err(|error| backend_client::ClientError::Protocol(format!("{error:?}")))
+            })
+            .map_err(|_| EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            })?;
+        if !operation.admits_observation(&observed.observation) {
+            return Err(EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            });
+        }
+        let mut operation = operation.clone();
+        operation.profile_progress = observed.profile_progress;
         Ok(EngineDto::IndexOperation {
             request,
             basis,
             project: project.clone(),
-            operation: operation.clone(),
-            observation,
+            operation,
+            observation: observed.observation,
         })
+    }
+
+    fn index_session(
+        &self,
+        context: &backend_client::RequestContext,
+        cancel: &CancellationToken,
+    ) -> Result<Session, ClientError> {
+        // Dial/authentication precede the socket-specific desktop wake. Link
+        // this request before connecting; on_cancel also closes the early race.
+        let waiting = context.clone();
+        let _wake = cancel.on_cancel(move || {
+            waiting.cancel(backend_client::RequestCancellationReason::Explicit);
+        });
+        let transport = backend_client::UnixCommandTransport::connect_with_context(
+            &self.endpoint,
+            DESKTOP_CONNECT_TIMEOUT,
+            Duration::from_secs(30),
+            Some(context),
+        )?;
+        let mut session = Session::from_transport(self.endpoint.clone(), transport);
+        session.set_request_context(Some(context.clone()))?;
+        Ok(session)
+    }
+
+    /// Index status and progress share their original request lifetime across
+    /// connection and retry. The publication observer owns owner-loss recovery;
+    /// these reads must not start an independent liveness RPC or recovery wait.
+    fn with_index_read<T>(
+        &mut self,
+        context: &backend_client::RequestContext,
+        mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
+    ) -> Result<T, EngineFault> {
+        for attempt in 0..2 {
+            let cancel = self.current_cancel()?;
+            if cancel.is_cancelled() {
+                self.session = None;
+                return Err(EngineFault::Cancelled);
+            }
+            if let Err(error) = context.check() {
+                self.session = None;
+                return Err(fault(error));
+            }
+            if self.session.is_none() {
+                self.session = Some(self.index_session(context, &cancel).map_err(fault)?);
+            }
+            let _wake = cancel_wake(
+                &cancel,
+                self.session.as_ref().expect("session installed").interrupt_handle(),
+            )?;
+            if cancel.is_cancelled() {
+                self.session = None;
+                return Err(EngineFault::Cancelled);
+            }
+            let result = operation(self.session.as_mut().expect("session installed"));
+            if cancel.is_cancelled() {
+                self.session = None;
+                return Err(EngineFault::Cancelled);
+            }
+            match result {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if let Err(stopped) = context.check() {
+                        self.session = None;
+                        return Err(fault(stopped));
+                    }
+                    if transport_break(&error) {
+                        self.session = None;
+                        if attempt == 0 {
+                            if self.gate.as_ref().is_some_and(|gate| {
+                                gate.ready_epoch() != self.attached_epoch
+                            }) {
+                                return Err(EngineFault::Superseded);
+                            }
+                            continue;
+                        }
+                    }
+                    return Err(fault(error));
+                }
+            }
+        }
+        unreachable!("one index read attempt and one retry return above")
     }
 
     /// A read may be retried once after a transport break, using a fresh
@@ -518,6 +725,28 @@ impl LocalEngineClient {
     }
 }
 
+/// Re-read the exact durable payload and owner ticket before cancellation.
+/// A terminal receipt wins; unknown, accepted-only or replaced tickets refuse.
+fn admit_index_cancel_preflight(
+    operation: &crate::model::IndexOperationClaim,
+    ticket: &backend_library::IndexJobTicket,
+    observation: &backend_library::IndexOperationObservation,
+) -> Result<bool, ClientError> {
+    use backend_library::{IndexOperationObservation, IndexOperationState};
+    if !operation.admits_observation(observation) {
+        return Err(ClientError::Protocol("cancel observation changed its exact operation".into()));
+    }
+    match observation {
+        IndexOperationObservation::Known(status) => match &status.state {
+            IndexOperationState::Active { ticket: active, .. } if active == ticket => Ok(true),
+            IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. }
+                | IndexOperationState::Failed { .. } => Ok(false),
+            _ => Err(ClientError::Protocol("cancel observation has no matching current ticket".into())),
+        },
+        _ => Err(ClientError::Protocol("cancel observation has no exact active job".into())),
+    }
+}
+
 fn cancel_wake(
     cancel: &CancellationToken,
     interrupt: Option<TransportInterrupt>,
@@ -542,6 +771,18 @@ impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.active_cancel = Some(request.cancellation().clone());
         let _lifetime = match request {
+            EngineRequest::CancelIndexOperation { owner, project, basis, .. } => {
+                let Some(owner) = owner else {
+                    self.active_cancel = None;
+                    return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
+                };
+                let lifetime = owner.bind_cancellation(request.cancellation());
+                if owner.ready_for_send(*basis, request.cancellation()).is_err() {
+                    self.active_cancel = None;
+                    return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
+                }
+                lifetime
+            }
             EngineRequest::IndexProject { owner: Some(owner), project, basis, .. } => {
                 let lifetime = owner.bind_cancellation(request.cancellation());
                 if let Err(message) = owner.ready_for_send(*basis, request.cancellation()) {
@@ -559,8 +800,8 @@ impl EngineClient for LocalEngineClient {
                 return Err(match request {
                     EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent { project: project.clone(),
                         error: crate::core::ErrorValue::new(FaultCode::Transport, format!("The owner stopped before this request's first send: {error}. Nothing was sent.")) },
-                    EngineRequest::IndexOperationStatus { project, .. } =>
-                        EngineFault::IndexUnconfirmed { project: project.clone() },
+                    EngineRequest::IndexOperationStatus { project, .. }
+                    | EngineRequest::CancelIndexOperation { project, .. } => EngineFault::IndexUnconfirmed { project: project.clone() },
                     _ => owner_fault(error),
                 });
             }
@@ -590,6 +831,7 @@ impl EngineClient for LocalEngineClient {
             EngineRequest::Surface { .. } => self.request_surface(request),
             EngineRequest::IndexProject { .. } => self.request_index(request),
             EngineRequest::IndexOperationStatus { .. } => self.request_index_status(request),
+            EngineRequest::CancelIndexOperation { .. } => self.request_index_cancel(request),
             EngineRequest::Object {
                 request,
                 basis,
@@ -617,7 +859,8 @@ impl EngineClient for LocalEngineClient {
             && self.gate.as_ref().and_then(super::owner::OwnerGate::ready_epoch)
                 != self.attached_epoch;
         let result = match (request, result) {
-            (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. },
+            (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. }
+                | EngineRequest::CancelIndexOperation { project, .. },
                 Err(EngineFault::Cancelled | EngineFault::Superseded | EngineFault::Failed(_))) =>
                 Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
             (_, result) => result,
@@ -642,14 +885,15 @@ fn owner_change_result(
             Err(error)
         }
         (
-            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. },
+            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }
+                | EngineRequest::CancelIndexOperation { .. },
             Ok(dto @ EngineDto::IndexOperation { .. }),
         ) if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
                     if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. } | backend_library::IndexOperationState::Failed { .. })) =>
         {
             Ok(dto)
         }
-        (EngineRequest::IndexOperationStatus { project, .. }, _) => {
+        (EngineRequest::IndexOperationStatus { project, .. } | EngineRequest::CancelIndexOperation { project, .. }, _) => {
             Err(EngineFault::IndexUnconfirmed {
                 project: project.clone(),
             })
@@ -771,6 +1015,167 @@ mod publication_revision_tests;
 mod tests {
     use super::*;
     use crate::navigation::RequestId;
+
+    #[cfg(unix)]
+    #[test]
+    fn index_reads_keep_expiry_cancellation_and_owner_fences_without_a_liveness_probe() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Instant;
+
+        for case in ["expired", "cancelled", "suspended", "healthy", "protocol"] {
+            let directory = std::env::temp_dir().join(format!(
+                "ndi-{}-{:x}", std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock").as_nanos(),
+            ));
+            std::fs::create_dir(&directory).expect("fresh private endpoint directory");
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("private directory");
+            let endpoint = directory.join("s");
+            let listener = UnixListener::bind(&endpoint).expect("probe detector");
+            std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))
+                .expect("private endpoint");
+            listener.set_nonblocking(true).expect("bounded accept");
+            let connections = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicBool::new(false));
+            let observed_connections = Arc::clone(&connections);
+            let observer_finished = Arc::clone(&finished);
+            let detector = std::thread::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < until {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            observed_connections.fetch_add(1, Ordering::AcqRel);
+                            // A regression's liveness RPC fails promptly rather
+                            // than leaving this test in its independent I/O wait.
+                            drop(stream);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if observer_finished.load(Ordering::Acquire) { break; }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("probe detector: {error}"),
+                    }
+                }
+            });
+            let view = super::super::owner::publication_tests::view();
+            let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+            let basis = VersionedRoot::from_revision(1, cursor, 0);
+            let gate = super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+            let attachment = gate.ready_epoch().expect("ready attachment");
+            let mut client = LocalEngineClient::gated(
+                &endpoint, LocalProjectId::from_path(&directory).expect("project"), gate.clone(),
+            );
+            let (command, _owner) = UnixStream::pair().expect("cached command socket");
+            client.session = Some(Session::from_transport(
+                endpoint.clone(), backend_client::UnixCommandTransport::from_stream(command),
+            ));
+            client.active_cancel = Some(CancellationToken::new());
+            client.attached_epoch = Some(attachment);
+            let context = backend_client::RequestContext::new();
+            let deadline = context.read_deadline(if case == "expired" { Duration::from_millis(50) } else { Duration::from_secs(2) }).expect("original budget");
+            let mut attempts = 0;
+            let result = client.with_index_read(&context, |_| {
+                attempts += 1;
+                match case {
+                    "expired" => {
+                        std::thread::sleep(deadline.saturating_duration_since(Instant::now())
+                            + Duration::from_millis(1));
+                        Err(ClientError::RemoteDeadlineExceeded)
+                    }
+                    "cancelled" => {
+                        context.cancel(backend_client::RequestCancellationReason::Explicit);
+                        Err(ClientError::Disconnected(std::io::ErrorKind::ConnectionReset))
+                    }
+                    "suspended" => {
+                        gate.suspend_observation(attachment).expect("rotate attachment");
+                        Err(ClientError::Disconnected(std::io::ErrorKind::ConnectionReset))
+                    }
+                    "healthy" => Ok(7),
+                    "protocol" => Err(ClientError::Protocol("correlated refusal".into())),
+                    _ => unreachable!(),
+                }
+            });
+            finished.store(true, Ordering::Release);
+            detector.join().expect("bounded probe detector");
+            assert_eq!(connections.load(Ordering::Acquire), 0, "{case}: no extra liveness socket");
+            assert_eq!(attempts, 1, "{case}: no retry after stop or authority change");
+            match case {
+                "expired" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
+                    if error.code() == FaultCode::Transport)),
+                "cancelled" => assert!(matches!(result, Err(EngineFault::Cancelled))),
+                "suspended" => assert!(matches!(result, Err(EngineFault::Superseded))),
+                "healthy" => assert!(matches!(result, Ok(7))),
+                "protocol" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
+                    if error.code() == FaultCode::Protocol && error.message() == "protocol: correlated refusal")),
+                _ => unreachable!(),
+            }
+            if case != "suspended" {
+                assert_eq!(gate.ready_epoch(), Some(attachment), "{case}: read failure cannot declare owner dead");
+            }
+            assert_eq!(client.session.is_some(), matches!(case, "healthy" | "protocol"));
+            drop(client);
+            std::fs::remove_file(endpoint).expect("remove endpoint");
+            std::fs::remove_dir(directory).expect("remove private directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_read_retires_the_cached_session_when_cancelled_during_wake_registration() {
+        use std::os::unix::net::UnixStream;
+
+        struct CancelAtWake {
+            transport: backend_client::UnixCommandTransport,
+            cancel: CancellationToken,
+            cancel_at_lookup: bool,
+        }
+        impl backend_client::CommandTransport for CancelAtWake {
+            fn request(&mut self, _: backend_library::CommandDto)
+                -> Result<backend_library::ReplyDto, ClientError>
+            {
+                Err(ClientError::Protocol("no fixture command is admitted".into()))
+            }
+            fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+                if self.cancel_at_lookup { self.cancel.cancel(); }
+                backend_client::CommandTransport::interrupt_handle(&self.transport)
+            }
+        }
+        for cancel_at_lookup in [true, false] {
+            let (stream, _owner) = UnixStream::pair().expect("cached owned socket");
+            let transport = backend_client::UnixCommandTransport::from_stream(stream);
+            assert!(
+                backend_client::CommandTransport::interrupt_handle(&transport).is_some(),
+                "real cached transport owns its public interrupt handle"
+            );
+            let cancel = CancellationToken::new();
+            let mut client = LocalEngineClient::new(
+                "unused-index-wake-endpoint", LocalProjectId::new("index-wake").expect("project"),
+            );
+            client.active_cancel = Some(cancel.clone());
+            client.session = Some(Session::from_transport("unused-index-wake-endpoint", CancelAtWake {
+                transport, cancel, cancel_at_lookup,
+            }));
+            let context = backend_client::RequestContext::new();
+            context.read_deadline(Duration::from_secs(2)).expect("original scope");
+            let mut invoked = false;
+            let result = client.with_index_read(&context, |_| {
+                invoked = true;
+                Ok(7)
+            });
+            if cancel_at_lookup {
+                assert!(matches!(result, Err(EngineFault::Cancelled)));
+                assert!(!invoked, "no callback after the immediate cancellation wake");
+                assert!(client.session.is_none(), "interrupted cached transport is retired");
+            } else {
+                assert!(matches!(result, Ok(7)));
+                assert!(invoked);
+                assert!(client.session.is_some(), "healthy cached transport is retained");
+            }
+        }
+    }
 
     #[test]
     fn bootstrap_retry_preserves_transport_cause_and_never_retries_invalid_or_cancelled_frames() {

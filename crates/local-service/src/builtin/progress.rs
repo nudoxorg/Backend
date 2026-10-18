@@ -42,6 +42,9 @@ struct ProgressTally {
     declarations: u64,
     languages: BTreeMap<SourceLanguage, (u64, u64)>,
     faults: BTreeMap<SourceUnavailableReason, u64>,
+    observed_projects: u64,
+    unknown_projects: u64,
+    excluded: BTreeMap<String, u64>,
 }
 
 /// One exact fault for a count that outgrew the report width.
@@ -58,6 +61,26 @@ fn bump(counter: &mut u64, amount: u64) -> Result<(), BuiltinModelError> {
 impl ProgressTally {
     /// Folds one relation row into the tally, ignoring project rows.
     fn observe(&mut self, record: &ProductSourceRecord) -> Result<(), BuiltinModelError> {
+        if let Some(project) = record.project_fields() {
+            match project.source_selection {
+                None => bump(&mut self.unknown_projects, 1)?,
+                Some(observation) => {
+                    observation.admit().map_err(BuiltinModelError)?;
+                    if observation.observed_projects != 1 || observation.unknown_projects != 0 {
+                        return Err(BuiltinModelError(
+                            "project source-selection observation has invalid scope".into(),
+                        ));
+                    }
+                    bump(&mut self.observed_projects, 1)?;
+                    for row in &observation.unsupported_extensions {
+                        bump(
+                            self.excluded.entry(row.extension.clone()).or_default(),
+                            row.files,
+                        )?;
+                    }
+                }
+            }
+        }
         let Some(file) = record.file_fields() else {
             return Ok(());
         };
@@ -95,7 +118,7 @@ impl ProgressTally {
             .into_iter()
             .map(|(reason, files)| FaultRows::new(reason, files))
             .collect();
-        IngestProgress::new(
+        let progress = IngestProgress::new(
             self.files_discovered,
             self.files_indexed,
             self.files_unavailable,
@@ -103,7 +126,26 @@ impl ProgressTally {
             languages,
             faults,
         )
-        .map_err(|error| BuiltinModelError(format!("admit ingest progress: {error}")))
+        .map_err(|error| BuiltinModelError(format!("admit ingest progress: {error}")))?;
+        if self.observed_projects == 0 && self.unknown_projects == 0 {
+            return Ok(progress);
+        }
+        progress
+            .with_source_selection(backend_library::SourceSelectionObservation {
+                observed_projects: self.observed_projects,
+                unknown_projects: self.unknown_projects,
+                unsupported_extensions: self
+                    .excluded
+                    .into_iter()
+                    .map(
+                        |(extension, files)| backend_library::SourceExtensionExclusion {
+                            extension,
+                            files,
+                        },
+                    )
+                    .collect(),
+            })
+            .map_err(BuiltinModelError)
     }
 }
 
@@ -143,3 +185,42 @@ pub(super) fn ingest_progress(
 )]
 #[path = "progress/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod source_selection_tests {
+    use super::*;
+
+    #[test]
+    fn source_selection_tally_retains_known_exclusions_alongside_unknown_legacy_projects() {
+        let mut tally = ProgressTally::default();
+        let known = ProductSourceRecord::project("known", [1; 32], vec![])
+            .unwrap()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(12))
+            .unwrap();
+        let historical = ProductSourceRecord::project("legacy", [2; 32], vec![]).unwrap();
+        tally.observe(&known).unwrap();
+        tally.observe(&historical).unwrap();
+        let progress = tally.finish().unwrap();
+        assert_eq!(progress.files_discovered(), 0);
+        let observation = progress.source_selection().unwrap();
+        assert_eq!(observation.observed_projects, 1);
+        assert_eq!(observation.unknown_projects, 1);
+        assert_eq!(observation.unsupported_extensions[0].files, 12);
+        let text = observation.render();
+        assert!(text.contains(".vue: 12 excluded (unsupported extension)"));
+        assert!(text.contains("unknown for 1 historical project"));
+        assert!(text.contains("totals cover supported extensions"));
+        let mut overflow = ProgressTally::default();
+        let maximum = ProductSourceRecord::project("maximum", [3; 32], vec![])
+            .unwrap()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(
+                u64::MAX,
+            ))
+            .unwrap();
+        overflow.observe(&maximum).unwrap();
+        assert!(
+            overflow.observe(&known).is_err(),
+            "counts never saturate or silently disappear"
+        );
+    }
+}

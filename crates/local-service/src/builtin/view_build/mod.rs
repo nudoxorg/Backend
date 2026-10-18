@@ -37,6 +37,8 @@ mod semantic;
 mod semantic_content_admission;
 mod source_availability;
 mod structural;
+#[cfg(test)]
+mod typescript_import_native;
 
 /// Exercises the production semantic-row projection from command-boundary tests.
 #[cfg(test)]

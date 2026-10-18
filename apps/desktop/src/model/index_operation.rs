@@ -21,6 +21,9 @@ pub struct IndexOperationClaim {
     /// Canonical owner evidence; missing means no answer was admitted yet.
     #[serde(default)]
     pub observation: Option<backend_library::IndexOperationObservation>,
+    /// Separately admitted display milestones; never persisted as an operation receipt.
+    #[serde(skip)]
+    pub profile_progress: Option<backend_library::IndexProgressPage>,
 }
 
 impl IndexOperationClaim {
@@ -47,9 +50,18 @@ impl IndexOperationClaim {
 
     /// Bind an already generated key to the selected native project.
     pub fn for_project(key: IndexOperationKey, project: &LocalProjectId) -> Result<Self, String> {
-        let coordinate = project.service_coordinate().map_err(|error| error.to_string())?;
-        let package = PackageReference::parse(coordinate.to_owned()).map_err(|error| error.to_string())?;
-        Ok(Self { key, package, execution_intent: CompileExecutionIntent::Interactive, observation: None })
+        let coordinate = project
+            .service_coordinate()
+            .map_err(|error| error.to_string())?;
+        let package =
+            PackageReference::parse(coordinate.to_owned()).map_err(|error| error.to_string())?;
+        Ok(Self {
+            key,
+            package,
+            execution_intent: CompileExecutionIntent::Interactive,
+            observation: None,
+            profile_progress: None,
+        })
     }
 
     /// Match an observation to the caller payload and re-admit the canonical
@@ -66,6 +78,22 @@ impl IndexOperationClaim {
             IndexOperationObservation::OutsideReceiptWindow { operation_key, request_digest } => *operation_key == self.key
                 && *request_digest == backend_library::index_operation_request_digest(&self.package, self.execution_intent),
             IndexOperationObservation::Unknown { operation_key } => *operation_key == self.key,
+        }
+    }
+
+    /// Only an admitted active operation supplies a process-local cancel ticket.
+    /// Accepted-but-not-started, terminal and unknown observations supply none.
+    #[must_use]
+    pub fn cancellation_ticket(&self) -> Option<backend_library::IndexJobTicket> {
+        let observation = self.observation.as_ref()?;
+        if !self.admits_observation(observation) { return None; }
+        match observation {
+            backend_library::IndexOperationObservation::Known(status) => match &status.state {
+                backend_library::IndexOperationState::Active { ticket, .. }
+                    if ticket.package() == &self.package => Some(ticket.clone()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
