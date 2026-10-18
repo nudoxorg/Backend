@@ -6,7 +6,7 @@ use super::call::{Tone, ty_el};
 use super::card::Cards;
 use super::ink::{G, group_mark, mark};
 use super::key::{CaseName, FoldKey, Key, Part, Sec, Slot};
-use super::kit::{Env, Ellipsis, Ink, Stop, action, caps, disclosure, faded, head, heading, ink, joint, prose, roles, said, said_in, truncated, wrapped};
+use super::kit::{Env, Ellipsis, Ink, Stop, caps, disclosure, faded, head, heading, ink, joint, prose, roles, said, said_in, truncated, wrapped};
 use super::view::{Block, Case, Docs, Fails, Field, Group, Outcomes, Owed, Row, Shape};
 use crate::anatomy::page::named_as;
 use crate::anatomy::unroll::unroll;
