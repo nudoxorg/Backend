@@ -294,3 +294,146 @@ fn local_semantic_unix_default_first_reply_waits_and_cancelled_waiter_reuses_wor
         .expect("owner survives stale semantic work");
     drop(runner);
 }
+
+#[test]
+fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive() {
+    let mut fixture = AdapterFixture::new();
+    let package = fixture.package;
+    let label = fixture.label.clone();
+    let basis = fixture.parts().1.engine().daemon().library().view().basis();
+    let coordinate = format!("{label}::src/lib.rs:7::cold_needle");
+    fixture.publish_rows(vec![
+        backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key(&coordinate)),
+            basis,
+            package,
+            coordinate.clone(),
+        )
+        .with_source(backend_library::SourceLocation::new("src/lib.rs", 7).expect("source")),
+    ]);
+    let expected_root = fixture.parts().1.engine().daemon().library().view().root();
+    let (entered, release) = fixture.parts().0.local_search_lane.hold_next();
+    let directory = tempfile::Builder::new()
+        .prefix("nis-")
+        .tempdir_in("/tmp")
+        .expect("private short socket root");
+    let path = directory.path().join("owner.sock");
+    let mut config = ListenerConfig::new(&path);
+    config.owner_reply_timeout = Duration::from_secs(2);
+    config.poll_interval = Duration::from_millis(1);
+    config.idle_timeout = None;
+    let (_, changes) = std::sync::mpsc::channel();
+    let service = LocaldService::new(
+        AdapterOwner {
+            fixture,
+            abandoned: Arc::new(AtomicUsize::new(0)),
+            changes,
+        },
+        config.limits,
+    )
+    .expect("real owner service");
+    let mut listener = UnixListenerService::bind(service, config).expect("authenticated listener");
+    let runner = RunningOwner {
+        stop: listener.shutdown_handle(),
+        thread: Some(std::thread::spawn(move || listener.run())),
+    };
+    let query = backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::from_static("cold_needle"),
+        limit: 3,
+        cursor: None,
+    };
+    let context = RequestContext::new();
+    context
+        .read_deadline(Duration::from_secs(3))
+        .expect("one bounded read scope");
+    assert!(
+        matches!(Session::connect_with_context(&path, context).expect("query client")
+        .surface(query.clone()),
+        Err(ClientError::CommandFailed(backend_library::CommandFailure::QueryPreparation {
+            basis, state: backend_library::QueryPreparationState::Preparing,
+        })) if basis == expected_root)
+    );
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("actual cold worker is held");
+    // A separate authenticated connection proves that no owner mutex is held
+    // by the native preparation, rather than timing an in-process helper.
+    let control = RequestContext::new();
+    control
+        .read_deadline(Duration::from_secs(2))
+        .expect("bounded independent status");
+    Session::connect_with_context(&path, control)
+        .expect("independent status client")
+        .health()
+        .expect("owner status while build is held");
+    let cancelled = RequestContext::new();
+    let mut client = Session::connect_with_context(&path, cancelled.clone())
+        .expect("independent cancellable client");
+    cancelled.cancel(RequestCancellationReason::Explicit);
+    assert!(matches!(
+        client.surface(query.clone()),
+        Err(ClientError::RequestCancelled(
+            RequestCancellationReason::Explicit
+        ))
+    ));
+    // A cancelled reader cannot retire or duplicate shared current-view work.
+    assert!(
+        matches!(Session::connect(&path).expect("same query retry").surface(query.clone()),
+        Err(ClientError::CommandFailed(backend_library::CommandFailure::QueryPreparation {
+            basis, state: backend_library::QueryPreparationState::Preparing,
+        })) if basis == expected_root)
+    );
+    release.send(()).expect("finish actual cold native build");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let page = loop {
+        assert!(
+            Instant::now() < deadline,
+            "exact cold projection must become ready"
+        );
+        match Session::connect(&path)
+            .expect("fresh exact query client")
+            .surface(query.clone())
+        {
+            Ok(backend_library::SurfaceReply::IndexSearchPage(page)) => break page,
+            Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::QueryPreparation {
+                    basis,
+                    state: backend_library::QueryPreparationState::Preparing,
+                },
+            )) if basis == expected_root => std::thread::sleep(Duration::from_millis(2)),
+            other => panic!("unexpected exact cold index result: {other:?}"),
+        }
+    };
+    assert_eq!(
+        page.hits.len(),
+        1,
+        "complete query retains its exact local hit"
+    );
+    match &page.hits[0] {
+        backend_library::RegistrySearchHit::LocalDeclaration(record) => {
+            assert_eq!(record.coordinate.as_str(), coordinate);
+            assert_eq!(record.name.as_str(), "cold_needle");
+            assert_eq!(
+                record.source,
+                backend_library::LocalDeclarationSource::Captured {
+                    path: backend_library::ProductText::from_static("src/lib.rs"),
+                    line: std::num::NonZeroU32::new(7).expect("line"),
+                }
+            );
+        }
+        other => panic!("local source identity cannot become a registry release: {other:?}"),
+    }
+    let warm = Session::connect(&path)
+        .expect("warm client")
+        .surface(query)
+        .expect("warm exact result");
+    let backend_library::SurfaceReply::IndexSearchPage(warm) = warm else {
+        panic!("warm page");
+    };
+    assert_eq!(
+        warm.hits, page.hits,
+        "same query/root keeps the complete exact result"
+    );
+    assert!(warm.next_cursor.is_none());
+    drop(runner);
+}

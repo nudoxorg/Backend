@@ -828,6 +828,16 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             }
             true
         }
+        (
+            Command::Surface(crate::SurfaceCommand::IndexSearch { .. }),
+            CommandReply::Failed(crate::CommandFailure::QueryPreparation { .. }),
+        ) => {
+            // IndexSearch carries no request basis. This is an observation of
+            // the current local-plane readiness, never result/cursor authority.
+            // A retry retains its original query and opaque cursor; once ready,
+            // the existing composite snapshot check can still refuse that cursor.
+            true
+        }
         (_, CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, .. })) => {
             let expected = match command {
                 Command::Search(query) => query.basis(),
@@ -1287,6 +1297,40 @@ mod query_preparation_tests {
     use super::*;
     use crate::{GraphQueryRequest, NameQuery, Query, QueryLimit, QueryPreparationState};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn index_search_preparation_is_observational_and_never_an_unrelated_surface_reply() {
+        let basis = ViewRevision::from_bytes([59; 32]);
+        for state in [
+            QueryPreparationState::Preparing,
+            QueryPreparationState::Retiring,
+        ] {
+            let reply = ReplyDto::new(
+                19,
+                CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, state }),
+            );
+            let bytes = crate::encode_reply_dto(&reply).expect("strict preparation codec");
+            let decoded = crate::decode_reply_dto(&bytes).expect("strict preparation roundtrip");
+            let request = CommandDto::new(
+                19,
+                Command::Surface(crate::SurfaceCommand::IndexSearch {
+                    query: crate::ProductText::from_static("pkg:pypi/exact@1"),
+                    limit: 3,
+                    cursor: None,
+                }),
+            );
+            admit_reply(&request, &decoded).expect("observational current-view readiness");
+            assert!(matches!(decoded.reply, CommandReply::Failed(
+                crate::CommandFailure::QueryPreparation { basis: observed, state: actual }
+            ) if observed == basis && actual == state));
+            for command in [crate::SurfaceCommand::Projects, crate::SurfaceCommand::Tree] {
+                assert!(
+                    admit_reply(&CommandDto::new(19, Command::Surface(command)), &reply).is_err(),
+                    "readiness must not widen unrelated surface admission"
+                );
+            }
+        }
+    }
 
     #[test]
     fn query_preparation_reply_is_bound_to_search_or_active_graph_and_exact_basis() {
