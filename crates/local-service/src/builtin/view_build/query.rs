@@ -11,7 +11,7 @@ use super::call_join::{
 };
 use super::compiled_source_path;
 use super::identity::{
-    fragment_text, query_external_id, query_package_id, query_semantic_id, semantic_coordinate,
+    fragment_text, query_external_id, query_package_id, query_semantic_id,
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
@@ -293,6 +293,18 @@ fn append_compiler_query_facts(
                 cancelled,
             )
             .map_err(BuiltinModelError)?;
+            let mut coordinates = super::identity::semantic_coordinates(
+                label,
+                session.publication_entities().map(|entity| {
+                    check_search_preparation(cancelled, "semantic-query-coordinate")?;
+                    let entity = entity.map_err(|error| BuiltinModelError(format!("read semantic query declaration: {error}")))?;
+                    let identity = entity.entity.version.identity();
+                    let location = locations.place(image, &entity.entity).map(|placement| placement.location)
+                        .or_else(|| kinds.exact_location(profile, identity, caller_path));
+                    Ok((identity, entity.name, location))
+                }),
+                cancelled,
+            )?;
             for (identity, binding) in &kinds.exact {
                 check_search_preparation(cancelled, "semantic-exact-site")?;
                 exact_sites.record(
@@ -321,12 +333,9 @@ fn append_compiler_query_facts(
                 }
                 let name = super::semantic_display_name(entity.name)?.to_owned();
                 let kind = kinds.kind_of(identity, entity.entity.kind);
-                let location = locations.place(image, &entity.entity).map(|placement| placement.location)
-                    .or_else(|| kinds.exact_location(profile, identity, caller_path));
-                let display_coordinate = match location {
-                    Some(location) => super::identity::declaration_coordinate(label, location.path(), location.start_line(), &name),
-                    None => semantic_coordinate(label, identity, &name),
-                };
+                let display_coordinate = coordinates.remove(&identity).ok_or_else(|| {
+                    BuiltinModelError("semantic query declaration has no exact coordinate".to_owned())
+                })?;
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
