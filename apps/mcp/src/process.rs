@@ -192,6 +192,29 @@ fn framed_reply(
 
 const NO_ENDPOINT: &str = "local endpoint unavailable";
 
+/// Keep help and initialize on the installed CLI's read-only registration path.
+pub(crate) const STDIO_SETUP_GUIDANCE: &str =
+    "Stdio setup: with the optional CLI installed, run `nudox mcp-config` from the selected project, \
+     or pass --project with that project's absolute path. It prints the matched installed MCP \
+     executable, an absolute project path and Claude Code local-scope/Codex registration commands. \
+     It does not write client configuration, start a service or index a project. Inspect an existing \
+     nudox entry before adding it. Without the CLI, configure a stdio entry for the selected project \
+     with this server's absolute executable path and --project followed by the absolute project path.\n\n\
+     Use paths native to the operating system running the MCP client. For a client inside WSL, \
+     install and run the Linux build in that WSL distribution, then run `nudox mcp-config` there. \
+     Do not copy a Windows executable/project entry into the WSL client's configuration. Native \
+     Windows clients can use the JSON from `nudox mcp-config --format json`; the printed POSIX \
+     shell commands are for macOS/Linux.";
+
+fn help_text() -> String {
+    format!(
+        "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]\n\n\
+         Default transport: newline-delimited JSON-RPC over stdio. The MCP host launches this process; the local owner starts on the first owner-backed tool call.\n\n\
+         {STDIO_SETUP_GUIDANCE}\n\n\
+         HTTP setup: run backend-mcp --project /absolute/project --http 127.0.0.1:41449, then connect the host to http://127.0.0.1:41449/mcp. Keep that server process running. Use Bearer authentication from BACKEND_MCP_TOKEN (16-256 visible ASCII bytes) or the private token file identified by the startup message."
+    )
+}
+
 fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut endpoint = None;
     let mut workspace = None;
@@ -219,12 +242,7 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
             return Err("--http requires local endpoint transport support".to_owned());
         }
         if matches!(argument.as_str(), "--help" | "-h") {
-            println!(
-                "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]\n\n\
-                 Default transport: newline-delimited JSON-RPC over stdio. The MCP host launches this process; the local owner starts on the first owner-backed tool call.\n\n\
-                 Claude Code setup:\n  claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${{CLAUDE_PROJECT_DIR:-.}}'\n\n\
-                 HTTP setup: run backend-mcp --project /absolute/project --http 127.0.0.1:41449, then connect the host to http://127.0.0.1:41449/mcp. Keep that server process running. Use Bearer authentication from BACKEND_MCP_TOKEN (16-256 visible ASCII bytes) or the private token file identified by the startup message."
-            );
+            println!("{}", help_text());
             std::process::exit(0);
         }
         let (slot, label) = match argument.as_str() {
@@ -263,6 +281,23 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn help_uses_local_absolute_setup_for_the_clients_native_platform() {
+        let help = help_text();
+        assert!(help.contains(STDIO_SETUP_GUIDANCE));
+        assert!(help.contains("nudox mcp-config"));
+        assert!(help.contains("Claude Code local-scope"));
+        assert!(help.contains("absolute project path"));
+        assert!(help.contains("client inside WSL"));
+        assert!(help.contains("Linux build in that WSL distribution"));
+        assert!(help.contains("nudox mcp-config --format json"));
+        assert!(!help.contains("--scope user"));
+        assert!(!help.contains("CLAUDE_PROJECT_DIR"));
+        assert!(!help.contains("command -v backend-mcp"));
+        assert!(help.contains("HTTP setup:"));
+        assert!(help.contains("http://127.0.0.1:41449/mcp"));
+    }
 
     /// A workspace laid out on disk for one stdio session.
     struct Fixture {
