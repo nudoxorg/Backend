@@ -4076,7 +4076,7 @@ mod tests {
             }
             fn observe(&self, event: ProjectExecutionEvent<'_>) {
                 if !self.armed.load(Ordering::Acquire) { return; }
-                self.events.lock().unwrap().push((event.phase, event.transition,
+                self.events.lock().expect("test event log mutex is not poisoned").push((event.phase, event.transition,
                     event.file.map(|file| (file.index, file.path.to_owned()))));
                 if event.phase == P::SourcePreparationTypeEnvironment && event.transition == T::Entered {
                     self.entered.store(true, Ordering::Release);
@@ -4107,7 +4107,7 @@ mod tests {
                 assert!(matches!(result, Err(TszProjectQuerySessionError::ExecutionStopped(
                     tsz_common::ProjectExecutionStop::Deadline
                 ))), "entrypoint {entrypoint}: {result:?}");
-                let events = stop.events.lock().unwrap();
+                let events = stop.events.lock().expect("test event log mutex is not poisoned");
                 let parents: Vec<_> = events.iter().filter(|(phase, transition, _)|
                     *phase == P::SourcePreparation && *transition == T::Entered).collect();
                 assert_eq!(parents.len(), 1, "shared preparation has exactly one parent");
