@@ -32,6 +32,8 @@ pub enum FaultCode {
     Transport,
     /// A response failed schema/admission checks.
     Protocol,
+    /// A matched owner update requires a manual restart before retrying.
+    OwnerUpdate,
     /// The requested object was not found.
     Missing,
     /// Persistence failed.
@@ -72,6 +74,15 @@ impl ErrorValue {
             code,
             message: Arc::from(message),
         }
+    }
+
+    /// Preserves the observed version mismatch and required manual action.
+    #[must_use]
+    pub fn owner_update(found: u16, supported: u16, detail: &str) -> Self {
+        Self::new(
+            FaultCode::OwnerUpdate,
+            format!("NuDox owner update (version {found} → {supported}). Restart the previous NuDox owner, then retry. No command was submitted. {detail}"),
+        )
     }
 
     /// Returns the stable diagnostic message.

@@ -382,10 +382,10 @@ impl reconnect::Endpoint for SessionEndpoint {
         let mut session = connect_session_owner_with(
             self.paths.endpoint(),
             context,
-            |endpoint| {
+            |_endpoint| {
                 let connected = match context {
-                    Some(context) => Session::connect_with_context(endpoint, context.clone()),
-                    None => Session::connect(endpoint),
+                    Some(context) => Session::connect_matched_owner(&self.paths, Some(context), false),
+                    None => Session::connect_matched_owner(&self.paths, None, false),
                 };
                 if connected.is_err()
                     && let Some(context) = context

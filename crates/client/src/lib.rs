@@ -216,6 +216,15 @@ pub const MAX_EVENTS: usize = backend_library::MAX_SUBSCRIPTION_EVENTS;
 /// One closed failure type shared by all command clients.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientError {
+    /// An older local owner could not complete a safe pre-command handoff.
+    OwnerUpdate {
+        /// Wire version actually observed from the correlated health probe.
+        found: u16,
+        /// Wire version implemented by this matched client.
+        supported: u16,
+        /// Actionable custody, shutdown or platform limitation.
+        detail: String,
+    },
     /// The endpoint or stream could not be used.
     Io(String),
     /// The actual automatic owner-startup cause and its runtime recovery policy.
@@ -339,6 +348,7 @@ impl fmt::Display for ClientError {
                 formatter.write_str("remote index exceeded the bounded client request deadline")
             }
             Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
+            Self::OwnerUpdate { found, supported, detail } => write!(formatter, "NuDox owner update (version {found} → {supported}): {detail}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
             Self::ResponseTooLarge { .. } => {
@@ -636,6 +646,19 @@ impl UnixCommandTransport {
         io_timeout: Duration,
         context: Option<&RequestContext>,
     ) -> Result<Self, ClientError> {
+        Self::connect_before(path, connect_timeout, io_timeout, context, None)
+    }
+
+    // The owner compatibility handshake shares one absolute startup deadline
+    // across dial, authentication and its later read-only probe. Ordinary
+    // transports retain their existing independent dial/I/O budget semantics.
+    fn connect_before(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+        context: Option<&RequestContext>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Self, ClientError> {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
@@ -645,12 +668,7 @@ impl UnixCommandTransport {
                 context.check()?;
             }
             let remaining = connect_timeout.saturating_sub(started.elapsed());
-            let remaining = match context {
-                Some(context) => context
-                    .remaining_read_budget()?
-                    .map_or(remaining, |budget| remaining.min(budget)),
-                None => remaining,
-            };
+            let remaining = Self::connection_budget(remaining, deadline, context)?;
             if remaining.is_zero() {
                 return Err(map_endpoint_connect_error(
                     std::io::ErrorKind::TimedOut.into(),
@@ -687,12 +705,7 @@ impl UnixCommandTransport {
         }
         // Authentication also touches the new stream, so establish its I/O
         // deadlines before asking the local peer proof helper to inspect it.
-        let authentication_budget = match context {
-            Some(context) => context
-                .remaining_read_budget()?
-                .map_or(io_timeout, |remaining| io_timeout.min(remaining)),
-            None => io_timeout,
-        };
+        let authentication_budget = Self::connection_budget(io_timeout, deadline, context)?;
         configure_timeout(&stream, authentication_budget)?;
         let peer = match backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path) {
             Ok(peer) => peer,
@@ -700,12 +713,14 @@ impl UnixCommandTransport {
                 if let Some(context) = context {
                     context.check()?;
                 }
+                Self::connection_budget(io_timeout, deadline, context)?;
                 return Err(map_peer_authentication_error(error));
             }
         };
         if let Some(context) = context {
             context.check()?;
         }
+        Self::connection_budget(io_timeout, deadline, context)?;
         Ok(Self {
             stream,
             interrupt,
@@ -716,6 +731,27 @@ impl UnixCommandTransport {
             frames_sent: 0,
             frame_budget: connection_frame_budget(),
         })
+    }
+
+    fn connection_budget(
+        ceiling: Duration,
+        deadline: Option<std::time::Instant>,
+        context: Option<&RequestContext>,
+    ) -> Result<Duration, ClientError> {
+        let mut remaining = ceiling;
+        if let Some(context) = context {
+            context.check()?;
+            if let Some(budget) = context.remaining_read_budget()? {
+                remaining = remaining.min(budget);
+            }
+        }
+        if let Some(deadline) = deadline {
+            remaining = remaining.min(deadline.saturating_duration_since(std::time::Instant::now()));
+            if remaining.is_zero() {
+                return Err(ClientError::RemoteDeadlineExceeded);
+            }
+        }
+        Ok(remaining)
     }
 
     /// Wraps a connected stream for tests and embedded transports.
@@ -3838,3 +3874,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[cfg(any(unix, windows))]
+mod owner_upgrade;

@@ -1262,6 +1262,10 @@ impl Fault {
                 ),
                 Affordance::Retry,
             ),
+            ClientError::OwnerUpdate { found, supported, detail } => (
+                FaultSlug::Protocol, CauseSlug::Unproven,
+                format!("NuDox owner update (version {found} → {supported}): {detail}"), Affordance::Retry,
+            ),
             ClientError::Protocol(detail) => (
                 FaultSlug::Protocol,
                 CauseSlug::Unproven,

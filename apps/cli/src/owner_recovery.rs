@@ -25,6 +25,7 @@ pub(crate) enum RecoverableRead {
 
 pub(crate) struct OwnerRecovery {
     used: bool,
+    passive: bool,
     scope: RequestContext,
     paths: WorkspacePaths,
     progress: Option<std::sync::mpsc::SyncSender<String>>,
@@ -38,6 +39,7 @@ impl OwnerRecovery {
         let reporter = progress.clone();
         Self {
             used: false,
+            passive,
             scope,
             paths: paths.clone(),
             progress,
@@ -55,6 +57,7 @@ impl OwnerRecovery {
     ) -> Self {
         Self {
             used: false,
+            passive: true,
             scope,
             paths,
             progress: None,
@@ -66,11 +69,11 @@ impl OwnerRecovery {
     /// No command has been sent, so peer loss here permits one fresh dial.
     pub(crate) fn connect_initial(
         &mut self,
-        endpoint: &std::path::Path,
+        _endpoint: &std::path::Path,
     ) -> Result<Session, ClientError> {
         self.scope
             .read_deadline(backend_runtime::COMMAND_STARTUP_TIMEOUT)?;
-        let mut session = match Session::connect_with_context(endpoint, self.scope.clone()) {
+        let mut session = match Session::connect_matched_owner(&self.paths, Some(&self.scope), self.passive) {
             Ok(session) => session,
             Err(error) if error.is_connection_lost() => {
                 self.used = true;
@@ -399,7 +402,7 @@ fn connect_replacement(
     connect_replacement_with(
         &context,
         paths.endpoint(),
-        |endpoint| Session::connect_with_context(endpoint, context.clone()),
+        |_endpoint| Session::connect_matched_owner(paths, Some(&context), passive),
         || bootstrap_owner(paths, passive, &context, progress.as_ref()),
     )
 }

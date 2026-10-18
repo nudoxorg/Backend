@@ -166,6 +166,7 @@ pub(crate) fn not_ready<T>(
         }
         Shown::Fault(error) => {
             let message = ctx.say(error.message().to_owned());
+            let retry_label = retry_label(error.code());
             let code = ctx.say(fault_code(error.code()));
             let links = ctx.links.clone();
             let id: SharedString = format!("retry-{key:?}").into();
@@ -183,9 +184,9 @@ pub(crate) fn not_ready<T>(
                 local(cx) && expected.as_ref().is_some_and(|expected| store.read(cx).admits_page_retry(expected))
             }), act).with_payload(payload);
             let act = target_action.callback();
-            ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), action: target_action.clone(), peek: None, source: None });
+            ctx.targets.push(Target { id: id.clone(), label: retry_label.into(), action: target_action.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
-            let mut control = facet::controls::button(native_id, "Try again", &measure)
+            let mut control = facet::controls::button(native_id, retry_label, &measure)
                 .primary().on_click(move |window, cx| act(window, cx))
                 .when_current(Rc::new(move |cx| target_action.admits(cx)));
             if let Some(focus) = focus { control = control.focus_handle(focus); }
@@ -237,6 +238,7 @@ pub(crate) fn fault_code(code: FaultCode) -> String {
     let name = match code {
         FaultCode::Transport => "TRANSPORT",
         FaultCode::Protocol => "PROTOCOL",
+        FaultCode::OwnerUpdate => "OWNER-UPDATE",
         FaultCode::Missing => "MISSING",
         FaultCode::Persistence => "PERSISTENCE",
         FaultCode::Unsupported => "UNSUPPORTED",
@@ -244,3 +246,13 @@ pub(crate) fn fault_code(code: FaultCode) -> String {
     };
     format!("READ-{name}")
 }
+
+
+fn retry_label(code: FaultCode) -> &'static str {
+    match code {
+        FaultCode::OwnerUpdate => "Retry after restart",
+        FaultCode::Transport | FaultCode::Protocol | FaultCode::Missing
+        | FaultCode::Persistence | FaultCode::Unsupported | FaultCode::Cancelled => "Try again",
+    }
+}
+
