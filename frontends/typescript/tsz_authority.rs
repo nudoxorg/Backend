@@ -4019,6 +4019,120 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn native_preparation_subpasses_preserve_deadline_and_hide_partial_authority() -> Result<(), TestFailure> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tsz_common::{ProjectExecutionEvent, ProjectExecutionPhase as P, ProjectExecutionTransition as T};
+        struct Stop { phase: P, entered: AtomicBool }
+        impl ExecutionCheckpoint for Stop {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if self.entered.load(Ordering::Acquire) {
+                    Err(tsz_common::ProjectExecutionStop::Deadline)
+                } else { Ok(()) }
+            }
+            fn observe(&self, event: ProjectExecutionEvent<'_>) {
+                if event.phase == self.phase && event.transition == T::Entered {
+                    self.entered.store(true, Ordering::Release);
+                }
+            }
+        }
+        for phase in [P::SourcePreparationFunctionDefs, P::SourcePreparationWarmDefinitions,
+            P::SourcePreparationHeritage, P::SourcePreparationWellKnownSymbols,
+            P::SourcePreparationTypeEnvironment, P::SourcePreparationReconciliation,
+            P::SourcePreparationBoxedTypes] {
+            let stop = Stop { phase, entered: AtomicBool::new(false) };
+            let mut authority = TszProjectAuthority::new();
+            let result = authority.update_with_checker_execution(
+                vec![input("src/value.ts", "export interface Value { x: number; } export const bad: string = 1;")],
+                options(), &[], TszProjectCheckerExecution {
+                    checkpoint: &stop, workers: std::num::NonZeroUsize::new(1).test_value()?,
+                },
+            );
+            assert!(matches!(result, Err(TszAuthorityError::ProjectCheck(
+                tsz::parallel::ProjectProgramCheckError::ExecutionStopped(tsz_common::ProjectExecutionStop::Deadline)
+            ))), "native subpass {phase:?}: {result:?}");
+            assert!(stop.entered.load(Ordering::Acquire), "actual native subpass entered");
+            assert!(authority.project().is_none(), "a timed-out program exposes no queryable facts");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interface_only_preparation_deadlines_keep_one_parent_and_exact_source() -> Result<(), TestFailure> {
+        use std::sync::Mutex;
+        use std::sync::atomic::Ordering;
+        use tsz_common::{ProjectExecutionEvent, ProjectExecutionPhase as P, ProjectExecutionTransition as T};
+        #[derive(Default)]
+        struct Stop {
+            armed: AtomicBool,
+            entered: AtomicBool,
+            events: Mutex<Vec<(P, T, Option<(usize, String)>)>>,
+        }
+        impl ExecutionCheckpoint for Stop {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if self.entered.load(Ordering::Acquire) {
+                    Err(tsz_common::ProjectExecutionStop::Deadline)
+                } else { Ok(()) }
+            }
+            fn observe(&self, event: ProjectExecutionEvent<'_>) {
+                if !self.armed.load(Ordering::Acquire) { return; }
+                self.events.lock().unwrap().push((event.phase, event.transition,
+                    event.file.map(|file| (file.index, file.path.to_owned()))));
+                if event.phase == P::SourcePreparationTypeEnvironment && event.transition == T::Entered {
+                    self.entered.store(true, Ordering::Release);
+                }
+            }
+        }
+        for entrypoint in 0..3 {
+            let stop = Stop::default();
+            let mut authority = TszProjectAuthority::new();
+            authority.update_with_execution_checkpoint(
+                vec![input("src/value.ts", "export interface Value { x: number; }")],
+                options(), &[], &stop,
+            ).test_value()?;
+            {
+                let session = authority.project().test_value()?.checked_query_session(&stop).test_value()?;
+                let index = session.file_index("src/value.ts").test_value()?;
+                let result = session.with_file_checker_and_types(index, |checker, _, file, _| {
+                    stop.armed.store(true, Ordering::Release);
+                    match entrypoint {
+                        0 => checker.check_source_file_interfaces_only(file.source_file),
+                        1 => checker.check_source_file_interfaces_only_with_fresh_interface_fuel(file.source_file),
+                        _ => checker.check_source_file_interfaces_only_filtered_post_merge(
+                            file.source_file, &Default::default(), &Default::default(),
+                        ),
+                    }
+                    "discard stopped interface query"
+                });
+                assert!(matches!(result, Err(TszProjectQuerySessionError::ExecutionStopped(
+                    tsz_common::ProjectExecutionStop::Deadline
+                ))), "entrypoint {entrypoint}: {result:?}");
+                let events = stop.events.lock().unwrap();
+                let parents: Vec<_> = events.iter().filter(|(phase, transition, _)|
+                    *phase == P::SourcePreparation && *transition == T::Entered).collect();
+                assert_eq!(parents.len(), 1, "shared preparation has exactly one parent");
+                assert_eq!(parents[0].2.as_ref(), Some(&(index, "src/value.ts".to_owned())));
+                let mut active = false;
+                let mut saw_subpass = false;
+                for (phase, transition, _) in events.iter() {
+                    match (*phase, *transition) {
+                        (P::SourcePreparation, T::Entered) => { assert!(!active); active = true; }
+                        (P::SourcePreparation, T::Returned) => panic!("stopped preparation cannot return"),
+                        (P::SourcePreparation, T::Unwound) => { assert!(active); active = false; }
+                        (P::SourcePreparationTypeEnvironment, T::Entered) => {
+                            assert!(active, "actual interface subpass retains its timing parent");
+                            saw_subpass = true;
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(saw_subpass && !active, "actual native subpass stops and unwinds");
+            }
+            assert!(authority.project().is_none(), "stopped interface query hides partial authority");
+        }
+        Ok(())
+    }
+
     fn hot_file_fixture() -> (Vec<TszFileInput>, TszProjectOptions) {
         let hot = (0..20_000)
             .map(|n| format!("export const v{n}: number = {n};"))

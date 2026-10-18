@@ -130,6 +130,20 @@ impl CheckerState<'_> {
     }
 
     fn prepare_source_file_for_checking(&mut self, root_idx: NodeIndex) -> Option<NodeIndex> {
+        // All four source-check entrypoints share this preparation frame.
+        // Keep it outside the first poll so early stops retain their source.
+        let types = self.ctx.types;
+        let file_name = self.ctx.file_name.clone();
+        let observed_file = Some(tsz_common::ProjectExecutionFile {
+            index: self.ctx.current_file_idx,
+            path: &file_name,
+        });
+        let observe = |event: tsz_common::ProjectExecutionEvent<'_>| types.observe_execution(event);
+        let preparation_span = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe,
+            tsz_common::ProjectExecutionPhase::SourcePreparation,
+            observed_file,
+        );
         self.ctx.types.execution_checkpoint(0).ok()?;
         // Reset per-file flags
         self.ctx.is_in_ambient_declaration_file = false;
@@ -150,6 +164,9 @@ impl CheckerState<'_> {
         self.ctx.eval_session.reset_lazy_resolution_fuel();
         self.ctx.eval_session.reset_lazy_readiness_guards();
 
+        let function_defs = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationFunctionDefs, None,
+        );
         // Register Function DefIds in the interner BEFORE building the environment.
         // This ensures `T extends Function` constraint checks during type alias
         // processing can identify the Function interface by DefId.
@@ -159,6 +176,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        function_defs.returned();
+        let warm_definitions = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationWarmDefinitions, None,
+        );
         // Phase 1 DefId-first: warm local caches with stable DefIds.
         //
         // When the checker received a pre-populated shared DefinitionStore
@@ -178,6 +199,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        warm_definitions.returned();
+        let heritage = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationHeritage, None,
+        );
         // Phase 1c: resolve cross-batch heritage. Now that all DefIds from both
         // the primary binder and lib binders are registered, resolve heritage_names
         // (e.g., `class MyError extends Error`) to DefId-level extends/implements.
@@ -189,6 +214,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        heritage.returned();
+        let well_known_symbols = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationWellKnownSymbols, None,
+        );
         // Seed the well-known-symbol name registry from the lib `Symbol`
         // members before the environment build eagerly evaluates (and caches)
         // `keyof`/indexed-access type aliases over well-known-symbol keys.
@@ -196,6 +225,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        well_known_symbols.returned();
+        let type_environment = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationTypeEnvironment, None,
+        );
         // Build TypeEnvironment with all type-defining symbols.
         // This populates both ctx.type_env and ctx.type_environment in-place
         // via get_type_of_symbol -> compute_type_of_symbol -> register_def_in_envs.
@@ -203,6 +236,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        type_environment.returned();
+        let reconciliation = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationReconciliation, None,
+        );
         // Wire up DefinitionStore so TypeEnvironment::get_def_kind can fall
         // back to it when the local def_kinds map is incomplete.
         self.ctx.ensure_both_envs_have_definition_store();
@@ -241,6 +278,10 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        reconciliation.returned();
+        let boxed_types = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe, tsz_common::ProjectExecutionPhase::SourcePreparationBoxedTypes, None,
+        );
         // Register boxed types (String, Number, Boolean, etc.) from lib.d.ts
         // This enables primitive property access to use lib definitions instead of hardcoded lists
         // IMPORTANT: Must run AFTER build_type_environment() because it replaces the
@@ -251,6 +292,7 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        boxed_types.returned();
         // Type setup can spend the per-file resolution/application budget or
         // trip the stack/depth breaker while probing large lib-facing types.
         // Those guards should bound setup itself, not poison the later
@@ -280,6 +322,7 @@ impl CheckerState<'_> {
 
         self.ctx.types.execution_checkpoint(0).ok()?;
 
+        preparation_span.returned();
         Some(root_idx)
     }
 
@@ -554,11 +597,6 @@ impl CheckerState<'_> {
             path: &file_name,
         });
         let observe = |event: tsz_common::ProjectExecutionEvent<'_>| types.observe_execution(event);
-        let preparation_span = tsz_common::ProjectExecutionSpan::with_observer(
-            &observe,
-            tsz_common::ProjectExecutionPhase::SourcePreparation,
-            observed_file,
-        );
         // Open a deterministic, per-file naming scope for inference placeholders
         // so any `__infer_*` witness that surfaces in a diagnostic is stable
         // across runs and across parallel file checks.
@@ -576,7 +614,6 @@ impl CheckerState<'_> {
             return;
         };
 
-        preparation_span.returned();
         let statements_span = tsz_common::ProjectExecutionSpan::with_observer(
             &observe,
             tsz_common::ProjectExecutionPhase::SourceStatements,
