@@ -190,6 +190,11 @@ class FakeGitHub(release.GitHub):
             raise urllib.error.HTTPError("https://api.github.com/example", 404, "missing", {}, None)
         return self.release
 
+    def publish_fixture(self, *args, **kwargs):
+        """Keep asset controls local; tag admission has dedicated real-boundary controls."""
+        with patch.object(release, "require_published_source_tag"):
+            return self.publish(*args, source=Path("/fixture/source"), **kwargs)
+
     def upload(self, release_id, path):
         asset = {"name": path.name, "id": len(self.uploaded) + 1}
         self.uploaded[asset["id"]] = release.sha256(path)
@@ -393,6 +398,79 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "tag preflight refused"):
                 release.main()
         self.assertEqual(github.calls, [], "failed tag preflight must precede release lookup, POST, and PATCH")
+
+    def test_direct_publication_requires_canonical_checkout_before_any_release_work(self):
+        github = FakeGitHub()
+        with self.assertRaisesRegex(ValueError, "requires the canonical source checkout"):
+            github.publish("/not/read", "v0.2.0", True)
+        self.assertEqual(github.calls, [])
+        self.assertIsNone(github.release)
+
+    def test_direct_publication_refuses_missing_or_different_authoritative_tag(self):
+        for remote in [subprocess.CalledProcessError(2, ["git", "ls-remote"]),
+                       "b" * 40 + "\trefs/tags/v0.2.0\n"]:
+            with self.subTest(remote=type(remote).__name__), tempfile.TemporaryDirectory() as directory:
+                manifest = candidate(directory)
+                github = FakeGitHub()
+                with patch.object(release.subprocess, "check_output", side_effect=[
+                    "https://dev.nudox.org/git/Nudox/Backend.git\n", remote,
+                ]):
+                    with self.assertRaises(ValueError):
+                        github.publish(directory, "v0.2.0", True, source=Path("/fixture/source"))
+                self.assertEqual(github.calls, [], "authoritative refusal must precede GitHub work")
+                self.assertEqual(github.uploaded, {})
+                self.assertIsNone(github.release)
+
+    def test_tag_changed_during_upload_retains_verified_draft_without_publication(self):
+        for moved in [subprocess.CalledProcessError(2, ["git", "ls-remote"]),
+                      "b" * 40 + "\trefs/tags/v0.2.0\n"]:
+            with self.subTest(moved=type(moved).__name__), tempfile.TemporaryDirectory() as directory:
+                manifest = candidate(directory)
+                github = FakeGitHub()
+                github.tag_reference = {"ref": "refs/tags/v0.2.0", "object": {
+                    "type": "commit", "sha": manifest["source_sha"],
+                }}
+                with patch.object(release.subprocess, "check_output", side_effect=[
+                    "https://dev.nudox.org/git/Nudox/Backend.git\n",
+                    manifest["source_sha"] + "\trefs/tags/v0.2.0\n",
+                    "https://dev.nudox.org/git/Nudox/Backend.git\n", moved,
+                ]):
+                    with self.assertRaises(ValueError):
+                        github.publish(directory, "v0.2.0", True, source=Path("/fixture/source"))
+                self.assertTrue(github.release["draft"])
+                self.assertEqual(len(github.uploaded), 4, "verified draft assets remain retryable")
+                self.assertFalse(any(method == "PATCH" for _, method, _ in github.calls))
+
+    def test_successful_direct_publication_checks_exact_pair_before_upload_and_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = candidate(directory)
+            github = FakeGitHub()
+            github.tag_reference = {"ref": "refs/tags/v0.2.0", "object": {
+                "type": "commit", "sha": manifest["source_sha"],
+            }}
+            with patch.object(release.subprocess, "check_output", side_effect=[
+                "https://dev.nudox.org/git/Nudox/Backend.git\n",
+                manifest["source_sha"] + "\trefs/tags/v0.2.0\n",
+            ] * 2) as git:
+                github.publish(directory, "v0.2.0", True, source=Path("/fixture/source"))
+            self.assertEqual(git.call_count, 4)
+            self.assertEqual([path for path, _, _ in github.calls].count("/git/ref/tags/v0.2.0"), 2)
+            self.assertFalse(github.release["draft"])
+            self.assertEqual(github.calls[-2][0], "/git/ref/tags/v0.2.0")
+            self.assertEqual(github.calls[-1][1], "PATCH")
+
+    def test_tag_preflight_errors_do_not_expose_remote_credentials_or_stderr(self):
+        secret = "private-fixture-credential"
+        for failure in [
+            "https://user:" + secret + "@dev.nudox.org/git/Nudox/Backend.git\n",
+            subprocess.CalledProcessError(128, ["git", "remote"], stderr=secret),
+        ]:
+            with self.subTest(failure=type(failure).__name__), patch.object(
+                release.subprocess, "check_output", side_effect=[failure]
+            ):
+                with self.assertRaises(ValueError) as caught:
+                    release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, FakeGitHub())
+                self.assertNotIn(secret, str(caught.exception))
 
     def test_diagnostic_linux_validation_checks_package_without_claiming_native_qa(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -649,13 +727,13 @@ class CandidateTests(unittest.TestCase):
 
             github = FakeGitHub()
             with patch.object(release, "validate", return_value=manifest):
-                github.publish(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
+                github.publish_fixture(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
             self.assertEqual(github.asset_data[4], b"pinned installer")
             self.assertEqual(github.release["assets"][-1]["name"], "install-linux-x64.py")
 
             stable_github = FakeGitHub()
             with patch.object(release, "validate", return_value=manifest):
-                stable_github.publish(root, "v0.2.0", True, "linux-x64")
+                stable_github.publish_fixture(root, "v0.2.0", True, "linux-x64")
             self.assertEqual(stable_github.asset_data[5], b"channel installer")
             self.assertEqual(stable_github.release["assets"][-1]["name"], "install-linux-x64.py")
 
@@ -676,7 +754,7 @@ class CandidateTests(unittest.TestCase):
             tag, shell, sidecar = self.checkpoint_shell_pair(root, manifest)
             self.assertEqual(release.validate_linux(root, manifest, require_qa=False), manifest)
             github = FakeGitHub()
-            github.publish(root, tag, False, "linux-x64", draft_only=True)
+            github.publish_fixture(root, tag, False, "linux-x64", draft_only=True)
             published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
             self.assertEqual(published[shell.name], shell.read_bytes())
             self.assertEqual(published[sidecar.name], sidecar.read_bytes())
@@ -703,7 +781,7 @@ class CandidateTests(unittest.TestCase):
                         path.symlink_to(replacement)
                 return original_lookup(selected_tag)
             with patch.object(github, "find_release", side_effect=changed_after_admission):
-                github.publish(root, tag, False, "linux-x64", draft_only=True)
+                github.publish_fixture(root, tag, False, "linux-x64", draft_only=True)
             published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
             self.assertEqual({name: published[name] for name in original}, original)
 
@@ -730,7 +808,7 @@ class CandidateTests(unittest.TestCase):
                     shell.symlink_to(original)
                 github = FakeGitHub()
                 with self.assertRaises(ValueError):
-                    github.publish(root, tag, False, "linux-x64", draft_only=True)
+                    github.publish_fixture(root, tag, False, "linux-x64", draft_only=True)
                 self.assertEqual(github.uploaded, {})
                 self.assertIsNone(github.release)
 
@@ -751,7 +829,7 @@ class CandidateTests(unittest.TestCase):
             self.checkpoint_shell_pair(root, manifest)
             github = FakeGitHub()
             with self.assertRaisesRegex(ValueError, "exact pinned checkpoint tag"):
-                github.publish(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
+                github.publish_fixture(root, "v0.2.0-rc.1-linux-x64", False, "linux-x64", draft_only=True)
             self.assertIsNone(github.release)
             self.assertEqual(github.uploaded, {})
 
@@ -762,7 +840,7 @@ class CandidateTests(unittest.TestCase):
             self.checkpoint_shell_pair(root, manifest)
             github = FakeGitHub()
             with patch.object(release, "validate", return_value=manifest):
-                github.publish(root, "v0.2.0", True, "linux-x64")
+                github.publish_fixture(root, "v0.2.0", True, "linux-x64")
             published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
             self.assertEqual(published["install-linux-x64.py"], (root / "install-linux-x64-channel.py").read_bytes())
             self.assertNotIn("install-linux-x64.sh", published)
@@ -772,24 +850,24 @@ class CandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             candidate(directory)
             github = FakeGitHub()
-            github.publish(directory, "v0.2.0", True)
+            github.publish_fixture(directory, "v0.2.0", True)
             self.assertFalse(github.release["draft"])
             self.assertEqual(len(github.uploaded), 4)
             self.assertEqual(github.calls[-1][2]["make_latest"], "false")
-            github.publish(directory, "v0.2.0", True)
+            github.publish_fixture(directory, "v0.2.0", True)
             self.assertEqual(len(github.uploaded), 4)
             github.uploaded[1] = "d" * 64
             with self.assertRaisesRegex(ValueError, "overwrite immutable"):
-                github.publish(directory, "v0.2.0", True)
+                github.publish_fixture(directory, "v0.2.0", True)
 
     def test_candidate_retry_finds_draft_by_listing_and_never_creates_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate(directory)
             github = FakeGitHub()
-            github.publish(directory, "v0.2.0-rc.1-macos", False)
+            github.publish_fixture(directory, "v0.2.0-rc.1-macos", False)
             # A retry after interruption before the final draft publication.
             github.release["draft"] = True
-            github.publish(directory, "v0.2.0-rc.1-macos", False)
+            github.publish_fixture(directory, "v0.2.0-rc.1-macos", False)
             self.assertFalse(github.release["draft"])
             self.assertTrue(github.release["prerelease"])
             self.assertEqual(len(github.uploaded), 4)
@@ -816,11 +894,11 @@ class CandidateTests(unittest.TestCase):
             candidate(root)
             github = FakeGitHub()
             with self.assertRaisesRegex(ValueError, "candidate tag"):
-                github.publish(root, "v0.2.0", False)
+                github.publish_fixture(root, "v0.2.0", False)
             self.assertEqual(github.calls, [])
             (root / "native-qa.json").unlink()
             with self.assertRaisesRegex(ValueError, "regular file"):
-                github.publish(root, "v0.2.0-rc.1-macos", False)
+                github.publish_fixture(root, "v0.2.0-rc.1-macos", False)
             self.assertEqual(github.calls, [])
 
 

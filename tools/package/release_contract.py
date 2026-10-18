@@ -593,7 +593,9 @@ class GitHub:
             raise ValueError("multiple draft releases have this tag; inspect before retrying")
         return matches[0] if matches else None
 
-    def publish(self, directory, tag, stable, platform=None, draft_only=False):
+    def publish(self, directory, tag, stable, platform=None, draft_only=False, *, source=None):
+        if source is None:
+            raise ValueError("release publication requires the canonical source checkout")
         directory = Path(directory)
         manifest = validate(directory, platform=platform, require_qa=not draft_only)
         selected = manifest["platform"]
@@ -617,6 +619,7 @@ class GitHub:
                 pinned_tag, pinned_installer, shell_assets = checkpoint
                 if tag != pinned_tag:
                     raise ValueError("Linux checkpoint shell can only publish under its exact pinned checkpoint tag")
+        require_published_source_tag(source, tag, manifest["source_sha"], self)
         release = self.find_release(tag)
         if release is None:
             release = self.api("/releases", "POST", {"tag_name": tag, "name": "NuDox " + tag, "draft": True, "prerelease": not stable, "make_latest": "false", "body": f'Verified native artifacts. Canonical Forgejo Backend source: {manifest["source_sha"]}. The GitHub tag is a distribution identifier.'})
@@ -655,6 +658,9 @@ class GitHub:
                     paths.append(staged_shell)
             self.publish_assets(release, paths, assets, stable)
         if release["draft"] and not draft_only:
+            # Uploads can outlive the initial observation. Re-admit both refs
+            # immediately before making the draft public; never repair refs here.
+            require_published_source_tag(source, tag, manifest["source_sha"], self)
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})
         return manifest
 
@@ -941,16 +947,14 @@ def main():
                 args.candidate_tag = f'v{manifest["version"]}-rc.{args.rc}-{manifest["platform"]}'
             if not args.candidate_tag:
                 raise ValueError("candidate staging requires --candidate-tag")
-            require_published_source_tag(args.source, args.candidate_tag, manifest["source_sha"], github)
-            github.publish(args.candidate, args.candidate_tag, False, args.platform, draft_only=args.action == "stage")
+            github.publish(args.candidate, args.candidate_tag, False, args.platform, draft_only=args.action == "stage", source=args.source)
         else:
             if not all((args.promotion_host, args.promotion_key, args.known_hosts)):
                 raise ValueError("publishing requires channel promotion credentials and pinned SSH host key")
             metadata = public_metadata(require_versioned=True)
             if metadata.get("schema") != 1 or set(metadata.get("platforms", {})) != {"macos", "linux-x64", "linux-arm64", "windows"}:
                 raise ValueError("platform-specific auth routing must be deployed before publishing")
-            require_published_source_tag(args.source, "v" + manifest["version"], manifest["source_sha"], github)
-            github.publish(args.candidate, "v" + manifest["version"], True, args.platform)
+            github.publish(args.candidate, "v" + manifest["version"], True, args.platform, source=args.source)
             promote(manifest, args.promotion_host, args.promotion_key, args.known_hosts)
     result = {"action": args.action, "version": manifest["version"], "source_sha": manifest["source_sha"], "sha256": manifest["sha256"]}
     if args.action == "stage":
