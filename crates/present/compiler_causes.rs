@@ -184,7 +184,6 @@ mod tests {
             AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
             CompilerDiagnostic, CompilerTerminal, SourceAuthority, TypeScriptAuthorityFailureKind,
         };
-        use backend_semantic::vocabulary::{Language, Stage};
         use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
         PackageCompilerFailure::from_package_terminal(
             "src/main.ts",

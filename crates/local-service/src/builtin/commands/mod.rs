@@ -19,7 +19,7 @@ mod snapshot;
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed};
 #[cfg(any(test, feature = "test-support"))]
 pub(in crate::builtin) use adapter::{
-    PreparedBuiltinIntent, commit_builtin_intent, commit_prepared_builtin_intent,
+    commit_builtin_intent, commit_prepared_builtin_intent,
     prepare_builtin_intent,
 };
 #[cfg(test)]

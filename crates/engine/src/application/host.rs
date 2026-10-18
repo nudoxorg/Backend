@@ -15,13 +15,16 @@ mod snapshot;
 
 use std::{
     ffi::OsString,
-    fs, io,
+    io,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+
+#[cfg(test)]
+use std::fs;
 
 use arrayvec::ArrayVec;
 use authority::NativeExecutables;

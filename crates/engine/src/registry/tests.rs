@@ -5602,7 +5602,7 @@ fn deferred_registry_tail_process_worker() {
     drop(owner);
 
     let source_path = root.join("complete-frame.journal");
-    let (mut source, _) =
+    let (source, _) =
         HashChainJournal::<RegistryLog>::open(&source_path).expect("temporary complete journal");
     let intent = AcquisitionIntent::new(FeedCursor::genesis(endpoint.id()), limits().max_items);
     source

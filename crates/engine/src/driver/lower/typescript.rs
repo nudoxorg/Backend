@@ -37,7 +37,6 @@ use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
     TypeScriptProjectionFault, TypeScriptSource,
 };
-use backend_version::{ContentId, SourceFactDomain};
 
 use crate::driver::{
     lower::{

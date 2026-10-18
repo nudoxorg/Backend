@@ -23,6 +23,7 @@ mod typescript_program;
 mod typescript_program_lane;
 mod unit_authority_v2;
 
+#[cfg(test)]
 pub(crate) use self::typescript_program::build_native_inputs;
 
 pub use self::cluster_coordinator::{
@@ -109,10 +110,13 @@ pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
 #[cfg(test)]
 pub(crate) use self::toolchain_probe::executable_content_hash_bytes_for_test;
 pub(crate) use self::toolchain_probe::{
-    NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment,
-    admit_typescript_script_invocation, compiler_directory_object_identity,
+    NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, compiler_directory_object_identity,
     executable_content_digest, executable_object_identity, typescript_module_closure_digest,
     typescript_module_files_digest,
+};
+#[cfg(test)]
+pub(crate) use self::toolchain_probe::{
+    NativeCompilerEnvironment, admit_typescript_script_invocation,
 };
 pub use self::toolchain_probe::{
     ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeFileRole,

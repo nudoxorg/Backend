@@ -920,7 +920,7 @@ mod tests {
             }
             hint => panic!("missing retained unavailable evidence: {hint:?}"),
         }
-        let mut cold = IndexOperationJournal::open(path).expect("cold durable reader");
+        let cold = IndexOperationJournal::open(path).expect("cold durable reader");
         assert!(matches!(
             cold.entry(key()).expect("cold receipt"),
             Some(JournalEntry::Retained(
