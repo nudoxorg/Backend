@@ -43,7 +43,7 @@ fn ready_search_server(
 #[test]
 fn invalid_search_is_typed_before_owner_and_same_session_reads_still_work() {
     for forwarded in [false, true] {
-        for query in [Value::Null, json!(""), json!(7)] {
+        for query in [Value::Null, json!(""), json!(" \t\n"), json!(7)] {
             let connects = Arc::new(AtomicUsize::new(0));
             let health = Arc::new(AtomicUsize::new(0));
             let mut server = ready_search_server(connects.clone(), health.clone());
@@ -64,6 +64,11 @@ fn invalid_search_is_typed_before_owner_and_same_session_reads_still_work() {
             assert_eq!(result["structuredContent"]["answer"], "fault", "{invalid}");
             assert_eq!(result["structuredContent"]["slug"], "usage", "{invalid}");
             assert_eq!(result["structuredContent"]["operand"], "query", "{invalid}");
+            if query.as_str().is_some_and(|text| !text.is_empty()) {
+                let message = text_of(result);
+                assert!(message.contains("non-whitespace character"), "{invalid}");
+                assert!(!message.contains("indexing"), "{invalid}");
+            }
             assert_eq!(connects.load(Ordering::Relaxed), 0, "no owner connect: {invalid}");
 
             let status = server
