@@ -2087,7 +2087,11 @@ impl Session {
             _ => None,
         };
         let expected = command.id();
-        let reply = self.send_success(Command::Surface(command), None)?;
+        let reply = if matches!(&command, SurfaceCommand::IndexSearch { .. }) {
+            self.send_index_search_ready(command)?
+        } else {
+            self.send_success(Command::Surface(command), None)?
+        };
         let CommandReply::Surface(reply) = reply.reply else {
             return Err(ClientError::Protocol(
                 "surface reply changed shape".to_owned(),

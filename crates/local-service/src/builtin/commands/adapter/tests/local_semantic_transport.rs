@@ -12,6 +12,7 @@ struct AdapterOwner {
     fixture: AdapterFixture,
     abandoned: Arc<AtomicUsize>,
     changes: std::sync::mpsc::Receiver<BuiltinIntent>,
+    cancellable_index_reads: Arc<AtomicUsize>,
 }
 impl OwnerService for AdapterOwner {
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
@@ -26,6 +27,16 @@ impl OwnerService for AdapterOwner {
         ticket: u64,
     ) -> Result<CommandOutcome, ProtocolError> {
         let (adapter, daemon) = self.fixture.parts();
+        if backend_engine::decode_command_dto_for_owner(body, owner_cursor(daemon)).is_ok_and(
+            |request| {
+                matches!(
+                    request.command,
+                    Command::Surface(backend_library::SurfaceCommand::IndexSearch { limit: 2, .. })
+                )
+            },
+        ) {
+            self.cancellable_index_reads.fetch_add(1, Ordering::AcqRel);
+        }
         adapter
             .execute_or_defer(daemon, body, ticket)
             .map(|outcome| match outcome {
@@ -133,6 +144,7 @@ fn local_semantic_unix_default_first_reply_waits_and_cancelled_waiter_reuses_wor
             fixture,
             abandoned: Arc::clone(&abandoned),
             changes,
+            cancellable_index_reads: Arc::new(AtomicUsize::new(0)),
         },
         config.limits,
     )
@@ -301,16 +313,29 @@ fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive(
     let package = fixture.package;
     let label = fixture.label.clone();
     let basis = fixture.parts().1.engine().daemon().library().view().basis();
-    let coordinate = format!("{label}::src/lib.rs:7::cold_needle");
-    fixture.publish_rows(vec![
-        backend_library::Row::in_package(
-            backend_library::RowId::Symbol(backend_library::symbol_key(&coordinate)),
-            basis,
-            package,
-            coordinate.clone(),
-        )
-        .with_source(backend_library::SourceLocation::new("src/lib.rs", 7).expect("source")),
-    ]);
+    let coordinates = (0..3)
+        .map(|index| format!("{label}::src/lib.rs:{}::cold_needle_{index}", index + 1))
+        .collect::<Vec<_>>();
+    fixture.publish_rows(
+        coordinates
+            .iter()
+            .enumerate()
+            .map(|(index, coordinate)| {
+                backend_library::Row::in_package(
+                    backend_library::RowId::Symbol(backend_library::symbol_key(coordinate)),
+                    basis,
+                    package,
+                    coordinate.clone(),
+                )
+                .with_source(
+                    backend_library::SourceLocation::new("src/lib.rs", index as u32 + 1)
+                        .expect("captured source"),
+                )
+            })
+            .collect(),
+    );
+    let (changed_package, changed_label) = fixture.add_target();
+    let change = BuiltinIntent::add(changed_package, changed_label).expect("actual source change");
     let expected_root = fixture.parts().1.engine().daemon().library().view().root();
     let (entered, release) = fixture.parts().0.local_search_lane.hold_next();
     let directory = tempfile::Builder::new()
@@ -322,12 +347,14 @@ fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive(
     config.owner_reply_timeout = Duration::from_secs(2);
     config.poll_interval = Duration::from_millis(1);
     config.idle_timeout = None;
-    let (_, changes) = std::sync::mpsc::channel();
+    let (change_sender, changes) = std::sync::mpsc::channel();
+    let cancellable_index_reads = Arc::new(AtomicUsize::new(0));
     let service = LocaldService::new(
         AdapterOwner {
             fixture,
             abandoned: Arc::new(AtomicUsize::new(0)),
             changes,
+            cancellable_index_reads: Arc::clone(&cancellable_index_reads),
         },
         config.limits,
     )
@@ -339,25 +366,29 @@ fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive(
     };
     let query = backend_library::SurfaceCommand::IndexSearch {
         query: backend_library::ProductText::from_static("cold_needle"),
-        limit: 3,
+        limit: 1,
         cursor: None,
     };
     let context = RequestContext::new();
     context
         .read_deadline(Duration::from_secs(3))
         .expect("one bounded read scope");
-    assert!(
-        matches!(Session::connect_with_context(&path, context).expect("query client")
-        .surface(query.clone()),
-        Err(ClientError::CommandFailed(backend_library::CommandFailure::QueryPreparation {
-            basis, state: backend_library::QueryPreparationState::Preparing,
-        })) if basis == expected_root)
-    );
+    let query_path = path.clone();
+    let original = query.clone();
+    let first = std::thread::spawn(move || {
+        Session::connect_with_context(query_path, context)
+            .expect("query client")
+            .surface(original)
+    });
     entered
         .recv_timeout(Duration::from_secs(2))
         .expect("actual cold worker is held");
-    // A separate authenticated connection proves that no owner mutex is held
-    // by the native preparation, rather than timing an in-process helper.
+    assert!(
+        !first.is_finished(),
+        "ordinary first-use call waits for its complete result"
+    );
+    // A separate authenticated connection proves that native preparation holds
+    // no owner mutex; this is the real Session/listener path, not a helper timer.
     let control = RequestContext::new();
     control
         .read_deadline(Duration::from_secs(2))
@@ -366,63 +397,125 @@ fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive(
         .expect("independent status client")
         .health()
         .expect("owner status while build is held");
+
     let cancelled = RequestContext::new();
-    let mut client = Session::connect_with_context(&path, cancelled.clone())
-        .expect("independent cancellable client");
+    cancelled
+        .read_deadline(Duration::from_secs(2))
+        .expect("independent cancellation scope");
+    let scope = cancelled.clone();
+    let query_path = path.clone();
+    let cancelled_reader = std::thread::spawn(move || {
+        Session::connect_with_context(query_path, scope)
+            .expect("independent cancellable client")
+            .surface(backend_library::SurfaceCommand::IndexSearch {
+                query: backend_library::ProductText::from_static("cold_needle"),
+                limit: 2,
+                cursor: None,
+            })
+    });
+    wait_until(|| cancellable_index_reads.load(Ordering::Acquire) > 0);
     cancelled.cancel(RequestCancellationReason::Explicit);
     assert!(matches!(
-        client.surface(query.clone()),
+        cancelled_reader.join().expect("actual cancelled client"),
         Err(ClientError::RequestCancelled(
             RequestCancellationReason::Explicit
         ))
     ));
-    // A cancelled reader cannot retire or duplicate shared current-view work.
+    let mut observer_reader =
+        Session::connect(&path).expect("independent observer-cancelled reader");
+    observer_reader.observe_query_preparation(|_| false);
     assert!(
-        matches!(Session::connect(&path).expect("same query retry").surface(query.clone()),
-        Err(ClientError::CommandFailed(backend_library::CommandFailure::QueryPreparation {
-            basis, state: backend_library::QueryPreparationState::Preparing,
-        })) if basis == expected_root)
+        matches!(observer_reader.surface(backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::from_static("cold_needle"), limit: 2, cursor: None,
+    }), Err(ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(detail)))
+        if detail == "query preparation wait cancelled")
     );
+    assert!(
+        !first.is_finished(),
+        "observer cancellation affects only its read, not the held shared worker"
+    );
+    let expired = RequestContext::new();
+    expired
+        .read_deadline(Duration::from_millis(80))
+        .expect("independent short deadline");
+    assert!(matches!(
+        Session::connect_with_context(&path, expired)
+            .expect("deadline client")
+            .surface(backend_library::SurfaceCommand::IndexSearch {
+                query: backend_library::ProductText::from_static("cold_needle"),
+                limit: 3,
+                cursor: None,
+            }),
+        Err(ClientError::RemoteDeadlineExceeded)
+    ));
+    assert!(
+        !first.is_finished(),
+        "other reader cancellation/deadline cannot retire shared work"
+    );
+    Session::connect(&path)
+        .expect("status after cancelled and expired readers")
+        .health()
+        .expect("owner remains responsive");
     release.send(()).expect("finish actual cold native build");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let page = loop {
-        assert!(
-            Instant::now() < deadline,
-            "exact cold projection must become ready"
-        );
-        match Session::connect(&path)
-            .expect("fresh exact query client")
-            .surface(query.clone())
-        {
-            Ok(backend_library::SurfaceReply::IndexSearchPage(page)) => break page,
-            Err(ClientError::CommandFailed(
-                backend_library::CommandFailure::QueryPreparation {
-                    basis,
-                    state: backend_library::QueryPreparationState::Preparing,
-                },
-            )) if basis == expected_root => std::thread::sleep(Duration::from_millis(2)),
-            other => panic!("unexpected exact cold index result: {other:?}"),
-        }
+    let first_page = first
+        .join()
+        .expect("original first-use reader")
+        .expect("complete ordinary reply");
+    let backend_library::SurfaceReply::IndexSearchPage(page) = first_page else {
+        panic!("index page");
     };
-    assert_eq!(
-        page.hits.len(),
-        1,
-        "complete query retains its exact local hit"
-    );
+    assert_eq!(page.hits.len(), 1);
+    let issued = page
+        .next_cursor
+        .clone()
+        .expect("real current-view continuation");
     match &page.hits[0] {
         backend_library::RegistrySearchHit::LocalDeclaration(record) => {
-            assert_eq!(record.coordinate.as_str(), coordinate);
-            assert_eq!(record.name.as_str(), "cold_needle");
+            assert_eq!(record.coordinate.as_str(), coordinates[0]);
+            assert_eq!(record.name.as_str(), "cold_needle_0");
             assert_eq!(
                 record.source,
                 backend_library::LocalDeclarationSource::Captured {
                     path: backend_library::ProductText::from_static("src/lib.rs"),
-                    line: std::num::NonZeroU32::new(7).expect("line"),
+                    line: std::num::NonZeroU32::new(1).expect("line"),
                 }
             );
         }
-        other => panic!("local source identity cannot become a registry release: {other:?}"),
+        other => panic!("local source cannot become a registry release: {other:?}"),
     }
+    let mut all = page.hits.to_vec();
+    let mut cursor = Some(issued.clone());
+    while let Some(current) = cursor {
+        let reply = Session::connect(&path)
+            .expect("continuation client")
+            .surface(backend_library::SurfaceCommand::IndexSearch {
+                query: backend_library::ProductText::from_static("cold_needle"),
+                limit: 1,
+                cursor: Some(current),
+            })
+            .expect("original exact continuation");
+        let backend_library::SurfaceReply::IndexSearchPage(page) = reply else {
+            panic!("index page");
+        };
+        assert_eq!(page.hits.len(), 1);
+        all.extend(page.hits.iter().cloned());
+        cursor = page.next_cursor;
+        assert!(all.len() <= 3, "complete continuation cannot repeat a row");
+    }
+    let actual = all
+        .iter()
+        .map(|hit| match hit {
+            backend_library::RegistrySearchHit::LocalDeclaration(record) => {
+                record.coordinate.as_str()
+            }
+            other => panic!("unexpected result plane: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        coordinates.iter().map(String::as_str).collect::<Vec<_>>(),
+        "cold client wait preserves the full exact ordered row union"
+    );
     let warm = Session::connect(&path)
         .expect("warm client")
         .surface(query)
@@ -431,9 +524,31 @@ fn cold_index_search_preparation_keeps_unix_status_and_cancel_scopes_responsive(
         panic!("warm page");
     };
     assert_eq!(
-        warm.hits, page.hits,
-        "same query/root keeps the complete exact result"
+        warm.hits[0], all[0],
+        "warm query keeps the same exact first source row"
     );
-    assert!(warm.next_cursor.is_none());
+
+    change_sender
+        .send(change)
+        .expect("actual owner source change");
+    wait_until(|| {
+        Session::connect(&path)
+            .expect("changed view client")
+            .revision()
+            .expect("actual current revision")
+            .root
+            != expected_root
+    });
+    let stale = backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::from_static("cold_needle"),
+        limit: 1,
+        cursor: Some(issued),
+    };
+    assert!(
+        matches!(Session::connect(&path).expect("old issued cursor client").surface(stale),
+        Err(ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(detail)))
+            if detail.contains("cursor does not match")),
+        "client preparation retries never repair or clear an old issued cursor"
+    );
     drop(runner);
 }

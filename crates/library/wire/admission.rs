@@ -1309,8 +1309,8 @@ mod query_preparation_tests {
                 19,
                 CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, state }),
             );
-            let bytes = crate::encode_reply_dto(&reply).expect("strict preparation codec");
-            let decoded = crate::decode_reply_dto(&bytes).expect("strict preparation roundtrip");
+            let bytes = serde_json::to_vec(&reply).expect("strict preparation codec");
+            let decoded = crate::decode_reply_body(&bytes).expect("strict preparation roundtrip");
             let request = CommandDto::new(
                 19,
                 Command::Surface(crate::SurfaceCommand::IndexSearch {
