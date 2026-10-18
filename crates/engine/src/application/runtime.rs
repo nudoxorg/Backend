@@ -70,9 +70,9 @@ fn compiler_lane_count() -> usize {
 
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
-    MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_FRAGMENT_BYTES, MAX_PACKAGE_SEMANTIC_BYTES,
-    PackageExecutionAuthority, StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
-    StagedVersionedPlaneSegment,
+    MAX_PACKAGE_EMBEDDING_BYTES, MAX_PACKAGE_SEMANTIC_BYTES, PackageExecutionAuthority,
+    StagedCompilerArtifact, StagedPackageCompilation, StagedSemanticPackage,
+    StagedVersionedPlaneSegment, package_fragment_limit,
 };
 use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
@@ -4703,7 +4703,9 @@ fn run_worker_lanes(
     embedding_scratch_max: usize,
 ) -> WorkerDisposition {
     let lane_count = compiler_lane_count();
-    let reservation_capacity = staged_output_reservation(
+    // A lane may receive any admitted profile; reserve the largest finite fragment plane.
+    let reservation_capacity = staged_output_reservation_with_fragment_limit(
+        MAX_PACKAGE_SEMANTIC_BYTES,
         MAX_MANIFEST_ENTRIES,
         image_cap,
         embedding_payload_max,
@@ -4860,7 +4862,7 @@ fn dispatch_runtime_command(
         } => {
             let facts = request.facts();
             let reservation_bytes =
-                staged_output_reservation(request.source_count(), image_cap, 0, 0);
+                staged_output_reservation(facts.profile, request.source_count(), image_cap, 0, 0);
             let Some(reservation_bytes) = reservation_bytes else {
                 let _ = response.send(RuntimeEvent::Complete(Err(
                     facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow)
@@ -5039,6 +5041,7 @@ fn queue_package_sources(
     let reusable_go_authority =
         go_authority_witness_allows_semantic_reuse(facts.language, go_authority_witness.as_ref());
     let reservation_bytes = staged_output_reservation(
+        facts.profile,
         request.sources.len(),
         image_cap,
         embedding_payload_max,
@@ -5168,6 +5171,23 @@ fn staged_output_budget_cause(
 }
 
 fn staged_output_reservation(
+    profile: LanguageProfile,
+    source_count: usize,
+    image_cap: usize,
+    embedding_payload_max: usize,
+    embedding_scratch_max: usize,
+) -> Option<usize> {
+    staged_output_reservation_with_fragment_limit(
+        package_fragment_limit(profile),
+        source_count,
+        image_cap,
+        embedding_payload_max,
+        embedding_scratch_max,
+    )
+}
+
+fn staged_output_reservation_with_fragment_limit(
+    fragment_cap: usize,
     source_count: usize,
     image_cap: usize,
     embedding_payload_max: usize,
@@ -5202,12 +5222,56 @@ fn staged_output_reservation(
     semantic_and_ir
         .checked_add(embedding_bytes)?
         .checked_add(embedding_scratch_max)?
-        .checked_add(MAX_PACKAGE_FRAGMENT_BYTES)?
+        .checked_add(fragment_cap)?
         .checked_add(metadata_bytes)?
         .checked_add(versioned_plane_bytes)?
         .checked_add(crate::publication::manifest::COMPILATION_MANIFEST_HEADER_BYTES)?
         .checked_add(crate::publication::binding::COMPILATION_BINDING_BYTES)?
         .checked_add(size_of::<StagedSemanticPackage>())
+}
+
+#[cfg(test)]
+mod fragment_budget_tests {
+    use super::LanguageProfile;
+
+    #[test]
+    fn staged_output_reservations_charge_profile_fragment_cap_before_lane_admission() {
+        use backend_semantic::vocabulary::{GoVersion, PythonVersion};
+        let go = LanguageProfile::Go(GoVersion::Go124);
+        let python = LanguageProfile::Python(PythonVersion::Python314);
+        let go_bytes = super::staged_output_reservation(go, 433, 512 * 1024 * 1024, 0, 0)
+            .expect("bounded Go request");
+        let python_bytes = super::staged_output_reservation(python, 433, 512 * 1024 * 1024, 0, 0)
+            .expect("bounded Python request");
+        assert_eq!(go_bytes - python_bytes, (512 - 64) * 1024 * 1024);
+        assert_eq!(
+            super::staged_output_reservation_with_fragment_limit(
+                512 * 1024 * 1024,
+                433,
+                512 * 1024 * 1024,
+                0,
+                0,
+            ),
+            Some(go_bytes)
+        );
+        for profile in LanguageProfile::PRODUCT_PROFILES {
+            let bytes = super::staged_output_reservation(profile, 433, 512 * 1024 * 1024, 0, 0)
+                .expect("bounded product profile");
+            assert_eq!(
+                bytes,
+                if matches!(profile, LanguageProfile::Go(_)) {
+                    go_bytes
+                } else {
+                    python_bytes
+                }
+            );
+            assert_eq!(
+                super::staged_output_reservation(profile, 1, usize::MAX, 0, 0),
+                None
+            );
+            assert_eq!(super::staged_output_reservation(profile, 0, 0, 0, 0), None);
+        }
+    }
 }
 
 fn lane_identity(

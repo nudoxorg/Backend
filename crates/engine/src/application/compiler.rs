@@ -95,6 +95,8 @@ use crate::application::{
     terminal::{compile_terminal, source_authority},
 };
 
+/// Default whole-package compact-fragment limit; Go retains complete sibling-package
+/// projections per source and uses the finite semantic-image envelope instead.
 pub(crate) const MAX_PACKAGE_FRAGMENT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_PACKAGE_SEMANTIC_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum optional embedding payload bytes retained for one staged package.
@@ -2120,6 +2122,18 @@ pub enum PackageSemanticError {
         /// Bounded output lane.
         lane: &'static str,
     },
+    /// The complete profile-bound compact-fragment plane exceeded its finite limit.
+    #[error(
+        "package semantic publication exceeds compact fragment byte budget for {profile:?}: used {used_bytes} bytes, limit {limit_bytes} bytes"
+    )]
+    FragmentCapacity {
+        /// Exact package profile that selected the finite fragment policy.
+        profile: LanguageProfile,
+        /// Attempted aggregate, including an addition wider than the host usize.
+        used_bytes: u128,
+        /// Maximum aggregate admitted for this profile.
+        limit_bytes: usize,
+    },
     /// Reusable publication scratch could not be prepared.
     #[error("package semantic publication scratch failed")]
     Scratch(#[source] crate::application::LocalCompilerScratchError),
@@ -4115,12 +4129,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 }
             };
             let fragment_length = compiled.fragment.len();
-            fragment_bytes = checked_package_bytes(
-                fragment_bytes,
-                fragment_length,
-                MAX_PACKAGE_FRAGMENT_BYTES,
-                "compact fragment",
-            )?;
+            fragment_bytes =
+                checked_package_fragment_bytes(fragment_bytes, fragment_length, target.profile)?;
             let image_bytes = compiled.semantic_image.len();
             semantic_bytes = checked_package_bytes(
                 semantic_bytes,
@@ -4765,11 +4775,10 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
-            fragment_bytes = checked_package_bytes(
+            fragment_bytes = checked_package_fragment_bytes(
                 fragment_bytes,
                 artifact.fragment.len(),
-                MAX_PACKAGE_FRAGMENT_BYTES,
-                "compact fragment",
+                staged.profile,
             )?;
         }
         let semantic_bytes = staged.semantic_images.len();
@@ -4921,12 +4930,8 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         }
         let mut fragment_bytes = 0_usize;
         for artifact in &staged.artifacts {
-            fragment_bytes = checked_package_bytes(
-                fragment_bytes,
-                artifact.fragment.len(),
-                MAX_PACKAGE_FRAGMENT_BYTES,
-                "compact fragment",
-            )?;
+            fragment_bytes =
+                checked_package_fragment_bytes(fragment_bytes, artifact.fragment.len(), profile)?;
         }
         let semantic_bytes = staged.semantic_images.len();
         if semantic_bytes > MAX_PACKAGE_SEMANTIC_BYTES {
@@ -5357,6 +5362,22 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             &mut self.scratch.manifest_facts,
         )
         .map_err(PackageSemanticError::Reopen)?;
+        // The immutable manifest supplies every exact recipe profile. A Go entry
+        // cannot widen the aggregate if any retained entry belongs to another profile.
+        checked_package_bytes(
+            0,
+            requirements.semantic_image_bytes,
+            MAX_PACKAGE_SEMANTIC_BYTES,
+            "semantic image",
+        )?;
+        checked_manifest_fragment_bytes(
+            self.scratch
+                .manifest_facts
+                .iter()
+                .take(artifact_count)
+                .flatten()
+                .map(|fact| (fact.recipe.profile, fact.fragment_length as usize)),
+        )?;
         self.scratch
             .prepare_publication(
                 artifact_count,
@@ -5472,6 +5493,52 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package(request, self.scratch, cancelled, progress)?;
         self.publish_staged_single(staged, cancelled, progress)
+    }
+}
+
+// Go's per-source fragments retain the admitted sibling-package projection. Charge
+// every retained byte, without deduplication, against the same finite envelope as
+// semantic images. Selecting this policy never widens another language's budget.
+pub(crate) const fn package_fragment_limit(profile: LanguageProfile) -> usize {
+    match profile {
+        LanguageProfile::Go(_) => MAX_PACKAGE_SEMANTIC_BYTES,
+        _ => MAX_PACKAGE_FRAGMENT_BYTES,
+    }
+}
+
+fn checked_manifest_fragment_bytes(
+    fragments: impl IntoIterator<Item = (LanguageProfile, usize)>,
+) -> Result<usize, PackageSemanticError> {
+    let mut total = 0;
+    let mut limiting_profile = None;
+    for (profile, length) in fragments {
+        let profile = match limiting_profile {
+            Some(previous)
+                if package_fragment_limit(previous) <= package_fragment_limit(profile) =>
+            {
+                previous
+            }
+            _ => profile,
+        };
+        limiting_profile = Some(profile);
+        total = checked_package_fragment_bytes(total, length, profile)?;
+    }
+    Ok(total)
+}
+
+fn checked_package_fragment_bytes(
+    accumulated: usize,
+    additional: usize,
+    profile: LanguageProfile,
+) -> Result<usize, PackageSemanticError> {
+    let limit_bytes = package_fragment_limit(profile);
+    match accumulated.checked_add(additional) {
+        Some(total) if total <= limit_bytes => Ok(total),
+        _ => Err(PackageSemanticError::FragmentCapacity {
+            profile,
+            used_bytes: accumulated as u128 + additional as u128,
+            limit_bytes,
+        }),
     }
 }
 
@@ -6344,6 +6411,124 @@ mod tests {
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
     use backend_version::{ContentId, SourceFactDomain};
+
+    #[test]
+    fn go_package_fragments_admit_materialized_over_64_mib_without_widening_other_profiles() {
+        use backend_semantic::vocabulary::GoVersion;
+        // Exercise real resident fragment lengths beyond the former aggregate cap.
+        // These bytes test sizing only; they are not claimed as admitted semantic IR.
+        let fragments = vec![0_u8; 65 * 1024 * 1024];
+        let go = LanguageProfile::Go(GoVersion::Go124);
+        let mut total = 0;
+        for fragment in fragments.chunks(1024 * 1024) {
+            total = super::checked_package_fragment_bytes(total, fragment.len(), go)
+                .expect("Go sibling-package fragments fit the finite 512 MiB plane");
+        }
+        assert_eq!(total, fragments.len());
+        assert!(total > super::MAX_PACKAGE_FRAGMENT_BYTES);
+        assert!(total < super::MAX_PACKAGE_SEMANTIC_BYTES);
+        for profile in LanguageProfile::PRODUCT_PROFILES {
+            if matches!(profile, LanguageProfile::Go(_)) {
+                continue;
+            }
+            // Re-admission is profile-bound, including a retained aggregate first sized as Go.
+            let error = super::checked_package_fragment_bytes(total, 0, profile)
+                .expect_err("another profile must retain its 64 MiB fragment budget");
+            assert!(matches!(
+                error,
+                PackageSemanticError::FragmentCapacity {
+                    profile: observed,
+                    used_bytes,
+                    limit_bytes: super::MAX_PACKAGE_FRAGMENT_BYTES,
+                } if observed == profile && used_bytes == fragments.len() as u128
+            ));
+        }
+    }
+
+    #[test]
+    fn reopened_fragment_manifest_cannot_borrow_a_go_budget_for_another_profile() {
+        use backend_semantic::vocabulary::{GoVersion, PythonVersion};
+        let go = LanguageProfile::Go(GoVersion::Go124);
+        let python = LanguageProfile::Python(PythonVersion::Python314);
+        let mib = 1024 * 1024;
+        assert_eq!(
+            super::checked_manifest_fragment_bytes([(go, 64 * mib), (go, mib)])
+                .expect("all-Go retained fragments"),
+            65 * mib
+        );
+        for entries in [[(go, 65 * mib), (python, 0)], [(python, 0), (go, 65 * mib)]] {
+            let error = super::checked_manifest_fragment_bytes(entries)
+                .expect_err("mixed profiles retain the tighter whole-manifest cap");
+            assert!(matches!(error, PackageSemanticError::FragmentCapacity {
+                profile,
+                used_bytes,
+                limit_bytes,
+            } if profile == python && used_bytes == 65 * mib as u128 && limit_bytes == 64 * mib));
+        }
+        assert_eq!(
+            super::checked_manifest_fragment_bytes([(go, 32 * mib), (python, 32 * mib)])
+                .expect("mixed manifest at exact tighter boundary"),
+            64 * mib
+        );
+        assert_eq!(
+            super::checked_manifest_fragment_bytes([(go, 256 * mib), (go, 256 * mib)])
+                .expect("exact all-Go reopen boundary"),
+            512 * mib
+        );
+        assert!(super::checked_manifest_fragment_bytes([(go, 512 * mib), (go, 1)]).is_err());
+        assert!(super::checked_manifest_fragment_bytes([(python, 64 * mib), (go, 1)]).is_err());
+        assert!(super::checked_manifest_fragment_bytes([(go, usize::MAX), (go, 1)]).is_err());
+    }
+
+    #[test]
+    fn package_fragment_limits_are_exact_profile_bound_and_overflow_safe() {
+        use backend_semantic::vocabulary::GoVersion;
+        for version in [
+            GoVersion::Go122,
+            GoVersion::Go123,
+            GoVersion::Go124,
+            GoVersion::Go125,
+            GoVersion::Go126,
+        ] {
+            let profile = LanguageProfile::Go(version);
+            assert_eq!(super::package_fragment_limit(profile), 512 * 1024 * 1024);
+        }
+        for profile in LanguageProfile::PRODUCT_PROFILES {
+            let limit = if matches!(profile, LanguageProfile::Go(_)) {
+                512 * 1024 * 1024
+            } else {
+                64 * 1024 * 1024
+            };
+            assert_eq!(super::package_fragment_limit(profile), limit);
+            assert_eq!(
+                super::checked_package_fragment_bytes(limit - 1, 1, profile)
+                    .expect("exact finite boundary"),
+                limit
+            );
+            for (accumulated, additional) in [(limit, 1), (usize::MAX, 1), (usize::MAX, usize::MAX)]
+            {
+                let error = super::checked_package_fragment_bytes(accumulated, additional, profile)
+                    .expect_err("over-budget and overflowing lengths must refuse");
+                let diagnostic = error.to_string();
+                let attempted = accumulated as u128 + additional as u128;
+                assert!(diagnostic.contains(&format!("{profile:?}")));
+                assert!(diagnostic.contains(&format!("used {attempted} bytes")));
+                assert!(diagnostic.contains(&format!("limit {limit} bytes")));
+                assert!(diagnostic.len() < 256);
+                assert!(matches!(
+                    error,
+                    PackageSemanticError::FragmentCapacity {
+                        profile: observed,
+                        used_bytes,
+                        limit_bytes,
+                    } if observed == profile && used_bytes == attempted && limit_bytes == limit
+                ));
+            }
+        }
+        // The independent semantic-image and optional embedding planes remain unchanged.
+        assert_eq!(super::MAX_PACKAGE_SEMANTIC_BYTES, 512 * 1024 * 1024);
+        assert_eq!(super::MAX_PACKAGE_EMBEDDING_BYTES, 64 * 1024 * 1024);
+    }
 
     #[test]
     fn required_embedding_admission_preserves_configured_provisioning_cause() {
