@@ -34,9 +34,9 @@ use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
-    McpInvocation, Probe, Request, answer_paged, bounded_text,
-    encode_answer_with_call, encode_serializable, estimate_tokens, fault_value, lower_with_opener,
-    markdown, oversized_fault, record_list,
+    McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
+    encode_serializable, estimate_tokens, fault_value, lower_with_opener, markdown,
+    oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -191,9 +191,14 @@ impl Engine for SessionProduct {
         package: PackageReference,
         execution_intent: CompileExecutionIntent,
     ) -> Result<SurfaceReply, ClientError> {
-        backend_client::index_with_journal(&self.1, package, execution_intent, |command| {
-            self.0.surface(command)
-        })
+        let context = self.0.request_context().cloned();
+        backend_client::index_with_journal_wait(
+            &self.1,
+            package,
+            execution_intent,
+            context.as_ref(),
+            |command| self.0.surface(command),
+        )
     }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.0.revision().map(|revision| revision.root)
@@ -1117,7 +1122,10 @@ impl<P: Product> Server<P> {
                 )
             }
             Ok(Request::Surface(command))
-                if matches!(command.as_ref(), SurfaceCommand::PackageSourceMembership { .. }) =>
+                if matches!(
+                    command.as_ref(),
+                    SurfaceCommand::PackageSourceMembership { .. }
+                ) =>
             {
                 let SurfaceCommand::PackageSourceMembership { request } = command.as_ref() else {
                     unreachable!()

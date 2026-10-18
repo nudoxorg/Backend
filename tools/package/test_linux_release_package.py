@@ -350,6 +350,7 @@ class NativeDefaultPackageTests(unittest.TestCase):
         self.rpaths = {}
         self.node_probes = []
         self.node_versions = ("v24.18.0", "5.9.3")
+        self.glibc_floors = {}
 
     def sdk(self):
         root = self.base / "sdk-input/payload"
@@ -392,7 +393,7 @@ class NativeDefaultPackageTests(unittest.TestCase):
                 if args[0] == "-l":
                     return f"Requesting program interpreter: {package.INTERPRETER}]"
                 self.assertEqual(args[0], "--version-info")
-                return "GLIBC_2.31"
+                return "GLIBC_" + self.glibc_floors.get(Path(args[-1]).name, "2.31")
             self.fail(f"unexpected tool execution: {command}")
         def process_run(command, **kwargs):
             if command[0] == "git":
@@ -410,6 +411,82 @@ class NativeDefaultPackageTests(unittest.TestCase):
              patch.object(package.subprocess, "run", side_effect=process_run), \
              redirect_stdout(self.packaging_stdout):
             return package.main()
+
+    def add_desktop(self):
+        image = self.base / "backend-desktop"
+        image.write_bytes(b"\x7fELF synthetic desktop, never executed")
+        record = {"sha256": package.sha256(image), "bytes": image.stat().st_size}
+        self.build["executables"]["backend-desktop"] = {**record, "path": str(image)}
+        receipt_path = Path(self.build["root_receipt"]["path"])
+        receipt = json.loads(receipt_path.read_text())
+        receipt["artifacts"]["backend-desktop"] = record
+        RootArtifactReceiptTests().seal(receipt_path, receipt, self.build)
+        self.manifest.write_text(json.dumps(self.build))
+        return receipt_path, receipt
+
+    def test_default_schema_remains_exact_cli_shape(self):
+        self.assertEqual(self.invoke(), 0)
+        release = json.loads((self.output / "release-manifest.json").read_text())
+        manifest = json.loads((self.output / "nudox-linux-x86_64/packaging-manifest.json").read_text())
+        self.assertEqual(release["schema"], 1)
+        self.assertEqual(manifest["schema"], "nudox.linux-portable-package.v1")
+        self.assertNotIn("desktop", release)
+        self.assertNotIn("desktop", manifest)
+        self.assertEqual({item["name"] for item in manifest["executables"]}, set(package.BINARIES))
+
+    def test_fourth_desktop_requires_explicit_opt_in_before_output(self):
+        self.add_desktop()
+        with self.assertRaisesRegex(ValueError, "omits or adds executable identities"):
+            self.invoke()
+        self.assertFalse(self.output.exists())
+
+    def test_desktop_opt_in_requires_exact_four_build_and_receipt_records(self):
+        with self.assertRaisesRegex(ValueError, "omits or adds executable identities"):
+            self.invoke(["--include-desktop"])
+        self.assertFalse(self.output.exists())
+        receipt_path, receipt = self.add_desktop()
+        del receipt["artifacts"]["backend-desktop"]
+        RootArtifactReceiptTests().seal(receipt_path, receipt, self.build)
+        self.manifest.write_text(json.dumps(self.build))
+        with self.assertRaisesRegex(ValueError, "exactly the selected four"):
+            self.invoke(["--include-desktop"])
+        self.assertFalse(self.output.exists())
+
+    def test_desktop_receipt_hash_and_length_are_mandatory(self):
+        receipt_path, receipt = self.add_desktop()
+        for key, value in (("sha256", "d" * 64), ("bytes", 1)):
+            with self.subTest(key=key):
+                original = receipt["artifacts"]["backend-desktop"][key]
+                receipt["artifacts"]["backend-desktop"][key] = value
+                RootArtifactReceiptTests().seal(receipt_path, receipt, self.build)
+                self.manifest.write_text(json.dumps(self.build))
+                with self.assertRaisesRegex(ValueError, "artifact differs"):
+                    self.invoke(["--include-desktop"])
+                self.assertFalse(self.output.exists())
+                receipt["artifacts"]["backend-desktop"][key] = original
+
+    def test_desktop_schema_and_transitive_library_floor_are_measured(self):
+        self.add_desktop()
+        self.glibc_floors.update({"backend-desktop": "2.35", "libfixture.so": "2.42"})
+        self.assertEqual(self.invoke(["--include-desktop"]), 0)
+        root = self.output / "nudox-linux-x86_64"
+        release = json.loads((self.output / "release-manifest.json").read_text())
+        manifest = json.loads((root / "packaging-manifest.json").read_text())
+        self.assertEqual(release["schema"], 2)
+        self.assertEqual(manifest["schema"], "nudox.linux-portable-package.v2")
+        self.assertEqual(release["desktop"], package.DESKTOP_ROLE)
+        self.assertEqual(manifest["desktop"], package.DESKTOP_ROLE)
+        self.assertEqual({item["name"] for item in manifest["executables"]}, {*package.BINARIES, "backend-desktop"})
+        self.assertEqual(release["minimum_glibc"], "2.42")
+        self.assertEqual(manifest["required_glibc"], "2.42")
+        self.assertEqual(manifest["libraries"]["libfixture.so"]["required_glibc_versions"], ["2.42"])
+        self.assertEqual(self.rpaths[str(root / "bin/backend-desktop")], "$ORIGIN/../lib")
+        self.assertEqual(self.node_probes, [])
+        self.assertFalse(manifest["glibc_libraries_bundled"])
+        with tarfile.open(self.output / release["asset"], "r:gz") as archive:
+            self.assertEqual(archive.getmember("nudox-linux-x86_64/bin/backend-desktop").mode & 0o777, 0o755)
+        import install_linux
+        self.assertEqual(install_linux.validate_release_manifest(release), release)
 
     def test_default_native_package_preserves_source_and_closure_without_sdk_or_probes(self):
         self.assertEqual(self.invoke(), 0)

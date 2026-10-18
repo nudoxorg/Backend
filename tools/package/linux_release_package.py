@@ -22,6 +22,7 @@ import tarfile
 import tomllib
 
 BINARIES = ("backend-cli", "backend-mcp", "backend-locald")
+DESKTOP_ROLE = {"executable": "backend-desktop", "launcher": "nudox-desktop"}
 MAX_BINARY_BYTES = 512 * 1024 * 1024
 MAX_TYPESCRIPT_PACKAGE_BYTES = 96 * 1024 * 1024
 MAX_NODE_LIBRARY_BYTES = 512 * 1024 * 1024
@@ -253,7 +254,8 @@ def check_source(source: Path, build: dict, receipt: dict) -> tuple[str, str, st
     return revision, tree, lock_sha, version
 
 
-def admit_receipt(build: dict) -> dict:
+def admit_receipt(build: dict, *, include_desktop: bool = False) -> dict:
+    binaries = (*BINARIES, DESKTOP_ROLE["executable"]) if include_desktop else BINARIES
     record = build.get("root_receipt")
     source = build.get("source")
     if not isinstance(record, dict) or not isinstance(source, dict):
@@ -267,11 +269,11 @@ def admit_receipt(build: dict) -> dict:
     receipt = parse_json_bytes(receipt_bytes, "root build receipt")
     if record.get("schema") != "nudox.runtime-artifact-build-receipt.v1" or receipt.get("schema") != record["schema"]:
         fail("root build receipt has an unsupported or mismatched schema")
-    public = public_build_manifest(build)
+    public = public_build_manifest(build, include_desktop=include_desktop)
     artifacts = receipt.get("artifacts")
-    if not isinstance(artifacts, dict) or set(artifacts) != set(BINARIES):
-        fail("root build receipt must attest exactly the three product artifacts")
-    for name in BINARIES:
+    if not isinstance(artifacts, dict) or set(artifacts) != set(binaries):
+        fail("root build receipt must attest exactly the selected four product artifacts" if include_desktop else "root build receipt must attest exactly the three product artifacts")
+    for name in binaries:
         artifact = artifacts[name]
         if not isinstance(artifact, dict) or not isinstance(artifact.get("bytes"), int) or isinstance(artifact["bytes"], bool):
             fail(f"root build receipt has an invalid artifact byte count: {name}")
@@ -288,18 +290,19 @@ def admit_receipt(build: dict) -> dict:
     return receipt
 
 
-def public_build_manifest(build: dict) -> dict:
+def public_build_manifest(build: dict, *, include_desktop: bool = False) -> dict:
     """Retain build identity and hashes while omitting machine-local paths."""
+    binaries = (*BINARIES, DESKTOP_ROLE["executable"]) if include_desktop else BINARIES
     if build.get("schema") != "nudox.runtime-build-manifest.v1":
         fail("build manifest has an unsupported runtime-artifact schema")
     source = build.get("source")
     if not isinstance(source, dict) or not all(key in source for key in ("commit", "tree", "clean")):
         fail("build manifest omits its source identity")
     executables = build.get("executables")
-    if not isinstance(executables, dict) or set(executables) != set(BINARIES):
+    if not isinstance(executables, dict) or set(executables) != set(binaries):
         fail("build manifest omits or adds executable identities")
     public_executables = {}
-    for name in BINARIES:
+    for name in binaries:
         record = executables[name]
         if not isinstance(record, dict) or not re.fullmatch(r"[a-f0-9]{64}", record.get("sha256", "")):
             fail(f"build manifest has an invalid {name} hash")
@@ -420,6 +423,7 @@ def main() -> int:
     parser.add_argument("--typescript-sdk-receipt", type=Path, help="exact source-bound optional SDK receipt; requires --typescript-sdk-directory")
     parser.add_argument("--embedding-helper", type=Path, help="optional receipted CPU Candle helper")
     parser.add_argument("--embedding-helper-receipt", type=Path, help="exact successful helper build receipt")
+    parser.add_argument("--include-desktop", action="store_true", help="opt in to a hash-receipted fourth backend-desktop executable and schema-2 desktop bundle")
     parser.add_argument("--release-tag", help="immutable checkpoint tag; defaults to today's UTC date and source revision")
     args = parser.parse_args()
     if (args.typescript_sdk_directory is None) != (args.typescript_sdk_receipt is None):
@@ -428,7 +432,8 @@ def main() -> int:
     manifest_path = args.manifest.resolve(strict=True)
     build_bytes = read_regular_bytes(manifest_path, 16 * 1024 * 1024, "build manifest")
     build = parse_json_bytes(build_bytes, "build manifest")
-    receipt = admit_receipt(build)
+    binaries = (*BINARIES, DESKTOP_ROLE["executable"]) if args.include_desktop else BINARIES
+    receipt = admit_receipt(build, include_desktop=args.include_desktop)
     revision, tree, lock_sha, version = check_source(args.source, build, receipt)
     release_tag = args.release_tag or f"checkpoint-{dt.datetime.now(dt.timezone.utc):%Y%m%d}-{revision[:10]}-linux-x64"
     if not TAG_RE.fullmatch(release_tag) or not release_tag.endswith("-" + revision[:10] + "-linux-x64"):
@@ -453,7 +458,7 @@ def main() -> int:
     artifact_records = build.get("executables")
     if not isinstance(artifact_records, dict):
         fail("build manifest omits executable records")
-    for name in BINARIES:
+    for name in binaries:
         record = artifact_records.get(name)
         if not isinstance(record, dict):
             fail(f"build manifest omits {name}")
@@ -632,7 +637,7 @@ def main() -> int:
         setup_path.write_text(json.dumps(setup, indent=2, sort_keys=True) + "\n")
         embedding_setup = {"path": "share/nudox/embedding/setup.json", "sha256": sha256(setup_path), "size_bytes": setup_path.stat().st_size}
 
-    public_build = public_build_manifest(build)
+    public_build = public_build_manifest(build, include_desktop=args.include_desktop)
     (root / "build-manifest.json").write_text(json.dumps(public_build, indent=2, sort_keys=True) + "\n")
     package_tools = Path(__file__).resolve().parent
     installer_source = (package_tools / "install_linux.py").read_text()
@@ -665,11 +670,15 @@ def main() -> int:
         "runtime_acceptance": "external_native_qa_record_required",
         "checkpoint_shell_asset": "install-linux-x64.sh",
     }
+    if args.include_desktop:
+        package.update(schema="nudox.linux-portable-package.v2", desktop=dict(DESKTOP_ROLE))
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
     sdk_note = ("This archive also includes a receipt-bound Node/TypeScript SDK for explicitly\n"
                 "configured legacy Compiler API integration. Keep share/nudox/typescript\n"
                 "and lib/ with the sibling executables.\n") if sdk_admission is not None else ""
     readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nTypeScript analysis uses linked TSZ with embedded declarations by default; Node and\nan npm TypeScript installation are not required for this compiler path.\nPython analysis uses linked Pyrefly by default. Selected project interpreter,\nstandard-library and virtual-environment inputs are captured separately.\n{sdk_note}Default project discovery does not require hidden NUDOX_* environment variables.\n"""
+    if args.include_desktop:
+        readme += "\nOpen the app from a graphical Linux session (Wayland or X11):\n  backend-desktop\nKeep the matching CLI, MCP and locald executables beside backend-desktop in bin/.\n"
     (root / "README.txt").write_text(readme)
 
     archive_name = f"nudox-linux-x86_64-{revision[:10]}.tar.gz"
@@ -704,6 +713,8 @@ def main() -> int:
         "build_manifest_sha256": sha256(root / "build-manifest.json"),
         "packaging_manifest_sha256": sha256(root / "packaging-manifest.json"),
     }
+    if args.include_desktop:
+        release.update(schema=2, desktop=dict(DESKTOP_ROLE))
     (output / "release-manifest.json").write_text(json.dumps(release, indent=2, sort_keys=True) + "\n")
     candidate_installer = installer_source.replace('PINNED_RELEASE_TAG = ""', f'PINNED_RELEASE_TAG = "{release_tag}"', 1)
     candidate_installer = candidate_installer.replace('PINNED_MANIFEST_SHA256 = ""', f'PINNED_MANIFEST_SHA256 = "{sha256(output / "release-manifest.json")}"', 1)

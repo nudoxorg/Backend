@@ -36,6 +36,7 @@ MAX_METADATA = 65536
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
 REQUIRED_BINARIES = ("backend-cli", "backend-mcp", "backend-locald")
+DESKTOP_ROLE = {"executable": "backend-desktop", "launcher": "nudox-desktop"}
 ASSET_RE = re.compile(r"nudox-linux-x86_64-[a-f0-9]{10,40}\.tar\.gz\Z")
 SEMVER_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 SHA_RE = re.compile(r"[a-f0-9]{64}\Z")
@@ -73,9 +74,26 @@ def fetch_bytes(url: str, limit: int, label: str) -> bytes:
     return body
 
 
+def desktop_enabled(manifest: dict) -> bool:
+    """The schema-2 role is explicit; legacy metadata never opts in implicitly."""
+    if manifest.get("schema") == 2:
+        if manifest.get("desktop") != DESKTOP_ROLE:
+            raise InstallError("Linux desktop release has an invalid desktop role")
+        return True
+    if "desktop" in manifest:
+        raise InstallError("legacy Linux release cannot declare a desktop role")
+    return False
+
+
+def release_binaries(manifest: dict) -> tuple[str, ...]:
+    return (*REQUIRED_BINARIES, DESKTOP_ROLE["executable"]) if desktop_enabled(manifest) else REQUIRED_BINARIES
+
+
 def validate_release_manifest(release_manifest: object) -> dict:
     manifest_fields = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_glibc", "build_manifest_sha256", "packaging_manifest_sha256"}
-    if not isinstance(release_manifest, dict) or set(release_manifest) != manifest_fields or release_manifest.get("schema") != 1:
+    if isinstance(release_manifest, dict) and desktop_enabled(release_manifest):
+        manifest_fields.add("desktop")
+    if not isinstance(release_manifest, dict) or set(release_manifest) != manifest_fields or type(release_manifest.get("schema")) is not int or release_manifest["schema"] not in (1, 2):
         raise InstallError("immutable Linux release manifest has an unsupported schema")
     if not isinstance(release_manifest.get("version"), str) or not SEMVER_RE.fullmatch(release_manifest["version"]):
         raise InstallError("immutable Linux release manifest has an invalid version")
@@ -257,7 +275,8 @@ def _safe_member(member: tarfile.TarInfo, topdir: str) -> str | None:
     return relative.as_posix()
 
 
-def safe_extract(archive: Path, destination: Path) -> None:
+def safe_extract(archive: Path, destination: Path, *, manifest: dict | None = None) -> None:
+    binaries = release_binaries(manifest or {})
     topdir = "nudox-linux-x86_64"
     seen: set[str] = set()
     total = 0
@@ -278,10 +297,12 @@ def safe_extract(archive: Path, destination: Path) -> None:
                     raise InstallError("archive uncompressed size exceeds the 2 GiB safety limit")
                 parsed.append((member, relative))
             files = {relative for member, relative in parsed if relative is not None and member.isreg()}
-            required = {"bin/" + name for name in REQUIRED_BINARIES} | {"build-manifest.json", "packaging-manifest.json", "README.txt"}
+            required = {"bin/" + name for name in binaries} | {"build-manifest.json", "packaging-manifest.json", "README.txt"}
             if not required.issubset(files):
                 raise InstallError("archive is missing one or more required product files or manifests")
-            allowed_bin = {"bin/" + name for name in REQUIRED_BINARIES}
+            allowed_bin = {"bin/" + name for name in binaries}
+            if "bin/backend-desktop" in files and "backend-desktop" not in binaries:
+                raise InstallError("desktop executable requires an explicit schema-2 desktop release")
             if not allowed_bin.issubset(files):
                 raise InstallError("archive omits a required Linux CLI/MCP/locald executable")
             for member, relative in parsed:
@@ -590,8 +611,9 @@ def verify_embedding_setup(root: Path, package: dict) -> None:
 
 
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
+    expected_binaries = release_binaries(manifest)
     _verified_package_path(root, "", directory=True)
-    for relative in ("build-manifest.json", "packaging-manifest.json", *("bin/" + name for name in REQUIRED_BINARIES)):
+    for relative in ("build-manifest.json", "packaging-manifest.json", *("bin/" + name for name in expected_binaries)):
         _verified_package_path(root, relative)
     if not (root / "bin/backend-cli").is_file() or not os.access(root / "bin/backend-cli", os.X_OK):
         raise InstallError("installed stage does not contain an executable backend-cli")
@@ -606,7 +628,8 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     build_revision = build.get("source_sha") or build_source.get("commit") or build_source.get("git_revision")
     if build_revision != entry["source_sha"]:
         raise InstallError("build manifest source revision differs from the promoted release")
-    if package.get("schema") != "nudox.linux-portable-package.v1":
+    expected_schema = "nudox.linux-portable-package.v2" if desktop_enabled(manifest) else "nudox.linux-portable-package.v1"
+    if package.get("schema") != expected_schema or package.get("desktop") != manifest.get("desktop"):
         raise InstallError("package manifest has an unsupported schema")
     if _file_sha256(root / "build-manifest.json") != manifest["build_manifest_sha256"]:
         raise InstallError("build manifest hash differs from immutable release metadata")
@@ -616,7 +639,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     if not isinstance(binaries, list):
         raise InstallError("package manifest has no executable inventory")
     binary_records = {item.get("name"): item for item in binaries if isinstance(item, dict)}
-    if set(binary_records) != set(REQUIRED_BINARIES):
+    if set(binary_records) != set(expected_binaries) or (desktop_enabled(manifest) and len(binary_records) != len(package["executables"])):
         raise InstallError("package manifest executable inventory is incomplete or ambiguous")
     for name, record in binary_records.items():
         if record.get("packaged_path") != f"bin/{name}" or record.get("packaged_sha256") != _file_sha256(root / "bin" / name):
@@ -644,7 +667,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     if host_glibc is None or host_glibc < minimum:
         detected = ".".join(map(str, host_glibc)) if host_glibc else "unknown"
         raise InstallError(f"this release requires glibc {manifest['minimum_glibc']} or newer; this host reports {detected}")
-    for name in REQUIRED_BINARIES:
+    for name in expected_binaries:
         binary = root / "bin" / name
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise InstallError(f"package omits executable {name}")
@@ -713,7 +736,7 @@ def verify_existing_install(final: Path, expected_marker: dict, entry: dict, man
         raise InstallError(f"existing release at {final} failed its integrity/startup recheck; refusing to reuse it: {error}") from error
 
 
-def command_links(managed_root: Path) -> dict[str, str]:
+def command_links(managed_root: Path, *, include_desktop: bool = False) -> dict[str, str]:
     binaries = {
         "nudox": "backend-cli",
         "nudox-mcp": "backend-mcp",
@@ -723,6 +746,8 @@ def command_links(managed_root: Path) -> dict[str, str]:
         "backend-mcp": "backend-mcp",
         "backend-locald": "backend-locald",
     }
+    if include_desktop:
+        binaries.update({DESKTOP_ROLE["launcher"]: DESKTOP_ROLE["executable"], DESKTOP_ROLE["executable"]: DESKTOP_ROLE["executable"]})
     return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
 
 
@@ -875,7 +900,7 @@ def _lstat_or_none(path):
         return None
 
 
-def _check_command_aliases(prefix, managed_root, *, create_bin):
+def _check_command_aliases(prefix, managed_root, *, create_bin, include_desktop=False):
     bin_dir = prefix / "bin"
     if bin_dir.is_symlink():
         raise InstallError(f"command install directory must not be a symlink: {bin_dir}")
@@ -884,7 +909,7 @@ def _check_command_aliases(prefix, managed_root, *, create_bin):
             return None
         bin_dir.mkdir(mode=0o700, exist_ok=True)
     _validate_install_directory(bin_dir)
-    links = command_links(managed_root)
+    links = command_links(managed_root, include_desktop=include_desktop)
     for name, target in links.items():
         link = bin_dir / name
         if link.exists() and not link.is_symlink():
@@ -907,6 +932,11 @@ def _publish_command_aliases(bin_dir, links, current, managed_root, final):
     current_target = os.path.relpath(final, managed_root)
     if not current.is_symlink() or os.readlink(current) != current_target:
         _replace_symlink(current, current_target)
+    if DESKTOP_ROLE["launcher"] not in links:
+        for name in (DESKTOP_ROLE["launcher"], DESKTOP_ROLE["executable"]):
+            link = bin_dir / name
+            if link.is_symlink() and _managed_link(link, managed_root):
+                link.unlink()
 
 
 def reuse_existing_install(prefix: Path, entry: dict, manifest: dict, *, allow_downgrade: bool = False) -> bool:
@@ -965,7 +995,7 @@ def _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade):
     if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
         raise InstallError(f"version path exists and is not an install directory: {final}")
     verify_existing_install(final, marker, entry, manifest)
-    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True, include_desktop=desktop_enabled(manifest))
     _publish_command_aliases(bin_dir, links, current, managed_root, final)
     return True
 
@@ -980,12 +1010,12 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
     if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
         raise InstallError("release has an unsafe install identity")
     final = version_root / install_id
-    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True, include_desktop=desktop_enabled(manifest))
     marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
     check_checkpoint_update(current, marker, allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
-        safe_extract(archive, stage)
+        safe_extract(archive, stage, manifest=manifest)
         verify_package(stage, entry, manifest)
         (stage / ".installed-release.json").write_text(json.dumps(marker, sort_keys=True) + "\n")
         os.chmod(stage, 0o755)
@@ -1034,6 +1064,8 @@ def main(argv: list[str] | None = None) -> int:
             install(prefix, entry, manifest, archive, allow_downgrade=args.allow_downgrade)
     print(f"Installed NuDox {entry['version']} CLI, MCP server and local daemon in {prefix}.")
     print("Commands: nudox, nudox-mcp, nudox-locald, backend-cli, backend-mcp, backend-locald")
+    if desktop_enabled(manifest):
+        print("Open the app from a graphical Linux session: nudox-desktop")
     print(f"MCP executable for client configuration: {prefix / 'bin' / 'backend-mcp'}")
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     if str(prefix / "bin") not in path_parts:

@@ -85,6 +85,8 @@ pub use index_operation::{
     IndexJournalDispatch, JournaledIndexStart, index_with_journal, index_with_journal_recovery,
     surface_with_index_journal,
 };
+#[cfg(any(unix, windows))]
+pub use index_operation::{index_with_journal_recovery_wait, index_with_journal_wait};
 pub use index_progress::{
     IndexObservationFingerprint, IndexOperationWaitResult, IndexOperationWaitStop,
     IndexProgressRead, IndexProgressReference, IndexProgressUpdate, MAX_INDEX_OPERATION_WAIT,
@@ -1450,9 +1452,12 @@ impl Session {
         // retained exact next command with the existing owner/proof admission.
         if self.prepared_query.is_none()
             && continuation.is_some_and(|continuation| {
-                self.continuations.get(&continuation.cursor())
+                self.continuations
+                    .get(&continuation.cursor())
                     .and_then(|retained| retained.next_request.as_ref())
-                    .is_some_and(|request| matches!(&request.command, Command::SearchPublishedNames(_)))
+                    .is_some_and(|request| {
+                        matches!(&request.command, Command::SearchPublishedNames(_))
+                    })
             })
         {
             let limit = QueryLimit::new(limit).ok_or_else(|| {

@@ -15,7 +15,10 @@ use std::{
     io,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -35,6 +38,17 @@ const MAX_STAGE_CLEANUP_ENTRIES: usize = 1_000_000;
 pub(crate) const STAGE_LEASE_FILE_PREFIX: &str = ".stage-active-";
 const NAMESPACE_FENCE_WAIT: Duration = Duration::from_secs(5);
 const NAMESPACE_FENCE_POLL: Duration = Duration::from_millis(2);
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_FENCE_CONTENTION: std::cell::RefCell<Option<std::sync::mpsc::SyncSender<()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Observes a real failed native lock attempt on this test thread, once.
+#[cfg(test)]
+pub(crate) fn observe_next_fence_contention(sender: std::sync::mpsc::SyncSender<()>) {
+    TEST_FENCE_CONTENTION.with(|slot| *slot.borrow_mut() = Some(sender));
+}
 
 /// The two fixed lock files that serialize final namespace admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,6 +315,36 @@ impl PrivateNamespace {
         kind: NamespaceFenceKind,
         wait: Duration,
     ) -> io::Result<NamespaceFence> {
+        self.acquire_fence_controlled(kind, wait, None)
+    }
+
+    /// Waits cooperatively only before the caller owns any preparation stage.
+    /// Stage publication and retirement must use the uncancelled fence API.
+    pub(crate) fn acquire_preparation_fence(
+        &self,
+        kind: NamespaceFenceKind,
+        cancelled: Option<&AtomicBool>,
+    ) -> io::Result<NamespaceFence> {
+        self.acquire_fence_controlled(kind, NAMESPACE_FENCE_WAIT, cancelled)
+    }
+
+    fn acquire_fence_controlled(
+        &self,
+        kind: NamespaceFenceKind,
+        wait: Duration,
+        cancelled: Option<&AtomicBool>,
+    ) -> io::Result<NamespaceFence> {
+        let check_cancelled = || {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "lexical preparation cancelled while waiting for namespace fence",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
         let file = self.open_fence_file(
             || {
                 self.directory
@@ -320,19 +364,28 @@ impl PrivateNamespace {
         fence.verify_for(self)?;
         let started = Instant::now();
         loop {
+            check_cancelled()?;
             match fence.file.try_lock() {
                 Ok(()) => {
                     fence.verify_for(self)?;
+                    check_cancelled()?;
                     return Ok(fence);
                 }
-                Err(TryLockError::WouldBlock) if started.elapsed() < wait => {
-                    thread::sleep(NAMESPACE_FENCE_POLL);
-                }
                 Err(TryLockError::WouldBlock) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "namespace publication fence remained busy",
-                    ));
+                    #[cfg(test)]
+                    TEST_FENCE_CONTENTION.with(|slot| {
+                        if let Some(sender) = slot.borrow_mut().take() {
+                            let _ = sender.try_send(());
+                        }
+                    });
+                    check_cancelled()?;
+                    if started.elapsed() >= wait {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "namespace publication fence remained busy",
+                        ));
+                    }
+                    thread::sleep(NAMESPACE_FENCE_POLL);
                 }
                 Err(TryLockError::Error(error)) => return Err(error),
             }
@@ -2169,6 +2222,36 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(attempts, DENIAL_BACKOFF.len() + 1);
         assert_eq!(pauses, DENIAL_BACKOFF);
+        drop(namespace);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_uncancelled_contended_namespace_fence_still_admits_after_release() {
+        let root = scratch("fence-normal-contention");
+        let namespace = namespace(&root);
+        let holder = namespace
+            .acquire_fence(NamespaceFenceKind::DurableCache)
+            .expect("initial owner");
+        // An ordinary caller still gets the original bounded-busy error.
+        let busy =
+            namespace.acquire_fence_with_wait(NamespaceFenceKind::DurableCache, Duration::ZERO);
+        assert!(matches!(busy, Err(ref error) if error.kind() == io::ErrorKind::WouldBlock));
+        let (blocked_tx, blocked_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                observe_next_fence_contention(blocked_tx);
+                let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
+                fence.verify_for(&namespace)
+            });
+            let observed = blocked_rx.recv_timeout(Duration::from_secs(10));
+            let holder_still_valid = holder.verify_for(&namespace);
+            drop(holder);
+            let result = waiter.join().expect("normal waiter");
+            observed.expect("real native contention");
+            holder_still_valid.expect("held owner remains pinned");
+            result.expect("uncancelled waiter acquires after owner release");
+        });
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
     }
