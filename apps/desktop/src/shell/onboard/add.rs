@@ -87,7 +87,7 @@ pub(crate) struct Form {
 impl Form {
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Path to a project folder"));
-        let events = cx.subscribe_in(&input, window, |add: &mut Self, input, event: &InputEvent, window, cx| match event {
+        let events = cx.subscribe_in(&input, window, |add: &mut Self, input, event: &InputEvent, _window, cx| match event {
             InputEvent::Change => {
                 let typed = input.read(cx).value().to_string();
                 add.edited(typed, cx);

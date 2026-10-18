@@ -37,7 +37,7 @@ struct Hit {
 /// use of it.
 fn hits(world: &World, i: NodeId) -> Vec<Hit> {
     let mut out: Vec<Hit> = Vec::new();
-    let mut push = |caller: NodeId, member: Option<NodeId>, out: &mut Vec<Hit>| {
+    let push = |caller: NodeId, member: Option<NodeId>, out: &mut Vec<Hit>| {
         if world.top(caller) == world.top(i) || world.node(caller).orphan {
             return;
         }

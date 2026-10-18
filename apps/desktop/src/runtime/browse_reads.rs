@@ -372,7 +372,7 @@ fn prepared_library_model(
         .enumerate()
         .map(|(at, twice)| {
             let shown = at < facet::browse::TWICE_AT_REST;
-            let mut said = |text: &str| {
+            let said = |text: &str| {
                 if shown {
                     say(text)
                 } else {

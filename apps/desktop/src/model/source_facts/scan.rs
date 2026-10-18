@@ -592,7 +592,7 @@ pub fn scan_cancellable(
             let lines: Vec<&str> = text.split('\n').collect();
             let file = rel.join("/");
             let proc_ok = process_imported(&code);
-            let mut hit = |list: &mut Vec<Evidence>,
+            let hit = |list: &mut Vec<Evidence>,
                            count: &mut usize,
                            offsets: Vec<usize>,
                            skip: &dyn Fn(usize) -> bool| {

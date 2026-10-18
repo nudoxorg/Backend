@@ -810,7 +810,7 @@ pub(crate) struct ProjectionOperationGuard {
     _gate: File,
 }
 
-fn lock_file(mut file: File, shared: bool) -> Result<File, ProjectionError> {
+fn lock_file(file: File, shared: bool) -> Result<File, ProjectionError> {
     let started = Instant::now();
     #[cfg(test)]
     let mut reported_blocked = false;

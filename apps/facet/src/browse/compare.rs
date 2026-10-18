@@ -425,7 +425,7 @@ impl RenderOnce for Compare {
     }
 }
 
-fn silhouette(id: &ElementId, candidate: &Candidate, counts: &[usize; 4], state: &Entity<State>, m: &Measure, cx: &mut App) -> AnyElement {
+fn silhouette(id: &ElementId, candidate: &Candidate, counts: &[usize; 4], state: &Entity<State>, m: &Measure, _cx: &mut App) -> AnyElement {
     let mut strip = div().flex().flex_wrap().gap(m.space(Space::Tight));
     for (at, family_) in Family::ALL.into_iter().enumerate() {
         let count = candidate.operations.as_ref().map(|_| counts[at]);

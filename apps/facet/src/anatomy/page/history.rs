@@ -144,7 +144,7 @@ impl Element for HistoryStrip {
             self.inks,
             self.key.clone(),
         );
-        style.paint(bounds, window, cx, |window, cx| {
+        style.paint(bounds, window, cx, |window, _cx| {
             paint(&history, &xs, at, bounds, scale, inks, window);
             // The pointer scrubs: the nearest bar takes the caption.
             let (key, xs, span) = (key, xs, bounds);

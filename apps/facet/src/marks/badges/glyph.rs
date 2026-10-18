@@ -305,7 +305,7 @@ pub fn paint(window: &mut Window, bounds: Bounds<Pixels>, glyph: Glyph, color: H
     let w = (1.25 * k).max(1.0);
     let at = |p: P| pt(ox + p.0 * k, oy + p.1 * k);
     let mut fill = Fill::new();
-    let mut stroke = |points: &[Pt], closed: bool, fill: &mut Fill| {
+    let stroke = |points: &[Pt], closed: bool, fill: &mut Fill| {
         for pair in points.windows(2) {
             if let Some(quad) = segment(pair[0], pair[1], w) {
                 fill.poly(&quad);

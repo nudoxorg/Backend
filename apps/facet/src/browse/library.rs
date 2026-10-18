@@ -2843,8 +2843,8 @@ fn twice_row(
     state: &Rc<RefCell<State>>,
     state_key: SharedString,
     list_row: Option<(ListState, usize)>,
-    window: &mut Window,
-    cx: &mut App,
+    _window: &mut Window,
+    _cx: &mut App,
 ) -> AnyElement {
     let is_open = state.borrow().is_open(&state_key);
     let toggle = Rc::clone(state);
