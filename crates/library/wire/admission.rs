@@ -86,7 +86,7 @@ impl std::error::Error for ReplyAdmissionError {}
 /// Returns [`RequestAdmissionError`] when a text-bearing command is empty or
 /// exceeds [`MAX_COMMAND_TEXT`].
 pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> {
-    if matches!(&request.command, Command::PackagePage(page) | Command::OutlinePage { page, .. } | Command::MembersPage { page, .. } if page.window().is_windowed() || page.continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
+    if matches!(&request.command, Command::PackagePage(page) | Command::MembersPage { page, .. } if page.window().is_windowed() || page.continuation().is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some()))
     {
         return Err(RequestAdmissionError::InvalidSurface);
     }
@@ -105,7 +105,7 @@ pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> 
         Command::SearchPublishedNames(query) => {
             Some((query.query().window(), query.query().cursor()))
         }
-        Command::GraphPage { page, .. } => Some((
+        Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => Some((
             page.window(),
             page.continuation().map(crate::PageContinuation::cursor),
         )),
@@ -489,14 +489,20 @@ fn admit_projection_page(
             order.validate(&page.snapshot, *package, request.limit())
                 .map_err(ReplyAdmissionError::Protocol)?;
             if let Some(next) = page.snapshot.next {
-                if order.symbols().len() != usize::from(request.limit().get())
+                if order.symbols().len() != usize::from(request.window().delivery().get())
                     || next.query_offset() != start.checked_add(order.symbols().len() as u64)
                         .ok_or_else(|| ReplyAdmissionError::Protocol("outline offset overflow".to_owned()))?
                 {
                     return Err(ReplyAdmissionError::Protocol("outline continuation changed its ordered predecessor count".to_owned()));
                 }
             }
-            crate::QueryPageRecipe::outline(page.snapshot.root.basis().root, *package, request.limit(), order).identity()
+            // Only the native producer reconstructs/authenticates the prior
+            // ordered rows and digest. This helper use checks span and scope;
+            // echoing the supplied recipe here grants no predecessor authority.
+            let predecessor = request.continuation().map(crate::PageContinuation::cursor);
+            admit_catalog_window(&page.snapshot, request.window(), predecessor,
+                predecessor.map_or(page.snapshot.root.recipe, Cursor::recipe))?;
+            crate::QueryPageRecipe::outline_window(page.snapshot.root.basis().root, *package, request.window(), order).identity()
         },
         Command::MembersPage {
             owner,

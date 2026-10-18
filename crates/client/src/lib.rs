@@ -1760,8 +1760,33 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        let credit = QueryLimit::new(limit)
+            .ok_or_else(|| ClientError::Protocol("invalid outline credit".to_owned()))?;
+        self.outline_page_with_window(coordinate, backend_library::QueryWindow::fixed(credit), continuation)
+    }
+
+    /// Reads a complete native outline window under unchanged issued credit.
+    ///
+    /// # Errors
+    /// Refuses unrelated/unprepared cursors, stale authority and reply failures.
+    pub fn outline_page_window(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.prepare_query_window(window, continuation, None)?;
+        self.outline_page_with_window(coordinate, window, continuation)
+    }
+
+    fn outline_page_with_window(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
         if self.prepared_query.is_some() {
-            return self.resume_prepared_outline(package_key(coordinate), limit, continuation);
+            return self.resume_prepared_outline(package_key(coordinate), window, continuation);
         }
         let revision = self.revision()?;
         let package = package_key(coordinate);
@@ -1770,7 +1795,8 @@ impl Session {
             id: encode_id(package.as_bytes()),
             value: coordinate.to_owned(),
         });
-        let page = page_request(revision.root, limit, continuation)?;
+        let page = page_request(revision.root, window.issued().get(), continuation)?
+            .with_window(window).ok_or_else(|| ClientError::Protocol("outline delivery changed issued credit".to_owned()))?;
         self.send_success(
             Command::OutlinePage { package, page },
             Some(self.page_certificate(certificate, continuation)),

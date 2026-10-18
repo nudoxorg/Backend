@@ -51,12 +51,12 @@ impl<P: Product> Server<P> {
                 SURFACE_TOOL,
                 json!({"command":SurfaceCommand::SemanticVersions {
                     package:package.clone(), limit:1, cursor:None,
-                }}),
+                }, "detail":"full"}),
             )
         } else {
             (
                 "backend.semantic_versions",
-                json!({"package":package.as_str(),"limit":1}),
+                json!({"package":package.as_str(),"limit":1,"detail":"full"}),
             )
         };
         let metadata_arguments = metadata_arguments

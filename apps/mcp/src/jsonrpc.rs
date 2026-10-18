@@ -258,6 +258,9 @@ impl Engine for SessionProduct {
             Probe::Names { text, limit } if limit == window.issued().get() => {
                 self.0.names_page_window(text, window, continuation)
             }
+            Probe::OutlinePage { path, limit } if limit == window.issued().get() => {
+                self.0.outline_page_window(path, window, continuation)
+            }
             _ => Err(ClientError::Protocol(
                 "catalog window changed query family/credit".to_owned(),
             )),
@@ -1186,9 +1189,9 @@ impl<P: Product> Server<P> {
         }
     }
     /// A complete native outline page is selected before output admission.
-    /// Only the first page may be re-read with a smaller effective limit. Every
-    /// candidate must retain the original producer basis/frontier; continuation
-    /// requests retain their issued limit and are never silently resized.
+    /// The first page selects issued credit. Continued deliveries may shrink
+    /// under that same ceiling; native witnesses bind each exact prior span.
+    /// Every attempt retains the original input cursor and source frontier.
     fn outline_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -1233,6 +1236,7 @@ impl<P: Product> Server<P> {
             Some(_) => limit(arguments)?,
             None => backend_library::QueryLimit::MAX,
         };
+        let mut delivery = effective;
         let mut page_arguments = arguments.clone();
         page_arguments.insert("path".to_owned(), json!(path));
         page_arguments.insert("limit".to_owned(), json!(effective));
@@ -1240,6 +1244,7 @@ impl<P: Product> Server<P> {
             continuation_context(&self.project, "backend.outline", &page_arguments, detail);
         let continuation = self.continuation(arguments, &context)?;
         let mut pinned = None;
+        let mut pinned_revision = None;
         loop {
             lifetime.check().map_err(|error| {
                 RpcError::from_fault(&Fault::from_client_error(
@@ -1247,21 +1252,36 @@ impl<P: Product> Server<P> {
                     backend_present::Operand::Whole,
                 ))
             })?;
-            let answer = answer_paged(
-                &mut self.product,
-                &Request::OutlinePage {
-                    path: path.clone(),
-                    limit: effective,
-                },
-                continuation,
-            )
-            .map_err(|fault| RpcError::from_fault(&fault))?;
+            self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
+            let selected = Request::OutlinePage { path: path.clone(), limit: effective };
+            let probe = Probe::OutlinePage { path: &path, limit: effective };
+            let reply = self.product.probe_page_window(
+                probe, continuation, record_pages::query_window(effective, delivery)?,
+            );
+            lifetime.check().map_err(semantic_pages::semantic_client_error)?;
+            let reply = match reply {
+                Err(ClientError::ResponseTooLarge { basis: Some(basis) }) => {
+                    record_pages::pin_revision(&mut pinned_revision, basis)?;
+                    if record_pages::shrink_window(continuation.is_some(), &mut effective,
+                        &mut delivery, &mut page_arguments) {
+                        context = continuation_context(&self.project, "backend.outline", &page_arguments, detail);
+                        continue;
+                    }
+                    return Err(RpcError::from_fault(&backend_present::probe_fault(
+                        &ClientError::ResponseTooLarge { basis: Some(basis) }, probe)));
+                }
+                Err(error) => return Err(RpcError::from_fault(&backend_present::probe_fault(&error, probe))),
+                Ok(reply) => reply,
+            };
+            let answer = backend_present::catalog_page_answer(&selected, reply)
+                .map_err(|fault| RpcError::from_fault(&fault))?;
             let Answer::Outline(tree) = &answer else {
                 return Err(RpcError::invalid("outline page changed shape"));
             };
             let basis = tree
                 .page_basis()
                 .ok_or_else(|| RpcError::invalid("outline page omits producer basis"))?;
+            record_pages::pin_revision(&mut pinned_revision, basis.0.root.into())?;
             if pinned.is_some_and(|expected| expected != basis) {
                 return Err(RpcError::tool(
                     "outline source changed while selecting a bounded page; restart the outline explicitly",
@@ -1310,6 +1330,7 @@ impl<P: Product> Server<P> {
             } else {
                 fit_measured_preview(candidate, ResponseTransport::StdioLine)
             };
+            lifetime.check().map_err(semantic_pages::semantic_client_error)?;
             if fitted.fits()
                 && !fitted
                     .value()
@@ -1324,15 +1345,17 @@ impl<P: Product> Server<P> {
                     .and_then(|frame| frame.remove("result"))
                     .unwrap_or(Value::Null));
             }
-            if continuation.is_some() || effective == 1 {
+            if delivery == 1 {
                 let mut frame = fitted.into_value();
                 return Ok(frame
                     .as_object_mut()
                     .and_then(|frame| frame.remove("result"))
                     .unwrap_or(Value::Null));
             }
-            effective = effective.div_ceil(2);
-            page_arguments.insert("limit".to_owned(), json!(effective));
+            if !record_pages::shrink_window(continuation.is_some(), &mut effective,
+                &mut delivery, &mut page_arguments) {
+                return Err(RpcError::tool("outline delivery cannot make progress"));
+            }
             context =
                 continuation_context(&self.project, "backend.outline", &page_arguments, detail);
         }

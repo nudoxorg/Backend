@@ -860,7 +860,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "A readable declaration name or address.",
         )],
         options: &[LIMIT, CURSOR],
-        when: "Use when you have a name from prose or a stack trace and need the exact coordinates it could mean.",
+        when: "Use when you have a name from prose or a stack trace and need the exact coordinates it could mean. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
         name: "search",
@@ -872,7 +872,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "Text to find in names, signatures, and documentation.",
         )],
         options: &[LIMIT, CURSOR],
-        when: "Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate.",
+        when: "Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
         name: "graph",

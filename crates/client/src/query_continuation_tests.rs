@@ -112,6 +112,7 @@ impl CommandTransport for Transport {
         if matches!(
             &request.command,
             Command::GraphPage { .. }
+                | Command::OutlinePage { .. }
                 | Command::MembersPage { .. }
                 | Command::SearchPublishedNames(_)
         ) {
@@ -121,7 +122,7 @@ impl CommandTransport for Transport {
                 backend_library::decode_command_body(&bytes).map_err(ClientError::Protocol)?;
             assert_eq!(
                 admitted, request,
-                "plain graph strict standalone command admission"
+                "catalog strict standalone command admission"
             );
         }
         let mut reply = if let Command::SearchPublishedNames(query) = &request.command {
@@ -229,7 +230,7 @@ impl CommandTransport for Transport {
                 }
                 Command::OutlinePage { package, page } => {
                     let CommandReply::ProjectionPage(projection) = &reply.reply else { panic!("outline page"); };
-                    QueryPageRecipe::outline(library.revision_root(), *package, page.limit(),
+                    QueryPageRecipe::outline_window(library.revision_root(), *package, page.window(),
                         projection.outline_order.as_ref().expect("native outline order"))
                         .canonical_preimage()
                         .to_vec()
@@ -2843,7 +2844,8 @@ fn read_window_with_credit(
     match family {
         0 => session.names_page_window("Thing", window, continuation),
         1 => session.search_page_window("Thing", window, continuation),
-        _ => session.graph_page_window("graph::source", window, continuation),
+        2 => session.graph_page_window("graph::source", window, continuation),
+        _ => session.outline_page_window("/p", window, continuation),
     }
 }
 
@@ -2869,7 +2871,7 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
                 Command::Search(query) => {
                     query.cursor().is_some() && query.window().delivery().get() > 1
                 }
-                Command::GraphPage { page, .. } => {
+                Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
                     page.continuation().is_some() && page.window().delivery().get() > 1
                 }
                 _ => false,
@@ -2883,9 +2885,12 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
             }
         }
     }
-    for family in 0..3 {
+    for family in 0..4 {
         let (owner, requests) = if family < 2 {
             fixture()
+        } else if family == 3 {
+            (Arc::new(Mutex::new(owner_with_package(1, 7, 0, &["Thing"], Some("/p")))),
+                Arc::new(Mutex::new(Vec::new())))
         } else {
             (
                 Arc::new(Mutex::new(graph_fixture(false, 1, 7))),
@@ -2994,6 +2999,8 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
         stale.restore_continuation_state(retained);
         *owner.lock().expect("owner") = if family < 2 {
             self::owner(2, 37, 0)
+        } else if family == 3 {
+            owner_with_package(2, 7, 0, &["Thing"], Some("/p"))
         } else {
             graph_fixture(false, 2, 7)
         };
@@ -4211,4 +4218,42 @@ fn direct_member_session_refuses_changed_reply_sources_before_retaining_any_curs
         assert!(!client.has_portable_query_continuation(successor));
         assert!(client.encode_query_continuation(successor).is_err());
     }
+}
+
+#[test]
+fn portable_outline_windows_reopen_legacy_and_variable_spans_without_losing_exact_rows() {
+    let owner = Arc::new(Mutex::new(owner_with_package(1, 11, 0, &["Thing"], Some("/p"))));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let expected = owner.lock().expect("owner").view().rows().iter().filter_map(|row| {
+        matches!(row.id, RowId::Symbol(_)).then_some(row.id)
+    }).collect::<std::collections::BTreeSet<_>>();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing.outline_page("/p", 4, None).expect("legacy fixed page");
+    let mut ids = window_snapshot(&first).root.rows().iter().map(|row| row.id).collect::<std::collections::BTreeSet<_>>();
+    let mut next = PageContinuation::from_cursor(window_snapshot(&first).next.expect("legacy next"));
+    let mut signed = issuing.encode_query_continuation(next).expect("portable fixed predecessor");
+    for delivery in [1, 2, 4] {
+        let mut fresh = session(&owner, &requests);
+        let imported = fresh.decode_page_continuation(&signed).expect("fresh proof admission");
+        assert_eq!(imported, next);
+        let reply = fresh.outline_page_window("/p", delivery_window(4, delivery), Some(imported)).expect("native successor");
+        let page = window_snapshot(&reply);
+        assert!(page.root.row_count() <= u64::from(delivery));
+        for row in page.root.rows() { assert!(ids.insert(row.id), "one exact ID once"); }
+        if let Some(cursor) = page.next {
+            assert_eq!(cursor.query_offset(), imported.cursor().query_offset() + page.root.row_count());
+            assert_eq!(cursor.query_position().predecessor().expect("window span").delivery().get(), delivery);
+            next = PageContinuation::from_cursor(cursor);
+            signed = fresh.encode_query_continuation(next).expect("portable exact order-bound span");
+            let mut wrong = token_value(&signed);
+            wrong["command"]["data"]["page"]["continuation"]["query_window"]["delivery"] = serde_json::json!(3);
+            assert!(session(&owner, &requests).decode_page_continuation(&token(&wrong)).is_err(), "tampered predecessor span refuses");
+            let mut changed = session(&owner, &requests);
+            let imported = changed.decode_page_continuation(&signed).expect("same exact proof");
+            let before = requests.lock().expect("requests").len();
+            assert!(changed.outline_page_window("/p", delivery_window(3, 1), Some(imported)).is_err());
+            assert_eq!(requests.lock().expect("requests").len(), before, "changed issued credit refuses before page submission");
+        } else { assert_eq!(delivery, 4); }
+    }
+    assert_eq!(ids, expected);
 }

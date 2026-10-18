@@ -763,35 +763,38 @@ mod source_selection_tests {
 
     #[test]
     fn health_selection_wire_keeps_legacy_unknown_and_supported_counts_separate() {
-        let legacy: IngestProgressWire = serde_json::from_str("{}").unwrap();
+        let legacy: IngestProgressWire = serde_json::from_str("{}").expect("legacy empty progress wire fixture deserializes");
         assert!(
             progress_from_wire(legacy)
-                .unwrap()
+                .expect("legacy progress without source selection remains accepted")
                 .source_selection()
                 .is_none()
         );
         let progress = IngestProgress::new(5, 5, 0, 7, vec![], vec![])
-            .unwrap()
+            .expect("valid base progress fixture")
             .with_source_selection(crate::SourceSelectionObservation::project_vue(12))
-            .unwrap();
-        let encoded = serde_json::to_vec(&progress_to_wire(&progress)).unwrap();
-        let cold = progress_from_wire(serde_json::from_slice(&encoded).unwrap()).unwrap();
+            .expect("project Vue observation is valid");
+        let encoded = serde_json::to_vec(&progress_to_wire(&progress))
+            .expect("progress wire fixture serializes");
+        let cold = progress_from_wire(serde_json::from_slice(&encoded).expect("encoded progress wire deserializes"))
+            .expect("encoded progress wire is accepted");
         assert_eq!(cold, progress);
         assert_eq!(cold.files_discovered(), 5);
         assert_eq!(cold.files_indexed(), 5);
         assert_eq!(cold.files_unavailable(), 0);
         assert_eq!(
-            cold.source_selection().unwrap().unsupported_extensions[0].files,
+            cold.source_selection().expect("source selection round-trips").unsupported_extensions[0].files,
             12
         );
         let no_observation =
-            serde_json::to_value(progress_to_wire(&IngestProgress::default())).unwrap();
+            serde_json::to_value(progress_to_wire(&IngestProgress::default()))
+                .expect("default progress wire fixture serializes");
         assert!(no_observation.get("source_selection").is_none());
         let mut forged = progress_to_wire(&progress);
         forged
             .source_selection
             .as_mut()
-            .unwrap()
+            .expect("source selection is present in the fixture")
             .unsupported_extensions[0]
             .extension = "../vue".into();
         assert!(progress_from_wire(forged).is_err());

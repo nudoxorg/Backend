@@ -218,7 +218,12 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>, 
     if let Some(kind) = record.kind() {
         tags.push(format!("{} {}", KindGlyph::new(kind), kind.name()));
     }
-    tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    if record.is_external_reference() {
+        tags.push("external reference".to_owned());
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
@@ -604,7 +609,10 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
-            index_search_page_footer(view, &mut lines);
+            if detail == Detail::Summary && matches!(view.semantic_data(), Some(crate::ProductSemanticData::VersionsPage(_))) {
+        lines.push("For native source references, request --detail full (fresh discovery).".to_owned());
+    }
+    index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
             return lines.finish();
         }
